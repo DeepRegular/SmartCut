@@ -748,8 +748,9 @@ out is not mistaken for a seek that needed a wider margin.
 pictures hanging off one may be thrown away — that is in the bitstream, not in
 any index. So the points arrive with `leading_known: false` and
 `index::refine_leading` measures the ones a boundary can actually land on: 24
-points either side of each end of each range, each read from the byte the map
-gives for it. Measuring every point inside the range instead — which is what it
+points either side of each end of each range, and of each recorder seam inside
+one (a seam is a boundary too: the copy before it stops there, and the one
+after it opens there), each read from the byte the map gives for it. Measuring every point inside the range instead — which is what it
 used to do, invisibly, because a walk answers for itself and this never ran —
 took ten minutes on those sixteen thousand entry points, which is to say the
 disc's own index bought nothing at all.
@@ -1085,11 +1086,18 @@ of the one stream, and the `.IFO` tables are the only thing that says where:
 | `VTS_NN_0.IFO`, `VTS_PGCIT` | each program chain: its cells, their lengths, the sectors they play, and which cell each program starts at |
 | `VTS_NN_0.IFO`, `VTSI_MAT` | the picture, and the sound and subpicture tracks the set declares |
 
-A chapter's position is the sum of the lengths of the cells before it, which is
-why the cells have to lie end to end for any of this to mean anything. A chain
-whose cells do not is an angle block, or one assembled out of pieces of several
-titles, and it is not read at all: the span its cells happen to lie inside is
-not the title, and saying nothing is better than offering that.
+A chapter is where the navigation pack that opens its cell says it is, and a
+row is as long as its packs run. The cell lengths in the index are only the
+fallback, for a pack that will not read: they are written two ways on real NTSC
+discs -- most as a thirty-frame timecode whose "second" is 1.001 seconds of
+pictures, some as plain seconds -- and summed over an hour-long title the two
+readings part by several seconds.
+
+A chain holding an angle block or an interleaved unit is not read: the sectors
+it plays belong to more than one path. One whose cells merely jump about the
+stream becomes a row for each stretch it plays in order. A pressed disc does
+this when every title ends on one short cell they share, written before the
+first of them; refusing such a chain lost the disc's main programme.
 
 Since a title is a stretch and not a file, its name has to say which stretch:
 
