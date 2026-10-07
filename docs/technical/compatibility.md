@@ -243,7 +243,7 @@ use, and differ in these ways:
 
 | | 0.8.21 and earlier | After |
 |---|---|---|
-| Fields a `.scproj` does not know | Dropped on load and gone from the file at the next save, except inside a row's edit until it is opened. A file from a later version opened and saved there loses them | Kept at every level and written back out |
+| Fields a `.scproj` does not know | Dropped on load and gone from the file at the next save, except inside a row's edit until it is opened. A file from a later version opened and saved there loses them | Kept at the five places listed above and written back out |
 | `smartcut_cm` in `.cm.json` | Written as 1 and never read | A larger number is refused |
 | Fields `batch.json` does not know | Passed over when read and gone at the next write | Kept and written back out |
 | A number where a preset's setting is text | The default, where a `.scproj` turned it into text | Turned into text |
