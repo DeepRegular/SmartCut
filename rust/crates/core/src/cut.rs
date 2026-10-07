@@ -3390,6 +3390,16 @@ fn copy_segment(
     // Where the previous picture went, when it was the first field of a pair
     // and the next one completes it. See where the pair is placed.
     let mut first_field: Option<i64> = None;
+    // The sequence a picture's slices are read by, as the stream restates it
+    // in front of each entry point -- not only the one the recording opened
+    // on. A cut of a recorder's PAFF recording opens on the encoder's MBAFF
+    // pictures, whose `frame_num` is four bits against the recorder's eight;
+    // cut again across that seam and read by the first sequence, the
+    // recorder's fields were taken for frames, each put in a frame's place,
+    // and one of every pair that collided was dropped: 52 of 450 pictures
+    // lost in a fifteen-second recut. Asked only where the recording's own
+    // sequence allows fields at all, as [`crate::index::walk`] asks it.
+    let mut shape = src.video.field_shape;
 
     let mut started = false;
     let mut overshot = false;
@@ -3549,12 +3559,19 @@ fn copy_segment(
         // otherwise put both fields in the same place, and the muxer would
         // take only one of them. The two are always next to each other in
         // decode order, so the first is always the one just seen.
+        if src.video.field_shape.is_some() {
+            if let Some(restated) =
+                crate::bitstream::restated_field_shape(&src.video.codec, data, src.video.framing)
+            {
+                shape = restated;
+            }
+        }
         let (display, fields) = match (
             crate::bitstream::is_field_picture(
                 data,
                 &src.video.codec,
                 src.video.framing,
-                src.video.field_shape.as_ref(),
+                shape.as_ref(),
             ),
             first_field.take(),
         ) {
@@ -6745,9 +6762,18 @@ fn heard_in(src: &Source, stream_index: usize, plans: &[RangePlan]) -> bool {
                     // within a second of where it stopped, nothing of it was
                     // written, and the check at the end refused the whole
                     // cut for it after writing all of it.
-                    let d = packet.duration().max(0) as f64 * f64::from(stream.time_base());
-                    let middle = t + d / 2.0;
-                    if middle >= a && middle < b {
+                    //
+                    // And by its start, not its middle: a track with nothing
+                    // written yet opens only on a frame that starts inside the
+                    // range (`min_start` in [`take_audio`]; the copy and the
+                    // smart path alike). A track that stopped with its last
+                    // frame across the range's start -- begun before it, its
+                    // middle after -- was "heard" by the middle, not one frame
+                    // of it was written, and the check at the end refused the
+                    // cut all the same. A re-encoded track writes from any
+                    // frame overlapping the range, so this is never more than
+                    // what it writes either.
+                    if t >= a && t < b {
                         return true;
                     }
                     continue;

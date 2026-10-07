@@ -428,7 +428,13 @@ impl<'a> Collector<'a> {
             return self.opts.interval;
         }
         let left = self.opts.max_bytes.saturating_sub(self.bytes) as f64;
-        let ahead = (known - self.seen).max(0.0);
+        // A read that has gone past the length the container claimed has no
+        // idea how much is left: taken as nothing, the floor came out zero
+        // and every picture was held however far past the budget it went.
+        // As much again as has been read is assumed instead, which keeps
+        // what is held within the budget whatever the real length turns out
+        // to be.
+        let ahead = if self.duration > self.seen { known - self.seen } else { self.seen };
         self.opts.interval.max(ahead / (left / each).max(1.0))
     }
 
@@ -1169,6 +1175,29 @@ mod tests {
         c.seen = 0.5;
         c.fed = 2;
         assert_eq!(c.min_gap(), 0.0);
+    }
+
+    /// Over the budget, what is held stays near it whether the length the
+    /// container claimed was right or far too short (a program stream has
+    /// been read as eight seconds for an hour): an hour of entry points
+    /// every half second, a kilobyte apiece, against 64 KB.
+    #[test]
+    fn the_budget_holds_whatever_the_claimed_length() {
+        let opts = ThumbOptions {
+            max_bytes: 64 << 10,
+            ..ThumbOptions::default()
+        };
+        for claimed in [3600.0, 8.0, 0.0] {
+            let mut c = Collector::about(claimed, 1.0, &opts);
+            for k in 0..7200 {
+                let time = k as f64 * 0.5;
+                let jpeg = c.wants(time).then(|| vec![0u8; 1024]);
+                c.take(Made { time, sig: [0; SIG], jpeg });
+            }
+            let held: usize = c.thumbs.iter().map(|t| t.jpeg.len()).sum();
+            assert!(held <= (64 + 16) << 10, "claimed {claimed}: {} KB held", held >> 10);
+            assert!(c.thumbs.len() >= 32, "claimed {claimed}: only {} held", c.thumbs.len());
+        }
     }
 
     /// No differences is no scenes and the floor as the bar; a recording

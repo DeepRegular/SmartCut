@@ -70,16 +70,7 @@ fn nal_payloads(data: &[u8], framing: NalFraming) -> Vec<&[u8]> {
             }
         }
         NalFraming::AnnexB => {
-            let mut starts = Vec::new();
-            let mut i = 0;
-            while i + 3 <= data.len() {
-                if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
-                    starts.push(i + 3);
-                    i += 3;
-                } else {
-                    i += 1;
-                }
-            }
+            let starts = start_codes(data);
             for (k, &s) in starts.iter().enumerate() {
                 let end = starts.get(k + 1).map_or(data.len(), |&n| {
                     // trim the next start code, and its optional leading zero
@@ -97,6 +88,32 @@ fn nal_payloads(data: &[u8], framing: NalFraming) -> Vec<&[u8]> {
         }
     }
     out
+}
+
+/// Where each payload begins: the byte after every `00 00 01`, the search
+/// going on three bytes past each one found.
+///
+/// **Asked of every byte of every picture**, by the walk among others -- and
+/// on an interlaced H.264 recording, of each picture twice (the reference
+/// question and the field question). So the third byte is looked at first:
+/// above 1 it rules out a start code at any of the three places it could be
+/// part of, and the search steps over all three. Which places are found is
+/// exactly what a byte-by-byte search finds (see the test).
+fn start_codes(data: &[u8]) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while i + 3 <= data.len() {
+        match data[i + 2] {
+            1 if data[i] == 0 && data[i + 1] == 0 => {
+                starts.push(i + 3);
+                i += 3;
+            }
+            // A start code at `i + 1` or `i + 2` needs this byte to be 0.
+            0 => i += 1,
+            _ => i += 3,
+        }
+    }
+    starts
 }
 
 const H264_VCL: std::ops::RangeInclusive<u8> = 1..=5;
@@ -584,6 +601,12 @@ const H264_CHROMA_PROFILES: &[u32] =
     &[100, 110, 122, 244, 44, 83, 86, 118, 128, 134, 135, 138, 139];
 
 fn h264_field_shape(nal: &[u8]) -> Option<FieldShape> {
+    h264_sequence_shape(nal).flatten()
+}
+
+/// [`h264_field_shape`], telling a header that says every picture is a whole
+/// frame (`Some(None)`) from one that could not be read (`None`).
+fn h264_sequence_shape(nal: &[u8]) -> Option<Option<FieldShape>> {
     if !is_h264_sps(nal) {
         return None;
     }
@@ -635,10 +658,95 @@ fn h264_field_shape(nal: &[u8]) -> Option<FieldShape> {
     let frame_mbs_only = b.u(1)? == 1;
     // Set, and every picture in the sequence is a whole frame: no picture
     // need be asked, and nothing after this is read.
-    (!frame_mbs_only).then_some(FieldShape {
+    Some((!frame_mbs_only).then_some(FieldShape {
         frame_num_bits,
         separate_colour_planes,
-    })
+    }))
+}
+
+/// What a packet says again of the sequence its pictures are read by, where
+/// it says it: `Some(Some(shape))` from a sequence header that allows field
+/// pictures, `Some(None)` from one whose every picture is a whole frame, and
+/// `None` where the packet carries no header ahead of its pictures, or one
+/// that could not be read -- which leaves the caller with what it had.
+///
+/// A transport stream restates the header in front of every entry point, and
+/// a recording can change it on the way: a cut of a recorder's PAFF
+/// recording opens on an encoder's MBAFF pictures and goes on into the
+/// recorder's fields, each with a `frame_num` of its own width, and a join
+/// can go on into a progressive recording's frames, whose slices carry no
+/// `field_pic_flag` at all.
+///
+/// **Only what comes before the packet's first slice is looked at**, which
+/// is where a header goes and is a few dozen bytes of a picture's hundred
+/// thousand. Asked of every packet of an interlaced recording, a search of
+/// the whole packet ([`field_shape`]) doubled the time a walk of a recorder's
+/// 45-minute clip took.
+pub fn restated_field_shape(
+    codec: &str,
+    data: &[u8],
+    framing: NalFraming,
+) -> Option<Option<FieldShape>> {
+    if codec != "h264" {
+        return None;
+    }
+    h264_sequence_shape(h264_header_ahead(data, framing)?)
+}
+
+/// The first sequence header in a packet ahead of its first slice. See
+/// [`restated_field_shape`].
+fn h264_header_ahead(data: &[u8], framing: NalFraming) -> Option<&[u8]> {
+    // What a NAL unit opening with `b` is: `Some(true)` a sequence header,
+    // `Some(false)` a slice (and so the end of the search), `None` anything
+    // else -- a delimiter, a picture header, supplemental information.
+    let kind = |b: u8| match b & 0x1F {
+        7 => Some(true),
+        t if H264_VCL.contains(&t) => Some(false),
+        _ => None,
+    };
+    match framing {
+        NalFraming::Length(n) => {
+            let mut i = 0;
+            while i + n <= data.len() {
+                let mut len = 0usize;
+                for k in 0..n {
+                    len = (len << 8) | data[i + k] as usize;
+                }
+                i += n;
+                if len == 0 {
+                    continue;
+                }
+                let nal = data.get(i..i.checked_add(len)?)?;
+                match kind(nal[0]) {
+                    Some(true) => return Some(nal),
+                    Some(false) => return None,
+                    None => i += len,
+                }
+            }
+            None
+        }
+        NalFraming::AnnexB => {
+            let start_after = |from: usize| -> Option<usize> {
+                (from..data.len().saturating_sub(2))
+                    .find(|&i| data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1)
+            };
+            let mut s = start_after(0)? + 3;
+            loop {
+                let found = data.get(s).copied().and_then(kind);
+                if found == Some(false) {
+                    return None;
+                }
+                let next = start_after(s);
+                if found == Some(true) {
+                    // Up to the next start code, less the leading zero of a
+                    // four-byte one, as [`nal_payloads`] cuts it.
+                    let end = next.map_or(data.len(), |e| if e > s && data[e - 1] == 0 { e - 1 } else { e });
+                    return data.get(s..end);
+                }
+                s = next? + 3;
+            }
+        }
+    }
 }
 
 /// Step over the quantiser matrices a sequence header may write for itself.
@@ -725,7 +833,14 @@ pub fn is_field_picture(
 /// `Some(field_pic_flag)` where this slice opens a picture, `None` where it
 /// carries on one already opened.
 fn h264_opens_a_picture(nal: &[u8], shape: &FieldShape) -> Option<bool> {
-    let mut b = Bits::new(nal.get(1..)?); // past the one-byte NAL header
+    // Past the one-byte NAL header, and no further than the slice header
+    // reaches: three numbers of at most 63 bits each, two bits, `frame_num`
+    // and the flag come to 224 bits at the most, and 96 bytes hold 512 of
+    // them however many emulation prevention bytes are taken out. Unpacked
+    // whole, every slice of every picture was copied to read its first few
+    // bytes, which on an interlaced recording was a quarter of a walk.
+    let nal = nal.get(1..)?;
+    let mut b = Bits::new(&nal[..nal.len().min(96)]);
     if b.ue()? != 0 {
         return None; // first_mb_in_slice
     }
@@ -1177,6 +1292,73 @@ mod tests {
     fn a_progressive_recording_codes_no_fields() {
         let header = sps("67f4000d919b28283f6022000003000200000300781e28532c");
         assert!(field_shape("h264", &annexb(&[&header]), NalFraming::AnnexB).is_none());
+    }
+
+    /// The start codes found by stepping over bytes that cannot be part of
+    /// one are the ones a byte-by-byte search finds, on data dense with the
+    /// bytes that matter.
+    #[test]
+    fn start_codes_are_the_ones_a_plain_search_finds() {
+        let plain = |d: &[u8]| {
+            let (mut out, mut i) = (Vec::new(), 0);
+            while i + 3 <= d.len() {
+                if d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1 {
+                    out.push(i + 3);
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            }
+            out
+        };
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for len in 0..2000usize {
+            let d: Vec<u8> = (0..len % 97)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    [0u8, 0, 0, 1, 1, 2, 3, 0xff][(seed % 8) as usize]
+                })
+                .collect();
+            assert_eq!(start_codes(&d), plain(&d), "{d:?}");
+        }
+    }
+
+    /// A packet restating its sequence ahead of its slices changes how the
+    /// slices after it are read -- to fields, to frames -- and one that
+    /// restates nothing, or nothing readable, leaves it as it was.
+    #[test]
+    fn a_packet_restates_its_sequence_ahead_of_its_slices() {
+        let fields =
+            sps("27640028ac2ca50168111f7ff800200018800001f480007530742000206c80001036651b5805");
+        let frames = sps("67f4000d919b28283f6022000003000200000300781e28532c");
+        let slice = sps("2188a7de14d29e346f5a");
+        let aud: &[u8] = &[0x09, 0x10];
+        let shape = field_shape("h264", &annexb(&[&fields]), NalFraming::AnnexB).unwrap();
+        let ask = |nals: &[&[u8]]| restated_field_shape("h264", &annexb(nals), NalFraming::AnnexB);
+        assert_eq!(ask(&[aud, &fields, &slice]), Some(Some(shape)));
+        assert_eq!(ask(&[aud, &frames, &slice]), Some(None));
+        assert_eq!(ask(&[aud, &slice]), None);
+        // Behind the slice is not ahead of it.
+        assert_eq!(ask(&[&slice, &fields]), None);
+        // Cut short, it says nothing.
+        assert_eq!(ask(&[aud, &fields[..6]]), None);
+        // The same, framed by length as an MP4 frames it.
+        let mut framed = Vec::new();
+        for nal in [aud, &fields[..], &slice[..]] {
+            framed.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+            framed.extend_from_slice(nal);
+        }
+        assert_eq!(
+            restated_field_shape("h264", &framed, NalFraming::Length(4)),
+            Some(Some(shape))
+        );
+        assert_eq!(restated_field_shape("hevc", &annexb(&[&fields]), NalFraming::AnnexB), None);
+        for cut in 0..framed.len() {
+            let _ = restated_field_shape("h264", &framed[..cut], NalFraming::Length(4));
+            let _ = ask(&[aud, &fields[..cut.min(fields.len())]]);
+        }
     }
 
     /// MPEG-2 says it in the picture itself: `picture_structure` 3 is a whole

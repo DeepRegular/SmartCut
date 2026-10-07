@@ -85,7 +85,14 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// now declines for every MPEG stream: entries that were not entry points,
 /// and none for the first half second. As with 4, nothing in the file says
 /// which source made it, and a disc image never changes size or time.
-pub const VERSION: u32 = 10;
+///
+/// 11: two things a walk saved before got wrong and kept. An `.mp4` cut out
+/// with `ffmpeg -ss X -c copy` hides a key picture before 0 behind its edit
+/// list; it was saved as an entry point at 0, and every range from the head
+/// then failed ("passed without being met") however often it was opened.
+/// And a field-coded (PAFF) H.264 recording was saved as variable-rate, its
+/// two fields counted as two pictures.
+pub const VERSION: u32 = 11;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

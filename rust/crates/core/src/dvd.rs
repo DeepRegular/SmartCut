@@ -94,7 +94,8 @@ pub struct Title {
     pub parts: usize,
     /// Which title set it lives in, `1` for `VTS_01_*`.
     pub vts: usize,
-    /// How long the index says this piece runs.
+    /// How long this piece runs: by its navigation packs, or where they
+    /// will not read, by the index's cell times.
     pub duration: f64,
     /// Chapter points, in seconds from the start of this piece.
     pub chapters: Vec<f64>,
@@ -318,16 +319,36 @@ fn pieces(
             // is nowhere to put one when that beginning could not be read: a
             // chapter is a time on the stream's clock or it is nothing, and a
             // mark in the wrong place is worse than no mark.
+            //
+            // Timed by the navigation pack that opens the chapter's cell,
+            // which is on the clock the pictures are shown by, and not by
+            // adding up the index's cell times: those are written two ways.
+            // Most NTSC discs write a timecode of thirty frames to the
+            // "second" (see [`dvd_time`]), but some authoring tools write
+            // seconds of the clock and frames at 29.97 -- one disc here does,
+            // its cells 749.23 s by the index and 749.25 s by its packs -- and
+            // either reading put a chapter 0.1% of its distance off on the
+            // other kind. The sum stays as the fallback for a pack that will
+            // not read, or one so far from the sum that it is not this run's
+            // clock at all.
             let chapters = entries
                 .iter()
                 .filter_map(|&pgn| pgc.programs.get(pgn.checked_sub(1)?).copied())
                 .filter(|&cell| cell > run.from && cell <= run.to)
                 .map(|cell| {
-                    pgc.cells[run.from..cell - 1]
+                    let summed = pgc.cells[run.from..cell - 1]
                         .iter()
                         .map(|c| c.length)
                         .sum::<f64>()
-                        + 0.0
+                        + 0.0;
+                    match (run.start, vol.vobu_time(vts, pgc.cells[cell - 1].first)) {
+                        (Some(from), Some(at))
+                            if (at - from - summed).abs() <= 1.0 + summed * 0.002 =>
+                        {
+                            at - from
+                        }
+                        _ => summed,
+                    }
                 })
                 .collect();
             Title {
@@ -335,7 +356,19 @@ fn pieces(
                 part: k + 1,
                 parts,
                 vts,
-                duration: pgc.cells[run.from..run.to].iter().map(|c| c.length).sum(),
+                // By the packs as well, for the same reason: on a disc of the
+                // second kind every row was listed 0.1% long.
+                duration: {
+                    let summed: f64 = pgc.cells[run.from..run.to].iter().map(|c| c.length).sum();
+                    match (run.start, run.end) {
+                        (Some(from), Some(to))
+                            if (to - from - summed).abs() <= 1.0 + summed * 0.002 =>
+                        {
+                            to - from
+                        }
+                        _ => summed,
+                    }
+                },
                 chapters: if run.start.is_some() {
                     chapters
                 } else {
@@ -365,6 +398,9 @@ struct Run {
     /// navigation pack at that sector could be read. `None` is a damaged
     /// disc, and costs the chapters -- see [`pieces`].
     start: Option<f64>,
+    /// Where its last cell's last VOBU stops on that clock, when that pack
+    /// could be read.
+    end: Option<f64>,
 }
 
 /// Where a chain's clock starts again, and so where its rows have to be cut.
@@ -403,12 +439,16 @@ fn runs_of(vol: &mut Volume, vts: usize, pgc: &Pgc) -> Vec<Run> {
                 from: i,
                 to: i + 1,
                 start,
+                end: None,
             }),
         }
         // Where this cell leaves the clock, for the next one to be judged
         // against. Its last VOBU is the one that knows.
-        ends_at = vol
-            .vobu_end(vts, cell.last_vobu)
+        let end = vol.vobu_end(vts, cell.last_vobu);
+        if let Some(run) = out.last_mut() {
+            run.end = end;
+        }
+        ends_at = end
             .or_else(|| start.map(|t| t + cell.length))
             .unwrap_or(f64::NAN);
     }
@@ -908,25 +948,30 @@ fn language(raw: &[u8]) -> Option<String> {
 
 /// A `dvd_time_t`: hours, minutes and seconds in binary coded decimal, and a
 /// frame count with the frame rate in its top two bits.
+///
+/// **On most NTSC discs it is a timecode, not a time.** The clock counts
+/// thirty frames to its "second" and never drops one, while the pictures run
+/// at 30000/1001: every second it states is 1.001 seconds of pictures. Read
+/// as seconds plus frames, a cell came out a thousandth short -- on five of
+/// six NTSC discs here, against the navigation packs that time the same
+/// cells; 5.09 seconds by the end of an 85 minute film. The sixth writes
+/// seconds of the clock and frames at 29.97, which this reads 0.1% long.
+/// Which is why chapters and lengths are taken from the packs where they
+/// read, and this is only the fallback: see [`pieces`].
 fn dvd_time(b: &[u8], at: usize) -> Option<f64> {
     let t = b.get(at..at + 4)?;
     let bcd = |x: u8| -> Option<f64> {
         let (tens, units) = (x >> 4, x & 0xf);
         (tens <= 9 && units <= 9).then(|| (tens * 10 + units) as f64)
     };
-    let rate = match t[3] >> 6 {
-        1 => 25.0,
-        3 => 30000.0 / 1001.0,
-        // A time with no frame rate in it is a time this cannot place to
-        // better than a second, and the seconds are still worth having.
-        _ => 0.0,
-    };
     let frames = bcd(t[3] & 0x3f)?;
     let seconds = bcd(t[0])? * 3600.0 + bcd(t[1])? * 60.0 + bcd(t[2])?;
-    Some(if rate > 0.0 {
-        seconds + frames / rate
-    } else {
-        seconds
+    Some(match t[3] >> 6 {
+        1 => seconds + frames / 25.0,
+        3 => (seconds * 30.0 + frames) * 1001.0 / 30000.0,
+        // A time with no frame rate in it is a time this cannot place to
+        // better than a second, and the seconds are still worth having.
+        _ => seconds,
     })
 }
 
@@ -1305,13 +1350,18 @@ mod tests {
 
     #[test]
     fn a_dvd_time_is_binary_coded_decimal_with_the_rate_on_top() {
-        // 00:59:59.22 at 30000/1001
+        // 00:59:59.22 at 30000/1001: a timecode of thirty frames to the
+        // second, so 3599 * 30 + 22 frames of 1001/30000 seconds each.
         let t = [0x00, 0x59, 0x59, 0xc0 | 0x22];
         let secs = dvd_time(&t, 0).unwrap();
         assert!(
-            (secs - (3599.0 + 22.0 / (30000.0 / 1001.0))).abs() < 1e-6,
+            (secs - (3599.0 * 30.0 + 22.0) * 1001.0 / 30000.0).abs() < 1e-6,
             "{secs}"
         );
+        // A cell of eight seconds on an NTSC disc's index, as one disc here
+        // writes it: its navigation packs are 8.008 seconds apart.
+        let t = [0x00, 0x00, 0x08, 0xc0];
+        assert!((dvd_time(&t, 0).unwrap() - 8.008).abs() < 1e-9);
         // 25 fps carries a different pair of top bits.
         let t = [0x01, 0x00, 0x00, 0x40 | 0x12];
         assert!((dvd_time(&t, 0).unwrap() - (3600.0 + 12.0 / 25.0)).abs() < 1e-6);

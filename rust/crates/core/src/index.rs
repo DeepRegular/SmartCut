@@ -174,6 +174,27 @@ pub fn walk(
     // What is offered is throttled where it is decided, in [`crate::Told`].
     let mut told = crate::Told::new();
     let mut seen: u64 = 0;
+    // The instants pictures are shown at, a frame apiece, for [`varies`].
+    //
+    // **A field-coded frame is two packets with a time apiece.** A recorder's
+    // PAFF hands each field over on its own, and each carries its own
+    // presentation time, half a frame after the one before -- 1501 and 1502
+    // ticks in turn at 29.97 -- so every other gap was shorter than half a
+    // frame and every such recording read as one whose pictures come faster
+    // than its rate: "the pictures vary", and the cut planned without the
+    // grid. The second field of a pair is the first's other half, not a
+    // picture of its own, and is left out here. Asked only of a stream whose
+    // sequence allows fields at all (`field_shape`), which is a handful.
+    let mut shown: Vec<f64> = Vec::new();
+    let mut half_open = false;
+    // The sequence the slices are read by, as the stream restates it in
+    // front of its entry points. **Not only the one it opened on:** a cut of
+    // a recorder's PAFF recording opens on the encoder's MBAFF pictures, with
+    // a four-bit `frame_num`, and goes on into the recorder's fields with an
+    // eight-bit one. Read by the first, the fields' `field_pic_flag` was a
+    // bit of their `frame_num`: no pair was found, and the cut still read as
+    // one whose pictures vary. See `copy_segment` in [`crate::cut`].
+    let mut shape = video.field_shape;
     let mut reading = ictx.read_packets();
     for (s, p) in reading.by_ref() {
         seen += 1;
@@ -202,6 +223,21 @@ pub fn walk(
         if entries.step(&p) != crate::Step::Skip {
             entry(&p)?;
         }
+        // Before the timestamp too, so that a second field carrying none
+        // still closes the pair it belongs to.
+        let second_half = video.field_shape.is_some() && {
+            if let Some(restated) =
+                p.data().and_then(|d| bitstream::restated_field_shape(&codec, d, framing))
+            {
+                shape = restated;
+            }
+            let field = p
+                .data()
+                .is_some_and(|d| bitstream::is_field_picture(d, &codec, framing, shape.as_ref()));
+            let second = field && half_open;
+            half_open = field && !second;
+            second
+        };
         let Some(pts) = p.pts() else { continue };
         let reference = p
             .data()
@@ -217,21 +253,28 @@ pub fn walk(
                 .map(|d| bitstream::display_fields(d, &codec, vc1) != 2)
                 .unwrap_or(false);
         }
-        packets.push(PacketView {
+        let view = PacketView {
             pts: pts as f64 * time_base - start_time,
             dts: p.dts().unwrap_or(pts) as f64 * time_base - start_time,
             key: p.is_key(),
             reference,
             pos: p.position() as i64,
-        });
+        };
+        if !second_half {
+            shown.push(view.pts);
+        }
+        packets.push(view);
     }
     let whole = reading.finished().is_ok();
     drop(reading);
 
-    // The last picture to be shown, which is not the last to arrive.
-    let end = packets
+    // The last picture to be shown, which is not the last to arrive. Of the
+    // frames in `shown`: the second field of the last pair is shown half a
+    // frame after the pair begins, and taken for a picture of its own it
+    // put the end half a frame past the last one.
+    let end = shown
         .iter()
-        .map(|p| p.pts)
+        .copied()
         .fold(f64::NEG_INFINITY, f64::max)
         .into_finite()
         .map(|t| t + video.frame_duration());
@@ -246,7 +289,6 @@ pub fn walk(
     // order there is: what is being asked is how long each picture is on
     // screen, and a picture is on screen until the next one shown replaces
     // it.
-    let mut shown: Vec<f64> = packets.iter().map(|p| p.pts).collect();
     shown.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     Ok(Index {
         points: points_from(&packets, &codec),

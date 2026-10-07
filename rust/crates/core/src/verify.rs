@@ -427,6 +427,27 @@ pub fn check_crossed(
     pieces: &[Piece],
     after: &[crate::transition::Transition],
     compare: Compare,
+    told: Option<Box<dyn FnMut(f64) + Send>>,
+    stop: &AtomicBool,
+) -> Result<Report> {
+    check_placed(output, pieces, after, None, compare, told, stop)
+}
+
+/// [`check_crossed`], told where the output's sound tracks sit among the
+/// master's: `places[k]` is the position in the master's
+/// [`Source::audios`] of the output's `k`th track. A join pairs a clip's
+/// tracks with the master's by that position, not by the order they come
+/// out in: a master whose first track was left out writes its second as
+/// the output's first, and a clip with one track has nothing for it -- the
+/// track stops where the master does, which is what was asked for. `None`
+/// takes the output's order for the master's, which is right whenever no
+/// track of the master was left out.
+pub fn check_placed(
+    output: &str,
+    pieces: &[Piece],
+    after: &[crate::transition::Transition],
+    places: Option<&[usize]>,
+    compare: Compare,
     mut told: Option<Box<dyn FnMut(f64) + Send>>,
     stop: &AtomicBool,
 ) -> Result<Report> {
@@ -461,11 +482,17 @@ pub fn check_crossed(
     // How much of that the recordings' own sound does not cover. See
     // [`Report::sound_short`].
     let mut sound_short = 0.0;
+    // And what each track lacks at a recorder's seams inside the ranges, per
+    // piece, by the track's place among that piece's own. See
+    // [`seam_missing`].
+    let mut seam_short: Vec<Vec<f64>> = Vec::new();
     for p in pieces {
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        sound_short += sound_missing(p, &within);
+        let (missing, span) = sound_missing(p, &within);
+        sound_short += missing;
+        seam_short.push(seam_missing(p, span));
     }
     let fps = pieces.first().map(|p| p.src.video.frame_rate).unwrap_or(0.0);
     let estimate = (kept * if fps > 0.0 { fps } else { 30.0 }).max(1.0);
@@ -785,10 +812,16 @@ pub fn check_crossed(
         // AC-3 a TrueHD track is wrapped around is declared as a stream of
         // its own and is no track of the master's.
         let mut place = 0usize;
+        // Whether the output's tracks can be taken for a piece's own by
+        // place: told so, or every one of the piece's tracks is here. Where
+        // one was left out and nobody said which, a seam's hole is held to
+        // the track that lacks the most -- the head and the tail are held to
+        // all of them that way too.
+        let written = sounds.iter().filter(|s| s.2 > 0).count();
         report.sounds = sounds
             .iter()
             .map(|s| {
-                let at = place;
+                let at = places.map_or(place, |p| p.get(place).copied().unwrap_or(place));
                 if s.2 > 0 {
                     place += 1;
                 }
@@ -799,7 +832,23 @@ pub fn check_crossed(
                     .filter(|p| !p.src.audios.is_empty() && p.src.audios.len() <= at)
                     .flat_map(|p| p.ranges.iter().map(move |r| within(p, r)))
                     .sum();
-                Sound { index: s.0, seconds: s.3, measured: s.3 > 0.0, short: sound_short + gap }
+                let seams: f64 = pieces
+                    .iter()
+                    .zip(&seam_short)
+                    .map(|(p, holes)| {
+                        if places.is_some() || written >= p.src.audios.len() {
+                            holes.get(at).copied().unwrap_or(0.0)
+                        } else {
+                            holes.iter().fold(0.0, |m: f64, &h| m.max(h))
+                        }
+                    })
+                    .sum();
+                Sound {
+                    index: s.0,
+                    seconds: s.3,
+                    measured: s.3 > 0.0,
+                    short: sound_short + gap + seams,
+                }
             })
             .collect();
         source_side.join().map_err(|_| anyhow!("the source side of the check stopped"))??;
@@ -842,20 +891,28 @@ fn crossed(pieces: &[Piece], after: &[crate::transition::Transition]) -> f64 {
 /// All of them for a recording with no sound track. Otherwise what lies
 /// before the latest of its tracks' first sound and after the earliest of
 /// their last: read off the file's first and last few seconds, and only for
-/// a piece with a range near either end -- in between, the sound runs.
-fn sound_missing(p: &Piece, within: &dyn Fn(&Piece, &(f64, f64)) -> f64) -> f64 {
+/// a piece with a range near either end -- in between, the sound runs, bar
+/// a recorder's seams, which [`seam_missing`] measures.
+///
+/// Comes back with the span it measured, `(0, inf)` where it measured none,
+/// so that what lies outside it is not counted a second time at a seam.
+fn sound_missing(
+    p: &Piece,
+    within: &dyn Fn(&Piece, &(f64, f64)) -> f64,
+) -> (f64, (f64, f64)) {
     const NEAR: f64 = 10.0;
+    let unmeasured = (0.0, f64::INFINITY);
     let whole: f64 = p.ranges.iter().map(|r| within(p, r)).sum();
     if p.src.audios.is_empty() {
-        return whole;
+        return (whole, unmeasured);
     }
     let duration = p.src.duration;
     let head = p.ranges.iter().any(|&(a, _)| a < NEAR);
     let tail = duration > 0.0 && p.ranges.iter().any(|&(_, b)| b > duration - NEAR);
     if !head && !tail {
-        return 0.0;
+        return (0.0, unmeasured);
     }
-    let Some((from, to)) = sound_span(p.src, head, tail, NEAR) else { return 0.0 };
+    let Some((from, to)) = sound_span(p.src, head, tail, NEAR) else { return (0.0, unmeasured) };
     // What of each range lies inside the span.
     let inside: f64 = p
         .ranges
@@ -865,7 +922,150 @@ fn sound_missing(p: &Piece, within: &dyn Fn(&Piece, &(f64, f64)) -> f64) -> f64 
             (end.min(to) - r.0.max(0.0).max(from)).max(0.0)
         })
         .sum();
-    (whole - inside).max(0.0)
+    ((whole - inside).max(0.0), (from, to))
+}
+
+/// How much of a piece's ranges each of its sound tracks has no sound for at
+/// the seams of a recorder's clip, by the track's place in
+/// [`Source::audios`].
+///
+/// **A recorder's clip can lose seconds of one track where it was paused.**
+/// On one BD-RE recorder's clip the second track stops 3.2 s before a seam
+/// that the pictures and the first track run straight through, and a cut
+/// across it, which carries the recording faithfully, was reported as that
+/// track running short. [`sound_missing`] only reads the two ends of the
+/// file, so each seam a range reaches is read as well: the last sound before
+/// it and the first after, track by track. Only what the recording lacks is
+/// allowed for: a track the cut loses where the recording has it is still
+/// reported. Where a read cannot say -- no sound of a track on one side
+/// within the stretch read -- the hole is taken as only as long as what was
+/// read, so that what is allowed for is never more than was measured.
+///
+/// `span` is where [`sound_missing`] found the sound running; what lies
+/// outside it is counted there already.
+fn seam_missing(p: &Piece, span: (f64, f64)) -> Vec<f64> {
+    /// How far before a seam the read begins, and how far after it the first
+    /// sound of each track is looked for. The ends of the file are read as
+    /// far ([`sound_missing`]'s `NEAR`), and the hole that was measured is
+    /// 3.2 s.
+    const BACK: f64 = 10.0;
+    const ON: f64 = 10.0;
+    let src = p.src;
+    let mut out = vec![0.0; src.audios.len()];
+    if out.is_empty() || src.joins.is_empty() {
+        return out;
+    }
+    let duration = src.duration;
+    let ranges: Vec<(f64, f64)> = p
+        .ranges
+        .iter()
+        .map(|&(a, b)| {
+            let end = if duration > 0.0 { b.min(duration) } else { b };
+            (a.max(0.0).max(span.0), end.min(span.1))
+        })
+        .filter(|(a, b)| b > a)
+        .collect();
+    for (n, j) in src.joins.iter().enumerate() {
+        let next = src.joins.get(n + 1);
+        let until = next.map_or(j.time + ON, |x| x.ends.min(j.time + ON));
+        if !ranges.iter().any(|&(a, b)| a < until && b > j.ends - BACK) {
+            continue;
+        }
+        let Some(holes) = seam_holes(src, j, next, BACK, until) else { continue };
+        for (k, hole) in holes.into_iter().enumerate() {
+            out[k] += hole_in(&ranges, hole, (j.ends, j.time));
+        }
+    }
+    out
+}
+
+/// How much of `ranges` a track's `hole` covers, leaving out `between`: the
+/// stretch from where the pictures before a seam end to where the ones after
+/// it begin, which the pictures lack as much as the sound does.
+fn hole_in(ranges: &[(f64, f64)], (h0, h1): (f64, f64), (ends, time): (f64, f64)) -> f64 {
+    let over = |x0: f64, x1: f64| -> f64 {
+        ranges.iter().map(|&(a, b)| (b.min(x1) - a.max(x0)).max(0.0)).sum()
+    };
+    if h1 <= h0 {
+        return 0.0;
+    }
+    over(h0, h1.min(ends)) + over(h0.max(time.max(ends)), h1)
+}
+
+/// Each sound track's hole at one seam: from the end of its last packet
+/// before the seam to the start of its first after it. Read by byte, as the
+/// cut reads a stretch (see [`crate::restamp::Seam`]): over a seam the times
+/// need not climb with the bytes, so which side a packet is on is its
+/// position. `None` where the recording cannot be read.
+fn seam_holes(
+    src: &Source,
+    j: &crate::restamp::Seam,
+    next: Option<&crate::restamp::Seam>,
+    back: f64,
+    until: f64,
+) -> Option<Vec<(f64, f64)>> {
+    let tracks: Vec<(usize, f64)> =
+        src.audios.iter().map(|a| (a.stream_index, a.time_base)).collect();
+    let mut ictx = crate::input::demux(&src.input.url).ok()?;
+    let want = j.ends - back;
+    // The last entry point of the stretch before that is far enough ahead.
+    let landing = src
+        .points
+        .iter()
+        .rfind(|p| p.pos >= 0 && (p.pos as u64) < j.at && p.time <= want);
+    let placed = match landing {
+        Some(p) if src.byte_seekable => unsafe {
+            ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, p.pos, ff::ffi::AVSEEK_FLAG_BYTE) >= 0
+        },
+        _ => false,
+    };
+    if !placed {
+        let target = ((want.max(0.0) + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        ictx.seek(target, ..target).ok()?;
+    }
+    let wall = next.map(|x| x.at);
+    let mut read_at: Option<u64> = None;
+    // The earliest time read before the seam: where a track has nothing
+    // before it, its hole is known to reach back at least that far.
+    let mut opened: Option<f64> = None;
+    let mut last: Vec<Option<f64>> = vec![None; tracks.len()];
+    let mut first: Vec<Option<f64>> = vec![None; tracks.len()];
+    let mut reading = ictx.read_packets();
+    for (stream, packet) in reading.by_ref() {
+        if packet.position() >= 0 {
+            read_at = Some(packet.position() as u64);
+        }
+        let Some(at) = read_at else { continue };
+        if wall.is_some_and(|w| at >= w) {
+            break;
+        }
+        let k = tracks.iter().position(|t| t.0 == stream.index());
+        let tb = k.map_or_else(|| f64::from(stream.time_base()), |k| tracks[k].1);
+        let Some(t) = packet.pts().map(|p| p as f64 * tb - src.start_time) else { continue };
+        if at < j.at {
+            opened = Some(opened.map_or(t, |o: f64| o.min(t)));
+            if let Some(k) = k {
+                let end = t + packet.duration().max(0) as f64 * tb;
+                last[k] = Some(last[k].map_or(end, |l: f64| l.max(end)));
+            }
+        } else {
+            if let Some(k) = k {
+                first[k] = Some(first[k].map_or(t, |f: f64| f.min(t)));
+            }
+            if t > until || first.iter().all(Option::is_some) {
+                break;
+            }
+        }
+    }
+    // A read that stopped on an error says nothing it can be held to.
+    reading.finished().ok()?;
+    let opened = opened.unwrap_or(j.ends).max(j.ends - back);
+    Some(
+        last.iter()
+            .zip(&first)
+            .map(|(l, f)| (l.unwrap_or(opened), f.unwrap_or(until)))
+            .collect(),
+    )
 }
 
 /// Where a recording's sound begins and ends, as the latest first packet and
@@ -924,4 +1124,39 @@ fn frame_rate(ictx: &crate::input::Demux, video: Option<usize>, fallback: f64) -
         .map(|s| f64::from(s.avg_frame_rate()))
         .filter(|r| r.is_finite() && *r > 0.0);
     r.unwrap_or(if fallback > 0.0 { fallback } else { 30.0 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hole_in;
+
+    /// A track that stops 3.2 s before a seam the pictures run straight
+    /// through: the hole is allowed for where a range covers it, and only
+    /// there.
+    #[test]
+    fn a_hole_before_a_seam_counts_where_kept() {
+        let seam = (2730.0, 2730.0);
+        let hole = (2726.8, 2730.02);
+        let across = [(2700.0, 2760.0)];
+        assert!((hole_in(&across, hole, seam) - 3.22).abs() < 1e-9);
+        // A range ending inside the hole has only its part of it.
+        let into = [(2700.0, 2728.0)];
+        assert!((hole_in(&into, hole, seam) - 1.2).abs() < 1e-9);
+        // Two ranges, one either side, and none of the hole between them.
+        let around = [(2700.0, 2726.0), (2731.0, 2760.0)];
+        assert_eq!(hole_in(&around, hole, seam), 0.0);
+        // No hole: the sound runs on to the seam.
+        assert_eq!(hole_in(&across, (2730.0, 2730.0), seam), 0.0);
+    }
+
+    /// Where the stretch before a seam ends earlier than the next begins, the
+    /// pictures lack that stretch as well, and it is not the sound's to make
+    /// up.
+    #[test]
+    fn a_gap_the_pictures_share_is_not_counted() {
+        let seam = (100.0, 101.0);
+        let across = [(90.0, 110.0)];
+        assert!((hole_in(&across, (99.0, 101.5), seam) - 1.5).abs() < 1e-9);
+        assert_eq!(hole_in(&across, (100.2, 100.8), seam), 0.0);
+    }
 }

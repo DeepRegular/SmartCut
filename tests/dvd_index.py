@@ -74,24 +74,13 @@ def bcd(n):
 def dvd_time(seconds):
     """A `dvd_time_t`: hours, minutes and seconds in binary coded decimal,
     and a frame count with the rate in its top two bits. 30000/1001 here,
-    which is what the fixture runs at."""
-    rate = 30000 / 1001
-    whole = int(seconds)
-    frames = min(int(round((seconds - whole) * rate)), 29)
+    which is what the fixture runs at. On such a disc it is a timecode of
+    thirty frames to the "second" that never drops one, as most real discs
+    write it: every second it states is 1.001 seconds of pictures."""
+    n = int(round(seconds * 30000 / 1001))
+    whole, frames = divmod(n, 30)
     h, m, s = whole // 3600, (whole // 60) % 60, whole % 60
     return bytes([bcd(h), bcd(m), bcd(s), 0xC0 | bcd(frames)])
-
-
-def seconds_of(raw):
-    """A `dvd_time_t` back into seconds, so that what is printed for the
-    tests to check is what the reader will read rather than what was meant."""
-    un = lambda x: (x >> 4) * 10 + (x & 0xF)
-    return (
-        un(raw[0]) * 3600.0
-        + un(raw[1]) * 60.0
-        + un(raw[2])
-        + un(raw[3] & 0x3F) / (30000 / 1001)
-    )
 
 
 # --- the stream ----------------------------------------------------------
@@ -362,19 +351,20 @@ def main():
     open(os.path.join(video_ts, "VIDEO_TS.IFO"), "wb").write(mgr)
     open(os.path.join(video_ts, "VIDEO_TS.BUP"), "wb").write(mgr)
 
-    # What the shell needs to know to check the answers against. Every
-    # duration here is a sum of cell lengths *as written* -- binary coded
-    # decimal down to the frame -- because that is what the reader adds up,
-    # and a check against the timestamps they were quantised from would be a
-    # check against a number nothing produces.
-    quantised = [seconds_of(dvd_time((c[2] - c[1]) / PTM)) for c in cells]
+    # What the shell needs to know to check the answers against. Every time
+    # here is the navigation packs', because that is what the reader goes by:
+    # a title runs from where its first cell's first VOBU begins to where its
+    # last cell's last one ends, and a chapter is where the pack opening its
+    # cell says. The cell lengths written in the index -- binary coded decimal
+    # down to the frame -- are only the reader's fallback, for a pack that
+    # will not read, since discs write them two ways (see `dvd_time`).
     print("start %.6f" % (cells[0][1] / PTM))
     for i, chapters in enumerate(titles):
-        print("title %d %.3f" % (i + 1, sum(quantised[:chapters])))
+        print("title %d %.3f" % (i + 1, (cells[chapters - 1][2] - cells[0][1]) / PTM))
     for i, c in enumerate(cells):
         print("cell %d %d %d %.3f" % (i + 1, c[0], c[4], (c[2] - c[1]) / PTM))
     print("chapters " + " ".join(
-        "%.3f" % sum(quantised[:i]) for i in range(len(cells))
+        "%.3f" % ((c[1] - cells[0][1]) / PTM) for c in cells
     ))
 
 

@@ -284,9 +284,10 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
 fn check_output(
     out: &str,
     pieces: &[smartcut_core::verify::Piece],
+    places: Option<&[usize]>,
     compare: smartcut_core::verify::Compare,
 ) -> Result<()> {
-    check_output_crossed(out, pieces, &[], compare)
+    check_output_placed(out, pieces, &[], places, compare)
 }
 
 /// [`check_output`], for a file of sound alone joined with transitions:
@@ -297,8 +298,20 @@ fn check_output_crossed(
     after: &[smartcut_core::transition::Transition],
     compare: smartcut_core::verify::Compare,
 ) -> Result<()> {
+    check_output_placed(out, pieces, after, None, compare)
+}
+
+/// [`check_output_crossed`], told where the output's sound tracks sit among
+/// the master's. See `verify::check_placed`.
+fn check_output_placed(
+    out: &str,
+    pieces: &[smartcut_core::verify::Piece],
+    after: &[smartcut_core::transition::Transition],
+    places: Option<&[usize]>,
+    compare: smartcut_core::verify::Compare,
+) -> Result<()> {
     let never = std::sync::atomic::AtomicBool::new(false);
-    let report = smartcut_core::verify::check_crossed(out, pieces, after, compare, None, &never)
+    let report = smartcut_core::verify::check_placed(out, pieces, after, places, compare, None, &never)
         .with_context(|| format!("cannot read {out} back to check it"))?;
     for line in report.lines() {
         smartcut_core::say!("verify: {line}");
@@ -1768,7 +1781,13 @@ fn run() -> Result<()> {
     // named. A disc's stream is Blu-ray's own framing whatever the folder
     // is called, which is settled here rather than waiting for the name the
     // disc gives the file.
+    //
+    // And only off a transport stream, as the render line below has it: a
+    // DVD's navigation packets and a camera's timecode or metadata track in a
+    // .mov are "data" to the demuxer too, and were listed as a carousel that
+    // would travel into a .ts -- where nothing of them is written.
     let data_travels = data_broadcast != Some(false)
+        && src.on_a_ts
         && match (&bdav, &output) {
             (Some(_), _) => false,
             (None, Some(out)) => smartcut_core::can_carry_data_broadcast(out, tables),
@@ -2796,6 +2815,23 @@ fn run() -> Result<()> {
         .iter()
         .find(|a| !drop_streams.contains(&a.stream_index))
         .map(|a| a.codec.clone());
+    // Where each sound track a join writes sits among the master's, for
+    // `--verify`: the engine pairs every other recording's tracks with the
+    // master's by that place (`cut::Threads`), so with the master's first
+    // track dropped the output's first is its second, and a recording with
+    // one track has nothing there. Counted in the output's order, the check
+    // held that recording's one track against it and called the sound off.
+    // A single recording needs none of it, and may leave out a track the
+    // ranges do not hear, which this list would not know of.
+    let sound_places: Option<Vec<usize>> = (reels.len() > 1).then(|| {
+        shaped_like
+            .audios
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !drop_streams.contains(&a.stream_index))
+            .map(|(p, _)| p)
+            .collect()
+    });
     if reels.len() > 1 {
         tell!(
             "        {} recording(s) into one file, shaped like {}",
@@ -2986,7 +3022,7 @@ fn run() -> Result<()> {
         } else {
             smartcut_core::verify::Compare::Pictures
         };
-        check_output(&out, &pieces, compare)
+        check_output(&out, &pieces, sound_places.as_deref(), compare)
     };
     if onto.is_none() {
         check_cut()?;

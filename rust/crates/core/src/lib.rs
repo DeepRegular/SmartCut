@@ -500,10 +500,13 @@ pub struct DroppedStream {
     /// Its index among the container's streams, which is how it is named
     /// where the `pid` beside it is not a PID. See [`track_name`].
     pub stream_index: usize,
-    /// Which of them it is: `"superimpose"`, `"data"`, `"menu"` or
-    /// `"text subtitles"`. A name rather than a sentence, because the window
-    /// says this in the language it is set to and the command line says it
-    /// in English.
+    /// Which of them it is: `"superimpose"`, `"data"`, `"data stream"`,
+    /// `"menu"` or `"text subtitles"`. `"data"` is a transport stream's,
+    /// which may be a data broadcast; `"data stream"` is any other
+    /// container's -- a camera's timecode or metadata track, a DVD's
+    /// navigation packets -- which never is. A name rather than a sentence,
+    /// because the window says this in the language it is set to and the
+    /// command line says it in English.
     pub what: &'static str,
 }
 
@@ -517,6 +520,7 @@ impl DroppedStream {
             // [`disc::unreadable`].
             "menu" => "a menu",
             "text subtitles" => "text subtitles, whose typeface is on the disc",
+            "data stream" => "a data stream",
             _ => "data broadcast",
         }
     }
@@ -954,6 +958,11 @@ pub struct EntryPictures<'a> {
     video: &'a VideoInfo,
     /// A half has gone in and the next packet completes it.
     partner: bool,
+    /// The sequence the entry pictures are read by, as the stream last
+    /// restated it: a cut of a PAFF recording opens on the encoder's MBAFF
+    /// pictures with a sequence of their own. See `copy_segment` in
+    /// [`cut`].
+    shape: Option<bitstream::FieldShape>,
 }
 
 /// What [`EntryPictures::step`] says to do with a packet.
@@ -972,6 +981,7 @@ impl<'a> EntryPictures<'a> {
         Self {
             video,
             partner: false,
+            shape: video.field_shape,
         }
     }
 
@@ -987,11 +997,19 @@ impl<'a> EntryPictures<'a> {
         if !packet.is_key() {
             return Step::Skip;
         }
+        let data = packet.data().unwrap_or(&[]);
+        if self.video.field_shape.is_some() {
+            if let Some(restated) =
+                bitstream::restated_field_shape(&self.video.codec, data, self.video.framing)
+            {
+                self.shape = restated;
+            }
+        }
         self.partner = bitstream::is_field_picture(
-            packet.data().unwrap_or(&[]),
+            data,
             &self.video.codec,
             self.video.framing,
-            self.video.field_shape.as_ref(),
+            self.shape.as_ref(),
         );
         if self.partner {
             Step::Half
@@ -1229,6 +1247,39 @@ fn assemble(
     // in the last bit. Nothing can be seeked to before the file begins, and
     // a range clamped to a negative entry point simply fails, so the floor
     // goes in here rather than at every call site.
+    //
+    // **An entry point well before zero is not that rounding: it is pre-roll.**
+    // An MP4 cut with `ffmpeg -ss X -c copy` begins on the key picture before
+    // X and hides the pictures up to X behind an edit list: they are decoded
+    // and never shown, and the first picture shown, at 0, is not a key
+    // picture. Floored to 0 like the rest, the hidden key picture became an
+    // entry point at 0, a copy was planned from it, and the copy -- looking
+    // for a key picture at 0 -- met none and stopped every range that began
+    // at the start ("passed without being met"). Copied from it, it would
+    // have shown the hidden pictures. So only the last of them is kept, as
+    // the place decoding starts from, standing at 0 and marked as a point no
+    // copy can start at -- which is what it is: the head is re-encoded from
+    // the first picture shown, the way a range opening mid-GOP is. Where a
+    // key picture is shown at 0 after all, the hidden ones are not needed.
+    let fd = video.frame_duration();
+    let hidden = points.iter().take_while(|p| p.time < -fd / 2.0).count();
+    if hidden > 0 {
+        if points.get(hidden).is_some_and(|p| p.time <= fd / 2.0) {
+            points.drain(..hidden);
+        } else {
+            points.drain(..hidden - 1);
+            let p = &mut points[0];
+            p.time = 0.0;
+            p.lead_start = 0.0;
+            if p.lead_indices.is_empty() {
+                p.lead_indices.push(1);
+            }
+            p.droppable = false;
+            // Nothing for [`index::refine_leading`] to read: what it would
+            // look for is a key picture at 0, and there is none.
+            p.measured = true;
+        }
+    }
     for p in points.iter_mut() {
         p.time = p.time.max(0.0);
         p.lead_start = p.lead_start.max(0.0);
@@ -1901,10 +1952,14 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
                     stream_index: s.index(),
                     what: "superimpose",
                 }),
+                // A data broadcast is a transport stream's. Anywhere else
+                // this is a timecode or metadata track, and it is named so:
+                // called "data", a .mov's timecode was listed as a data
+                // broadcast the output settings would answer for.
                 (ff::media::Type::Unknown, _) | (ff::media::Type::Data, _) => Some(DroppedStream {
                     pid: s.id(),
                     stream_index: s.index(),
-                    what: "data",
+                    what: if on_a_ts { "data" } else { "data stream" },
                 }),
                 _ => None,
             }
