@@ -434,8 +434,9 @@ pub struct CaptionInfo {
     pub format: TextFormat,
     /// The moment the times inside a TTML document are counted from, on the
     /// same clock as everything else here -- which is to say where the disc
-    /// says this clip begins to present, less where the file begins. Zero
-    /// for ARIB text, whose packets carry their own times.
+    /// says this clip begins to present, less where the file begins; with no
+    /// disc index beside the file, where its pictures begin. Zero for ARIB
+    /// text, whose packets carry their own times.
     pub base: f64,
 }
 
@@ -1589,6 +1590,13 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     // service is told from the others its map may name.
     let video_id = stream.id();
     let time_base = f64::from(stream.time_base());
+    // Where the pictures' own clock starts, on the demuxer's clock: what a
+    // TTML document is counted from where no disc says otherwise. See the
+    // captions below.
+    let video_start = Some(stream.start_time())
+        .filter(|&at| at != ff::ffi::AV_NOPTS_VALUE)
+        .map(|at| at as f64 * time_base)
+        .filter(|at| at.is_finite());
     let params = stream.parameters();
     let codec = format!("{:?}", params.id()).to_lowercase();
     let (width, height, has_b_frames, field_order, sample_aspect_ratio, shape, extradata) = unsafe {
@@ -1890,9 +1898,21 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
                 format,
                 // On the demuxer's own clock for the moment; rebased below,
                 // where the file's own beginning is worked out.
+                // **Without the disc's index, from the first picture.** A
+                // document is never timed on the stream's raw clock: on a
+                // disc it counts from where the clip begins to present, and
+                // a cut written here counts it from the cut's first picture
+                // (see `write_ttml` in [`cut`]). Read as raw times, a clip
+                // taken off a disc had every line its presentation start
+                // early -- 2.3 s on a recorder's 4K clip -- and each re-cut
+                // of a cut moved them by the cut's own start, 75 ms a time.
+                // The first picture is that start exactly for a cut, and the
+                // nearest thing to it the file says for a bare clip.
                 base: match format {
                     TextFormat::Arib => 0.0,
-                    TextFormat::Ttml => disc::clip_presentation_start(path).unwrap_or(0.0),
+                    TextFormat::Ttml => disc::clip_presentation_start(path)
+                        .or(video_start)
+                        .unwrap_or(0.0),
                 },
             })
         })

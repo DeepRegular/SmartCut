@@ -1040,10 +1040,19 @@ impl Reencoder {
             return Ok(());
         }
         // A hole in the track: silence for it, so that what follows
-        // stays where it was. Less than a frame is the timestamps'
-        // own rounding -- a Matroska track keeps milliseconds -- and is
-        // read past, as it always was.
-        let slack = n.max(i64::from(self.sample_rate) / 100);
+        // stays where it was. Under half a frame is the timestamps'
+        // own rounding -- a Matroska track keeps milliseconds, a few
+        // dozen samples either way -- and is read past, as it always was.
+        //
+        // Half a frame and not a whole one: a hole of exactly one frame is
+        // what a broadcast's single damaged frame leaves (the decoder
+        // refuses it, or the demuxer never hands it over), and it was read
+        // past as well. Every such frame moved the rest of the range a
+        // frame earlier: a recording with one AAC frame dropped, cut with
+        // its sound re-encoded, came out 1024 samples short and 21 ms ahead
+        // of its pictures from the drop on, and a frame further at each
+        // drop after that.
+        let slack = (n / 2).max(i64::from(self.sample_rate) / 100);
         if lo - self.next > slack {
             self.silence((lo - self.next) as usize);
         }

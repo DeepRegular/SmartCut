@@ -1785,6 +1785,20 @@ fn play_marks(raw: &[u8], at: usize, clips: &[Clip]) -> Vec<Vec<f64>> {
                 sound = false;
                 break;
             }
+            // **A recorder's playlist holds marks that are not chapters.**
+            // The kind is the mark's first byte: 0x01 and 0x02 are the
+            // picture the recorder shows for the title in its list, 0x03 is
+            // where playback last stopped, and 0x06 is a point to skip from.
+            // Every recorder playlist here carries one 0x01 (at the same
+            // second in all seven titles of one disc), and read as a chapter
+            // it put a chapter mark, and a chapter in the cut, a few seconds
+            // or a minute into every recording. The chapters themselves are
+            // 0x04 (a recorder's) and 0x05 (an authoring tool's, and this
+            // program's own). BDMV's kinds sit in another byte and mean other
+            // things, so this is asked only of the BDAV layouts.
+            if time_at == 6 && matches!(raw[entry], 0x01 | 0x02 | 0x03 | 0x06) {
+                continue;
+            }
             // A layout that does not say which clip a mark is on can only be
             // believed on a playlist that plays one.
             let which = match item_at {
@@ -2706,7 +2720,9 @@ fn track_of(pid: i32, attr: &[u8]) -> Option<Track> {
         // once the timeline it pointed into has been cut up. See
         // [`Track::carried`].
         0x91 => ("menu", "IGS".to_string(), lang(1), false),
-        0x92 => ("subtitle", "TextST".to_string(), lang(1), false),
+        // A text subtitle's character set comes first, and then the
+        // language.
+        0x92 => ("subtitle", "TextST".to_string(), lang(2), false),
         // Anything else, which on a Japanese recording is the broadcast's own
         // private streams -- the captions among them. Named by its number
         // rather than described, because what a private stream holds is not
@@ -3236,6 +3252,41 @@ mod tests {
         assert_eq!(marks[1].len(), 1);
         assert_eq!(marks[2].len(), 1);
         assert!((marks[2][0] - (600.0 - 11.651)).abs() < 0.01);
+    }
+
+    /// What two recorders here write: chapters of kind 0x04, and one mark
+    /// of kind 0x01 -- the title's picture in the recorder's own list --
+    /// which is not a chapter. A playlist holding nothing else has no
+    /// chapters at all.
+    #[test]
+    fn a_recorder_s_title_picture_is_not_a_chapter() {
+        let clips = [clip(7.0, 2700.0)];
+        let ticks = |seconds: f64| (seconds * TICK) as u32;
+        let mut raw = mark_section(
+            46,
+            &[(0, ticks(7.0)), (0, ticks(66.1)), (0, ticks(367.0))],
+            4,
+            6,
+        );
+        for (i, kind) in [0x04u8, 0x01, 0x04].into_iter().enumerate() {
+            raw[6 + i * 46] = kind;
+            raw[6 + i * 46 + 2..6 + i * 46 + 4].copy_from_slice(&0x0108u16.to_be_bytes());
+        }
+        let marks = play_marks(&raw, 0, &clips);
+        assert_eq!(marks[0].len(), 2, "{marks:?}");
+        assert!((marks[0][1] - 360.0).abs() < 0.01);
+        // Resume and skip points are not chapters either.
+        for kind in [0x02u8, 0x03, 0x06] {
+            raw[6 + 46] = kind;
+            assert_eq!(play_marks(&raw, 0, &clips)[0].len(), 2);
+        }
+        // An authoring tool's chapters are kind 0x05.
+        raw[6 + 46] = 0x05;
+        assert_eq!(play_marks(&raw, 0, &clips)[0].len(), 3);
+        let only = mark_section(46, &[(0, ticks(66.1))], 4, 6);
+        let mut only = only;
+        only[6] = 0x01;
+        assert!(play_marks(&only, 0, &clips).iter().all(Vec::is_empty));
     }
 
     #[test]

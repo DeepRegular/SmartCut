@@ -354,6 +354,52 @@ fn on_the_pictures(
     ranges.iter().map(|&(a, b)| (near(a), near(b))).collect()
 }
 
+/// The start of the picture on screen at `t`, as a bound: where a stretch
+/// written after a range's body has to begin for the two to meet on a
+/// picture. `t` itself where it is on one already, and on a recording whose
+/// pictures do not come at a rate.
+///
+/// **Two segments that meet part-way through a picture both write it**,
+/// because they ask different questions of it. The body of a range writes
+/// the pictures that *begin* inside it -- a re-encoded tail stops short of
+/// its end, a copy stops at an entry point's leading pictures -- and a
+/// transition written after it ([`crate::cut_conform`] laying out a crossing
+/// or a fade) opens on the picture *on screen* at its first instant. A bound
+/// inside a picture is both: the body wrote it last and the transition wrote
+/// it first, every picture of the transition after it came a frame late, and
+/// the range's own last picture was the one left out. That is every
+/// transition whose length is not a whole number of frames on a range the
+/// editor ended on a picture -- the default second at 29.97 is 29.97 frames.
+/// And where a copy then ended on an entry point just past the bound, the
+/// crossing came out a frame shorter than the clip after it gives up, and a
+/// picture of that clip was lost instead.
+///
+/// On the grid [`frames_in`] counts on, with the coarse-clock margin
+/// [`on_the_pictures`] gives a bound on a picture. Soft telecine puts its
+/// pictures on field points; everything else is on frames.
+pub(crate) fn on_screen_at(video: &VideoInfo, points: &[AccessPoint], t: f64) -> f64 {
+    let fd = video.frame_duration();
+    if video.variable_rate || !(fd.is_finite() && fd > 0.0) || !t.is_finite() {
+        return t;
+    }
+    let step = if video.pulldown { fd / 2.0 } else { fd };
+    let tick = coarse_tick(video);
+    let phase = phase_near(points, t);
+    // A bound already on a picture -- within a thousandth of a frame of one,
+    // or the two ticks ahead of it [`on_the_pictures`] puts one -- stays.
+    let ahead = tick.map_or(fd * 1e-3, |k| 2.5 * k);
+    let grid = phase + ((t - phase + ahead) / step).floor() * step;
+    let on = match tick {
+        Some(k) => grid - 2.0 * k,
+        None => grid,
+    };
+    if on >= t - fd * 1e-3 {
+        t
+    } else {
+        on
+    }
+}
+
 pub fn plan_range(
     video: &VideoInfo,
     duration: f64,
@@ -542,7 +588,7 @@ pub fn plan(
 pub fn plan_on(src: &crate::Source, ranges: &[(f64, f64)], opts: &PlanOptions) -> Vec<RangePlan> {
     let seams = seam_times(&src.joins);
     let ranges = on_the_pictures(&src.video, src.duration, &src.points, ranges);
-    let ranges = at_the_seams(&ranges, &src.joins);
+    let ranges = at_the_seams(&ranges, &src.joins, &src.points, &src.video);
     let ranges = past_the_seam(&ranges, &seams, &src.points, &src.video);
     let mut plans: Vec<RangePlan> = ranges
         .iter()
@@ -580,28 +626,120 @@ pub fn plan_on(src: &crate::Source, ranges: &[(f64, f64)], opts: &PlanOptions) -
 /// entry points, the copy ends on its last one and the re-encode holds the
 /// pictures after it, once.
 ///
-/// A copy that runs to the seam with nothing after it is left as it is: it
-/// stops at the seam's byte, which is the end it was planned to.
+/// A copy that runs to the seam with nothing after it is planned the same
+/// way where the stretch runs on past the seam's time. Stopping at the
+/// seam's byte is not stopping at the seam's time: a recorder's stretch can
+/// hold pictures stamped up to a third of a second past the time the next
+/// one begins at on the joined clock, and the copy wrote them all -- three
+/// pictures past the end of the range, in front of the next stretch's first,
+/// and the check found three more than were asked for. Ended on the
+/// stretch's own last entry point, the re-encode after it stops where the
+/// range does. Where the stretch ends where its seam says, the copy to the
+/// seam's byte is the range's own pictures and nothing else, and is left as
+/// it is: re-planned, the last GOP before every seam was re-encoded for
+/// nothing (5.45 s of a recorder title became 8.67 s).
 fn own_points(src: &crate::Source, plan: &RangePlan) -> Option<Vec<AccessPoint>> {
-    let eps = src.video.frame_duration() / 2.0;
-    let wall = src.joins.iter().find(|j| j.time >= plan.t_out - eps)?.at;
+    let fd = src.video.frame_duration();
+    let eps = fd / 2.0;
+    let k = src.joins.iter().position(|j| j.time >= plan.t_out - eps)?;
+    let seam = &src.joins[k];
+    let wall = seam.at;
     let beyond = |p: &AccessPoint| p.pos >= 0 && p.pos as u64 >= wall;
-    let foreign_tail = plan.segments.windows(2).any(|w| {
-        w[0].kind == SegmentKind::Copy
-            && w[1].kind == SegmentKind::Reencode
-            && w[0]
-                .copy_until
+    let reaches = |s: &Segment| {
+        s.kind == SegmentKind::Copy
+            && s.copy_until
                 .is_some_and(|u| src.points.iter().any(|p| p.time == u && beyond(p)))
-    });
-    if !foreign_tail {
+    };
+    let foreign_tail = plan
+        .segments
+        .windows(2)
+        .any(|w| reaches(&w[0]) && w[1].kind == SegmentKind::Reencode);
+    let to_the_wall = !foreign_tail && plan.segments.iter().any(reaches);
+    if !foreign_tail && !to_the_wall {
         return None;
+    }
+    if to_the_wall {
+        let lo = k.checked_sub(1).map_or(0, |i| src.joins[i].at);
+        let stop = seam.ends.min(seam.time);
+        // Unread is taken as running past: a GOP re-encoded that need not
+        // have been costs less than pictures written past the range.
+        let last = stretch_last_picture(src, lo, wall);
+        if last.is_some_and(|t| t < stop - eps) {
+            return None;
+        }
     }
     Some(src.points.iter().filter(|p| !beyond(p)).cloned().collect())
 }
 
-/// The shortest a piece of a range is worth keeping as a range of its own.
-/// A seam that falls this near the end of one is the end of it.
-const SLIVER: f64 = 0.1;
+/// How much of a stretch's end is read for its last picture; as
+/// `crate::index`'s own reading of a stretch's tail.
+const TAIL_BYTES: u64 = 8 << 20;
+
+/// The instant of the last picture of the stretch `lo..hi` (bytes), read off
+/// its tail; `None` where it could not be read.
+///
+/// Kept per clip and stretch for as long as the program runs: the editor
+/// plans on every edit, and the answer is the same every time.
+fn stretch_last_picture(src: &crate::Source, lo: u64, hi: u64) -> Option<f64> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    type Key = (String, u64, u64, usize, u64);
+    static SEEN: OnceLock<Mutex<HashMap<Key, Option<f64>>>> = OnceLock::new();
+    let key: Key = (
+        src.input.url.clone(),
+        lo,
+        hi,
+        src.points.len(),
+        src.duration.to_bits(),
+    );
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some(&known) = seen.lock().ok()?.get(&key) {
+        return known;
+    }
+    let found = (|| {
+        let mut ictx = crate::input::demux(&src.input.url).ok()?;
+        let idx = src.video.stream_index;
+        crate::input::keep_only(&mut ictx, &[idx]);
+        let from = hi.saturating_sub(TAIL_BYTES).max(lo);
+        let placed = unsafe {
+            ffmpeg_next::ffi::av_seek_frame(
+                ictx.as_mut_ptr(),
+                -1,
+                from as i64,
+                ffmpeg_next::ffi::AVSEEK_FLAG_BYTE,
+            ) >= 0
+        };
+        if !placed {
+            return None;
+        }
+        let tb = src.video.time_base;
+        let mut last = f64::NEG_INFINITY;
+        let mut read_at = from;
+        let mut reading = ictx.read_packets();
+        for (stream, packet) in reading.by_ref() {
+            if packet.position() >= 0 {
+                read_at = packet.position() as u64;
+            }
+            if read_at >= hi {
+                break;
+            }
+            if stream.index() != idx || read_at < from {
+                continue;
+            }
+            if let Some(pts) = packet.pts() {
+                last = last.max(pts as f64 * tb - src.start_time);
+            }
+        }
+        if reading.finished().is_err() {
+            return None;
+        }
+        last.is_finite().then_some(last)
+    })();
+    if let Ok(mut seen) = seen.lock() {
+        seen.insert(key, found);
+    }
+    found
+}
 
 /// Cut every kept range at the seams the recording carries.
 ///
@@ -622,15 +760,31 @@ const SLIVER: f64 = 0.1;
 ///
 /// Costs a second or two of re-encoding per seam, which is what a cut costs
 /// anywhere. A recording with no seams is planned exactly as it was.
-fn at_the_seams(ranges: &[(f64, f64)], joins: &[Seam]) -> Vec<(f64, f64)> {
+fn at_the_seams(
+    ranges: &[(f64, f64)],
+    joins: &[Seam],
+    points: &[AccessPoint],
+    video: &VideoInfo,
+) -> Vec<(f64, f64)> {
     if joins.is_empty() {
         return ranges.to_vec();
     }
+    let eps = video.frame_duration() / 2.0;
     let mut out = Vec::new();
     for &(a, b) in ranges {
         let mut at = a;
         for seam in joins {
-            if seam.time > at + SLIVER && seam.time < b - SLIVER {
+            // Every seam inside the range, however near either end of it. A
+            // range left whole across a seam a few pictures from its end
+            // copied or re-encoded straight over it, and wrote the next
+            // stretch's leading pictures -- the ones whose references were
+            // never recorded -- as the wreckage they decode to. An OUT on the
+            // last picture of a stretch is drawn a picture past the seam and
+            // was exactly that. The piece in front of a seam is kept however
+            // short (it is pictures the person chose); the piece behind one
+            // is dropped below when it ends before the stretch's first entry
+            // point, since what lies there ahead of it cannot be decoded.
+            if seam.time > at + 1e-3 && seam.time < b {
                 // `ends` and `time` are the same instant on every recording
                 // whose sequence table describes the pictures it has. Where
                 // they are not, what lies between them is a stretch of the
@@ -649,7 +803,22 @@ fn at_the_seams(ranges: &[(f64, f64)], joins: &[Seam]) -> Vec<(f64, f64)> {
                 at = seam.time;
             }
         }
-        out.push((at, b));
+        // Kept from the stretch's first entry point on where that is inside
+        // it, as [`past_the_seam`] then begins it: an OUT on the second or
+        // third picture after a seam is those pictures, and they decode.
+        // Asked of the entry point rather than of the piece's length -- a
+        // piece a few pictures long was dropped whole, and with it the
+        // pictures from the entry point to the OUT. Half a picture of it at
+        // least, so that an OUT drawn on the entry point itself is no piece.
+        let decodes = || {
+            points
+                .iter()
+                .find(|p| p.time >= at - eps)
+                .is_some_and(|p| p.time < b - eps)
+        };
+        if at == a || decodes() {
+            out.push((at, b));
+        }
     }
     out
 }
@@ -1074,6 +1243,19 @@ mod tests {
             }
         }
 
+        let video = video();
+        // An entry point a picture after each seam, as a recorder's stretch
+        // opens on leading pictures stamped ahead of its first I.
+        let pt = |time: f64| AccessPoint {
+            time,
+            lead_start: time,
+            lead_indices: Vec::new(),
+            droppable: true,
+            pos: -1,
+            measured: true,
+        };
+        let points = [pt(0.0), pt(10.026), pt(25.026)];
+        let at_the_seams = |r: &[(f64, f64)], j: &[Seam]| at_the_seams(r, j, &points, &video);
         let joins = [seam(0, 10.0), seam(0, 25.0)];
         assert_eq!(
             at_the_seams(&[(0.0, 40.0)], &joins),
@@ -1090,6 +1272,23 @@ mod tests {
             at_the_seams(&[(5.0, 15.0), (30.0, 35.0)], &joins),
             vec![(5.0, 10.0), (10.0, 15.0), (30.0, 35.0)]
         );
+        // An OUT a picture past a seam ends the range at the seam: what lies
+        // behind it is the next stretch's undecodable leading pictures.
+        assert_eq!(at_the_seams(&[(5.0, 10.026)], &joins), vec![(5.0, 10.0)]);
+        // An IN a picture or two before a seam keeps those pictures, and the
+        // rest begins at the seam.
+        assert_eq!(
+            at_the_seams(&[(9.95, 15.0)], &joins),
+            vec![(9.95, 10.0), (10.0, 15.0)]
+        );
+        // A range shorter than a sliver on no seam is still the person's.
+        assert_eq!(at_the_seams(&[(12.0, 12.05)], &joins), vec![(12.0, 12.05)]);
+        // An OUT on the second picture after a seam keeps the entry point's
+        // picture: the piece behind the seam is planned, and begins on it.
+        assert_eq!(
+            at_the_seams(&[(5.0, 10.06)], &joins),
+            vec![(5.0, 10.0), (10.0, 10.06)]
+        );
     }
 
     /// A stretch whose sequence table claims more time than it holds
@@ -1099,6 +1298,16 @@ mod tests {
     /// See [`crate::index::mend_stretches`].
     #[test]
     fn a_stretch_that_ends_early_ends_the_range_early() {
+        let video = video();
+        let points = [AccessPoint {
+            time: 25.0,
+            lead_start: 25.0,
+            lead_indices: Vec::new(),
+            droppable: true,
+            pos: -1,
+            measured: true,
+        }];
+        let at_the_seams = |r: &[(f64, f64)], j: &[Seam]| at_the_seams(r, j, &points, &video);
         let joins = [Seam {
             at: 0,
             time: 25.0,

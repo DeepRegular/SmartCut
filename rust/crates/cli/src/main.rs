@@ -1149,6 +1149,13 @@ fn run() -> Result<()> {
     if bdav.is_some() && subtitles != smartcut_core::cut::Subtitles::Pgs {
         bail!("--subtitles beside and sup write files beside the cut, which do not go onto a disc");
     }
+    // A disc's stream is Blu-ray's partial transport stream, which is what
+    // the window always writes onto one. Left to the muxer, its PMT declared
+    // the sound (AAC, MPEG audio) as a private stream (type 0x06) and carried
+    // no SIT: a stream no recorder writes, put on a disc meant for one.
+    if bdav.is_some() && tables.is_some_and(|t| t != smartcut_core::si::Tables::Partial) {
+        bail!("--tables: a disc's stream is written as a partial transport stream, as a recorder writes it");
+    }
     // The size is worked out from the first recording's ranges before the
     // others are opened, so it would leave them out of the sum and say a
     // join fits that does not. And a cut of sound alone has no pictures to

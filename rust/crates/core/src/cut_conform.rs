@@ -222,6 +222,8 @@ fn pictures_afresh(
     // Whether the decoder has taken a key picture of this read yet; see
     // where `damaged` is counted.
     let mut keyed = false;
+    // See [`RunUp`].
+    let mut run_up = RunUp::new(seg.seek_from);
     let mut past_end = false;
     // The instant the range stops asking for pictures. A range may be asked
     // for past where the recording stops, and a last picture written out to
@@ -401,6 +403,9 @@ fn pictures_afresh(
         // lands in, before any key picture, can be refused only for naming
         // parameter sets that arrive with the key picture after it, and costs
         // this range nothing.
+        if !run_up.passes(&packet, in_tb, src.start_time) {
+            continue;
+        }
         if decoder.send_packet(&packet).is_err() {
             let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
             if keyed || at.is_none_or(|t| t >= seg.start - slack) {
@@ -632,6 +637,9 @@ struct FarSide {
     /// Set when the clip has no more pictures at all. The held one then
     /// stands for the rest of the crossing.
     spent: bool,
+    /// The pictures read before the first key one, which are not decoded;
+    /// see [`RunUp`].
+    run_up: RunUp,
     /// Set once the reader has run out of packets and the decoder has been
     /// told so.
     ///
@@ -664,6 +672,15 @@ impl FarSide {
             in_tb,
             start_time: src.start_time,
             from,
+            // Aimed at the clip's last entry point at or before `from`,
+            // where the pictures needed there are decoded from.
+            run_up: RunUp::new(
+                src.points
+                    .iter()
+                    .rev()
+                    .find(|p| p.time <= from + 1e-6)
+                    .map_or(0.0, |p| p.time),
+            ),
             held: None,
             ahead: None,
             rescale: None,
@@ -731,6 +748,9 @@ impl FarSide {
             }
             // A packet the decoder will not take is not a reason to stop
             // the cut; see [`reencode_segment`].
+            if !self.run_up.passes(&packet, self.in_tb, self.start_time) {
+                continue;
+            }
             let _ = self.decoder.send_packet(&packet);
         }
     }

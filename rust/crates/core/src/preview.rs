@@ -1618,7 +1618,24 @@ fn walk(
     // Whether the decoder holds anything a drain would hand back.
     let mut fed = false;
     let quarter = src.video.frame_duration() / 4.0;
-    let lead = |t: f64, since: Option<f64>| since.is_some_and(|s| t < s - quarter);
+    // The other end of a stretch, read the same way: where the cut stops the
+    // range before seam `k` (see `plan`'s `at_the_seams`, the earlier of the
+    // seam's two instants). A recorder's stretch can run a picture or two
+    // past the time its sequence table gives it -- 0.05 s on one recorder
+    // title, a third of a second on another -- and the plan ends the range
+    // before them; shown, the editor stood on a picture past the range's end.
+    // A picture that *begins* before that instant is the range's, as the cut
+    // writes it (to a thousandth of a frame, as its re-encode compares): a
+    // stretch whose table end is not on its pictures has its last one begin
+    // a fraction of a frame before it, and dropped at a quarter of a frame
+    // the check counted a picture fewer than the cut wrote -- a recorder
+    // title's range ending at such a seam failed with 120 written, 119
+    // expected.
+    let tol = src.video.frame_duration() * 1e-3;
+    let stops = |k: usize| src.joins.get(k).map(|j| j.ends.min(j.time));
+    let outside = |t: f64, since: Option<f64>, stop: Option<f64>| {
+        since.is_some_and(|s| t < s - quarter) || stop.is_some_and(|e| t >= e - tol)
+    };
     let mut packets = ictx.read_packets();
     'outer: for (stream, packet) in packets.by_ref() {
         if stream.index() != idx {
@@ -1635,6 +1652,7 @@ fn walk(
         }
         if let Some(at) = read_at {
             let was = since;
+            let ended = stops(next_seam);
             let mut crossed = false;
             while let Some(j) = src.joins.get(next_seam).filter(|j| at >= j.at) {
                 since = Some(j.time);
@@ -1647,7 +1665,7 @@ fn walk(
                 while decoder.receive_frame(&mut frame).is_ok() {
                     let Some(pts) = frame.pts() else { continue };
                     let t = pts as f64 * in_tb - src.start_time;
-                    if lead(t, was) {
+                    if outside(t, was, ended) {
                         continue;
                     }
                     if first.is_none() {
@@ -1704,7 +1722,7 @@ fn walk(
         while decoder.receive_frame(&mut frame).is_ok() {
             let Some(pts) = frame.pts() else { continue };
             let t = pts as f64 * in_tb - src.start_time;
-            if lead(t, since) {
+            if outside(t, since, stops(next_seam)) {
                 continue;
             }
             if first.is_none() {
@@ -1741,7 +1759,7 @@ fn walk(
             let Some(t) = frame.pts().map(|p| p as f64 * in_tb - src.start_time) else {
                 continue;
             };
-            if lead(t, since) {
+            if outside(t, since, stops(next_seam)) {
                 continue;
             }
             if first.is_none() {

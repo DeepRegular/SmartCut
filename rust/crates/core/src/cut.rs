@@ -3144,6 +3144,52 @@ fn seek_into(
     seek_to(ictx, src, time)
 }
 
+/// Whether a picture read after a seek may go to the decoder yet.
+///
+/// **Nothing before the read's first key picture is decoded.** A seek lands
+/// ahead of the entry point it aimed at, and the pictures between are the
+/// tail of a GOP whose start was skipped: nothing of them can be shown, and
+/// handed over they are not merely wasted. A transport stream states its
+/// sequence header once, in the stream's record, as the FIRST one the file
+/// carries -- in a cut SmartCut wrote, the re-encoded head's, under the same
+/// numbers as the copied pictures' own and with other contents. A picture
+/// of the run-up, ahead of the next header restated in-band, was parsed by
+/// the head's, accepted, and left wrong references in the decoder: on an
+/// x264 recording with no IDR, every B picture of the re-encoded stretch
+/// came out damaged (28-35 dB) in a re-cut of such a cut. The preview's
+/// glance has never fed them (see [`crate::preview`]).
+///
+/// Fed from the first key packet; or from the entry point the read was
+/// aimed at, on a recording that does not mark its key packets -- whatever
+/// comes from there on is what was always decoded -- and after a few hundred
+/// pictures on one that says nothing at all.
+pub(super) struct RunUp {
+    started: bool,
+    waiting: u32,
+    from: f64,
+}
+
+impl RunUp {
+    pub(super) fn new(from: f64) -> RunUp {
+        RunUp {
+            started: false,
+            waiting: 0,
+            from,
+        }
+    }
+
+    pub(super) fn passes(&mut self, packet: &ff::Packet, in_tb: f64, start_time: f64) -> bool {
+        if !self.started {
+            self.waiting += 1;
+            let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - start_time);
+            self.started = packet.is_key()
+                || at.is_some_and(|t| t >= self.from - 1e-6)
+                || self.waiting > 300;
+        }
+        self.started
+    }
+}
+
 /// Seek so that the next read is safely *before* `time` (rebased seconds).
 ///
 /// The margin matters: MPEG-TS seeking is byte-position based and only
@@ -5024,6 +5070,7 @@ fn reencode_segment(
     let mut damaged = 0usize;
     // Whether the decoder has taken a key picture of this read yet.
     let mut keyed = false;
+    let mut run_up = RunUp::new(seg.seek_from);
     // **The decoder is shown one stretch of a joined clip and no more.**
     //
     // A seam is where the recorder stopped and started again, and the
@@ -5272,6 +5319,9 @@ fn reencode_segment(
         // SmartCut re-encoded -- and are refused for that alone. Counted,
         // a correct re-cut of such a cut said two dozen packets in each
         // re-encoded stretch were damaged and their pictures missing.
+        if !run_up.passes(&packet, in_tb, src.start_time) {
+            continue;
+        }
         if decoder.send_packet(&packet).is_err() {
             let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
             if keyed || at.is_none_or(|t| t >= seg.start - tol) {
@@ -6801,6 +6851,17 @@ fn ranges_with_transitions(
                 // place. Either way the range keeps its own `t_out`, which
                 // is what the sound is cut against.
                 let mut body_end = plan.t_out - take_tail;
+                // On the picture there, so that the body and the transition
+                // after it do not both write it; see
+                // [`crate::plan::on_screen_at`]. A reel written afresh whole
+                // is laid out on one clock and meets already.
+                if take_tail > 0.0 && !fits[n].video {
+                    body_end = crate::plan::on_screen_at(
+                        &reel.src.video,
+                        &reel.src.points,
+                        body_end,
+                    );
+                }
                 let tinted_head = take_head > 0.0 && !head.kind.overlaps();
                 let body_start = if tinted_head { t_in + take_head } else { t_in };
                 let mut segments = Vec::new();
@@ -6990,9 +7051,27 @@ pub fn open_the_reel(
 /// stopped. See [`open_the_reel`].
 fn after_a_copy(src: &Source, last: (SegmentKind, Option<f64>), next: &Segment) -> bool {
     let eps = src.video.frame_duration() / 2.0;
+    // **A recorder's seam is not the same stretch, however the two copies
+    // meet.** The copy before it stops at the seam's byte, and the one after
+    // opens on the next stretch's first entry point -- the very picture the
+    // one before was planned to stop on, so the two looked like one stretch
+    // read on. They are not: the decoder was handed the end of one recording
+    // and the leading pictures of another, and where the stretch before ended
+    // on a damaged picture (a lone field, which a recorder writes where the
+    // broadcast broke up) it kept the wrong references for the next GOPs --
+    // 41 and 58 pictures of two recorder titles came out missing or wrong
+    // after a seam a range ran across.
+    let at_a_seam = || {
+        src.joins.iter().any(|j| {
+            src.points
+                .iter()
+                .find(|p| p.time >= j.time - eps)
+                .is_some_and(|p| (p.time - next.start).abs() < eps)
+        })
+    };
     last.0 == SegmentKind::Copy
         && next.kind == SegmentKind::Copy
-        && !last.1.is_some_and(|until| (until - next.start).abs() < eps)
+        && (!last.1.is_some_and(|until| (until - next.start).abs() < eps) || at_a_seam())
 }
 
 /// A range's opening copy, re-encoded up to the next entry point a copy can

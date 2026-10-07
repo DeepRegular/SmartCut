@@ -57,6 +57,14 @@ const TS_VIDEO: &[&str] = &[
 /// Opus is carried with a registration descriptor saying so, which is what
 /// makes it readable back; FLAC and Vorbis have no type and are the ones
 /// this list is keeping out.
+///
+/// `pcm_dvd` is a DVD's LPCM as it is read, and is here for the same reason
+/// `pcm_bluray` is: a cut copying it into a `.ts` writes it as Blu-ray LPCM
+/// (`carriage` again), so the transport stream holds it. Left out, the
+/// window greyed `.ts` and `.m2ts` for every DVD with LPCM sound while the
+/// cut into either was fine. Nothing that writes a stream declares it as
+/// `pcm_dvd` -- the sound-only writer names what it declares, which is never
+/// this -- so no stream reaches a transport stream under this name.
 const TS_AUDIO: &[&str] = &[
     "aac",
     "aac_latm",
@@ -70,6 +78,7 @@ const TS_AUDIO: &[&str] = &[
     "mp3",
     "opus",
     "pcm_bluray",
+    "pcm_dvd",
 ];
 
 /// What an MP4 refuses. VP9 and AV1 are written; TrueHD is written on this
@@ -163,7 +172,8 @@ mod tests {
 
     #[test]
     fn a_transport_stream_holds_a_broadcast_and_not_a_webm() {
-        for codec in ["mpeg2video", "h264", "hevc", "vc1", "aac", "ac3", "mp2"] {
+        // A DVD's LPCM as it is read: the cut writes it as Blu-ray's.
+        for codec in ["mpeg2video", "h264", "hevc", "vc1", "aac", "ac3", "mp2", "pcm_dvd"] {
             assert!(holds("ts", codec), "{codec}");
         }
         for codec in ["vp8", "vp9", "av1", "flac", "vorbis"] {

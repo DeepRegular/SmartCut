@@ -316,19 +316,28 @@ pub fn write(
     let mut part = to.as_os_str().to_owned();
     part.push(".part");
     let part = PathBuf::from(part);
-    match write_to(from, &part, revision, access, label, on) {
-        Ok(size) => {
+    let mut made = false;
+    match write_to(from, &part, revision, access, label, on, &mut made) {
+        Ok((size, held)) => {
             // A rename that fails -- `to` is a folder, or cannot be replaced
             // -- leaves a whole image under the `.part` name, which is the
             // same gigabytes on the disk and nothing any run will clear up.
-            if let Err(e) = std::fs::rename(&part, to) {
+            // Renamed while the file is still open and locked, so that what
+            // is moved into place is this run's image and nobody else's.
+            let moved = std::fs::rename(&part, to);
+            if moved.is_err() {
                 let _ = std::fs::remove_file(&part);
-                return Err(e).with_context(|| format!("cannot write {}", to.display()));
             }
+            drop(held);
+            moved.with_context(|| format!("cannot write {}", to.display()))?;
             Ok(size)
         }
         Err(e) => {
-            let _ = std::fs::remove_file(&part);
+            // Only what this run made: a `.part` another run is still
+            // writing is that run's to finish.
+            if made {
+                let _ = std::fs::remove_file(&part);
+            }
             Err(e)
         }
     }
@@ -362,6 +371,11 @@ fn not_this_disc(from: &Path, to: &Path) -> Option<String> {
         return None;
     }
     let what = || "is not an image of a disc of recordings".to_string();
+    // A file that cannot be opened is not known to be anything; saying it was
+    // no disc's image sent somebody looking for the wrong fault.
+    if let Err(e) = std::fs::File::open(to) {
+        return Some(format!("cannot be read ({e})"));
+    }
     let Ok(mut old) = crate::udf::Image::open(to) else {
         return Some(what());
     };
@@ -410,7 +424,8 @@ fn write_to(
     access: Access,
     label: &str,
     on: Option<&(dyn Fn(f64) + Sync)>,
-) -> Result<u64> {
+    made: &mut bool,
+) -> Result<(u64, std::fs::File)> {
     let mut left_out = Vec::new();
     let mut tree = read_disc(from, &mut left_out)?;
     say_what_was_left_out(from, &left_out);
@@ -421,6 +436,26 @@ fn write_to(
     let plan = lay_out(&mut tree, access)?;
     let meta = metadata_image(&tree, &plan, revision, access, &now, label)?;
 
+    // Not while another run is writing an image of this disc. Two runs into
+    // one disc is what `bdav::prepare` reserves numbers for, and both may
+    // ask for the image: the second took the first's `.part` away (see
+    // below) and made its own under the name, the first then renamed
+    // the second's half-written file into place and said the image was
+    // done -- and with `--iso-only` took the folder away on the word of an
+    // image whose file data was still being copied out of it. The run
+    // writing holds a lock on its `.part` until it is renamed; one left by
+    // a run that was killed holds none, and is cleared as it always was.
+    if std::fs::symlink_metadata(to).is_ok_and(|m| m.is_file()) {
+        if let Ok(held) = std::fs::File::open(to) {
+            if let Err(std::fs::TryLockError::WouldBlock) = held.try_lock() {
+                bail!(
+                    "{}: another run is writing an image of this disc there now; make the \
+                     image again once it has finished",
+                    to.display()
+                );
+            }
+        }
+    }
     // Made afresh rather than opened through whatever has the name: a
     // `<image>.part` that was a link into the folder truncated the file it
     // pointed at -- one of the disc's own streams -- before it was read.
@@ -430,6 +465,10 @@ fn write_to(
         .create_new(true)
         .open(to)
         .with_context(|| format!("cannot write {}", to.display()))?;
+    *made = true;
+    // Held until the caller has renamed it into place; see [`write`]. A
+    // filesystem that cannot lock is not a reason to stop.
+    let _ = dst.try_lock();
     make_sparse(&dst);
     let mut out = Writer {
         to: BufWriter::with_capacity(1 << 20, dst),
@@ -533,8 +572,8 @@ fn write_to(
     }
     out.pad_to(plan.sectors - 1)?;
     out.sector(&sized(&anchor(&plan, plan.sectors - 1))?)?;
-    out.to.flush()?;
-    Ok(plan.sectors * SECTOR as u64)
+    let dst = out.to.into_inner().map_err(|e| e.into_error())?;
+    Ok((plan.sectors * SECTOR as u64, dst))
 }
 
 /// What under `from` an image of it would not carry, by path.
@@ -1874,6 +1913,33 @@ mod tests {
         write(&other, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
         let _ = std::fs::remove_dir_all(&other);
         write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        let _ = std::fs::remove_file(&image);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// A `.part` another run is still writing is neither taken away nor
+    /// renamed into place; one nobody holds is cleared as before.
+    #[test]
+    fn an_image_being_written_by_another_run_is_left_to_it() {
+        let at = std::env::temp_dir().join(format!("udfw-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(at.join("BDAV/STREAM")).unwrap();
+        std::fs::write(at.join("BDAV/info.bdav"), b"x").unwrap();
+        std::fs::write(at.join("BDAV/STREAM/00001.m2ts"), [0u8; 192]).unwrap();
+        let image = PathBuf::from(format!("{}.iso", at.display()));
+        let part = PathBuf::from(format!("{}.iso.part", at.display()));
+        let _ = std::fs::remove_file(&image);
+        std::fs::write(&part, b"the other run's").unwrap();
+        let other = std::fs::File::open(&part).unwrap();
+        other.lock().unwrap();
+        let e = write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap_err();
+        assert!(e.to_string().contains("another run"), "{e}");
+        assert_eq!(std::fs::read(&part).unwrap(), b"the other run's");
+        assert!(!image.exists());
+        drop(other);
+        write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        assert!(!part.exists());
+        assert!(crate::udf::Image::open(&image).unwrap().find("BDAV/STREAM/00001.m2ts").is_some());
         let _ = std::fs::remove_file(&image);
         let _ = std::fs::remove_dir_all(&at);
     }
