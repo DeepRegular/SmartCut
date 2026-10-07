@@ -132,8 +132,8 @@ where all of these hold:
   B slice the copy keeps names every active entry of both its lists through
   `ref_pic_list_modification`. A list left at its default, even partly, makes the
   point needed.
-- A leading reference picture's `memory_management_control_operation`, if any, is
-  operation 1 and unmarks only pictures from before the entry point.
+- No leading reference picture carries a `memory_management_control_operation` of
+  its own (`adaptive_ref_pic_marking_mode_flag` 0).
 - No leading reference field is held without its other field.
 - The key picture itself is a reference picture.
 
@@ -144,7 +144,7 @@ undecided after a thousand pictures. Only H.264 whose parameter sets travel in b
 is followed. A transport stream or `.m2ts` always qualifies, and so does an MP4 or
 Matroska file remuxed from one, which keeps its SPS and PPS in the key packets. An
 MP4 or Matroska file whose parameter sets live only in `avcC` keeps the flag's
-answer. The index stores the answer per entry point (`seek_index::VERSION` 13).
+answer. The index stores the answer per entry point (`seek_index::VERSION` 15).
 
 The B-list condition was found the hard way. A first version without it marked
 entry points droppable on a clip shaped like a pressed Blu-ray's (23.976p H.264:
@@ -158,8 +158,20 @@ keeping them made them match. That has not been reproduced. Twenty x264 transpor
 stream variants were tried (b-pyramid normal and strict, 16 references, 8 and 16 B
 frames, MBAFF top and bottom field first, bluray-compat with 4 slices, weightp 2 and
 others), each with the leading pictures cut out and decoded from the key, and none
-of them came out wrong. The case that does fail is the one above, which the rule now
-rejects.
+of them came out wrong. The rule as it then stood judged all twenty droppable.
+
+The rule now judges them needed, because every leading reference B that x264 writes
+carries operation 1 of its own. An earlier version let operation 1 through where it
+unmarked only pictures from before the entry point: the cut still holds those, and
+they are older than everything after the I. Holding them is the trouble. By order
+count such a picture stands below everything after the I, so in a trailing B's list
+0 it comes in front of every picture shown after that B, and it can stop list 1 from
+being swapped (8.2.4.2.3). An x264 stream whose headers were edited into a
+conformant shape, with a trailing B reference that unmarks the I, showed it: the B
+after that one, on its default lists, decoded differently with and without the
+leading pictures. So x264 open-GOP material with a B pyramid starts no copy at an
+open GOP, as when the reference flag alone decided. The recorder's BD-RE below is
+unaffected, since its leading B frames carry no operation.
 
 The material that needed it is a recorder's field-coded BD-RE. Each GOP has two
 leading B frames in front of its I, and the first is a reference for the second and
