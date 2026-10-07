@@ -67,6 +67,18 @@ The fix has two parts:
 MPEG-2 does not have this problem in the first place, because its sequence headers
 are in band already.
 
+**A transport stream's record holds one set, and it is the first in the file.** In a
+cut SmartCut wrote, that is the re-encoded head's, under the same ids as the copied
+pictures' own and with other contents. A re-encode reading such a file seeks, lands
+ahead of the entry point it aimed at, and the run-up pictures before the next
+in-band set were parsed with the head's. They were accepted and left wrong
+references behind: on x264 material with no IDR, every B picture of the re-encoded
+stretch came out at 28-35 dB in a re-cut of a cut. So **nothing before the read's
+first key packet goes to the decoder** (`cut::RunUp`, in the re-encode, the
+conformed reel and the crossing's far side), as the preview has always done. A file
+whose key packets are not marked is fed from the entry point the read aimed at, and
+one that says nothing from a few hundred pictures in.
+
 ### 2. The access point index has to scan *packets*
 
 `ffprobe -skip_frame nokey` **misses access points in open GOPs**, because the

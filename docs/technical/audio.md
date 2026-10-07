@@ -60,12 +60,14 @@ Continuously, but not blindly end to end. Until 0.8.3 a packet's place was the
 count of samples fed before it, so a stretch the track did not have — a
 dropout in a broadcast, sound that starts after the pictures or stops before
 them, a joined recording without the track — moved everything after it earlier
-by as much. Now a hole of more than a frame inside a range is filled with
-silence, and at the start of each range silence is added until the sound
-reaches the output time the range's pictures start at. The frame before each
-range's first is decoded as well and thrown away: AAC, AC-3 and MP2 decode a
-frame against the one before it, and without it the first frame of every range
-was mixed with the end of the range before — a click at each join.
+by as much. Now a hole of more than half a frame inside a range is filled with
+silence (until 2026-10-08, more than a whole frame: the one frame a broadcast
+loses where it is damaged was read past, and moved the rest of the range 21 ms
+ahead of its pictures), and at the start of each range silence is added until the
+sound reaches the output time the range's pictures start at. The frame before each
+range's first is decoded as well and thrown away: AAC, AC-3 and MP2 decode a frame
+against the one before it, and without it the first frame of every range was mixed
+with the end of the range before — a click at each join.
 
 Two more things the whole-track encoder does, both missing until 0.8.4. **An encoder whose delay is
 not a whole frame is fed a lead of silence first** — 1280 samples for AC-3, 671 for

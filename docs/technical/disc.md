@@ -339,8 +339,13 @@ range begins with it, and one that would run past the end of a range ends with i
 document's length does not change — `HH:MM:SS.mmm` is a fixed width — which matters
 because the twelve bytes a recorder writes in front of each document count it.
 
-What comes out is counted from the first picture of the cut, which is where a file with
-no playlist in front of it begins.
+What comes out is counted from the first picture of the cut, which is where a file
+with no playlist in front of it begins. Read back, such a file — or a clip copied
+off a disc without its index — is counted from its own first picture, the nearest
+thing to a presentation start it holds. Taken as the stream's raw clock instead,
+each re-cut of a cut moved every caption 75 ms early, and a bare 4K clip 2.3
+seconds; the bare clip is still about half a second early, because nothing in the
+file says more.
 
 **A caption already up when a range opens is read back for.** A document is sent once,
 when it goes up, and one stood for 38 seconds on the recordings here — so the one a
@@ -644,6 +649,15 @@ tried and the one whose times **all land inside the clip they claim** is the
 one that is used. When none of them does, the marks are left out: a chapter
 point in the wrong place is worse than no chapter point.
 
+**Not every mark a recorder writes is a chapter.** A BDAV mark's first byte is
+its kind, and only 0x04 (a recorder's chapter) and 0x05 (an authoring tool's,
+and SmartCut's own) are taken. 0x01 and 0x02 are the picture the recorder shows
+for the title in its list, 0x03 is where playback last stopped, 0x06 a point to
+skip from. Every recorder playlist carries a 0x01, so read as a chapter it put
+a chapter, in the editor and in the output, a few seconds to a minute into
+every recording. BDMV's
+kind sits in another byte and means other things; it is not filtered.
+
 Reading **which play item a mark belongs to** is what makes a "play all"
 usable. Without it every mark is a number with no clock under it: the fifth
 episode's chapter points are on the fifth episode's own timeline, which shares
@@ -944,6 +958,33 @@ them did until these recordings were cut end to end:
   later — read that as a seek that had overshot, and stopped. Where the landing
   would fall in front of the seam, `cut::seek_into` seeks to the seam's own
   byte instead.
+
+Three more were found on 2026-10-08, each by a range that ended or began a few
+pictures from a seam:
+
+- **Every seam inside a range splits it, however near either end**
+  (`plan::at_the_seams`). A seam less than a tenth of a second from an end used
+  to be left inside the range, and the cut wrote the next stretch's leading
+  pictures as the wreckage they decode to; an OUT on the last picture before a
+  seam is drawn a picture past it, so this was the ordinary case. The piece in
+  front of a seam is kept however short. The piece behind one is dropped only
+  when the next stretch's first entry point is not inside it; otherwise it is
+  kept from that entry point, and the pictures after it are written.
+- **A stretch can run past its seam's time.** Some recorder stretches hold
+  pictures stamped up to a third of a second after the next one begins on the
+  joined clock. A copy to the seam's byte wrote them all, past the end of the
+  range. Where the stretch's last picture lies within half a frame of the seam's
+  time or past it, the copy stops on the stretch's own last entry point and the
+  rest is re-encoded up to the range's end (`plan::own_points`). A stretch that
+  ends where its seam says is copied to the byte as before.
+- **Two copies meeting at a seam are not one stretch read on.** The copy after
+  opens on the very picture the one before was planned to stop at, so it looked
+  like a continuation, and the decoder was handed the end of one recording and
+  the leading pictures of another. Where the stretch before ended on a damaged
+  picture, the wrong references stayed for GOPs: 41 pictures of one title came
+  out missing. The copy after a seam now opens as a copy of its own
+  (`cut::after_a_copy`), its head re-encoded up to the next entry point, which
+  adds up to two seconds of re-encoding to a title.
 
 A row is joined only where the playlist accounts for the whole clip: every
 sequence it holds, in the order the file holds them, one play item each.

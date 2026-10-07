@@ -142,7 +142,7 @@ smartcut a.ts --join b.ts --transition dissolve --transition-seconds 2 \
 
 | オプション | 意味 |
 |---|---|
-| `--tables partial\|broadcast\|muxer` | TS の中身を説明するテーブルを、どの形で入れるか。指定が無ければ `.ts` は `broadcast`（録画自身の SDT・EIT・TOT。プレーヤーはここから番組名・放送局名・時刻を読みます）、`.m2ts` は `partial`（**部分 TS**。ディスクのストリームの書き方）になります。`muxer` は何も足しません。`--no-tables` は `muxer` の古い名前です |
+| `--tables partial\|broadcast\|muxer` | TS の中身を説明するテーブルを、どの形で入れるか。指定が無ければ `.ts` は `broadcast`（録画自身の SDT・EIT・TOT。プレーヤーはここから番組名・放送局名・時刻を読みます）、`.m2ts` は `partial`（**部分 TS**。ディスクのストリームの書き方）になります。`muxer` は何も足しません。`--no-tables` は `muxer` の古い名前です。`--bdav` で指定できるのは `partial` だけです。ディスクのストリームはこの形で書くので、`muxer` や `broadcast` を指定すると、録画を読む前にエラーで止まります |
 | `--no-data-broadcast` | 録画のデータ放送（d ボタンで見られるページ）を捨てます。指定が無ければ残します。残せるのは、テーブルを muxer に任せない（`broadcast` か `partial` の）`.ts` だけです。`.m2ts` には入れる場所がありません。モジュールが欠けずにそのままのバイトで入るので、受信機は同じページを描きます。捨てて得られるのはファイルサイズの削減だけです。カルーセルは多重化全体の 1/100 から 1/5 を占めます。`--data-broadcast` は残すことを明示的に指定する書き方で、格納できなかったときのメッセージだけが変わります |
 
 ## ディスク（BDAV）として書く

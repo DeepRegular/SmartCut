@@ -299,6 +299,15 @@ really does lose those seconds:
   crossing but its sound plays through it, which is what keeps the sound in
   step with the pictures on either side.
 
+**The segment begins on a picture.** The body of a range writes the pictures that
+begin inside it; the transition after it opens on the picture on screen at its
+first instant. A transition whose length is not a whole number of frames — the
+default second at 29.97 is 29.97 frames — began part-way through a picture, so
+both wrote that one: every picture of the transition came a frame late and the
+clip's own last picture was left out. Where the body is not written afresh whole,
+its end is moved to the start of the picture on screen there
+(`plan::on_screen_at`) before it is planned.
+
 **So the sound is not mixed.** The clip before plays through the crossing and
 the clip after starts where it ends. That is a decision and not an omission:
 mixing two tracks would mean decoding both and encoding the result, which makes

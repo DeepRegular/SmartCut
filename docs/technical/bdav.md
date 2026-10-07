@@ -632,6 +632,18 @@ image as well -- gigabytes, and on an image for a recorder to go on editing,
 enough to outgrow the disc. What is imaged and what `--iso-only` takes away are
 now the same thing.
 
+**An image already at that name is replaced only when it is of the same disc**
+(`udfw::not_this_disc`): every stream and clip index it holds has to be in the
+folder still, the indexes byte for byte, so an image made again of a disc that has
+grown passes and an image of some other disc does not. One that cannot be read is
+refused as unreadable rather than as another disc's. The image is written as
+`<disc>.iso.part` and renamed into place, and the run writing it **holds a lock on
+the `.part`** until then: two runs into one disc may both ask for the image, and the
+second used to take the first's `.part` away while the first renamed the second's
+half-written file into place — and, with `--iso-only`, removed the folder on the
+strength of it. A `.part` somebody holds is now refused; one left by a killed run
+holds no lock and is cleared.
+
 The image is a **UDF** filesystem, at revision 2.50 or 2.60 as the output
 settings screen asks. [`udfw.rs`](../../rust/crates/core/src/udfw.rs) writes
 it, and there is no specification in this project to write it from: every
