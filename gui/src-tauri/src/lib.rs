@@ -2114,14 +2114,26 @@ fn clip_gone_now(path: &str) -> bool {
 /// thread instead, which is what Tauri's own doc for the builder tells you
 /// to do. It costs nothing on Linux -- `build` hands itself back to the main
 /// thread there either way -- so the two platforms take the same path.
+///
+/// Says whether the window was already up, which is what tells the list a
+/// second press on the row it is open on from a fresh visit: asked of
+/// [`editor_up`] beforehand, a window that closed between the question and
+/// this was rebuilt as a visit that the list took to be the old one.
 #[tauri::command]
-async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String> {
+async fn open_editor(title: String, app: tauri::AppHandle) -> Result<bool, String> {
+    // One at a time. Tauri looks for a window of the label before it builds
+    // and enters it only once built, so a second press while the first was
+    // still being built -- a row double-clicked twice -- found none and built
+    // a second editor beside it. Held across the build, which has no await
+    // in it: the second press then finds the window and raises it.
+    static BUILDING: Mutex<()> = Mutex::new(());
+    let _one = locked(&BUILDING);
     if let Some(w) = app.get_webview_window(EDITOR) {
         // Already up: this is a second double-click, not a second editor.
         let _ = w.set_title(&title);
         let _ = w.unminimize();
         let _ = w.set_focus();
-        return Ok(());
+        return Ok(true);
     }
     let window = WebviewWindowBuilder::new(&app, EDITOR, WebviewUrl::App("editor.html".into()))
         .title(title)
@@ -2203,7 +2215,7 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<(), String>
             }
         }
     });
-    Ok(())
+    Ok(false)
 }
 
 /// Open 拡大表示, in a window of its own.
@@ -6829,7 +6841,12 @@ async fn bdav_finish(
         // the answer, and the two are not always the same -- a recording whose
         // pictures would not shrink as far as they were asked to is a disc
         // larger than the one that was drawn. See `fit`.
-        Ok(folder_bytes(&at))
+        //
+        // The disc, which is `BDAV` and not the folder it was written into:
+        // written straight into a folder of recordings, the folder's own
+        // gigabytes were counted, and a disc that fit was said to be tens of
+        // gigabytes over. The image holds `BDAV` alone too (`udfw::write`).
+        Ok(folder_bytes(&smartcut_core::bdav::root(&at)))
     })
     .await
     .map_err(|e| e.to_string())?

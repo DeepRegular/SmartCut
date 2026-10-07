@@ -987,6 +987,10 @@ el("cross-cancel").addEventListener("click", () => {
 // a field has the focus and something is being typed into it: Enter in the
 // seconds field means "take this number".
 window.addEventListener("keydown", (ev) => {
+  // A key the input method is using -- Escape taking back a conversion in
+  // the image's path field -- is not the window's: it closed the window and
+  // every setting made in it went with it.
+  if (ev.isComposing || ev.keyCode === 229) return;
   // The volume keeps the keyboard after it is used, and nothing types into
   // it: holding on to it, it took the arrows, Home, End and M from the
   // window. It hands the keyboard back at the first key, as the cut editor's

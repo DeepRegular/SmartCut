@@ -468,6 +468,10 @@ let owedBack = null;
 /// Every `editor-closed` that lands while it is is about the window before
 /// this one: the window being built cannot have closed yet. See the handler.
 let opening = false;
+/// How many times a window has been asked for, so that an `editor-closed`
+/// can tell a window asked for while it was asking whether one is up -- the
+/// same row again included, which `editing` alone cannot tell apart.
+let editorAsks = 0;
 
 async function edit(clip) {
   // A row that has left the list. Nothing here asks for one on purpose, but a
@@ -517,10 +521,26 @@ async function edit(clip) {
   // wire and the list went on taking presses while it was over there: the row
   // can have been deleted in the time the answer took.
   if (!clips.includes(clip)) return;
+  // The row the window is already up on, asked for again -- a second
+  // double-click is the ordinary way to bring that window forward. It is the
+  // same visit: the window keeps its timeline and the mark of what it arrived
+  // with, so what キャンセル goes back to stays what the visit began from.
+  // Taken again here it was the visit's own work, and a cut thrown away with
+  // Escape after the second press stayed on the row and was written.
+  //
+  // Whether the window is still up is `open_editor`'s answer below rather
+  // than a question asked first: a window that closed in between -- OK, and
+  // the row pressed again at once -- was built afresh as a new visit while
+  // this kept the old one's mark, and キャンセル there took back what OK had
+  // handed over.
+  const again = clip === editing;
+  const arrived = () => {
+    before = clip.edit ? JSON.parse(JSON.stringify(clip.edit)) : null;
+    editedBefore = clip.edited;
+    owedBack = null;
+  };
   editing = clip;
-  before = clip.edit ? JSON.parse(JSON.stringify(clip.edit)) : null;
-  editedBefore = clip.edited;
-  owedBack = null;
+  if (!again) arrived();
   // A lane in flight on this very clip is left alone. It used to be stopped
   // here -- the editor is about to make the same pass, and reading one file
   // twice at once is the thing most worth avoiding -- but that traded a real
@@ -547,7 +567,11 @@ async function edit(clip) {
   // nothing part-finished to save.
   try {
     opening = true;
-    await invoke("open_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
+    editorAsks += 1;
+    const up = await invoke("open_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
+    // Built just now: a visit of its own after all. Not where another row
+    // has been asked for meanwhile, which has taken the mark for itself.
+    if (again && up !== true && editing === clip) arrived();
     // Lost if the window is still starting up, which is what `editor-ready`
     // is for; sent anyway for the case where it is already open on another
     // clip and there will be no `editor-ready` at all.
@@ -698,9 +722,12 @@ if (listen) {
       // The row's answer as it stood before the first finding to land on
       // such a visit -- the list's, or one run in there, which went the
       // same way: the row went on saying "done" and greying the pass over
-      // a timeline that had none of it. Not over a booking, which the lane
-      // answers for itself.
-      if (landed && clip === editing && state.touched && !before && !booked && !owedBack) {
+      // a timeline that had none of it. Not over a pass the lane is running,
+      // which answers for itself when it ends. A booking still waiting is
+      // kept, though: the finding took it back, and the lane never reached it
+      // -- cancelled out of, the row said "done" and greyed the pass over a
+      // timeline with nothing on it, and nothing was left to answer.
+      if (landed && clip === editing && state.touched && !before && clip.cmState !== "running" && !owedBack) {
         owedBack = {
           id: clip.id,
           state: clip.cmState,
@@ -812,6 +839,8 @@ if (listen) {
       clip.cmNothingOwed = owedBack.nothing;
       clip.cmSource = owedBack.source;
       paintButtons();
+      // The booking handed back, to the lane that was to answer it.
+      if (clip.cmState === "queued") pump();
     }
     owedBack = null;
     // Along with the mark that says the row has been edited: what is being
@@ -850,10 +879,19 @@ if (listen) {
     // the lanes walking past it until the program is restarted.
     if (opening) return;
     const was = editing;
+    const gen = editorAsks;
     if (await invoke("editor_up").catch(() => false)) return;
     // Asked again after the answer: a row opened while it was on its way is
     // the window being built, and the question was about the one before it.
     if (opening || editing !== was) return;
+    // And the same row pressed again, which `editing` does not show: the
+    // window built for it is up by now, and letting go of the row left it
+    // blank. Asked once more, because that press can as well have found the
+    // old window on its way out, and then nothing is up.
+    if (editorAsks !== gen) {
+      if (await invoke("editor_up").catch(() => false)) return;
+      if (opening || editing !== was) return;
+    }
     // What that window found while it had the row. Its commercial detection
     // comes back inside the edit (`editor-state`); the two flat ones are in
     // the cache, and this is where the row goes and reads them.

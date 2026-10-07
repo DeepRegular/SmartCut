@@ -401,6 +401,9 @@ const CHOICES = {
 
 /// Seeded defaults, replacing the ones above for anything nobody has stored.
 const seeded = {};
+/// Whether this window has been seeded. Each window has its own copy of this
+/// module, and only the list window asks at startup; see `tellBackend`.
+let seededHere = false;
 
 /// Take what the backend says is in force for the preferences an environment
 /// variable can also set. Only the names it actually answered, and only
@@ -408,6 +411,7 @@ const seeded = {};
 /// and the environment is what the machine was started with.
 export function seed(from) {
   if (!from) return;
+  seededHere = true;
   for (const [name, value] of Object.entries(from)) {
     if (name in DEFAULTS && value !== null && value !== undefined) seeded[name] = value;
   }
@@ -580,6 +584,12 @@ export function forBackend() {
 /// asked.
 export async function tellBackend(invoke) {
   if (!invoke) return null;
+  // A window that was never seeded -- the cut editor, whose 音声波形 tells
+  // the backend -- would send the built-in defaults for whatever nobody has
+  // stored, and so turn off for the rest of the session the proxy, the clean
+  // joins, the log level and the fade a `SMARTCUT_*` variable had set. What
+  // is in force is the answer for those, as it is in the list window.
+  if (!seededHere) seed(await invoke("prefs_now").catch(() => null));
   try {
     return await invoke("set_prefs", { want: forBackend() });
   } catch (e) {

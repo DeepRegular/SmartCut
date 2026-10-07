@@ -5653,7 +5653,11 @@ const markFilter = (kind) => ({
 /// left to answer, and 環境設定 says whether it is even asked. See
 /// `quietOverwrite`.
 async function saveMarks(kind, ask) {
-  if (!src) return;
+  // Nor while another row is coming in: the name below is already the new
+  // row's (`sideBase`), and the marks, the cuts and the clock are still the
+  // row being left's. Ctrl+H then wrote the last recording's marks over the
+  // new one's `.keyframe`, which its own open read back a moment later.
+  if (!src || swapping) return;
   // The menu greys this line out; the shortcut is the way in that cannot,
   // and an empty file written under the recording's name would be read back
   // as a detection that found nothing.
@@ -5737,7 +5741,8 @@ const leaf = (path) => path.split(/[/\\]/).pop();
 /// line *cuts*, and lands in the undo history like any other cut; a saved
 /// finding arrives as the detection it was, band and marks and sentence.
 async function loadMarksFrom(kind) {
-  if (!src || !dialog) return;
+  // Not while another row is coming in, for the reason `saveMarks` gives.
+  if (!src || swapping || !dialog) return;
   const gen = openGen;
   const picked = await dialog.open({
     multiple: false,
@@ -5757,6 +5762,15 @@ async function loadMarksFrom(kind) {
         : kind === "cue"
           ? await readCueFile(from)
           : await readTrimFile(from);
+  // A finding read in by hand is what the timeline holds now, and nobody can
+  // say what it was asked: the question of the one it replaced went on
+  // greying the detection here and, handed to the list with the file's
+  // sentence, said the row had been detected that way. As a pass that
+  // replaces the band does; see the detect-cm handler.
+  if (kind === "cm" && got > 0) {
+    detectedWith.cm = null;
+    paintDetectCm();
+  }
   // Nothing in it, as against unreadable: the reader has said its piece about
   // the second, and a picker that answers a deliberate choice with silence
   // looks like a program that did not hear the click.
@@ -6762,11 +6776,18 @@ async function pointsArrived(exact, picked) {
   tailSrc = null;
   // The marks that came up with the row, onto the frames they show now that
   // there are access points to count frames from. See `onFrame`.
+  //
+  // The same marks, not an edit, as with the cuts above: a `.keyframe` read
+  // before the walk moved here by a hair, and the report `renderKeyframes`
+  // sends below -- which lands while the stage picture is still decoding --
+  // called the row edited, and the list's badge for that does not go away.
   if (src.pulldown) {
+    const was = touched();
     const all = keyframes.map(onFrame).sort((a, b) => a - b);
     keyframes = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
     if (activeKey !== null) activeKey = onFrame(activeKey);
     pickedKeys = pickedKeys.map(onFrame);
+    settleUnlessTouched(was);
   }
   // A moment after, so that it does not stand in front of the first picture
   // the stage asks for.
@@ -7560,7 +7581,9 @@ const isStillExt = (x) => STILL_FILTERS.some((f) => f.extensions.includes(x));
 let savingStill = false;
 
 async function saveStill() {
-  if (!src || !dialog || savingStill) return;
+  // Nor while another row is coming in: the frame would be the row being
+  // left's and the name offered the new one's. See `saveMarks`.
+  if (!src || swapping || !dialog || savingStill) return;
   if (playing) stopPlay();
   const at = playhead;
   const gen = openGen;
