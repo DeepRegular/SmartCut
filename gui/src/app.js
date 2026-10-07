@@ -1678,6 +1678,11 @@ async function runIndex(clip) {
   paintButtons();
   paintQueueNote();
   if (clip.selected) paintProps();
+  // And the two screens that list the rows ready to be written, where one of
+  // them is up: a row read while 出力 was on show stayed off its list --
+  // the run wrote it all the same -- until something else drew the screen.
+  if (screen === "outset") renderOutset();
+  if (screen === "out") renderOutScreen();
 }
 
 /// A detection reserved on a recording that cannot be read is not work
@@ -4811,13 +4816,13 @@ function soundExt(clip) {
 /// Whether the run writes the sound and no pictures. See `settings.container`.
 /// Never on the disc tab, which keeps the file tab's container for when the
 /// user goes back to it but writes recordings with pictures in them.
-const soundOnly = () => settings.container === "sound" && !bdavMode();
+const soundOnly = () => settings.container === "sound" && !writesDisc();
 
 function containerFor(clip) {
   // A disc's recordings are `.m2ts` whatever the recording arrived as, so
   // that is what the audio has to be writable into -- which is not the same
   // question as what an `.mp4` can hold.
-  if (bdavMode()) return "m2ts";
+  if (writesDisc()) return "m2ts";
   // The sound on its own is named by what the sound is; there is no
   // container to choose. See `soundExt`.
   if (soundOnly()) return soundExt(clip);
@@ -6363,7 +6368,7 @@ function paintSubtitleChoices(from) {
 /// one file however many rows went into it, so it goes where a single cut
 /// would.
 function subfolderWanted() {
-  return bdavMode() || (ready().length > 1 && !joining());
+  return writesDisc() || (ready().length > 1 && !joining());
 }
 
 /// What that folder is called when nobody has said.
@@ -6375,7 +6380,7 @@ function subfolderWanted() {
 /// the clock in the room -- see `today`, and the hour this kind of work is
 /// done at.
 function autoSubfolder(list) {
-  const name = bdavMode()
+  const name = writesDisc()
     ? discTitleFor(list)
     : projectPath
       ? stemOf(projectPath)
@@ -6393,6 +6398,18 @@ function autoSubfolder(list) {
 /// folder and its index in another.
 let runDir = null;
 let runFolder = null;
+/// And whether it is writing a disc, frozen with them: the two tabs are on
+/// the screen that stays open, and a press on the other one half way through
+/// a run is a look at its settings, not a new answer for the run. Read live,
+/// a disc run went on writing its streams as 音声のみ, or became a join of
+/// the list into the disc's folder, once ファイル出力 was shown; and a run of
+/// files went on as `.m2ts`. `null` between runs. See `writesDisc`.
+let runDisc = null;
+
+/// Whether what is being written -- or would be, between runs -- is a disc.
+function writesDisc() {
+  return runDisc ?? bdavMode();
+}
 
 /// The folder the output goes in, as this run sees it.
 function outDir() {
@@ -6451,7 +6468,7 @@ let folderAsked = null;
 /// `force` for the run itself: the answer on screen can be minutes old, and
 /// a folder can appear in between -- another window, the queue, a hand.
 async function askFreeFolder(force = false) {
-  if (!invoke || bdavMode()) return false;
+  if (!invoke || writesDisc()) return false;
   const asked = subfolderAsked();
   if (!asked) return false;
   const dir = outDir();
@@ -6493,7 +6510,7 @@ async function askFreeFolder(force = false) {
 function subfolderNow() {
   if (runFolder !== null) return runFolder;
   const asked = subfolderAsked();
-  if (!asked || bdavMode()) return asked;
+  if (!asked || writesDisc()) return asked;
   return freeFolder.dir === outDir() && freeFolder.asked === asked ? freeFolder.name : asked;
 }
 
@@ -6885,7 +6902,7 @@ async function askRoom() {
 /// Asked afresh rather than read off the gauge: the list can be edited
 /// between looking at the screen and pressing the button.
 async function fitShare() {
-  if (!bdavMode() || !settings.fit) return null;
+  if (!writesDisc() || !settings.fit) return null;
   const { room: r } = await askRoom();
   if (!r || r.fits) return null;
   // A list that cannot be reached is still written -- as small as this goes,
@@ -7014,7 +7031,7 @@ async function renderGauge() {
 /// that has lost nineteen names. So the box only means anything in file
 /// mode, and this is where the two are asked together.
 function joining() {
-  return settings.joinAll && !bdavMode();
+  return settings.joinAll && !writesDisc();
 }
 
 /// The row the joined file takes its shape from.
@@ -8477,8 +8494,8 @@ if (listen) {
 /// read for damage and length only; pictures written back smaller to fit a
 /// disc are counted but not compared, since none of them is the recording's
 /// any more; and sound alone has no pictures to line up.
-function compareFor(sent, share) {
-  if (soundOnly()) return "none";
+function compareFor(sent, share, sound) {
+  if (sound) return "none";
   if (sent.length > 1 && sent.slice(0, -1).some((c) => c.after && c.after.kind !== "none")) return "none";
   return share !== null ? "count" : "pictures";
 }
@@ -8491,8 +8508,12 @@ function compareFor(sent, share) {
 /// ranges and what follows it -- and not the rows as they are now: the editor
 /// stays open on the list while a run writes it, and a cut made there during
 /// the minutes a file took to write would have the file checked against
-/// ranges it was never written with, and failed.
-async function verifyWritten(row, out, sent, share, master = null) {
+/// ranges it was never written with, and failed. `sound` is whether it was
+/// written as sound alone, as the engine was told then: the container on the
+/// screen can have been changed since, and a file of pictures read as sound,
+/// or one of sound lined up against pictures, was a check that said the wrong
+/// thing about it.
+async function verifyWritten(row, out, sent, share, master, sound) {
   checking = row;
   row.out = { state: "running", progress: 0, note: t("out.verifyPct", { pct: 0 }) };
   el("out-state").textContent = t("out.verifying", { name: nameOf(out) });
@@ -8514,7 +8535,7 @@ async function verifyWritten(row, out, sent, share, master = null) {
       // them: the other clips' tracks are paired with the master's by place
       // among all of its tracks, and the check has to pair them the same way.
       master: sent.length > 1 ? master : null,
-      compare: compareFor(sent, share),
+      compare: compareFor(sent, share, sound),
     });
     const said = verdict(r);
     runLogLine(said.detail);
@@ -8576,6 +8597,8 @@ async function writeJoined(list) {
   // Named after the run's own first row: a walk that landed during the waits
   // before the run can have put a row above it that is not in this join.
   const out = joinedPath(list);
+  // Taken with the name, which it names; see the same in `startExport`.
+  const sound = soundOnly();
   // The engine refuses to write over a recording of the join itself; the
   // list's other rows -- one still unread, one that would not open -- are
   // recordings it does not know about, as they are for a file apiece.
@@ -8667,7 +8690,7 @@ async function writeJoined(list) {
       audioBitrate: audioBitrateOut(),
       audioSampleRate: audioRateOut(),
       audioBits: audioBitsOut(),
-      soundOnly: soundOnly(),
+      soundOnly: sound,
       subtitles: settings.subtitles,
       dataBroadcast: prefs.get("dataBroadcast") !== false,
       videoShare: share,
@@ -8677,7 +8700,7 @@ async function writeJoined(list) {
     let extra = "";
     let detail = "";
     if (prefs.get("verify") === true && !abort) {
-      const v = await verifyWritten(list[0], out, sent, share, Math.max(0, list.indexOf(master)));
+      const v = await verifyWritten(list[0], out, sent, share, Math.max(0, list.indexOf(master)), sound);
       if (v.failed) {
         for (const c of list) c.out = { state: "error", progress: 0, note: v.note };
         return false;
@@ -8718,6 +8741,7 @@ async function runExport() {
     exporting = false;
     writing = null;
     runDir = null;
+    runDisc = null;
     runFolder = null;
     paused = heldBeforeRun && !resumeAfterRun;
     resumeAfterRun = false;
@@ -8782,6 +8806,9 @@ async function startExport() {
   // A pass over another recording would be competing for the same disc, and
   // unlike the editor this is work with an end in sight that somebody is
   // watching. Both lanes stand aside until the list is written out.
+  // Which of the two tabs this run writes, held from here to its end; see
+  // `runDisc`. Every way out below puts it down with `runDir`.
+  runDisc = disc;
   heldBeforeRun = paused;
   resumeAfterRun = false;
   paused = true;
@@ -8822,6 +8849,7 @@ async function startExport() {
       // and the list is as it was.
       note(t("out.bdavFailed", { e: String(e) }));
       runDir = null;
+      runDisc = null;
       runFolder = null;
       paused = heldBeforeRun && !resumeAfterRun;
       pump();
@@ -8842,6 +8870,7 @@ async function startExport() {
       invoke("bdav_discard", { dir: discDir(), clips: slots.map((s) => s.clip) }).catch(() => {});
     }
     runDir = null;
+    runDisc = null;
     runFolder = null;
     paused = heldBeforeRun && !resumeAfterRun;
     pump();
@@ -8876,6 +8905,10 @@ async function startExport() {
     // A recording on a disc is `BDAV/STREAM/00001.m2ts`; which number it is
     // was settled above. What it is *called* goes in the index, not here.
     const out = disc ? slots[i].path : outputPath(clip);
+    // Taken with the name, which is named by it (`.m4a`, `.wav`): sent as
+    // the screen stands after the waits below, a container changed in them
+    // wrote pictures into an audio file's name, or sound alone into a `.ts`.
+    const sound = soundOnly();
     if (out === clip.path) {
       clip.out = { state: "error", progress: 0, note: t("out.sameName") };
       runLogLine(`${t("log.failed")}: ${clip.path}: ${clip.out.note}`);
@@ -8944,7 +8977,7 @@ async function startExport() {
         audioBitrate: audioBitrateOut(),
         audioSampleRate: audioRateOut(),
         audioBits: audioBitsOut(),
-        soundOnly: soundOnly(),
+        soundOnly: sound,
         // What the editor's track menu switched off for this clip. Per clip
         // and not per list: the audio settings above are one answer for the
         // whole run, but which of a recording's own streams are wanted is a
@@ -9011,7 +9044,7 @@ async function startExport() {
       // that does not match what was asked for is not done.
       let detail = "";
       if (prefs.get("verify") === true && !abort) {
-        const v = await verifyWritten(clip, out, [{ path: clip.path, ranges, after: null }], share);
+        const v = await verifyWritten(clip, out, [{ path: clip.path, ranges, after: null }], share, null, sound);
         if (v.failed) {
           // Still indexed on a disc, as a file that failed the check is
           // still kept: the stream is written whole, and a disc pass that
@@ -9202,6 +9235,7 @@ async function startExport() {
 
   exporting = false;
   runDir = null;
+  runDisc = null;
   runFolder = null;
   // The answer about the folder is left standing rather than thrown away.
   // The folder this run made is now a folder that is there, so asking again
@@ -11935,6 +11969,7 @@ async function walkQueue() {
       // them: lanes somebody had stood aside stay aside.
       paused = heldBeforeRun && !resumeAfterRun;
       runDir = null;
+      runDisc = null;
       runFolder = null;
       writing = null;
       paintExportButton();

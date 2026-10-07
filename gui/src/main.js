@@ -6825,6 +6825,14 @@ async function pointsArrived(exact, picked) {
     keyframes = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
     if (activeKey !== null) activeKey = onFrame(activeKey);
     pickedKeys = pickedKeys.map(onFrame);
+    // And the history's, whose steps are copies: a mark put down during the
+    // walk and brought back by やり直し afterwards stood half a frame off its
+    // frame again, and Insert there put a second mark down beside it.
+    for (const step of past.concat(undone)) {
+      const keys = step.keyframes.map(onFrame).sort((a, b) => a - b);
+      step.keyframes = keys.filter((t, i) => i === 0 || t - keys[i - 1] > frame() / 2);
+      if (step.activeKey !== null) step.activeKey = onFrame(step.activeKey);
+    }
     settleUnlessTouched(was);
   }
   // A moment after, so that it does not stand in front of the first picture

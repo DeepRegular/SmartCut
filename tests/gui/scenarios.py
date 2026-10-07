@@ -16,6 +16,7 @@ Run through tests/run_gui_tests.sh, which checks there is a display and a
 driver first.
 """
 
+import fcntl
 import os
 import shutil
 import subprocess
@@ -741,6 +742,113 @@ def join_verify(cfg, t):
                 os.remove(f)
 
 
+# -- 16 --------------------------------------------------------------------
+def mode_switch_during_run(cfg, t):
+    """The other tab of 出力設定 pressed just after 出力開始, as a look at its
+    settings: the run goes on writing what it was started as. A disc run
+    with 音声のみ left on the file tab once wrote its streams as sound alone
+    (or a join of the list, where 全部を 1 本に was on); a file run went on
+    as `.m2ts`."""
+    def press_other(app, mode):
+        app.to_list()
+        app.s.click('button.tab[data-screen="out"]')
+        # Both rows read: the button is pressable as soon as one of them is,
+        # and a run started then writes only that one.
+        wait_for("both rows on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == 2, 60)
+        label = wait_for("the start button", lambda: app.s.js(
+            "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 60)
+        time.sleep(0.5)
+        app.s.js("document.getElementById('run-export').click();"
+                 f"document.querySelector('.modes .tab[data-mode=\"{mode}\"]').click();")
+        wait_for("the run to finish", lambda: app.s.js(
+            "return document.getElementById('run-export').innerText") == label, 300, 0.5)
+
+    # A disc, the file tab holding 音声のみ and 全部を 1 本に.
+    with App(cfg, "mode_switch_during_run/disc", clips(cfg),
+             {"mode": "bdav", "container": "sound", "joinAll": True, "discTitle": "t"}) as app:
+        press_other(app, "file")
+        found = []
+        for root, _, names in os.walk(app.out):
+            found += [os.path.join(root, n) for n in names]
+        streams = sorted(f for f in found if f.endswith(".m2ts"))
+        seen = [pictures(f) for f in streams]
+        rel = sorted(os.path.relpath(f, app.out) for f in found)
+        t.check("16 disc run: two streams with pictures",
+                len(streams) == 2 and all(n and n >= FRAMES - 2 for n in seen),
+                f"{seen}; files {rel[:12]}")
+        t.check("16 disc run: nothing outside the disc",
+                rel and all(f.startswith("BDAV" + os.sep) for f in rel), f"{rel[:12]}")
+        shutil.rmtree(app.out)
+        os.makedirs(app.out)
+
+    # Files, with the disc tab pressed: still `.ts` and `.mkv`.
+    with App(cfg, "mode_switch_during_run/file", clips(cfg)) as app:
+        press_other(app, "bdav")
+        names = sorted(os.listdir(app.out))
+        t.check("16 file run: written as files", names == ["cut_01_a.ts", "cut_02_b.mkv"], f"{names}")
+        for f in names:
+            p = os.path.join(app.out, f)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+
+
+# -- 15 --------------------------------------------------------------------
+def cut_shapes_export(cfg, t):
+    """The other three ways the editor cuts, written out: the head cut (IN on
+    the first picture), Ctrl+Del (the inside of IN..OUT, both marked pictures
+    kept), a cut to the end (OUT by End), and 範囲外を削除 (keep IN..OUT) on
+    the .mkv's millisecond clock. Each output has the pictures the editor
+    counted."""
+    with App(cfg, "cut_shapes_export", clips(cfg)) as app:
+        app.open_row(1, "a.ts")
+        app.cut(0, 49)
+        # Ctrl+Del: IN 100, OUT 200 -> 101..199 go.
+        app.goto(100)
+        app.s.keys("i")
+        app.goto(200)
+        app.s.keys("o")
+        app.s.keys("Control+Delete")
+        wait_for("the inner cut", lambda: app.state()["frames"] == 550 - 99, 10)
+        # IN 400, End, OUT, Del: 400 to the last picture go.
+        app.goto(400)
+        app.s.keys("i")
+        app.s.keys("End")
+        time.sleep(0.5)
+        app.s.keys("o")
+        app.s.keys("Delete")
+        wait_for("the tail cut", lambda: app.state()["frames"] == 400, 10)
+        keep_a = app.state()["frames"]
+        app.ok()
+        app.gone()
+        app.open_row(2, "b.mkv")
+        app.goto(100)
+        app.s.keys("i")
+        app.goto(399)
+        app.s.keys("o")
+        app.s.click("#cut-outside")
+        wait_for("the outside cut", lambda: app.state()["frames"] in (300, 301), 10)
+        shown_b = app.state()["frames"]
+        app.ok()
+        app.gone()
+        # Back once more and out with OK: the second visit's walk lands on a
+        # saved edit whose cuts run to the ends of the recording.
+        app.open_row(2, "b.mkv")
+        again_b = app.state()["frames"]
+        app.ok()
+        app.gone()
+        files = app.export()
+        names = [os.path.basename(f) for f in files]
+        outs = {n: f for n, f in zip(names, files)}
+        got_a = pictures(outs["cut_01_a.ts"]) if "cut_01_a.ts" in outs else None
+        got_b = pictures(outs["cut_02_b.mkv"]) if "cut_02_b.mkv" in outs else None
+        t.check("15 .ts head + inner + tail cuts", got_a == keep_a,
+                f"{got_a} pictures (want {keep_a}); outputs {names}")
+        t.check("15 .mkv keep IN..OUT", got_b == 300,
+                f"{got_b} pictures (want 300; editor counted {shown_b}, {again_b} on return)")
+        for f in files:
+            os.remove(f)
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -760,6 +868,8 @@ SCENARIOS = [
     divide_then_edit_part,
     waveform_keeps_env_prefs,
     join_verify,
+    mode_switch_during_run,
+    cut_shapes_export,
 ]
 
 
@@ -769,6 +879,18 @@ EXTRA = [ok_then_reopen_fast]
 
 def main():
     cfg = Cfg()
+    os.makedirs(cfg.work, exist_ok=True)
+    # One suite at a time on a work directory. run_gui_tests.sh refuses while
+    # a SmartCut is up, but between two scenarios none is, and a second suite
+    # started then shared the recordings, the sidecars `clear_sidecars` takes
+    # away and the run directories `App` empties -- and the display.
+    lock = open(os.path.join(cfg.work, ".suite.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"run_gui_tests: another suite is running in {cfg.work}; try again when it ends",
+              file=sys.stderr)
+        return 2
     make_media(cfg)
     t = Tally()
     only = sys.argv[1:]

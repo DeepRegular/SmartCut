@@ -3630,7 +3630,18 @@ fn build_plan(src: &Source, ranges: &[(f64, f64)]) -> Vec<smartcut_core::RangePl
     // off cleanly. Read here rather than passed in, so that the plan the
     // editor draws and the plan the export writes cannot disagree -- they
     // both come through this function.
-    plan_on(src, ranges, &PlanOptions { clean_join: prefs::clean_join(), ..Default::default() })
+    plan_with(src, ranges, prefs::clean_join())
+}
+
+/// [`build_plan`], with 環境設定's answer already read: for a run that hands
+/// the same answer to the engine as well, and has to hand it the one its own
+/// plans were made with. See `export_joined`.
+fn plan_with(
+    src: &Source,
+    ranges: &[(f64, f64)],
+    clean_join: Option<f64>,
+) -> Vec<smartcut_core::RangePlan> {
+    plan_on(src, ranges, &PlanOptions { clean_join, ..Default::default() })
 }
 
 #[tauri::command]
@@ -3661,11 +3672,12 @@ fn plan_now(ranges: &[(f64, f64)], app: &tauri::AppHandle) -> Result<PlanInfo, S
                 src.start_time,
                 src.byte_seekable,
                 src.points.clone(),
+                src.joins.clone(),
             )
         })
     };
-    if let Some((path, url, video, start_time, byte_seek, mut points)) = pending {
-        index::refine_leading(&url, &video, start_time, byte_seek, &mut points, ranges)
+    if let Some((path, url, video, start_time, byte_seek, mut points, joins)) = pending {
+        index::refine_leading(&url, &video, start_time, byte_seek, &mut points, ranges, &joins)
             .map_err(|e| e.to_string())?;
         // Only into the recording they were read from, and only what this
         // read added: another plan may have measured points of its own while
@@ -3682,9 +3694,32 @@ fn plan_now(ranges: &[(f64, f64)], app: &tauri::AppHandle) -> Result<PlanInfo, S
             }
         }
     }
-    let guard = locked(&state.0);
-    let src = guard.as_ref().ok_or("no file open")?;
-    Ok(plan_info(&build_plan(src, ranges)))
+    // The plan, and -- where the cut would read the recording again to open
+    // a range's copy (see [`opened_as_cut`]) -- a copy of it to read with the
+    // recording let go, as above.
+    let (mut plans, again) = {
+        let guard = locked(&state.0);
+        let src = guard.as_ref().ok_or("no file open")?;
+        let plans = build_plan(src, ranges);
+        let again = (src.video.codec == "h264" && plans.len() > 1).then(|| src.clone());
+        (plans, again)
+    };
+    if let Some(src) = again {
+        opened_as_cut(&src, &mut plans);
+    }
+    Ok(plan_info(&plans))
+}
+
+/// A plan for the readouts, opened the way the cut opens it: a range whose
+/// H.264 copy follows a copy it does not carry on from has its head
+/// re-encoded by the engine (`smartcut_core::cut::open_the_reel`), and left
+/// out of what the editor and the output screen show, a cut placed on two
+/// lossless points read 映像 完全無劣化 while a second of it was re-encoded.
+/// With the options a single recording's export hands the engine (the
+/// default `opts.plan`). Only the readouts: the export's own plans are opened
+/// by the engine, and `verify_output` opens them itself.
+fn opened_as_cut(src: &Source, plans: &mut [smartcut_core::RangePlan]) {
+    smartcut_core::cut::open_the_reel(src, plans, &PlanOptions::default(), false);
 }
 
 fn plan_info(plans: &[smartcut_core::RangePlan]) -> PlanInfo {
@@ -3730,10 +3765,13 @@ async fn clip_plan(
                 src.byte_seekable,
                 &mut src.points,
                 &ranges,
+                &src.joins.clone(),
             )
             .map_err(|e| e.to_string())?;
         }
-        Ok(plan_info(&build_plan(&src, &ranges)))
+        let mut plans = build_plan(&src, &ranges);
+        opened_as_cut(&src, &mut plans);
+        Ok(plan_info(&plans))
     })
     .await
 }
@@ -5929,13 +5967,18 @@ async fn export(
                 src.byte_seekable,
                 &mut src.points,
                 &ranges,
+                &src.joins.clone(),
             )
             .map_err(|e| e.to_string())?;
         }
+        // 環境設定's answer about a plan, as this cut is planned with it, and
+        // kept for the check that reads the file back. See [`PLANNED_WITH`].
+        let clean_join = prefs::clean_join();
+        locked(&PLANNED_WITH).insert(output.clone(), clean_join);
         let plans = if sound_only {
             Vec::new()
         } else {
-            build_plan(&src, &ranges)
+            plan_with(&src, &ranges, clean_join)
         };
         let reporter = app.clone();
         let poster = if sound_only { None } else { poster_for(&src, &output, poster) };
@@ -6120,6 +6163,16 @@ struct Checked {
 #[derive(Default)]
 struct VerifyStop(AtomicBool);
 
+/// 環境設定's answer about a plan (see [`build_plan`]) as each output of this
+/// session was planned with it, by the output's local path.
+///
+/// For [`verify_output`], which plans the cut again to know which pictures
+/// were copied: 環境設定 can be changed while a run is going, and a check
+/// planned by the answer in force by then -- a row or two after the change --
+/// held the file to a plan it was not written by and called it wrong.
+static PLANNED_WITH: Mutex<std::collections::BTreeMap<String, Option<f64>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
 #[tauri::command]
 fn stop_verify(stop: State<VerifyStop>) {
     stop.0.store(true, Ordering::SeqCst);
@@ -6151,9 +6204,14 @@ async fn verify_output(
             "count" => smartcut_core::verify::Compare::Count,
             _ => smartcut_core::verify::Compare::Nothing,
         };
+        // Planned as the export planned it. See [`PLANNED_WITH`].
+        let clean_join = locked(&PLANNED_WITH)
+            .get(&output)
+            .copied()
+            .unwrap_or_else(prefs::clean_join);
         let mut sources = Vec::with_capacity(clips.len());
         let mut plans = Vec::with_capacity(clips.len());
-        for c in &clips {
+        for (n, c) in clips.iter().enumerate() {
             // Between recordings as well as inside the read: a join of a
             // dozen discs spends seconds on each before a picture is read.
             if app.state::<VerifyStop>().0.load(Ordering::SeqCst) {
@@ -6173,10 +6231,25 @@ async fn verify_output(
                         src.byte_seekable,
                         &mut src.points,
                         &c.ranges,
+                        &src.joins.clone(),
                     )
                     .map_err(|e| e.to_string())?;
                 }
-                build_plan(&src, &c.ranges)
+                let mut plan = plan_with(&src, &c.ranges, clean_join);
+                // And opened as the cut opens it: an H.264 copy that would
+                // start on a picture that restarts nothing -- each recording
+                // after the first of a join, and a range whose copy follows a
+                // copy -- has its head re-encoded, and held to the plan without
+                // it, those pictures were counted as copies that came back
+                // different. With the options the export hands the engine
+                // (`opts.plan`).
+                smartcut_core::cut::open_the_reel(
+                    &src,
+                    &mut plan,
+                    &PlanOptions { clean_join, ..Default::default() },
+                    n > 0 && clips.len() > 1,
+                );
+                plan
             } else {
                 Vec::new()
             };
@@ -6390,18 +6463,26 @@ async fn export_joined(
                     src.byte_seekable,
                     &mut src.points,
                     &clip.ranges,
+                    &src.joins.clone(),
                 )
                 .map_err(|e| e.to_string())?;
             }
             sources.push(src);
         }
+        // 環境設定's answer about a plan, read once: the plans below are made
+        // with it and the engine is handed it to plan what a transition
+        // leaves of a range (`opts.plan`). Read twice, a change in 環境設定
+        // landing between the two -- after every recording of a long list
+        // was opened -- planned the two halves of one range by two rules.
+        let clean_join = prefs::clean_join();
+        locked(&PLANNED_WITH).insert(output.clone(), clean_join);
         let plans: Vec<Vec<smartcut_core::RangePlan>> = if sound_only {
             sources.iter().map(|_| Vec::new()).collect()
         } else {
             sources
                 .iter()
                 .zip(&clips)
-                .map(|(src, clip)| build_plan(src, &clip.ranges))
+                .map(|(src, clip)| plan_with(src, &clip.ranges, clean_join))
                 .collect()
         };
         // Which of them the file takes its shape from, and whose streams it
@@ -6480,7 +6561,7 @@ async fn export_joined(
             // has to be planned again the way this window plans one. See
             // `build_plan`.
             plan: PlanOptions {
-                clean_join: prefs::clean_join(),
+                clean_join,
                 ..Default::default()
             },
             ..Default::default()
