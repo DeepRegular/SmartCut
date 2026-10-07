@@ -2033,13 +2033,21 @@ async fn names_an_input(output: String, inputs: Vec<String>) -> bool {
         if !out.exists() {
             return false;
         }
+        // And the names asked about are taken to where they are, the same
+        // way: a run's own earlier outputs (`writtenHere` in the list) are
+        // named as the output folder was typed, and `smb://nas/rec/cut_A.ts`
+        // asked as the string stood for nothing on disk -- the file check
+        // never found the earlier cut that `cut_a.ts` was about to replace.
+        // A recording's path passes through as it is.
+        let at = |s: &str| local_path(s).unwrap_or_else(|_| std::path::PathBuf::from(s));
         inputs.iter().any(|p| {
+            let whole = at(p);
             // A title on a disc image is named as the image and where on it.
             let file = match p.rsplit_once('@') {
-                Some((file, _)) if !std::path::Path::new(p).exists() => file,
-                _ => p.as_str(),
+                Some((file, _)) if !whole.exists() => at(file),
+                _ => whole,
             };
-            smartcut_core::input::same_file(std::path::Path::new(file), out)
+            smartcut_core::input::same_file(&file, out)
         })
     })
     .await
@@ -7539,18 +7547,56 @@ async fn audio_peak_at(
 /// that read these files expect. Numbered against the file just written, not
 /// the recording it came from.
 #[tauri::command]
-async fn write_keyframes(path: String, frames: Vec<u32>, fps: f64) -> Result<usize, String> {
-    off_thread(move || write_keyframes_now(&path, &frames, fps)).await
+async fn write_keyframes(
+    path: String,
+    frames: Vec<u32>,
+    fps: f64,
+    app: tauri::AppHandle,
+) -> Result<usize, String> {
+    off_thread(move || {
+        not_the_recording(&app, &local_path(&path)?)?;
+        write_keyframes_now(&path, &frames, fps)
+    })
+    .await
+}
+
+/// What a mark file named as the recording itself is refused with. The
+/// window words it (`marks.isRecording`); see `saveMarks`.
+const MARKS_OVER_RECORDING: &str = "\u{0}recording";
+
+/// Refuse a mark file whose name is the recording the editor has open.
+///
+/// The save dialog's own "replace?" is about a file being there, not about
+/// which file: `録画.ts` typed over the `.keyframe` name was asked about,
+/// answered, and the recording was written over with a list of numbers.
+/// Asked of the files, as [`save_frame`] asks through `refuse_as_output`,
+/// so a disc title's image and a DVD title's other parts count as well.
+fn not_the_recording(app: &tauri::AppHandle, path: &std::path::Path) -> Result<(), String> {
+    // Copied out and the lock let go before the `stat`s, which can be
+    // questions to a share. See [`opened_clone`].
+    let input = locked(&app.state::<Opened>().0).as_ref().map(|s| s.input.clone());
+    match input {
+        Some(input) if input.refuse_as_output(&path.to_string_lossy()).is_err() => {
+            Err(MARKS_OVER_RECORDING.to_string())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn write_keyframes_now(path: &str, frames: &[u32], fps: f64) -> Result<usize, String> {
     use std::fmt::Write as _;
     let _ = fps;
+    // Beside the output, which is named as the output folder was typed --
+    // `smb://nas/rec/x.keyframe` -- and lands where `export` put the cut,
+    // on the share's mount. Taken as the string, it was a relative path
+    // under a folder called `smb:` that does not exist: the write failed and
+    // the row of a cut written whole was marked failed, unchecked.
+    let path = local_path(path)?;
     let mut body = String::new();
     for f in frames {
         let _ = write!(body, "{f}\r\n");
     }
-    write_whole(std::path::Path::new(path), body.as_bytes()).map_err(|e| e.to_string())?;
+    write_whole(&path, body.as_bytes()).map_err(|e| e.to_string())?;
     Ok(frames.len())
 }
 
@@ -7690,8 +7736,9 @@ fn read_keyframes_now(path: &str) -> Result<Option<Vec<u32>>, String> {
 /// survives a cut is up there. So this takes the text whole, the way
 /// [`write_project`] does, and owns only the disc.
 #[tauri::command]
-async fn write_sidecar(path: String, body: String) -> Result<(), String> {
+async fn write_sidecar(path: String, body: String, app: tauri::AppHandle) -> Result<(), String> {
     off_thread(move || {
+        not_the_recording(&app, std::path::Path::new(&path))?;
         write_whole(std::path::Path::new(&path), body.as_bytes())
             .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
     })
@@ -8508,7 +8555,10 @@ async fn show_folder(path: String) -> Result<(), String> {
 }
 
 fn show_folder_now(path: &str) -> Result<(), String> {
-    let dir = std::path::Path::new(path);
+    // A job's output folder is named as it was typed, which can be a share
+    // (`smb://nas/rec`): the folder is its mount, as `export` writes there.
+    let dir = local_path(path)?;
+    let dir = dir.as_path();
     if !dir.is_dir() {
         return Err(trf!(
             "フォルダーが見つかりません: {}",

@@ -17,6 +17,7 @@ driver first.
 """
 
 import fcntl
+import hashlib
 import os
 import shutil
 import subprocess
@@ -26,7 +27,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import App, Failure, cuts_of, pictures, wait_for  # noqa: E402
+from harness import App, Failure, cuts_of, pictures, sh, wait_for  # noqa: E402
 from wd import WebDriverError  # noqa: E402
 
 # The two recordings. 600 pictures each at 30000/1001; the .ts has a black
@@ -1065,6 +1066,152 @@ def ctrl_h_before_marks_read(cfg, t):
 
 
 
+# -- 21 --------------------------------------------------------------------
+def marks_over_recording(cfg, t):
+    """名前を付けて保存 of the marks, with the recording's own name typed into
+    the save dialog and its "replace?" answered yes (GTK asks about a file
+    being there, not about which file): the recording must come through
+    untouched and the status line say why. A name beside it is written as
+    before, so the refusal is not of everything."""
+    def digest(path):
+        with open(path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+
+    before = digest(cfg.a)
+    avs = os.path.join(cfg.media, "a.avs")
+
+    def save_as(app, kind, path):
+        """The menu line, and the dialog given `path`; every question after
+        it answered with Enter (GTK's replace question defaults to 置換)."""
+        app.s.js(f"document.getElementById('status').textContent = '';"
+                 f"document.getElementById('save-as-{kind}').click()")
+        w = wait_for("the save dialog", lambda: (app.dialogs() or [None])[0], 10, 0.2)
+        sh(f"xdotool windowactivate --sync {w}", app.env)
+        time.sleep(0.5)
+        sh("xdotool key --clearmodifiers ctrl+a", app.env)
+        sh(f"xdotool type --delay 5 '{path}'", app.env)
+        sh("xdotool key --clearmodifiers Return", app.env)
+        for _ in range(2):
+            time.sleep(0.8)
+            up = app.dialogs()
+            if not up:
+                break
+            sh(f"xdotool windowactivate --sync {up[0]}", app.env)
+            sh("xdotool key --clearmodifiers Return", app.env)
+        wait_for("the dialogs to go", lambda: not app.dialogs(), 10, 0.2)
+        app.to_editor()
+        return wait_for("the status line", lambda: app.state()["status"], 10)
+
+    with App(cfg, "marks_over_recording", clips(cfg)) as app:
+        app.open_row(1, "a.ts")
+        # Beside it first, which also waits out the first visit's read of
+        # its mark files (`marksDue`): a press before that is refused for
+        # another reason.
+        status = ""
+        for _ in range(20):
+            status = save_as(app, "trim", avs)
+            if os.path.exists(avs):
+                break
+            time.sleep(1)
+        t.check("21 a name beside the recording is saved", os.path.exists(avs), repr(status))
+        for kind in ("trim", "keyframe"):
+            status = save_as(app, kind, cfg.a)
+            t.check(f"21 {kind} over the recording is refused",
+                    digest(cfg.a) == before and ("録画そのもの" in status or "recording itself" in status),
+                    f"status {status!r}, a.ts {'unchanged' if digest(cfg.a) == before else 'WRITTEN OVER'}")
+        # And the commands themselves, whoever calls them.
+        for cmd, args in (("write_keyframes", "{frames: [1], fps: 29.97}"),
+                          ("write_sidecar", "{body: 'x'}")):
+            said = app.s.js(
+                f"return window.__TAURI__.core.invoke('{cmd}', Object.assign({args}, {{path: arguments[0]}}))"
+                ".then(() => 'written', (e) => 'refused ' + JSON.stringify(String(e)));", cfg.a)
+            t.check(f"21 {cmd} onto the recording is refused",
+                    said.startswith("refused") and digest(cfg.a) == before, said)
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+
+
+# -- 22 --------------------------------------------------------------------
+def rename_during_run(cfg, t):
+    """Rows renamed while a run goes, with no numbers in the names: the first
+    row (a.ts, written as `cut_a.ts`) renamed `z` once its turn has begun,
+    and the second (c.ts) renamed `a` before its turn. The second is named at
+    its turn and came out as `cut_a.ts` -- the file this run had just written
+    -- and was written over it. It must be refused instead, and the first
+    row's file left as it was written (one sound track; c.ts has two)."""
+    rename = (
+        "const ren = (n, name) => {"
+        "  const li = document.querySelector(`#cliplist > li:nth-child(${n})`);"
+        "  li.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, button: 0}));"
+        "  window.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, button: 0}));"
+        "  document.getElementById('rename-clip').click();"
+        "  const f = document.querySelector('#cliplist input.rename');"
+        "  f.value = name;"
+        "  f.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));"
+        "};"
+        "ren(1, 'z'); ren(2, 'a');"
+        "return document.querySelector('#out-list > li:nth-child(2) .note').innerText;"
+    )
+    rows = [{"path": cfg.a}, {"path": cfg.c}]
+    with App(cfg, "rename_during_run", rows, {"number": False}) as app:
+        app.to_list()
+        # ベリファイ on, so that the first row's turn lasts long enough for
+        # the renames to land inside it.
+        app.s.js("const b = document.getElementById('pref-verify');"
+                 "if (!b.checked) b.click();")
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("both rows on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == 2, 60)
+        label = wait_for("the start button", lambda: app.s.js(
+            "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 60)
+        time.sleep(0.5)
+        first = os.path.join(app.out, "cut_a.ts")
+        app.s.click("#run-export")
+        wait_for("the first row's file", lambda: os.path.exists(first), 60, 0.02)
+        second_then = app.s.js(rename)
+        wait_for("the run to finish", lambda: app.s.js(
+            "return document.getElementById('run-export').innerText") == label, 300, 0.5)
+        names = sorted(os.listdir(app.out))
+        note = app.s.js("return document.querySelector('#out-list > li:nth-child(2) .note').innerText")
+        tracks = audio_tracks(first) if os.path.exists(first) else None
+        t.check("22 the second row waited while the rows were renamed",
+                "待機" in second_then or "waiting" in second_then.lower(), repr(second_then))
+        t.check("22 the first row's file is not written over", tracks == 1,
+                f"cut_a.ts has {tracks} sound tracks (want 1); files {names}")
+        t.check("22 the second row says why", names == ["cut_a.ts"] and "今回の出力" in note,
+                f"files {names}, row 2: {note!r}")
+
+
+# -- 23 --------------------------------------------------------------------
+def no_free_folder(cfg, t):
+    """The run's own folder (`night`) with every branch up to `night-999`
+    already there, as a hundred weekly runs leave them: no free name can be
+    found, and the run used to go ahead under the plain name -- into the
+    folder an earlier run wrote, its files laid over that run's. It must not
+    start, and say why."""
+    rows = [{"path": cfg.a}, {"path": cfg.b}]
+    with App(cfg, "no_free_folder", rows, {"subfolder": "night"}) as app:
+        for n in range(1, 1000):
+            os.makedirs(os.path.join(app.out, "night" if n == 1 else f"night-{n}"))
+        app.to_list()
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("both rows on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == 2, 60)
+        label = wait_for("the start button", lambda: app.s.js(
+            "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 60)
+        time.sleep(0.5)
+        app.s.click("#run-export")
+        said = wait_for("the run's sentence", lambda: app.s.js(
+            "return document.getElementById('out-note').textContent"), 30, 0.2)
+        time.sleep(1.0)
+        written = [os.path.join(r, f) for r, _, fs in os.walk(app.out) for f in fs]
+        button = app.s.js("return document.getElementById('run-export').innerText")
+        t.check("23 nothing written with no free folder name", not written,
+                f"{[os.path.relpath(f, app.out) for f in written][:6]}")
+        t.check("23 the run says why and is over", "フォルダー名" in said and button == label,
+                f"note {said!r}, button {button!r}")
+
+
 # -- 20 --------------------------------------------------------------------
 def disc_join_crossing(cfg, t):
     """Two clips on a disc folder joined with a long dissolve, ベリファイ on.
@@ -1152,6 +1299,9 @@ SCENARIOS = [
     disc_fields_under_hand,
     seam_window,
     ctrl_h_before_marks_read,
+    marks_over_recording,
+    rename_during_run,
+    no_free_folder,
 ]
 
 

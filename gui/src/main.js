@@ -5734,7 +5734,12 @@ async function saveMarks(kind, ask) {
       { n, file: leaf(to) }
     );
   } catch (e) {
-    el("status").textContent = tr("marks.saveFailed", { e });
+    // The name picked is the recording itself: refused by the backend,
+    // which says so in a word for this line to put in a sentence.
+    el("status").textContent =
+      String(e) === "\u0000recording"
+        ? tr("marks.isRecording", { file: leaf(to) })
+        : tr("marks.saveFailed", { e });
   }
 }
 
@@ -6459,6 +6464,10 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   // happened to stop it -- and not at all where the open failed.
   if (playing) stopPlay(false);
   endScroll(false);
+  // A step still waiting behind the picture in flight is an instant on the
+  // last recording's timeline: run once that picture is dropped, it moved
+  // this one's playhead off the place the row was left at. See `runScrub`.
+  scrubPending = null;
   // The track panel is the last recording's: its boxes switch streams off by
   // that recording's numbers, and ticked now they would land on this one.
   el("tracks-modal").hidden = true;

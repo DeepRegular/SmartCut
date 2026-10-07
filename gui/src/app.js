@@ -6479,10 +6479,18 @@ async function askFreeFolder(force = false) {
   let name = asked;
   try {
     name = await invoke("free_folder", { dirs, name: asked });
-  } catch {
-    // A folder nothing can look at is one this run is about to fail on with
-    // a sentence of its own. The plain name, which is what there was before
-    // there was a branch.
+  } catch (e) {
+    // The run's own ask is not answered with the plain name: the backend
+    // fails only where every branch up to `-999` is taken (a share that is
+    // not connected is left out there, not failed), and the plain name is
+    // then a folder already holding a run's files, which this run's would be
+    // laid over. The run stops on it instead; see `startExport`.
+    if (force) {
+      folderAsked = null;
+      throw e;
+    }
+    // For the screen, the plain name, which is what there was before there
+    // was a branch.
   }
   // Asked again since, about another folder or another name: that answer is
   // the one to keep, and this one landing after it would put the screen back
@@ -8866,7 +8874,20 @@ async function startExport() {
   // -- another window, the queue, a hand. A disc is not asked at all; a
   // second run onto one adds to it.
   const asked = subfolderAsked();
-  if (!disc) await askFreeFolder(true);
+  if (!disc) {
+    try {
+      await askFreeFolder(true);
+    } catch (e) {
+      // Nothing written yet: a run that did not start, as below.
+      note(t("out.noFreeFolder", { e: String(e) }));
+      runDir = null;
+      runDisc = null;
+      runFolder = null;
+      paused = heldBeforeRun && !resumeAfterRun;
+      pump();
+      return;
+    }
+  }
   runFolder = subfolderNow();
   // Said rather than done quietly. A run that wrote somewhere other than
   // where the screen had been saying is a run somebody would go looking for
@@ -8928,6 +8949,11 @@ async function startExport() {
   let done = 0;
   // Each row's chapter points as its stream was written; see below.
   const discMarks = new Map();
+  // The files this run has written so far. A row is named at its turn, and
+  // a row renamed while the run goes -- the one written as `ep` renamed `z`,
+  // a later one renamed `ep` -- was given the name of a file this run had
+  // just written, and was written over it.
+  const writtenHere = [];
   // **One file, written once.** Everything below this is the same run seen
   // from the other side: the disc pass is skipped -- a disc holds
   // recordings, and joining is the one thing it cannot do -- and the
@@ -8957,6 +8983,18 @@ async function startExport() {
     // in the list: its turn would come after its file had been cut short.
     if (await invoke("names_an_input", { output: out, inputs: runInputs() })) {
       clip.out = { state: "error", progress: 0, note: t("out.overwritesInput") };
+      runLogLine(`${t("log.failed")}: ${clip.path}: ${clip.out.note}`);
+      renderOutScreen();
+      continue;
+    }
+    // Nor over a file an earlier row of this run wrote. Asked of the
+    // strings and of the files, as a share's mount or the case of a Windows
+    // name can make two strings one file.
+    if (
+      writtenHere.includes(out) ||
+      (writtenHere.length && (await invoke("names_an_input", { output: out, inputs: writtenHere })))
+    ) {
+      clip.out = { state: "error", progress: 0, note: t("out.writtenThisRun") };
       runLogLine(`${t("log.failed")}: ${clip.path}: ${clip.out.note}`);
       renderOutScreen();
       continue;
@@ -9000,6 +9038,7 @@ async function startExport() {
     // a cut moved in the editor in the meantime put the marks of ranges
     // this stream was never written with into its playlist.
     if (disc) discMarks.set(clip, chaptersFor(clip));
+    writtenHere.push(out);
     try {
       await invoke("export", {
         path: clip.path,

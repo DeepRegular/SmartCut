@@ -432,7 +432,7 @@ function startPlay() {
     // A run that has since been stopped and followed by another is not the
     // one on screen, and its failure does not stop that one.
     if (run !== playRun) return;
-    el("note").textContent = tr("editor.playFailed", { e });
+    sayNote("editor.playFailed", { e });
     setPlaying(false);
   });
 }
@@ -487,7 +487,7 @@ async function showJoin() {
   facts = null;
   updateReadouts();
   if (!invoke) return;
-  el("note").textContent = tr("xw.reading");
+  sayNote("xw.reading");
   const run = ++joinRun;
   const load = loading.then(() =>
     invoke("cross_load", { before: j.beforePath, after: j.afterPath }),
@@ -497,14 +497,20 @@ async function showJoin() {
   try {
     got = await load;
   } catch (e) {
-    if (run === joinRun) el("note").textContent = tr("xw.cannotRead", { e });
+    if (run !== joinRun) return;
+    sayNote("xw.cannotRead", { e });
+    // Nor is the picture the join before's any more: left on the stage, it
+    // stood under this join's names and title as if it were this seam.
+    el("preview").removeAttribute("src");
+    shown = 0;
+    updateReadouts();
     return;
   }
   // Another join was picked while this one loaded; its own load comes after
   // this one and is the pair the backend ends up holding.
   if (run !== joinRun) return;
   facts = got;
-  el("note").textContent = "";
+  sayNote(null);
   // The sound is only offered where one of the two has any, and where the
   // joined file has any: a master that keeps no track is played as silence
   // (`heard` below 0, see `joinHeard` in the list), and a live slider over
@@ -530,8 +536,20 @@ function paintLive() {
   }
 }
 
+/// The line's sentence when it is not the crossing's own -- the load's
+/// (still reading, or why the recordings could not be read) or a playback
+/// failure -- kept as its key so that a language change says it again in the
+/// new language rather than wiping it or leaving it in the old one.
+let noteSaid = null;
+
+function sayNote(key, vars) {
+  noteSaid = key ? { key, vars } : null;
+  el("note").textContent = key ? tr(key, vars) : "";
+}
+
 /// What the setting costs the output, in the window's own words.
 function paintNote() {
+  noteSaid = null;
   const c = crossing();
   if (!c || c.kind === "none" || !span) {
     el("note").textContent = "";
@@ -1102,7 +1120,7 @@ if (listen) {
     // still holds -- the backend joins the sound's thread before it says
     // `cross-play-ended` -- so one from a run already stopped is dropped.
     if (!playing) return;
-    el("note").textContent = tr("editor.audioFailed", { e: ev.payload });
+    sayNote("editor.audioFailed", { e: ev.payload });
   });
 
   hear("lang-changed", (ev) => {
@@ -1116,8 +1134,10 @@ onLangChange(() => {
   updateReadouts();
   // The crossing's sentence only once the pair is in: before that the line
   // is what the load said -- still reading, or why the recordings could not
-  // be read -- and a language change wiped the reason off the window.
-  if (facts) paintNote();
+  // be read -- and a language change wiped the reason off the window. That,
+  // or a playback's failure, is said again in the new language.
+  if (noteSaid) sayNote(noteSaid.key, noteSaid.vars);
+  else if (facts) paintNote();
   // The play button's tooltip is its state's, written by `setPlaying` alone,
   // and the level's carries the number, written by `showVolume`.
   setPlaying(playing);
