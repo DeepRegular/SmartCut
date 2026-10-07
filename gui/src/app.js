@@ -8492,7 +8492,7 @@ function compareFor(sent, share) {
 /// stays open on the list while a run writes it, and a cut made there during
 /// the minutes a file took to write would have the file checked against
 /// ranges it was never written with, and failed.
-async function verifyWritten(row, out, sent, share) {
+async function verifyWritten(row, out, sent, share, master = null) {
   checking = row;
   row.out = { state: "running", progress: 0, note: t("out.verifyPct", { pct: 0 }) };
   el("out-state").textContent = t("out.verifying", { name: nameOf(out) });
@@ -8507,7 +8507,13 @@ async function verifyWritten(row, out, sent, share) {
         path: c.path,
         ranges: c.ranges,
         after: sent.length > 1 && i < sent.length - 1 ? c.after ?? null : null,
+        dropStreams: c.dropStreams ?? null,
+        dropPids: c.dropPids ?? null,
       })),
+      // A join's master and what it left out, as `export_joined` was sent
+      // them: the other clips' tracks are paired with the master's by place
+      // among all of its tracks, and the check has to pair them the same way.
+      master: sent.length > 1 ? master : null,
       compare: compareFor(sent, share),
     });
     const said = verdict(r);
@@ -8671,7 +8677,7 @@ async function writeJoined(list) {
     let extra = "";
     let detail = "";
     if (prefs.get("verify") === true && !abort) {
-      const v = await verifyWritten(list[0], out, sent, share);
+      const v = await verifyWritten(list[0], out, sent, share, Math.max(0, list.indexOf(master)));
       if (v.failed) {
         for (const c of list) c.out = { state: "error", progress: 0, note: v.note };
         return false;
@@ -8853,6 +8859,8 @@ async function startExport() {
   renderOutScreen();
 
   let done = 0;
+  // Each row's chapter points as its stream was written; see below.
+  const discMarks = new Map();
   // **One file, written once.** Everything below this is the same run seen
   // from the other side: the disc pass is skipped -- a disc holds
   // recordings, and joining is the one thing it cannot do -- and the
@@ -8916,6 +8924,11 @@ async function startExport() {
     const ranges = rangesOf(clip);
     const keptSecs = keepsOf(clip).reduce((n, k) => n + (k.b - k.a), 0);
     const marksSent = settings.keyframes && !disc ? liveMarksOf(clip) : [];
+    // And a disc's chapter points, which go into the playlist only once
+    // every stream is written: worked out then from the row as it stands,
+    // a cut moved in the editor in the meantime put the marks of ranges
+    // this stream was never written with into its playlist.
+    if (disc) discMarks.set(clip, chaptersFor(clip));
     try {
       await invoke("export", {
         path: clip.path,
@@ -9104,7 +9117,7 @@ async function startExport() {
             // Named the way the engine names it: the fields of a payload go
             // across as they are written, unlike a command's own arguments.
             channel_number: channelNumberOf(clip),
-            marks: chaptersFor(clip),
+            marks: discMarks.get(clip) || chaptersFor(clip),
           })),
         });
         finishStep("index", "done");

@@ -6078,6 +6078,12 @@ struct CheckClip {
     /// overlaps two clips' sound.
     #[serde(default)]
     after: Option<Crossing>,
+    /// What of this clip was left out, as `export_joined` was given it. Read
+    /// only of a join's master: see `verify_output`.
+    #[serde(default, rename = "dropStreams")]
+    drop_streams: Option<Vec<usize>>,
+    #[serde(default, rename = "dropPids")]
+    drop_pids: Option<Vec<i32>>,
 }
 
 /// What reading a written file back found. See `smartcut_core::verify`.
@@ -6134,6 +6140,7 @@ async fn verify_output(
     app: tauri::AppHandle,
     output: String,
     clips: Vec<CheckClip>,
+    master: Option<usize>,
     compare: String,
 ) -> Result<Checked, String> {
     app.state::<VerifyStop>().0.store(false, Ordering::SeqCst);
@@ -6189,10 +6196,32 @@ async fn verify_output(
             .iter()
             .map(|c| c.after.clone().map(Crossing::into_transition).unwrap_or_default())
             .collect();
-        let report = smartcut_core::verify::check_crossed(
+        // Where each sound track of a join sits among the master's, which is
+        // how the engine pairs every other clip's tracks with them: with the
+        // master's first track left out, a clip of one track has none in the
+        // output's first place, and counted in the output's order the check
+        // called that track's sound off. Worked out as `export_joined` works
+        // out what it drops. A single recording needs none of it.
+        let places: Option<Vec<usize>> = master.filter(|_| sources.len() > 1).map(|m| {
+            let m = m.min(sources.len() - 1);
+            let drop = streams_to_drop(
+                &sources[m],
+                clips[m].drop_streams.clone(),
+                clips[m].drop_pids.clone(),
+            );
+            sources[m]
+                .audios
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| !drop.contains(&a.stream_index))
+                .map(|(p, _)| p)
+                .collect()
+        });
+        let report = smartcut_core::verify::check_placed(
             &output,
             &pieces,
             &after,
+            places.as_deref(),
             compare,
             Some(Box::new(move |f| {
                 let _ = reporter.emit("verify-progress", (whose.clone(), f));

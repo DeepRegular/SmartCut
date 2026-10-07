@@ -364,7 +364,11 @@ async function showFrame(t) {
         jlog(`cross_shot: ${e}`);
         return null;
       });
-      if (!shot || playing) break;
+      if (playing) break;
+      // A still that could not be made is no reason to drop the one asked for
+      // since: left here, the drag's last instant was never drawn and the
+      // stage stood on an earlier picture under the playhead.
+      if (!shot) continue;
       // Another join was picked while this was being drawn, and it is a
       // picture of the join before: composited from that pair, at an instant
       // of that seam.
@@ -509,7 +513,10 @@ async function showJoin() {
   const heard = (facts.beforeAudio || facts.afterAudio) && !silent;
   for (const id of ["mute", "volume"]) el(id).disabled = !heard;
   await refreshSpan();
-  showFrame(0);
+  // Where the playhead is, which is the start unless the scrubber was used
+  // while the pair loaded: a picture of 0 under a head left elsewhere was a
+  // stage and a scrubber disagreeing until the next step.
+  showFrame(head);
 }
 
 /// Grey the rows that describe a crossing there is not one of.

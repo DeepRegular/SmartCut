@@ -50,6 +50,7 @@ class Cfg:
         self.media = os.path.join(self.work, "media")
         self.a = os.path.join(self.media, "a.ts")
         self.b = os.path.join(self.media, "b.mkv")
+        self.c = os.path.join(self.media, "c.ts")
 
 
 def make_media(cfg):
@@ -71,11 +72,22 @@ def make_media(cfg):
             "-c:v", "libx264", "-g", "30", "-preset", "veryfast", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-f", "matroska", cfg.b + ".part"], check=True)
         os.replace(cfg.b + ".part", cfg.b)
+    if not os.path.exists(cfg.c):
+        # a.ts's pictures with two sound tracks, for the joins `join_verify`
+        # makes: a recording with a track the other lacks.
+        subprocess.run(ff + [
+            "-f", "lavfi", "-i", "testsrc2=size=720x480:rate=30000/1001:duration=20",
+            "-f", "lavfi", "-i", "sine=frequency=550:duration=20:sample_rate=48000",
+            "-f", "lavfi", "-i", "sine=frequency=880:duration=20:sample_rate=48000",
+            "-map", "0", "-map", "1", "-map", "2",
+            "-c:v", "mpeg2video", "-g", "15", "-bf", "2", "-b:v", "4M",
+            "-c:a", "mp2", "-b:a", "192k", "-f", "mpegts", cfg.c + ".part"], check=True)
+        os.replace(cfg.c + ".part", cfg.c)
 
 
 def clear_sidecars(cfg):
     for f in os.listdir(cfg.media):
-        if f not in ("a.ts", "b.mkv"):
+        if f not in ("a.ts", "b.mkv", "c.ts"):
             os.remove(os.path.join(cfg.media, f))
 
 
@@ -423,6 +435,312 @@ def undo_after_detection(cfg, t):
         t.check("7 OK after the undo keeps the cut", len(c) == 1, f"row 1 cuts {fmt(c)}")
 
 
+# -- zoom ------------------------------------------------------------------
+def zoom_double_press(cfg, t):
+    """open_zoom asked twice in one tick, as Z pressed twice before 拡大表示
+    is up asks it (zoomOn is set only by the page's `zoom-ready`): one
+    拡大表示, and nothing of it left once the editor is closed. Tauri checks
+    for a window of the label before it builds and registers it only once
+    built, so two builds could both pass the check (the reason open_editor
+    holds a lock). Passes on Linux on cf71706 -- the second ask finds the
+    first window -- and is kept as a guard."""
+    with App(cfg, "zoom_double_press", clips(cfg)) as app:
+        app.open_row(1, "a.ts")
+        editor = app.editor()
+        app.s.js("const i = window.__TAURI_INTERNALS__.invoke;"
+                 "i('open_zoom', {title: 'z1'}); i('open_zoom', {title: 'z2'});")
+        time.sleep(4.0)
+        handles = app.s.handles()
+        zooms = [h for h in handles if h not in (app.main, editor)]
+        t.check("zoom: asked twice opens one 拡大表示", len(zooms) <= 1,
+                f"{len(zooms)} zoom window(s)")
+        app.s.switch(editor)
+        app.escape(discard=True, expect_dialog=False)
+        time.sleep(2.0)
+        left = [h for h in app.s.handles() if h != app.main]
+        t.check("zoom: closing the editor leaves no window behind", left == [],
+                f"{len(left)} window(s) besides the list")
+
+
+# -- 8 ---------------------------------------------------------------------
+def close_by_cross(app):
+    """The editor's title-bar cross: the window manager's close, as a hand
+    gives it (wmctrl sends WM_DELETE_WINDOW), not キャンセル and not OK."""
+    pid = app.gui_pid()
+    for line in subprocess.run(["wmctrl", "-lp"], capture_output=True, text=True,
+                               env=app.env).stdout.splitlines():
+        f = line.split(None, 4)
+        if len(f) == 5 and f[2] == str(pid) and "\u2014" in f[4] and "SmartCut" not in f[4]:
+            subprocess.run(["wmctrl", "-i", "-c", f[0]], env=app.env)
+            return
+    raise Failure("no editor window to close by its cross")
+
+
+def cross_then_reopen(cfg, t):
+    """A cut, the window closed by its cross (which keeps what was done), the
+    same row opened again at several delays, Escape: the cut stays. The
+    close here is immediate (no 220 ms of OK), so the press races the news
+    of the window going -- the `editorAsks` path of the editor-closed
+    handler."""
+    with App(cfg, "cross_then_reopen", clips(cfg)) as app:
+        have = 0
+        for i, delay in enumerate((0.0, 0.1, 0.3, 1.0)):
+            app.open_row(1, "a.ts")
+            a = 40 + i * 60
+            left = app.cut(a, a + 20)
+            # Past the editor's 150 ms report debounce: a cross that beats it
+            # loses the last cut (known, the debounce is not flushed on
+            # destroy).
+            time.sleep(0.5)
+            close_by_cross(app)
+            app.to_list()
+            time.sleep(delay)
+            app.open_row(1, "a.ts", wait=False)
+            try:
+                app.editor_ready("a.ts", timeout=30)
+            except Failure:
+                t.check(f"8 reopen {int(delay * 1000)} ms after the cross comes up", False,
+                        "no editor on the row after the second press")
+                return
+            st = app.state()
+            asked = app.escape(discard=True, expect_dialog=False)
+            app.gone()
+            c = cuts_of(app.save(), 1)
+            t.check(f"8 cross then reopen after {int(delay * 1000)} ms keeps the cut",
+                    len(c) == have + 1 and st["frames"] == left,
+                    f"row 1 has {len(c)} cut(s) (want {have + 1}); reopened with "
+                    f"{st['frames']} pictures (want {left}); "
+                    f"{'asked' if asked else 'did not ask'}")
+            have = len(c)
+
+
+# -- 9 ---------------------------------------------------------------------
+def switch_rows_then_escape(cfg, t):
+    """Row 1 cut, row 2 double-clicked (the window moves along: row 1's
+    visit ends with its cut), a cut on row 2, Escape, 破棄: row 1 keeps its
+    cut, row 2 has none. Then row 2 pressed and row 1 pressed straight back
+    at several delays: the window ends on row 1 with its cut, and Escape
+    asks nothing and changes nothing."""
+    with App(cfg, "switch_rows_then_escape", clips(cfg)) as app:
+        app.open_row(1, "a.ts")
+        left = app.cut(150, 300)
+        app.open_row(2, "b.mkv")
+        app.cut(100, 199)
+        app.escape(discard=True)
+        app.gone()
+        p = app.save()
+        c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+        t.check("9 switch: row 1 keeps its cut, row 2's goes",
+                len(c1) == 1 and c2 == [], f"row 1 {fmt(c1)}, row 2 {fmt(c2)}")
+        for delay in (0.0, 0.1, 0.5):
+            app.open_row(1, "a.ts")
+            app.open_row(2, "b.mkv", wait=False)
+            time.sleep(delay)
+            app.open_row(1, "a.ts", wait=False)
+            app.editor_ready("a.ts")
+            time.sleep(1.0)
+            st = app.state()
+            ok_title = "a.ts" in st["title"]
+            asked = app.escape(discard=True, expect_dialog=False)
+            app.gone()
+            p = app.save()
+            d1, d2 = cuts_of(p, 1), cuts_of(p, 2)
+            t.check(f"9 row 2 then row 1 again after {int(delay * 1000)} ms",
+                    ok_title and st["frames"] == left and d1 == c1 and d2 == [] and not asked,
+                    f"on {st['title']!r} with {st['frames']} pictures (want {left}); "
+                    f"row 1 {fmt(d1)}, row 2 {fmt(d2)}; {'asked' if asked else 'did not ask'}")
+
+
+# -- 10 --------------------------------------------------------------------
+def double_press_first_open(cfg, t):
+    """Row 1 double-clicked twice in quick succession on a list with no
+    editor up (the second press lands while the window is being built): one
+    window, a first visit -- a cut, Escape, 破棄 leaves the row uncut."""
+    with App(cfg, "double_press_first_open", clips(cfg)) as app:
+        for delay in (0.0, 0.2):
+            app.open_row(1, "a.ts", wait=False)
+            time.sleep(delay)
+            app.open_row(1, "a.ts", wait=False)
+            app.editor_ready("a.ts")
+            time.sleep(1.0)
+            windows = len(app.s.handles())
+            app.to_editor()
+            app.cut(150, 300)
+            app.escape(discard=True)
+            app.gone()
+            c = cuts_of(app.save(), 1)
+            t.check(f"10 two presses {int(delay * 1000)} ms apart, Escape drops the cut",
+                    windows == 2 and c == [], f"{windows} windows (want 2); row 1 cuts {fmt(c)}")
+
+
+# -- 11 --------------------------------------------------------------------
+def ok_then_other_row(cfg, t):
+    """A cut on row 1, OK, row 2 double-clicked soon after: the editor comes
+    up on row 2 (not blank), row 1 keeps its cut, and 破棄 on row 2 does not
+    touch row 1."""
+    with App(cfg, "ok_then_other_row", clips(cfg)) as app:
+        for i, delay in enumerate((0.3, 0.5)):
+            app.open_row(1, "a.ts")
+            a = 40 + i * 60
+            app.cut(a, a + 20)
+            app.ok()
+            app.to_list()
+            time.sleep(delay)
+            app.open_row(2, "b.mkv", wait=False)
+            try:
+                app.editor_ready("b.mkv", timeout=30)
+            except Failure:
+                t.check(f"11 row 2 {int(delay * 1000)} ms after OK comes up", False,
+                        "no editor on row 2")
+                return
+            app.cut(100, 120)
+            app.escape(discard=True)
+            app.gone()
+            p = app.save()
+            c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+            t.check(f"11 OK on row 1, row 2 after {int(delay * 1000)} ms, 破棄",
+                    len(c1) == i + 1 and c2 == [], f"row 1 {fmt(c1)}, row 2 {fmt(c2)}")
+
+
+# -- 12 --------------------------------------------------------------------
+def waveform_keeps_env_prefs(cfg, t):
+    """Started with SMARTCUT_CLEAN_JOINS and SMARTCUT_AUDIO_FADE and nothing
+    stored, 音声波形 turned on and off in the editor: what the backend holds
+    afterwards is still what the environment said. The editor's copy of the
+    preferences is never seeded at startup, and it sent the built-in
+    defaults for the two (prefs.js `tellBackend`)."""
+    app = App(cfg, "waveform_keeps_env_prefs", clips(cfg))
+    app.env["SMARTCUT_CLEAN_JOINS"] = "1"
+    app.env["SMARTCUT_AUDIO_FADE"] = "0.5"
+    with app:
+        app.to_list()
+        now = app.s.js("return window.__TAURI__.core.invoke('prefs_now')")
+        t.check("12 the environment is in force at start",
+                 now["cleanJoins"] is True and abs(now["audioFade"] - 0.5) < 1e-6,
+                 f"cleanJoins {now['cleanJoins']}, audioFade {now['audioFade']}")
+        app.open_row(1, "a.ts")
+        for _ in range(2):
+            app.s.js("document.getElementById('wave-show').click()")
+            time.sleep(1.0)
+        app.to_list()
+        now = app.s.js("return window.__TAURI__.core.invoke('prefs_now')")
+        t.check("12 音声波形 in the editor keeps them",
+                 now["cleanJoins"] is True and abs(now["audioFade"] - 0.5) < 1e-6,
+                 f"cleanJoins {now['cleanJoins']}, audioFade {now['audioFade']}")
+        app.to_editor()
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+
+
+# -- 13 --------------------------------------------------------------------
+def divide_then_edit_part(cfg, t):
+    """Row 1 divided into two parts (分割, 2 本), the second part opened, a
+    cut made and thrown away with Escape/破棄: the part is still a part (its
+    first half still cut away). Opened again, a cut and OK, then 出力開始:
+    each part's output has the pictures the editor showed for it."""
+    with App(cfg, "divide_then_edit_part", clips(cfg)) as app:
+        app.to_list()
+        app.s.click("#cliplist > li:nth-child(1) .nm")
+        wait_for("分割 to be offered", lambda: app.s.js(
+            "return !document.getElementById('divide-clip').disabled"), 60)
+        app.s.click("#divide-clip")
+        wait_for("the divide box", lambda: app.s.js(
+            "return !document.getElementById('divide').hidden"), 5)
+        app.s.js("const f = document.getElementById('divide-rule'); f.value = 'parts';"
+                 "f.dispatchEvent(new Event('change'));"
+                 "const v = document.getElementById('divide-value'); v.value = '2';"
+                 "v.dispatchEvent(new Event('input'));")
+        wait_for("分割 to be pressable", lambda: app.s.js(
+            "return !document.getElementById('divide-ok').disabled"), 30)
+        app.s.click("#divide-ok")
+        wait_for("three rows", lambda: app.rows() == 3, 10)
+        app.open_row(1, "a.ts")
+        one = app.state()["frames"]
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+        app.open_row(2, "a.ts")
+        two = app.state()["frames"]
+        app.cut(10, 20)
+        app.escape(discard=True)
+        app.gone()
+        p = app.save()
+        c2 = cuts_of(p, 2)
+        app.open_row(2, "a.ts")
+        again = app.state()["frames"]
+        t.check("13 a part keeps its part after 破棄",
+                one + two in (FRAMES, FRAMES + 1) and again == two and len(c2) == 1,
+                f"parts {one} + {two}; part 2 reopened with {again}; part 2 cuts {fmt(c2)}")
+        left = app.cut(10, 20)
+        app.ok()
+        app.gone()
+        files = app.export()
+        got = sorted(pictures(f) or 0 for f in files)
+        want = sorted([one, left, FRAMES])
+        t.check("13 each part's output has its pictures", got == want,
+                f"outputs {[os.path.basename(f) for f in files]} have {got} (want {want})")
+        for f in files:
+            os.remove(f)
+
+
+# -- 14 --------------------------------------------------------------------
+def audio_tracks(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+         "stream=index", "-of", "csv=p=0", path], capture_output=True, text=True).stdout
+    # A transport stream's streams are listed again under its program.
+    return len(set(out.split()))
+
+
+def join_verify(cfg, t):
+    """ベリファイ on, the list joined into one file (全部を 1 本に): the check
+    reads the file back the way the join wrote it. c.ts has two sound tracks
+    and a.ts one. With c.ts's first track switched off (its edit's
+    dropStreams) the output's one track is c.ts's second, which a.ts has
+    nothing for -- it stops where c.ts ends, as asked -- and the check, which
+    once paired the tracks by the output's order, called that sound off
+    ("音声 #1 が映像より 20 秒短い"). Tried with that master first and second,
+    and on a join with nothing switched off (master c.ts second, its second
+    track lacked by a.ts): each verifies OK and nothing about the sound."""
+    # c.ts: stream 0 is the video, 1 and 2 the sound tracks.
+    off = {"cuts": [], "keyframes": [], "dropStreams": [1]}
+    cases = [
+        ("master 2nd, its 1st track off", [{"path": cfg.a}, {"path": cfg.c, "edit": off}], 1, 1),
+        ("master 1st, its 1st track off", [{"path": cfg.c, "edit": off}, {"path": cfg.a}], 0, 1),
+        ("master 2nd, nothing off", [{"path": cfg.a}, {"path": cfg.c}], 1, 2),
+    ]
+    for n, (label, rows, master, tracks) in enumerate(cases):
+        app = App(cfg, f"join_verify/{n}", rows, {"joinAll": True, "master": master})
+        with app:
+            app.to_list()
+            # 環境設定 > ベリファイ, as the box sets it.
+            app.s.js("const b = document.getElementById('pref-verify');"
+                     "if (!b.checked) b.click();")
+            # Both rows read, so that the run is the join of the two: the
+            # button is pressable as soon as one of them is.
+            app.s.click('button.tab[data-screen="out"]')
+            wait_for("both rows on the output screen", lambda: app.s.js(
+                "return document.querySelectorAll('#out-list > li').length") == 2, 60)
+            time.sleep(0.5)
+            files = app.export()
+            notes = app.s.js(
+                "return [...document.querySelectorAll('#out-list > li .note')]"
+                ".map((n) => [n.innerText, n.title]);")
+            ts = [f for f in files if f.endswith(".ts")]
+            got = pictures(ts[0]) if len(ts) == 1 else None
+            heard = audio_tracks(ts[0]) if len(ts) == 1 else None
+            said = " | ".join(f"{a} [{b}]" for a, b in notes)
+            t.check(f"14 {label}: the joined file",
+                    len(ts) == 1 and got == 2 * FRAMES and heard == tracks,
+                    f"outputs {[os.path.basename(f) for f in files]}, {got} pictures, "
+                    f"{heard} sound track(s) (want {2 * FRAMES}, {tracks})")
+            t.check(f"14 {label}: ベリファイ OK, nothing about the sound",
+                    bool(notes) and all("ベリファイ OK" in a and "注意" not in a and "音声 #" not in b
+                                        and "不一致" not in b for a, b in notes),
+                    said)
+            for f in files:
+                os.remove(f)
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -434,6 +752,14 @@ SCENARIOS = [
     cut_and_export,
     ok_keeps_and_no_keeps,
     undo_after_detection,
+    zoom_double_press,
+    cross_then_reopen,
+    switch_rows_then_escape,
+    double_press_first_open,
+    ok_then_other_row,
+    divide_then_edit_part,
+    waveform_keeps_env_prefs,
+    join_verify,
 ]
 
 

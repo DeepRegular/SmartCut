@@ -6490,6 +6490,21 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     exact.catch(() => {});
     const outline = await invoke("open_outline", { path: picked });
     if (overtaken()) return;
+    // The disc's choice of tracks, when this is a first visit to a recording
+    // off one (see below). Asked here, before anything of the row being left
+    // is replaced, rather than half way through replacing it: in that wait
+    // the cuts were already this row's while the timeline, the selection and
+    // the playhead were still the last one's, and a Del or a K pressed then
+    // put the last recording's selection or instant onto this one.
+    let listed = null;
+    if (first && dropPids && dropPids.length) {
+      try {
+        listed = await invoke("tracks", { path: picked });
+      } catch (e) {
+        jlog(`tracks for the disc's choice: ${e}`);
+      }
+      if (overtaken()) return;
+    }
     src = outline;
     // A recording that did not come off a disc brings its own chapters, if
     // its container has any, and they are owed on the same terms a disc's
@@ -6575,17 +6590,11 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // as a TrueHD track with an AC-3 track folded into it, both on the one
     // PID and both handed over separately, so switching that track off has to
     // switch off both halves of it.
-    if (first && dropPids && dropPids.length) {
-      try {
-        const listed = await invoke("tracks", { path: picked });
-        if (overtaken()) return;
-        trackList = listed;
-        dropStreams = trackList
-          .filter((k) => k.optional && dropPids.includes(k.pid))
-          .map((k) => k.index);
-      } catch (e) {
-        jlog(`tracks for the disc's choice: ${e}`);
-      }
+    if (listed) {
+      trackList = listed;
+      dropStreams = trackList
+        .filter((k) => k.optional && dropPids.includes(k.pid))
+        .map((k) => k.index);
     }
     paintTrackButton();
     // Said again now the tracks are settled: the line above was drawn before
@@ -6619,6 +6628,10 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     selA = !first ? Math.min(saved.selA, outDur) : 0;
     selB = !first ? Math.min(saved.selB, outDur) : outDur;
     selGone = first || !!saved.selGone || (selA <= 0 && selB >= outDur - 1e-9);
+    // And the playhead, which the picture below puts on its frame: until
+    // then it was the last recording's instant, and a mark or a cover set in
+    // the wait for the files beside the recording landed there.
+    playhead = outToSrc(clamp(srcToOutSeam(!first ? saved.playhead : 0), 0, lastStop()));
     el("status").textContent = "";
     // What the row arrived with, said now as well as once the open is over.
     // The timeline is reported to the list while the walk is still reading
@@ -6760,19 +6773,44 @@ async function pointsArrived(exact, picked) {
   }
   if (!src || src.path !== picked) return;
   const at = playhead;
+  // A step of the history whose OUT stood on the end of its own timeline,
+  // which is the end the walk found as much as the live OUT below is: put
+  // back by 取消 at the old end, it was a frame short of the last picture
+  // again and a Del left the pictures past it in the output. Measured as
+  // `rebuildTimeline` measures, against whichever `src` is in hand.
+  const keptLength = (list) => {
+    let pos = headTime();
+    let n = 0;
+    for (const c of list) {
+      const a = Math.min(c.a, src.duration);
+      if (a > pos + 1e-6) n += a - pos;
+      pos = Math.max(pos, c.b);
+    }
+    return pos < src.duration - 1e-6 ? n + src.duration - pos : n;
+  };
+  let stepsAtEnd = [];
   // A cut that ran to the end the container gave runs to the end the walk
   // found. The walk can find the recording longer -- the last packets past
   // what the header said -- and a Trim line read before it had cut the tail
   // to the old end, which left the frames beyond it in the cut.
   if (full.duration > src.duration + 1e-6) {
+    stepsAtEnd = past.concat(undone).filter((step) => step.selB >= keptLength(step.cuts) - 1e-9);
     for (const c of cuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
     // And what a part of a divided row cuts away, which a Trim line read
     // below is merged with: left at the old end, it gave the tail back.
     for (const c of partCuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
+    // And in the history, whose steps are copies: a cut to the end made
+    // during the walk and stepped back to afterwards (a second cut made
+    // during the walk, then 取消) came back ending at the old end, and the
+    // pictures past it were written.
+    for (const step of past.concat(undone)) {
+      for (const c of step.cuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
+    }
     // The same cut, not an edit -- for the reason `openPath` gives above.
     settleMark();
   }
   src = full;
+  for (const step of stepsAtEnd) step.selB = keptLength(step.cuts);
   tailSrc = null;
   // The marks that came up with the row, onto the frames they show now that
   // there are access points to count frames from. See `onFrame`.
@@ -6794,7 +6832,14 @@ async function pointsArrived(exact, picked) {
   setTimeout(() => learnTail(picked), 1500);
   paintSourceInfo();
   paintSubsPicker();
+  // OUT on the end of the timeline as it was, which is the end: on the end
+  // the walk found, as the cuts above are. Left at the old end it was no
+  // longer the last picture, and a Del took the selection up to there and
+  // left the pictures past it in the output.
+  const toEnd = selB >= outDur - 1e-9;
   rebuildTimeline();
+  selB = toEnd ? outDur : Math.min(selB, outDur);
+  selA = Math.min(selA, selB);
   renderKeyframes();
   stripCache = null;
   stripShots = [];
@@ -7765,6 +7810,9 @@ function renderTracks() {
   const named = {
     superimpose: "tracks.gone.superimpose",
     data: "tracks.data",
+    // Not a transport stream's: a timecode or metadata track, never a data
+    // broadcast (see `DroppedStream::what`).
+    "data stream": "tracks.dataStream",
     substream: "tracks.substream",
     menu: "tracks.menu",
     "text subtitles": "tracks.textst",
