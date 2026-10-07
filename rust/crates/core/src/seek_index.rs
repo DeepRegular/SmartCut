@@ -92,7 +92,16 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// then failed ("passed without being met") however often it was opened.
 /// And a field-coded (PAFF) H.264 recording was saved as variable-rate, its
 /// two fields counted as two pictures.
-pub const VERSION: u32 = 11;
+///
+/// 12: whether each entry point has been read is kept point by point. It was
+/// written once for the lot, as whether the index had read its leading
+/// pictures, and an index off a container's table says it had not -- so the
+/// pre-roll entry point of an `.mp4` cut with `ffmpeg -ss`, which the open
+/// that found it marks as read, came back unread on the next open, was read
+/// for a key picture at 0, and took the next one's place where that one is
+/// decoded at 0: the copy then began a picture late, and the cut lost its
+/// first picture on every open but the first.
+pub const VERSION: u32 = 12;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 
@@ -103,6 +112,10 @@ const FLAG_HAS_TRACK: u32 = 1 << 3;
 const FLAG_END_KNOWN: u32 = 1 << 4;
 const FLAG_VARIABLE_KNOWN: u32 = 1 << 5;
 const FLAG_VARIABLE: u32 = 1 << 6;
+
+/// Beside `droppable` in an entry point's flag byte: the point has been read
+/// and is not to be read again. See [`VERSION`] 12.
+const MEASURED: u8 = 1 << 1;
 
 /// The fewest bytes one access point can take: its time, the time its lead
 /// pictures begin at, its position, whether it is droppable, and the count of
@@ -236,7 +249,7 @@ impl SeekIndex {
             w.f64(p.time);
             w.f64(p.lead_start);
             w.i64(p.pos);
-            w.u8(u8::from(p.droppable));
+            w.u8(u8::from(p.droppable) | if p.measured { MEASURED } else { 0 });
             w.u32(p.lead_indices.len() as u32);
             for i in &p.lead_indices {
                 w.u32(*i as u32);
@@ -334,7 +347,8 @@ impl SeekIndex {
                 bail!("{} holds an entry point that is not at a time", path.display());
             }
             let pos = r.i64()?;
-            let droppable = r.u8()? != 0;
+            let held = r.u8()?;
+            let droppable = held & 1 != 0;
             let leads = r.u32()? as usize;
             let leads = r.fits(leads, 4)?;
             let mut lead_indices = Vec::with_capacity(leads);
@@ -347,9 +361,12 @@ impl SeekIndex {
                 lead_indices,
                 droppable,
                 pos,
-                // Not written down point by point: an index either measured
-                // all of them or left the lot to be read when a cut needs it.
-                measured: flags & FLAG_LEADING_KNOWN != 0,
+                // Point by point, beside the index's own answer: an index
+                // off a table leaves its points to be read when a cut needs
+                // them, but one it already knows all it ever will about --
+                // the pre-roll point [`crate::scan_with`] stands at 0 -- is
+                // not to be read again. See [`VERSION`] 12.
+                measured: flags & FLAG_LEADING_KNOWN != 0 || held & MEASURED != 0,
             });
         }
 
@@ -782,6 +799,38 @@ mod tests {
         assert_eq!(prune(&dir, 2, 1 << 20, &spare).unwrap(), 1);
         assert!(paths[0].exists() && !paths[1].exists() && paths[2].exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A point already read comes back read, in an index that otherwise
+    /// leaves its points to be read: the pre-roll point of an `.mp4` cut with
+    /// `ffmpeg -ss`. Read again on the next open, it took the place of the
+    /// key picture after it and the cut lost its first picture.
+    #[test]
+    fn a_point_read_stays_read() {
+        let point = |time: f64, measured: bool| AccessPoint {
+            time,
+            lead_start: time,
+            lead_indices: vec![1],
+            droppable: false,
+            pos: 48,
+            measured,
+        };
+        let ix = SeekIndex {
+            points: vec![point(0.0, true), point(1.0, false)],
+            leading_known: false,
+            end: Some(2.0),
+            pulldown: None,
+            variable: None,
+            bit_rate: None,
+            track: None,
+            whole: true,
+        };
+        let at = std::env::temp_dir().join(format!("smartcut-scix-read-{}.scix", std::process::id()));
+        ix.save(&at).unwrap();
+        let back = SeekIndex::load(&at).unwrap();
+        let _ = std::fs::remove_file(&at);
+        let got: Vec<(bool, bool)> = back.points.iter().map(|p| (p.measured, p.droppable)).collect();
+        assert_eq!(got, [(true, false), (false, false)]);
     }
 
     /// And one that says it holds none, which is a file that reads.

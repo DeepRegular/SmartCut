@@ -244,7 +244,7 @@ fn collect_run(
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut slots = Slots::new(wanted, window);
         let mut failed = None;
-        let began = walk(src, from, margin, false, true, Cores::One, false, |t, frame| {
+        let began = walk(src, from, margin, false, true, Cores::One, false, None, |t, frame| {
             if t > last + fd {
                 return false;
             }
@@ -465,7 +465,7 @@ pub fn play_from(
     let mut stopped = false;
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut began_late = true;
-        let first = walk(src, entry, margin, false, true, Cores::All, false, |t, frame| {
+        let first = walk(src, entry, margin, false, true, Cores::All, false, None, |t, frame| {
             if t >= until - 1e-6 {
                 // The end of the stretch, which stops the playing -- unless
                 // nothing of it has been played: a seek that landed past the
@@ -548,7 +548,7 @@ fn picture_in(src: &Source, time: f64, woven: bool) -> Result<(f64, ff::frame::V
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut hit: Option<(f64, ff::frame::Video)> = None;
         let mut tail: Option<(f64, ff::frame::Video)> = None;
-        let began = walk(src, from, margin, false, woven, Cores::One, false, |t, frame| {
+        let began = walk(src, from, margin, false, woven, Cores::One, false, None, |t, frame| {
             // The wanted picture is whichever of the two straddling `time` is
             // nearer -- not "the first one at or after it". Under 2:3
             // pulldown the pictures are 41.7ms apart inside a 29.97 fps
@@ -1304,7 +1304,7 @@ fn still_picture(src: &Source, time: f64) -> Result<ff::frame::Video> {
         // The frame's two fields, by the picture each is taken from and
         // whether it is that picture's top field.
         let mut slots: [Option<(Rc<ff::frame::Video>, bool)>; 2] = [None, None];
-        let began = walk(src, from, margin, false, false, Cores::One, false, |t, frame| {
+        let began = walk(src, from, margin, false, false, Cores::One, false, None, |t, frame| {
             let head = *head.get_or_insert(t);
             let first = slot(shown, head);
             let at = slot(t, head);
@@ -1536,7 +1536,8 @@ enum Cores {
 /// between them unparsed -- for callers that are asking about entry points
 /// and nothing else. `frames` weaves a recording that repeats fields into
 /// the frames a screen shows; see [`crate::weave`]. `visit` returns false to
-/// stop.
+/// stop. `wall` is the byte the pictures stop at -- the seam after the
+/// stretch being read, on a recorder's clip -- where they stop at one.
 #[allow(clippy::too_many_arguments)]
 fn walk(
     src: &Source,
@@ -1546,6 +1547,7 @@ fn walk(
     frames: bool,
     cores: Cores,
     whole: bool,
+    wall: Option<u64>,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) -> Result<Option<f64>> {
     let mut ictx = crate::input::demux(&src.input.url)?;
@@ -1598,10 +1600,22 @@ fn walk(
         }
         Ok(true)
     };
+    // Where the pictures have got to, in bytes: see `wall`. A second field
+    // says nowhere and stands where its first did.
+    let mut read_at: Option<u64> = None;
     let mut packets = ictx.read_packets();
     'outer: for (stream, packet) in packets.by_ref() {
         if stream.index() != idx {
             continue;
+        }
+        if packet.position() >= 0 {
+            read_at = Some(packet.position() as u64);
+        }
+        // Past the wall is the next stretch, whose pictures are not this
+        // one's whatever their times say; the drain below hands back what
+        // the decoder still holds, as [`crate::cut`]'s re-encode does there.
+        if read_at.zip(wall).is_some_and(|(at, w)| at >= w) {
+            break;
         }
         // Never handed over rather than decoded and dropped -- and filtered
         // here rather than with `skip_frame`, which is per *picture* and so
@@ -1747,6 +1761,15 @@ pub(crate) fn pictures_in(
         let own_end = was + f64::from(shown_for) * fd / 2.0;
         t - from >= fd && own_end < t - fd / 4.0
     };
+    // **The stretch `to` lies in, and not the one after it.** On a
+    // recorder's clip the next stretch can open on pictures stamped before
+    // its seam -- leading pictures of a GOP the recorder cut, whose
+    // references are gone -- and on the joined clock they fall inside a
+    // range that ends at the seam. The cut stops at the seam's byte and
+    // never writes them ([`crate::cut`]'s `stretch_bytes`), so the count
+    // stops there too: read on, it took one of them for a picture the cut
+    // had lost.
+    let wall = src.joins.iter().find(|j| j.time >= to - eps).map(|j| j.at);
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut late = false;
         let mut seen = false;
@@ -1754,7 +1777,7 @@ pub(crate) fn pictures_in(
         let mut before: Option<(f64, ff::frame::Video)> = None;
         let mut opened = false;
         let mut going = true;
-        walk(src, entry, margin, false, false, Cores::Steady, true, |t, frame| {
+        walk(src, entry, margin, false, false, Cores::Steady, true, wall, |t, frame| {
             if !seen {
                 seen = true;
                 // Only a walk that has not yet handed anything on can be

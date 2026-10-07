@@ -25,6 +25,7 @@ fn main() -> Result<()> {
             src.byte_seekable,
             &mut src.points,
             &[(a, b)],
+            &src.joins.clone(),
         )?;
         let measured = src.points.iter().filter(|p| p.measured).count();
         println!("  pass {n}: {:.2}s, {measured} point(s) measured", t.elapsed().as_secs_f64());
@@ -39,6 +40,7 @@ fn main() -> Result<()> {
         false,
         &mut old.points,
         &[(a, b)],
+        &old.joins.clone(),
     )?;
     let key = |p: &sc::AccessPoint| {
         (format!("{:.4}", p.time), format!("{:.4}", p.lead_start), p.lead_indices.clone(), p.droppable)

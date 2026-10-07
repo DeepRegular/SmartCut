@@ -727,6 +727,11 @@ struct Writer {
     shrink: Option<Shrink>,
     /// A re-encoded head waiting for the copy after it. See [`poc_seam`].
     held: Option<Held>,
+    /// A recording joined after another has begun, or a range whose copy
+    /// follows a copy it does not carry on from, and none of its pictures
+    /// has been written yet. See [`copy_segment`] for what an HEVC copy does
+    /// with that.
+    opening: bool,
 }
 
 /// Writing the pictures back smaller, so that a run fits where it has to.
@@ -1144,6 +1149,7 @@ impl Writer {
     /// decode-order sum overtakes the presentation time it is supposed to
     /// precede. The muxer rejects that outright -- `pts < dts`.
     fn push(&mut self, e: Emitted) -> Result<()> {
+        self.opening = false;
         if let Some(held) = self.held.as_mut() {
             if !held.sealed {
                 held.pictures += 1;
@@ -3424,11 +3430,18 @@ fn copy_segment(
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
         let index = stream.index();
-        // Where the read has got to, in bytes into the clip. Not every packet
-        // says -- the second field of a pair does not -- so the last one that
-        // did stands in for those that do not, which is what the position
-        // means anyway: the read goes one way through the file.
-        if packet.position() >= 0 {
+        // Where the pictures have got to, in bytes into the clip. Not every
+        // packet says -- the second field of a pair does not -- so the last
+        // one that did stands in for those that do not, which is what the
+        // position means anyway: the read goes one way through the file.
+        //
+        // **The pictures' own positions, not the read's.** A second field
+        // leaves the parser only once the next picture's packet has begun,
+        // and the sound and captions read in between are already the next
+        // stretch's at a seam. Placed by them, the last picture's second
+        // field stood past the wall: a recorder BD-RE PAFF title lost the
+        // last picture before a seam, "1 picture(s) could not be placed".
+        if index == ist_index && packet.position() >= 0 {
             read_at = Some(packet.position() as u64);
         }
         if index != ist_index {
@@ -3649,6 +3662,39 @@ fn copy_segment(
                     out
                 }
                 _ => packet,
+            }
+        } else {
+            packet
+        };
+        // **A joined HEVC recording that opens on a clean random access opens
+        // on a broken link instead.** A CRA's picture order is read against
+        // the last pictures of the recording before it, and where it read as
+        // a step back the decoder put this recording's first pictures in
+        // among that one's last (3 of 282 out of place, measured with x265
+        // clips). A BLA is the same picture said to follow a splice: it
+        // restarts the count and the pictures before it are shown first,
+        // which is what the format provides the type for. Its leading
+        // pictures are already gone -- the copy opens on the entry point --
+        // so the ones a BLA has a decoder skip are not there. An end of
+        // sequence in front of the CRA would restart the count too, but a
+        // CRA after one throws away the pictures not yet shown (two, there).
+        // An IDR restarts everything itself and is left as it is. A range
+        // whose copy follows a copy it does not carry on from is answered
+        // the same way (see [`after_a_copy`]). See [`open_the_reel`] for
+        // H.264, which has no such type.
+        let packet = if writer.opening && src.video.codec == "hevc" {
+            let framing = match (reframe, ctx.unframe) {
+                (Some(r), _) => NalFraming::Length(r.nal_length),
+                (None, Some(_)) => NalFraming::AnnexB,
+                (None, None) => src.video.framing,
+            };
+            match broken_link(packet.data().unwrap_or(&[]), framing) {
+                Some(data) => {
+                    let mut out = ff::Packet::copy(&data);
+                    out.set_flags(packet.flags());
+                    out
+                }
+                None => packet,
             }
         } else {
             packet
@@ -4902,6 +4948,8 @@ fn reencode_segment(
     let mut past_end = false;
     // Packets libavcodec would not take. See where they are counted.
     let mut damaged = 0usize;
+    // Whether the decoder has taken a key picture of this read yet.
+    let mut keyed = false;
     // **The decoder is shown one stretch of a joined clip and no more.**
     //
     // A seam is where the recorder stopped and started again, and the
@@ -5059,11 +5107,17 @@ fn reencode_segment(
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
         let index = stream.index();
-        // Where the read has got to, in bytes into the clip. Not every packet
-        // says -- the second field of a pair does not -- so the last one that
-        // did stands in for those that do not, which is what the position
-        // means anyway: the read goes one way through the file.
-        if packet.position() >= 0 {
+        // Where the pictures have got to, in bytes into the clip. Not every
+        // packet says -- the second field of a pair does not -- so the last
+        // one that did stands in for those that do not.
+        //
+        // The pictures' own, as in [`copy_segment`]: the sound read between
+        // a picture's two fields is already the next stretch's at a seam,
+        // and placed by it, the second field of the last picture before the
+        // seam met the wall. The decoder was drained without it and the
+        // picture never came out -- a recorder BD-RE PAFF title re-encoded
+        // up to a seam was a picture short (191 of 193).
+        if index == ist_index && packet.position() >= 0 {
             read_at = Some(packet.position() as u64);
         }
         if index != ist_index {
@@ -5135,10 +5189,23 @@ fn reencode_segment(
         // decoding from the next one. So does this: what is lost is the
         // pictures inside the damage, which were never going to decode, and
         // how many were lost is said at the end.
+        //
+        // Counted only where it costs this segment a picture: once the
+        // decoder has taken a key picture, or for a packet of the segment's
+        // own. Before either, the read is in the run-up the seek lands in,
+        // whose packets can name parameter sets that only arrive with the
+        // key picture after them -- a recorder's own, in a cut whose head
+        // SmartCut re-encoded -- and are refused for that alone. Counted,
+        // a correct re-cut of such a cut said two dozen packets in each
+        // re-encoded stretch were damaged and their pictures missing.
         if decoder.send_packet(&packet).is_err() {
-            damaged += 1;
+            let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
+            if keyed || at.is_none_or(|t| t >= seg.start - tol) {
+                damaged += 1;
+            }
             continue;
         }
+        keyed |= packet.is_key();
         // Decoded frames arrive in display order, so a simple window test
         // picks out exactly the pictures this segment owns.
         feed!();
@@ -6704,9 +6771,149 @@ fn ranges_with_transitions(
                     segments,
                 });
             }
+            if !fits[n].video {
+                open_the_reel(reel.src, &mut out, &opts.plan, n > 0);
+            }
             out
         })
         .collect()
+}
+
+/// Re-encode the head of a joined H.264 recording that opens its copy on a
+/// picture that restarts nothing.
+///
+/// **A copy can only open on a recovery point where what comes before it is
+/// its own recording.** An H.264 picture states only the low bits of where
+/// it is shown, read against the reference picture decoded before it, and a
+/// recorder's own disc has no IDR anywhere to reset that: every entry point
+/// is an I picture with a recovery point. Inside one recording the bits
+/// carry on from the picture before, and a re-encoded head in front of a copy
+/// is moved along to meet them (see [`poc_seam`]). The second recording of a
+/// join, copied from its first picture, follows the *first* recording's last
+/// pictures instead -- another count, often another width of the field -- and
+/// where its low bits read as a step back the decoder took the copy's first
+/// second for pictures already shown and dropped them: 32 of 182 frames of a
+/// recorder's clip joined onto itself, and the same after a dissolve, whose
+/// re-encoded stretch belongs to the reel before and hands this one nothing.
+///
+/// So the reel opens the way a cut opens part-way into a recording: on a head
+/// re-encoded up to its next entry point, which starts with an IDR of its own,
+/// and from there on the copy, which [`poc_seam`] joins to the head. A reel
+/// that opens on an IDR -- any x264 file, and most of what a camera or a
+/// phone writes -- restarts the count itself and is left exactly as planned.
+///
+/// **And so does every range of one recording whose copy follows a copy.**
+/// A range that opens on an entry point and comes after a range that ended
+/// on one has nothing re-encoded between the two copies, and its first
+/// picture is read against the last of the range before -- seconds earlier
+/// in the same recording, which is the same mismatch: a recorder's clip cut
+/// on two of its entry points kept 56 of 108 pictures, and an x264 file whose
+/// entry points are not IDRs had 58 of 88 come out in the wrong place. Where
+/// the copy before stopped on the very picture this one opens on, the two are
+/// one stretch of the recording, the count carries on, and nothing changes.
+/// A range that opens on a re-encode is joined to whatever came before by
+/// that re-encode's own IDR, and a copy after a re-encoded stretch of its own
+/// recording is [`poc_seam`]'s.
+///
+/// `joined` is whether the reel follows another in the output -- every reel
+/// of a join but the first. Every caller that plans a cut or a join again
+/// (the check after it) asks this of the plans the same way, so that the
+/// pictures re-encoded here are not held to coming back as copies.
+///
+/// HEVC is answered in the copy itself: its clean random access is rewritten
+/// as a broken link, which restarts the count and is what the format provides
+/// for a splice (see [`broken_link`] and [`after_a_copy`]). Other codecs
+/// carry no such count.
+pub fn open_the_reel(
+    src: &Source,
+    plans: &mut [RangePlan],
+    opts: &crate::plan::PlanOptions,
+    joined: bool,
+) {
+    if src.video.codec != "h264" {
+        return;
+    }
+    // The segment written last before each range, in this reel; `None`
+    // before its first range that writes anything.
+    let mut before: Option<(SegmentKind, Option<f64>)> = None;
+    for plan in plans.iter_mut() {
+        let Some(first) = plan.segments.first() else { continue };
+        let opens = match before {
+            None => joined,
+            Some(last) => after_a_copy(src, last, first),
+        };
+        if opens {
+            open_on_entry(src, plan, opts);
+        }
+        before = plan.segments.last().map(|s| (s.kind, s.copy_until));
+    }
+}
+
+/// Whether a range's first segment is a copy that does not carry on from the
+/// copy written just before it -- `last` being that one's kind and where it
+/// stopped. See [`open_the_reel`].
+fn after_a_copy(src: &Source, last: (SegmentKind, Option<f64>), next: &Segment) -> bool {
+    let eps = src.video.frame_duration() / 2.0;
+    last.0 == SegmentKind::Copy
+        && next.kind == SegmentKind::Copy
+        && !last.1.is_some_and(|until| (until - next.start).abs() < eps)
+}
+
+/// A range's opening copy, re-encoded up to the next entry point a copy can
+/// open on, where it does not open on an IDR. See [`open_the_reel`].
+fn open_on_entry(src: &Source, plan: &mut RangePlan, opts: &crate::plan::PlanOptions) {
+    let first = &plan.segments[0];
+    if first.kind != SegmentKind::Copy {
+        return;
+    }
+    let start = first.start;
+    // Read rather than assumed, and only an answer of "it is clean" leaves
+    // the copy as it was: a picture that could not be read is re-encoded, as
+    // `clean_start` judges a misread unclean.
+    if crate::plan::clean_start(src, start, start).is_some() {
+        return;
+    }
+    let fd = src.video.frame_duration();
+    let eps = fd / 2.0;
+    let end = first.end;
+    let min_copy = opts.min_copy.unwrap_or_else(|| (2.0 * fd).max(0.5));
+    // The next entry point a copy may open on, as [`crate::plan::plan_range`]
+    // chooses one, with what the copy is worth left after it.
+    let next = src
+        .points
+        .iter()
+        .filter(|p| opts.allow_open_gop || !p.open_gop())
+        .find(|p| p.time > start + eps && (!p.open_gop() || p.droppable))
+        .map(|p| p.time)
+        .filter(|&t| end - t >= min_copy);
+    let total = first.frames;
+    match next {
+        Some(at) => {
+            let frames = (((at - start) / fd).round().max(0.0) as usize).min(total);
+            let head = Segment {
+                kind: SegmentKind::Reencode,
+                start,
+                end: at,
+                frames,
+                copy_until: None,
+                seek_from: seek_back(&src.points, start),
+                retouch: None,
+            };
+            let copy = &mut plan.segments[0];
+            copy.start = at;
+            copy.seek_from = at;
+            copy.frames = total - frames;
+            plan.segments.insert(0, head);
+        }
+        // No entry point a copy is worth opening on: the stretch is written
+        // afresh whole, as the planner writes one too short to copy.
+        None => {
+            let copy = &mut plan.segments[0];
+            copy.kind = SegmentKind::Reencode;
+            copy.copy_until = None;
+            copy.seek_from = seek_back(&src.points, start);
+        }
+    }
 }
 
 /// An entry point far enough before `target` to decode into it cleanly. The
@@ -6789,6 +6996,67 @@ fn heard_in(src: &Source, stream_index: usize, plans: &[RangePlan]) -> bool {
         }
     }
     false
+}
+
+/// An HEVC access unit that opens on a clean random access, rewritten to open
+/// on a broken link: each CRA slice (type 21) becomes BLA_W_LP (16), with
+/// `no_output_of_prior_pics_flag` cleared so that the pictures of the
+/// recording before are still shown. `None` where there is no CRA to rewrite
+/// -- an IDR, which restarts everything itself -- or the NALs cannot be told
+/// apart.
+///
+/// Only the header's first byte and one bit of the byte after the header
+/// change. Neither comes out zero -- the header byte holds the type, and the
+/// slice byte keeps either its first-slice flag or the start of its picture
+/// parameter set number (short of a set numbered 63) -- so the escaping of
+/// the slice is untouched.
+fn broken_link(data: &[u8], framing: NalFraming) -> Option<Vec<u8>> {
+    if crate::bitstream::starts_a_sequence(data, "hevc", framing) {
+        return None;
+    }
+    // Where each NAL's header begins.
+    let mut heads = Vec::new();
+    match framing {
+        NalFraming::Length(n) => {
+            if n == 0 || n > 4 {
+                return None;
+            }
+            let mut i = 0usize;
+            while i < data.len() {
+                let len = data.get(i..i + n)?.iter().fold(0usize, |a, &b| (a << 8) | b as usize);
+                i += n;
+                let end = i.checked_add(len).filter(|&e| e <= data.len())?;
+                heads.push(i);
+                i = end;
+            }
+        }
+        NalFraming::AnnexB => {
+            let mut i = 0usize;
+            while i + 3 <= data.len() {
+                if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+                    heads.push(i + 3);
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+    let mut out = data.to_vec();
+    let mut any = false;
+    for at in heads {
+        let (Some(&b0), Some(_), Some(&b2)) = (out.get(at), out.get(at + 1), out.get(at + 2)) else {
+            continue;
+        };
+        if (b0 >> 1) & 0x3F != 21 {
+            continue;
+        }
+        out[at] = (b0 & 0x81) | (16 << 1);
+        // first_slice_segment_in_pic_flag, then no_output_of_prior_pics_flag.
+        out[at + 2] = b2 & !0x40;
+        any = true;
+    }
+    any.then_some(out)
 }
 
 /// How a recording joined onto the master has its copied pictures framed
@@ -8454,6 +8722,7 @@ fn cut_into(
             .sum(),
         shrink: shrink_for(src, opts),
         held: None,
+        opening: false,
     };
 
     // What a reel that does not match is written into: the master's own
@@ -8479,6 +8748,10 @@ fn cut_into(
     for (reel_no, reel) in reels.iter().enumerate() {
         let rsrc = reel.src;
         let thread = &threads[reel_no];
+        writer.opening = reel_no > 0;
+        // The segment of this reel written last, for a copy that follows a
+        // copy without carrying on from it. See [`after_a_copy`].
+        let mut written_last: Option<(SegmentKind, Option<f64>)> = None;
         // How this reel's copied pictures are put into the output's framing.
         // The master's answer was worked out above; a recording joined on
         // brings its own framing and its own parameter sets, and copied
@@ -8778,6 +9051,16 @@ fn cut_into(
                 };
                 writer.hold(head, copy)?;
             }
+            // An HEVC range opening on a copy where the copy before it does
+            // not run into it opens on a broken link, as a joined reel does.
+            // See [`open_the_reel`] for H.264, whose plans answer it.
+            if first_segment
+                && rsrc.video.codec == "hevc"
+                && written_last.is_some_and(|last| after_a_copy(rsrc, last, seg))
+            {
+                writer.opening = true;
+            }
+            written_last = Some((seg.kind, seg.copy_until));
             let span = match (seg.kind, &seg.retouch, fits[reel_no].video) {
                 (SegmentKind::Copy, _, _) => copy_segment(rsrc, seg, &ctx, &mut writer)?,
                 (SegmentKind::Reencode, Some(retouch), _) => {
@@ -9745,5 +10028,40 @@ mod tests {
         for (a, b) in moved.iter().zip(&moved_long) {
             assert_eq!(&framed(a), b);
         }
+    }
+
+    /// A joined HEVC reel opening on a CRA opens on a BLA, the pictures
+    /// before still shown; an IDR, and anything else, is left alone.
+    #[test]
+    fn a_reel_opening_on_a_cra_opens_on_a_broken_link() {
+        // AUD, then two slices of a CRA: one with its first-slice flag and
+        // no_output_of_prior_pics_flag set, one without the first.
+        let aud = [0x46, 0x01, 0x10];
+        let first = [0x2A, 0x01, 0xC0 | 0x2C, 0x55];
+        let second = [0x2A, 0x01, 0x20, 0x77];
+        let annexb: Vec<u8> = [&aud[..], &first, &second]
+            .iter()
+            .flat_map(|n| [&[0u8, 0, 0, 1][..], n].concat())
+            .collect();
+        let out = broken_link(&annexb, NalFraming::AnnexB).unwrap();
+        let want: Vec<u8> = [&aud[..], &[0x20, 0x01, 0x80 | 0x2C, 0x55], &[0x20, 0x01, 0x20, 0x77]]
+            .iter()
+            .flat_map(|n| [&[0u8, 0, 0, 1][..], n].concat())
+            .collect();
+        assert_eq!(out, want);
+        // The same with lengths.
+        let framed = |nals: &[&[u8]]| -> Vec<u8> {
+            nals.iter().flat_map(|n| [&(n.len() as u32).to_be_bytes()[..], n].concat()).collect()
+        };
+        assert_eq!(
+            broken_link(&framed(&[&aud, &first, &second]), NalFraming::Length(4)).unwrap(),
+            framed(&[&aud, &[0x20, 0x01, 0x80 | 0x2C, 0x55], &[0x20, 0x01, 0x20, 0x77]])
+        );
+        // An IDR restarts everything already; a trailing picture has no CRA.
+        let idr = [0x26, 0x01, 0xC0, 0x55];
+        assert!(broken_link(&framed(&[&aud, &idr]), NalFraming::Length(4)).is_none());
+        assert!(broken_link(&framed(&[&aud, &[0x02, 0x01, 0x80, 0x11]]), NalFraming::Length(4)).is_none());
+        // A length past the packet's end is not read as anything.
+        assert!(broken_link(&[0, 0, 0, 9, 0x2A, 0x01], NalFraming::Length(4)).is_none());
     }
 }

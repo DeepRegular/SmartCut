@@ -958,6 +958,17 @@ fn points_from(packets: &[PacketView], codec: &str) -> Vec<AccessPoint> {
 /// bisects the file, and on an 81 GB UHD title that is most of a second and a
 /// half a point -- a minute for the forty-six points a plan over the whole
 /// title reads. The entry-point map says which byte each picture begins at.
+///
+/// **A seam inside a range is one of its ends.** `joins` is the recording's
+/// ([`crate::Source::joins`]): the planner cuts every range at a recorder's
+/// seams ([`crate::plan::plan_on`]), so a copy ends on the last entry point
+/// before each one and a range opens on the first after it, and those are
+/// points no end the caller asked for lies near. Left unmeasured, the copy
+/// before a seam ended on a guess at its terminating point's leading
+/// pictures -- two, where a recorder BD-RE's had four -- and the two
+/// pictures between were neither copied nor re-encoded: lost in front of a
+/// seam a long cut ran across, and every picture after them compared with
+/// the wrong one (5977 of 5979 on a recorder's title, 1335 "differ").
 pub fn refine_leading(
     url: &str,
     video: &VideoInfo,
@@ -965,6 +976,7 @@ pub fn refine_leading(
     byte_seek: bool,
     points: &mut [AccessPoint],
     ranges: &[(f64, f64)],
+    joins: &[crate::restamp::Seam],
 ) -> Result<()> {
     /// How many entry points either side of a boundary are measured.
     ///
@@ -975,8 +987,12 @@ pub fn refine_leading(
     const SKIRT: usize = 24;
     let always_droppable = bitstream::leading_always_droppable(&video.codec);
     let mut wanted = vec![false; points.len()];
-    for (t_in, t_out) in ranges {
-        for t in [*t_in, *t_out] {
+    for &(t_in, t_out) in ranges {
+        let seams = joins
+            .iter()
+            .filter(|j| j.time > t_in && j.time < t_out)
+            .flat_map(|j| [j.time, j.ends]);
+        for t in [t_in, t_out].into_iter().chain(seams) {
             let i = points.partition_point(|p| p.time < t);
             let lo = i.saturating_sub(SKIRT);
             let hi = (i + SKIRT).min(points.len());
@@ -1339,7 +1355,8 @@ fn window_from(
 ) -> Result<Vec<PacketView>> {
     let mut out = Vec::new();
     let mut target: Option<usize> = None;
-    for (s, p) in ictx.read_packets() {
+    let mut reading = ictx.read_packets();
+    for (s, p) in reading.by_ref() {
         if s.index() != video.stream_index {
             continue;
         }
@@ -1383,6 +1400,12 @@ fn window_from(
             break;
         }
     }
+    // A read that stopped at errors the recording kept giving -- a share
+    // that went away -- is not a read that found nothing. Taken for one, the
+    // point it was asked about was marked as read with the table's guess
+    // still on it, and the seek index keeps that mark: the guess -- a GOP
+    // assumed closed -- stood on every later open.
+    reading.finished()?;
     Ok(out)
 }
 

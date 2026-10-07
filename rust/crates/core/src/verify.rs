@@ -486,6 +486,9 @@ pub fn check_placed(
     // piece, by the track's place among that piece's own. See
     // [`seam_missing`].
     let mut seam_short: Vec<Vec<f64>> = Vec::new();
+    // And what each track lacks where it starts or stops inside a range, the
+    // same way. See [`track_ends`].
+    let mut own_short: Vec<Vec<f64>> = Vec::new();
     for p in pieces {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -493,6 +496,7 @@ pub fn check_placed(
         let (missing, span) = sound_missing(p, &within);
         sound_short += missing;
         seam_short.push(seam_missing(p, span));
+        own_short.push(track_ends(p, span, stop));
     }
     let fps = pieces.first().map(|p| p.src.video.frame_rate).unwrap_or(0.0);
     let estimate = (kept * if fps > 0.0 { fps } else { 30.0 }).max(1.0);
@@ -532,16 +536,19 @@ pub fn check_placed(
         None => None,
     };
     // Stream, decoder, packets read, seconds decoded.
-    let mut sounds: Vec<(usize, ff::decoder::Audio, u64, f64)> = Vec::new();
+    //
+    // A track no decoder here can read is one that cannot be measured, which
+    // is not the same as one that is wrong: it is kept with no decoder and
+    // reported as not measured rather than at nought seconds. Kept rather
+    // than left out, because its packets still make it one of the master's
+    // tracks -- left out, every track after it was taken for the one before
+    // it among the master's, and held to that one's allowance.
+    let mut sounds: Vec<(usize, Option<ff::decoder::Audio>, u64, f64)> = Vec::new();
     for &i in &audio {
         let Some(stream) = ictx.stream(i) else { continue };
-        let Ok(ctx) = ff::codec::context::Context::from_parameters(stream.parameters()) else {
-            continue;
-        };
-        // A track no decoder here can read is one that cannot be measured,
-        // which is not the same as one that is wrong: left out rather than
-        // reported at nought seconds.
-        let Ok(dec) = ctx.decoder().audio() else { continue };
+        let dec = ff::codec::context::Context::from_parameters(stream.parameters())
+            .ok()
+            .and_then(|ctx| ctx.decoder().audio().ok());
         sounds.push((i, dec, 0, 0.0));
     }
     let v_tb = video.and_then(|i| ictx.stream(i)).map(|s| f64::from(s.time_base())).unwrap_or(0.0);
@@ -754,8 +761,9 @@ pub fn check_placed(
                 }
             } else if let Some(s) = sounds.iter_mut().find(|s| s.0 == i) {
                 s.2 += 1;
-                if s.1.send_packet(&packet).is_ok() {
-                    while s.1.receive_frame(&mut sound).is_ok() {
+                let Some(dec) = s.1.as_mut() else { continue };
+                if dec.send_packet(&packet).is_ok() {
+                    while dec.receive_frame(&mut sound).is_ok() {
                         if sound.rate() > 0 {
                             s.3 += sound.samples() as f64 / f64::from(sound.rate());
                         }
@@ -776,8 +784,9 @@ pub fn check_placed(
             }
         }
         for s in sounds.iter_mut() {
-            let _ = s.1.send_eof();
-            while s.1.receive_frame(&mut sound).is_ok() {
+            let Some(dec) = s.1.as_mut() else { continue };
+            let _ = dec.send_eof();
+            while dec.receive_frame(&mut sound).is_ok() {
                 if sound.rate() > 0 {
                     s.3 += sound.samples() as f64 / f64::from(sound.rate());
                 }
@@ -843,11 +852,27 @@ pub fn check_placed(
                         }
                     })
                     .sum();
+                // Not the most any track lacks where the output's tracks
+                // cannot be told apart: a track that stops half way through
+                // the recording is a long stretch, and one left out of the
+                // cut would have had it allowed to every track kept. Only
+                // what all of them lack, then.
+                let own: f64 = pieces
+                    .iter()
+                    .zip(&own_short)
+                    .map(|(p, lacks)| {
+                        if places.is_some() || written >= p.src.audios.len() {
+                            lacks.get(at).copied().unwrap_or(0.0)
+                        } else {
+                            lacks.iter().copied().reduce(f64::min).unwrap_or(0.0)
+                        }
+                    })
+                    .sum();
                 Sound {
                     index: s.0,
                     seconds: s.3,
                     measured: s.3 > 0.0,
-                    short: sound_short + gap + seams,
+                    short: sound_short + gap + seams + own,
                 }
             })
             .collect();
@@ -944,12 +969,8 @@ fn sound_missing(
 /// `span` is where [`sound_missing`] found the sound running; what lies
 /// outside it is counted there already.
 fn seam_missing(p: &Piece, span: (f64, f64)) -> Vec<f64> {
-    /// How far before a seam the read begins, and how far after it the first
-    /// sound of each track is looked for. The ends of the file are read as
-    /// far ([`sound_missing`]'s `NEAR`), and the hole that was measured is
-    /// 3.2 s.
-    const BACK: f64 = 10.0;
-    const ON: f64 = 10.0;
+    const BACK: f64 = SEAM_BACK;
+    const ON: f64 = SEAM_ON;
     let src = p.src;
     let mut out = vec![0.0; src.audios.len()];
     if out.is_empty() || src.joins.is_empty() {
@@ -977,6 +998,184 @@ fn seam_missing(p: &Piece, span: (f64, f64)) -> Vec<f64> {
         }
     }
     out
+}
+
+/// How far before a recorder's seam [`seam_missing`] begins its read, and how
+/// far after it the first sound of each track is looked for. The ends of the
+/// file are read as far ([`sound_missing`]'s `NEAR`), and the hole that was
+/// measured is 3.2 s.
+const SEAM_BACK: f64 = 10.0;
+const SEAM_ON: f64 = 10.0;
+
+/// How much of a piece's ranges each of its sound tracks has no sound for
+/// where the track itself begins or ends inside them, by the track's place in
+/// [`Source::audios`].
+///
+/// **A broadcast's second track can stop in the middle of a recording**: it
+/// belongs to the programme before, and the cut keeps it where the ranges
+/// hold it ([`crate::cut`]'s `heard_in`). [`sound_missing`] reads only the
+/// two ends of the file and [`seam_missing`] only a recorder's seams, so a
+/// faithful cut keeping some of the track and some of what follows it was
+/// reported as that track running short. Each range is looked into here, a
+/// second and a half at each end: a track sounding at both is taken to run
+/// between, as the file's middle is above; where it is not, the range is
+/// halved until the stretch where it starts or stops is short enough to read
+/// whole. Only what the recording lacks is allowed for -- a track the cut
+/// loses where the recording has it is still reported -- and a read that
+/// fails allows nothing.
+///
+/// `span` is where [`sound_missing`] found the sound running, and the
+/// stretches around a recorder's seam are [`seam_missing`]'s: what lies
+/// there is counted there, not a second time here.
+fn track_ends(p: &Piece, span: (f64, f64), stop: &AtomicBool) -> Vec<f64> {
+    let src = p.src;
+    let none = vec![0.0; src.audios.len()];
+    if none.is_empty() {
+        return none;
+    }
+    let duration = src.duration;
+    let mut ranges: Vec<(f64, f64)> = p
+        .ranges
+        .iter()
+        .map(|&(a, b)| {
+            let end = if duration > 0.0 { b.min(duration) } else { b };
+            (a.max(0.0).max(span.0), end.min(span.1))
+        })
+        // A range to an end nobody knows is not one that can be halved.
+        .filter(|(a, b)| b > a && b.is_finite())
+        .collect();
+    for (n, j) in src.joins.iter().enumerate() {
+        let until = src.joins.get(n + 1).map_or(j.time + SEAM_ON, |x| x.ends.min(j.time + SEAM_ON));
+        let (w0, w1) = (j.ends - SEAM_BACK, until);
+        ranges = ranges
+            .into_iter()
+            .flat_map(|(a, b)| [(a, b.min(w0)), (a.max(w1), b)])
+            .filter(|(a, b)| b > a)
+            .collect();
+    }
+    if ranges.is_empty() {
+        return none;
+    }
+    let Ok(ictx) = crate::input::demux(&src.input.url) else { return none };
+    let mut ears = Ears {
+        src,
+        ictx,
+        tracks: src.audios.iter().map(|a| a.stream_index).collect(),
+        heard: Vec::new(),
+        // Two looks a range, and room for the halvings of the few where a
+        // track starts or stops: a track that comes and goes all through a
+        // long range is given up on rather than read for minutes.
+        reads: 64 + 4 * ranges.len(),
+        stop,
+    };
+    let mut out = none.clone();
+    for &(a, b) in &ranges {
+        for (k, o) in out.iter_mut().enumerate() {
+            match ears.lacks(k, a, b) {
+                Some(l) => *o += l,
+                None => return none,
+            }
+        }
+    }
+    out
+}
+
+/// Each track's first packet in a stretch and the end of its last, where it
+/// has any there.
+type Heard = Vec<Option<(f64, f64)>>;
+
+/// The reads [`track_ends`] makes of one recording, each kept for the other
+/// tracks to be answered from.
+struct Ears<'a> {
+    src: &'a Source,
+    ictx: crate::input::Demux,
+    tracks: Vec<usize>,
+    /// `(from, to)` and each track's first packet and the end of its last
+    /// inside it, where it has any.
+    heard: Vec<((f64, f64), Heard)>,
+    /// Reads left before the answer is given up on.
+    reads: usize,
+    stop: &'a AtomicBool,
+}
+
+impl Ears<'_> {
+    /// Each look at a range's end or middle.
+    const LOOK: f64 = 1.5;
+    /// A stretch this short is read whole rather than halved.
+    const WHOLE: f64 = 6.0;
+    /// Less than this at an edge is a frame, or the spacing of a track's
+    /// packets, and not a track that stops.
+    const EDGE: f64 = 0.25;
+
+    /// How much of `[x, y)` track `k` has no sound for.
+    fn lacks(&mut self, k: usize, x: f64, y: f64) -> Option<f64> {
+        if y - x <= Self::WHOLE {
+            return Some(match self.heard(x, y)?[k] {
+                None => y - x,
+                Some((first, last)) => self.edges(x, y, first, last),
+            });
+        }
+        let head = self.heard(x, x + Self::LOOK)?[k];
+        let tail = self.heard(y - Self::LOOK, y)?[k];
+        let mid = (x + y) / 2.0;
+        match (head, tail) {
+            (Some((first, _)), Some((_, last))) => Some(self.edges(x, y, first, last)),
+            (None, None) => {
+                let m = mid - Self::LOOK / 2.0;
+                if self.heard(m, m + Self::LOOK)?[k].is_none() {
+                    Some(y - x)
+                } else {
+                    Some(self.lacks(k, x, mid)? + self.lacks(k, mid, y)?)
+                }
+            }
+            _ => Some(self.lacks(k, x, mid)? + self.lacks(k, mid, y)?),
+        }
+    }
+
+    /// What lies between `[x, y)`'s ends and a track's first and last sound
+    /// inside it, where that is more than a frame.
+    fn edges(&self, x: f64, y: f64, first: f64, last: f64) -> f64 {
+        let gap = |g: f64| if g > Self::EDGE { g } else { 0.0 };
+        gap(first - x) + gap(y - last)
+    }
+
+    /// Each track's first packet in `[x, y)` and the end of its last.
+    fn heard(&mut self, x: f64, y: f64) -> Option<Heard> {
+        if let Some((_, h)) = self.heard.iter().find(|(r, _)| *r == (x, y)) {
+            return Some(h.clone());
+        }
+        if self.reads == 0 || self.stop.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.reads -= 1;
+        let start = self.src.start_time;
+        crate::input::keep_everything(&mut self.ictx);
+        let target = (((x - 1.0).max(0.0) + start) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        self.ictx.seek(target, ..target).ok()?;
+        crate::input::keep_with_pictures(&mut self.ictx, &self.tracks);
+        let mut got: Heard = vec![None; self.tracks.len()];
+        let mut packets = self.ictx.read_packets();
+        for (stream, packet) in packets.by_ref() {
+            let Some(t) = crate::input::packet_time(&stream, &packet, start) else { continue };
+            let Some(k) = self.tracks.iter().position(|&i| i == stream.index()) else {
+                // The pictures say when the stretch is over: sound is laid
+                // into a stream up to a second either side of them.
+                if t > y + 1.5 {
+                    break;
+                }
+                continue;
+            };
+            if t >= x && t < y {
+                let end = t + packet.duration().max(0) as f64 * f64::from(stream.time_base());
+                got[k] = Some(got[k].map_or((t, end), |(f, l)| (f.min(t), l.max(end))));
+            }
+        }
+        // A read that stopped on an error says nothing it can be held to.
+        packets.finished().ok()?;
+        drop(packets);
+        self.heard.push(((x, y), got.clone()));
+        Some(got)
+    }
 }
 
 /// How much of `ranges` a track's `hole` covers, leaving out `between`: the
@@ -1104,9 +1303,20 @@ fn sound_span(src: &Source, head: bool, tail: bool, near: f64) -> Option<(f64, f
         let target = target as i64;
         ictx.seek(target, ..target).ok()?;
         let mut last: Vec<Option<f64>> = vec![None; tracks.len()];
+        // Where the read was sent. A transport stream hands a track's last
+        // packet over only when the file ends, wherever the track stopped:
+        // a broadcast's second track that ended with the programme before
+        // came back here at that time, as if it were this stretch's, and
+        // everything after it was allowed for in every track -- a track the
+        // cut really lost there passed. A packet from well before the
+        // stretch read is that, and not where the track stops near the end.
+        let sent = (src.duration - near).max(0.0) - 1.0;
         for (stream, packet) in ictx.read_packets() {
             let Some(k) = tracks.iter().position(|t| t.0 == stream.index()) else { continue };
             let Some(t) = time(&packet, tracks[k].1) else { continue };
+            if t < sent {
+                continue;
+            }
             let end = t + packet.duration().max(0) as f64 * tracks[k].1;
             last[k] = Some(last[k].map_or(end, |l: f64| l.max(end)));
         }

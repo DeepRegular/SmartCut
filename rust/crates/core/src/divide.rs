@@ -486,4 +486,29 @@ mod tests {
         assert!(d.lengths.iter().all(|&l| l > 0.0 && l <= 7.0 + FD / 2.0 + 1e-9), "{:?}", d.lengths);
         assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{:?}", d.at);
     }
+
+    /// Keeps whose bounds are off the frame grid -- a millisecond clock, or
+    /// an edit made on another recording's grid: a division off the points
+    /// is put on a frame, which is never more than half a frame from where
+    /// it was asked for, so it stays within half a frame of a keep, and the
+    /// parts still add up to what survives the cuts.
+    #[test]
+    fn rounding_to_a_frame_stays_by_its_keep() {
+        let keeps = [(0.013, 10.029), (20.011, 30.007), (40.019, 50.0)];
+        let total: f64 = keeps.iter().map(|&(a, b)| b - a).sum();
+        for n in 2..=12 {
+            let d = divide(&keeps, &[], Rule::Parts(n), false, FD, 0.0, 0.0).unwrap();
+            let why = format!("{n}: {d:?}");
+            assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{why}");
+            assert!(
+                d.at.iter().all(|&s| keeps.iter().any(|&(a, b)| s >= a - FD / 2.0 - 1e-9 && s <= b + FD / 2.0 + 1e-9)),
+                "{why}"
+            );
+            assert!((d.lengths.iter().sum::<f64>() - total).abs() < 1e-6, "{why}");
+            for t in &d.at {
+                let k = t / FD;
+                assert!((k - k.round()).abs() < 1e-6, "{t} is not on a frame: {why}");
+            }
+        }
+    }
 }

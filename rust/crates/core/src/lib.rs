@@ -1283,6 +1283,21 @@ fn assemble(
     for p in points.iter_mut() {
         p.time = p.time.max(0.0);
         p.lead_start = p.lead_start.max(0.0);
+        // **A point with leading pictures has been read already**, and a
+        // second read is not to undo it. Nothing but a read -- the walk, or
+        // [`index::refine_leading`] -- puts them there, whatever an index
+        // held in the cache says about `measured` (before VERSION 12 it kept
+        // one flag for the whole index, not one a point). The
+        // pre-roll point above is the one where this matters: reloaded and
+        // read again, the key picture refine_leading looks for at 0 was
+        // found by its decode time in the next GOP's -- two frames on, on an
+        // MP4 cut two frames before a key picture -- and the point moved
+        // there. The second open of such a file cut from the start lost its
+        // first two pictures, and verify, holding the output to the same
+        // points, passed it.
+        if !p.lead_indices.is_empty() {
+            p.measured = true;
+        }
     }
 
     // A map the recording did not read for itself can be about something

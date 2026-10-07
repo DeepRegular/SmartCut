@@ -421,7 +421,11 @@ fn runs_of(vol: &mut Volume, vts: usize, pgc: &Pgc) -> Vec<Run> {
     let mut ends_at = f64::NAN;
     for (i, cell) in pgc.cells.iter().enumerate() {
         let start = vol.vobu_time(vts, cell.first);
-        let joins = match (start, out.last()) {
+        // A cell that does not begin where the one before it ended is
+        // another stretch of the stream, whatever its clock says: a row
+        // names one run of sectors. See [`read_pgc`].
+        let follows = i == 0 || cell.first == pgc.cells[i - 1].last + 1;
+        let on_the_clock = match (start, out.last()) {
             // A cell whose navigation pack could not be read is left with the
             // run before it. Cutting on a failed read would put a seam where
             // the disc has none.
@@ -433,6 +437,7 @@ fn runs_of(vol: &mut Volume, vts: usize, pgc: &Pgc) -> Vec<Run> {
             (Some(t), Some(_)) => !ends_at.is_finite() || (t - ends_at).abs() <= SLACK,
             (Some(_), None) => false,
         };
+        let joins = follows && on_the_clock;
         match out.last_mut() {
             Some(run) if joins => run.to = i + 1,
             _ => out.push(Run {
@@ -562,10 +567,11 @@ fn program_chains(ifo: &[u8]) -> Result<Vec<Pgc>> {
 
 /// One program chain, from the bytes it starts at.
 ///
-/// A chain whose cells do not lie end to end in the stream is not read at
-/// all. It is an angle block, or one assembled out of pieces of several
-/// titles, and the span its cells happen to lie inside is not the title --
-/// saying nothing is better than offering that.
+/// A chain holding an angle block or an interleaved unit is not read at all:
+/// its cells are alternatives, and laying them end to end is not the title --
+/// saying nothing is better than offering that. A chain whose cells merely
+/// jump about the stream is read, and becomes a row for each stretch it plays
+/// in order; see [`runs_of`].
 fn read_pgc(g: &[u8]) -> Option<Pgc> {
     if g.len() < 0xec {
         return None;
@@ -603,11 +609,12 @@ fn read_pgc(g: &[u8]) -> Option<Pgc> {
         if cell.last < cell.first || cell.last_vobu < cell.first || cell.last_vobu > cell.last {
             return None;
         }
-        if let Some(before) = cells.last() {
-            if cell.first != before.last + 1 {
-                return None;
-            }
-        }
+        // Cells that do not lie end to end are read all the same, and
+        // [`runs_of`] cuts the chain where they jump: a row is a stretch of
+        // sectors, and the span a jumping chain lies inside is not one. A
+        // pressed disc here ends each of its titles on one short cell they
+        // all share, written before the first of them -- and refusing the
+        // whole chain for that left its 47 minute programme off the list.
         cells.push(cell);
     }
 
@@ -1399,11 +1406,14 @@ mod tests {
     }
 
     #[test]
-    fn a_chain_that_jumps_about_is_not_offered_at_all() {
-        // A gap between two cells is a chain assembled out of pieces, and the
-        // span it lies inside is not the title.
-        let g = chain(&[(0, 59808), (170544, 229979)]);
-        assert!(read_pgc(&g).is_none());
+    fn a_chain_that_jumps_about_is_read_cell_by_cell() {
+        // A gap between two cells, or a jump back to a cell every title of
+        // the disc ends on: the chain is read, and [`runs_of`] makes a row of
+        // each stretch rather than one of the span they lie inside.
+        let g = chain(&[(170544, 229979), (0, 59808)]);
+        let pgc = read_pgc(&g).expect("cells out of order are still cells");
+        assert_eq!(pgc.cells.len(), 2);
+        assert_eq!(pgc.cells[1].first, 0);
     }
 
     #[test]

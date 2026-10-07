@@ -310,6 +310,9 @@ mod tests {
         near(most_buckets(0.0), 86_400 * 20);
         near(most_buckets(f64::NAN), 86_400 * 20);
         near(most_buckets(f64::INFINITY), 86_400 * 20);
+        near(most_buckets(-5.0), 86_400 * 20);
+        // A week is the most a length is believed, plus the minute.
+        near(most_buckets(1e12), (86_400 * 7 + 60) * 20);
     }
 
     /// Interleaved samples are one sample's channels side by side: element

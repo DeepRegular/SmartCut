@@ -544,11 +544,59 @@ pub fn plan_on(src: &crate::Source, ranges: &[(f64, f64)], opts: &PlanOptions) -
     let ranges = on_the_pictures(&src.video, src.duration, &src.points, ranges);
     let ranges = at_the_seams(&ranges, &src.joins);
     let ranges = past_the_seam(&ranges, &seams, &src.points, &src.video);
-    let mut plans = plan(&src.video, src.duration, &src.points, &ranges, opts);
+    let mut plans: Vec<RangePlan> = ranges
+        .iter()
+        .map(|&(a, b)| {
+            let plan = plan_range(&src.video, src.duration, &src.points, a, b, opts);
+            match own_points(src, &plan) {
+                Some(own) => plan_range(&src.video, src.duration, &own, a, b, opts),
+                None => plan,
+            }
+        })
+        .collect();
     for p in &mut plans {
         clean_the_join(src, p, opts);
     }
     plans
+}
+
+/// The entry points of the stretch `plan` lies in, where its copy was
+/// planned to end on an entry point of the next stretch and leave a
+/// re-encode behind it; `None` otherwise, which is every recording without
+/// seams and nearly every range of one with them.
+///
+/// **A copy never reaches an entry point of the next stretch.** The cutter
+/// stops reading a stretch at the seam's byte (`stretch_bytes` in
+/// [`crate::cut`]), so a copy told to run to such a point runs to the seam
+/// instead. The next stretch can open on leading pictures stamped in front
+/// of its seam, though, and its first entry point then ends a copy by
+/// coverage: the copy was planned to end at those pictures and a re-encode
+/// to fill from there to the seam. On a recorder BD-RE whose stretch stops
+/// half a second before its seam, that re-encode had none of the stretch's
+/// pictures to write and wrote the one already up a second time -- after
+/// the copy had written it -- and the check found a picture more than the
+/// recording has. Where the stretch does run on to the seam, the copy and
+/// the re-encode would both write its last pictures. Planned on its own
+/// entry points, the copy ends on its last one and the re-encode holds the
+/// pictures after it, once.
+///
+/// A copy that runs to the seam with nothing after it is left as it is: it
+/// stops at the seam's byte, which is the end it was planned to.
+fn own_points(src: &crate::Source, plan: &RangePlan) -> Option<Vec<AccessPoint>> {
+    let eps = src.video.frame_duration() / 2.0;
+    let wall = src.joins.iter().find(|j| j.time >= plan.t_out - eps)?.at;
+    let beyond = |p: &AccessPoint| p.pos >= 0 && p.pos as u64 >= wall;
+    let foreign_tail = plan.segments.windows(2).any(|w| {
+        w[0].kind == SegmentKind::Copy
+            && w[1].kind == SegmentKind::Reencode
+            && w[0]
+                .copy_until
+                .is_some_and(|u| src.points.iter().any(|p| p.time == u && beyond(p)))
+    });
+    if !foreign_tail {
+        return None;
+    }
+    Some(src.points.iter().filter(|p| !beyond(p)).cloned().collect())
 }
 
 /// The shortest a piece of a range is worth keeping as a range of its own.

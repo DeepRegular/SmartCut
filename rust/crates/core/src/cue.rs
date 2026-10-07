@@ -203,4 +203,16 @@ mod tests {
         let sheet = b"FILE \"a.wav\" WAVE\nTRACK 1 AUDIO\nINDEX 1 00:00:00\nTRACK 2 AUDIO\nINDEX 0 00:59:74\nINDEX 1 01:00:00\nTRACK 3 AUDIO\nINDEX 1 01:00:00\n";
         assert_eq!(track_starts(sheet), vec![0.0, 60.0]);
     }
+
+    /// A sheet that names no file at all -- a list of split points written
+    /// by hand -- is still one recording's tracks, and a `FILE` after the
+    /// last track ends nothing that was read.
+    #[test]
+    fn a_sheet_with_no_file_line() {
+        let sheet = b"TRACK 01 AUDIO\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 01 10:00:00\n";
+        assert_eq!(track_starts(sheet), vec![0.0, 600.0]);
+        let mut more = sheet.to_vec();
+        more.extend_from_slice(b"FILE \"b.wav\" WAVE\n");
+        assert_eq!(track_starts(&more), vec![0.0, 600.0]);
+    }
 }

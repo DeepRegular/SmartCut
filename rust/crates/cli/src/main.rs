@@ -2202,6 +2202,7 @@ fn run() -> Result<()> {
             src.byte_seekable,
             &mut src.points,
             &ranges,
+            &src.joins,
         )?;
     }
 
@@ -2222,7 +2223,11 @@ fn run() -> Result<()> {
         clean_join: clean_join.then_some(2.0),
         ..Default::default()
     };
-    let plans = plan_on(&src, &ranges, &opts);
+    let mut plans = plan_on(&src, &ranges, &opts);
+    // As the cut opens each range whose copy follows a copy (see
+    // `smartcut_core::cut::open_the_reel`): said in the plan below, and held
+    // to by `--verify`.
+    smartcut_core::cut::open_the_reel(&src, &mut plans, &opts, false);
 
     // What is said, as against what is planned. A range asked for past the
     // end of the recording is planned as asked -- the copy stops where the
@@ -2607,6 +2612,7 @@ fn run() -> Result<()> {
                 also.byte_seekable,
                 &mut also.points,
                 &whole,
+                &also.joins.clone(),
             )?;
         }
         tell!(
@@ -2766,10 +2772,15 @@ fn run() -> Result<()> {
         }
         None => None,
     };
-    let joined_plans: Vec<Vec<smartcut_core::RangePlan>> = joined_src
+    let mut joined_plans: Vec<Vec<smartcut_core::RangePlan>> = joined_src
         .iter()
         .map(|s| plan_on(s, &[(0.0, s.duration)], &opts))
         .collect();
+    // As the cut opens each of them (see `smartcut_core::cut::open_the_reel`),
+    // so that `--verify` holds the same pictures to coming back as copies.
+    for (s, p) in joined_src.iter().zip(&mut joined_plans) {
+        smartcut_core::cut::open_the_reel(s, p, &opts, true);
+    }
     // On every reel but the last: a transition belongs to the clip that
     // gives way, and the last one gives way to nothing. The window is where
     // a fade at the end of the file is asked for.
