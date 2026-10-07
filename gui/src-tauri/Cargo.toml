@@ -1,6 +1,6 @@
 [package]
 name = "gui"
-version = "0.8.21"
+version = "0.8.22"
 description = "SmartCut"
 edition = "2021"
 

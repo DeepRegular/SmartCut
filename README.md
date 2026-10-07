@@ -144,11 +144,11 @@ Every build bundles FFmpeg, so there is nothing else to install.
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.21_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.8.21-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.21_amd64.deb` | `sudo apt install ./smartcut_0.8.21_amd64.deb`. 29.2 MB, because GTK and WebKitGTK come from your system |
-| **Windows** | `SmartCut_0.8.21_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
-| **Windows** | `smartcut-portable-x64-0.8.21.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
+| **Linux** | `SmartCut_0.8.22_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.8.22-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.22_amd64.deb` | `sudo apt install ./smartcut_0.8.22_amd64.deb`. 29.4 MB, because GTK and WebKitGTK come from your system |
+| **Windows** | `SmartCut_0.8.22_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
+| **Windows** | `smartcut-portable-x64-0.8.22.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.35 or newer, which
 means Ubuntu 22.04, Debian 12, Fedora 36 or later. The `.deb` is for Ubuntu 22.04
