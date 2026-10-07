@@ -422,6 +422,14 @@ let lateFlat = [];
 /// -- and a cut placed during the walk, which is allowed, has to be sent.
 /// See `captureEdit`.
 let swapping = false;
+/// Whether the row up is a first visit whose mark files (`.keyframe`, Trim,
+/// `.cm.json`) have not been read yet. A recording whose head the outline
+/// could not find reads them only after the walk, and a Ctrl+H in that wait
+/// wrote the empty timeline over the very file about to be read. Set when an
+/// open starts, cleared once `loadMarkFiles` has run for it; left set where
+/// the open fails before that, since what is on screen is then not this
+/// recording's answer either. See `saveMarks`.
+let marksDue = false;
 
 /// The same string for the timeline as it arrived.
 ///
@@ -5658,6 +5666,13 @@ async function saveMarks(kind, ask) {
   // row being left's. Ctrl+H then wrote the last recording's marks over the
   // new one's `.keyframe`, which its own open read back a moment later.
   if (!src || swapping) return;
+  // Nor before a first visit has read the files beside the recording: the
+  // file about to be written is the one still owed to the timeline, and the
+  // timeline does not hold its marks yet.
+  if (marksDue) {
+    el("status").textContent = tr("marks.notRead");
+    return;
+  }
   // The menu greys this line out; the shortcut is the way in that cannot,
   // and an empty file written under the recording's name would be read back
   // as a detection that found nothing.
@@ -6428,6 +6443,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   // app.js.
   const first = !saved || !!saved.fresh;
   if (!picked) return;
+  marksDue = first;
   // A second row can be sent while this one is still coming up. Everything
   // below the first wait writes the window's state, so an open that has been
   // overtaken stops at the next one rather than finishing on top of the row
@@ -6654,6 +6670,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     let marks = false;
     if (early) marks = await settle(() => loadMarkFiles());
     if (overtaken()) return;
+    if (early) marksDue = false;
     // A file beside the recording has answered for the chapters: said now
     // rather than after the walk, or an OK during it left the row owing them,
     // and the next visit put them down on top of the file's marks.
@@ -6679,6 +6696,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     if (overtaken()) return;
     if (first && !early) marks = await settle(() => loadMarkFiles());
     if (overtaken()) return;
+    marksDue = false;
     // The disc's own chapters, which fill a timeline no file beside the
     // recording had anything to say about. Left until here either way: they
     // arrive on the stream's own clock and are dropped rather than clamped

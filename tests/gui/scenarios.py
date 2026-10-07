@@ -27,6 +27,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import App, Failure, cuts_of, pictures, wait_for  # noqa: E402
+from wd import WebDriverError  # noqa: E402
 
 # The two recordings. 600 pictures each at 30000/1001; the .ts has a black
 # stretch from 8 s to 11 s for the black detection to find. The .mkv's
@@ -52,6 +53,7 @@ class Cfg:
         self.a = os.path.join(self.media, "a.ts")
         self.b = os.path.join(self.media, "b.mkv")
         self.c = os.path.join(self.media, "c.ts")
+        self.d = os.path.join(self.media, "d.ts")
 
 
 def make_media(cfg):
@@ -88,7 +90,7 @@ def make_media(cfg):
 
 def clear_sidecars(cfg):
     for f in os.listdir(cfg.media):
-        if f not in ("a.ts", "b.mkv", "c.ts"):
+        if f not in ("a.ts", "b.mkv", "c.ts", "d.ts"):
             os.remove(os.path.join(cfg.media, f))
 
 
@@ -849,6 +851,283 @@ def cut_shapes_export(cfg, t):
             os.remove(f)
 
 
+# -- 17 --------------------------------------------------------------------
+def disc_fields_under_hand(cfg, t):
+    """The disc's index fields on 出力設定 while something redraws the screen
+    -- a row finishing its read, a recording's listing arriving: what is being
+    typed stays as typed. The name emptied to type a new one came straight
+    back as the recording's, and a space typed into the date was trimmed out
+    from under the caret. The redraw is asked for here the way those arrivals
+    ask for it (renderOutset), by the row picker's own change."""
+    with App(cfg, "disc_fields_under_hand", clips(cfg), {"mode": "bdav", "discTitle": "t"}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the programme field filled", lambda: app.s.js(
+            "return document.getElementById('out-programme').value"), 60)
+        redraw = "document.getElementById('outset-clip').dispatchEvent(new Event('change'));"
+        value = lambda f: app.s.js(f"return document.getElementById('{f}').value")
+        app.s.click("#out-programme")
+        app.s.keys("Control+a", "Delete")
+        app.s.js(redraw)
+        time.sleep(0.3)
+        t.check("17 emptied name stays empty while typed in", value("out-programme") == "",
+                repr(value("out-programme")))
+        app.s.type("New")
+        app.s.js(redraw)
+        t.check("17 typed name kept", value("out-programme") == "New", repr(value("out-programme")))
+        app.s.click("#out-made")
+        app.s.keys("Control+a", "Delete")
+        app.s.type("2026/08/17 ")
+        app.s.js(redraw)
+        time.sleep(0.3)
+        app.s.type("01:00")
+        t.check("17 date typed with its space", value("out-made") == "2026/08/17 01:00",
+                repr(value("out-made")))
+        # And away from the field, the screen is the row's again.
+        app.s.click("#out-channel")
+        app.s.js(redraw)
+        t.check("17 name kept after leaving", value("out-programme") == "New",
+                repr(value("out-programme")))
+        # The disc's name: emptied, it stays empty under the hand, and is
+        # worked out again once the hand has left it.
+        app.s.click("#out-disc-title")
+        app.s.keys("Control+a", "Delete")
+        app.s.js(redraw)
+        time.sleep(0.3)
+        t.check("17 emptied disc name stays empty while in it", value("out-disc-title") == "",
+                repr(value("out-disc-title")))
+        app.s.click("#out-programme")
+        time.sleep(0.3)
+        t.check("17 emptied disc name filled in on leaving", value("out-disc-title") != "",
+                repr(value("out-disc-title")))
+
+
+# -- 18 --------------------------------------------------------------------
+def seam_window(cfg, t):
+    """継ぎ目の設定 on a join of the two rows: a dissolve and a fade set in
+    the seam window and left with Escape change nothing in the project; set
+    again and left with OK, they are the row's `after`; opened a third time,
+    the window shows what OK handed back. The window is cross.js, which had
+    no scenario: the handshake is `cross-ready` / `cross-open` /
+    `cross-done`, the same shape as the editor's."""
+    def open_seam(app):
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "return !!r && !r.hidden;"), 60)
+        before = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+        app.s.switch(seam)
+        # Loaded: the pair is in and the span worked out, so the clip time
+        # reads something other than nothing.
+        wait_for("the join loaded", lambda: app.s.js(
+            "return document.getElementById('out-clip-time').textContent") not in
+            ("--:--:--.--", "00:00:00.00"), 60)
+        return seam
+
+    def set_crossing(app):
+        app.s.js(
+            "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+            "k.dispatchEvent(new Event('change', {bubbles: true}));"
+            "const f = document.getElementById('x-fade-out'); f.value = '1.5';"
+            "f.dispatchEvent(new Event('change', {bubbles: true}));")
+        time.sleep(0.5)
+
+    def seam_gone(app, seam):
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+        app.s.switch(app.main)
+
+    with App(cfg, "seam_window", clips(cfg), {"joinAll": True}) as app:
+        seam = open_seam(app)
+        set_crossing(app)
+        try:
+            app.s.keys("Escape")
+        except WebDriverError:
+            # The window goes on the key's way down, and the driver then has
+            # no window to let the key up in.
+            pass
+        seam_gone(app, seam)
+        after = app.save()["clips"][0].get("after")
+        t.check("18 Escape in the seam window changes nothing", not after, repr(after))
+
+        seam = open_seam(app)
+        shown = app.s.js("return document.getElementById('x-kind').value")
+        t.check("18 reopened after Escape shows no crossing", shown == "none", repr(shown))
+        set_crossing(app)
+        app.s.click("#cross-ok")
+        seam_gone(app, seam)
+        after = app.save()["clips"][0].get("after") or {}
+        t.check("18 OK writes the crossing to the row",
+                after.get("kind") == "dissolve" and after.get("fadeOut") == 1.5,
+                repr(after))
+
+        seam = open_seam(app)
+        shown = app.s.js("return [document.getElementById('x-kind').value,"
+                         " document.getElementById('x-fade-out').value]")
+        t.check("18 reopened after OK shows the crossing",
+                shown == ["dissolve", "1.5"], repr(shown))
+        # A list dropped from 効果 takes Escape for itself: the list goes and
+        # the window stays. The arrows and Enter then choose from it.
+        app.s.click("#x-kind")
+        dropped = app.s.js("const m = document.querySelector('#x-kind ~ .drop-menu');"
+                           "return !!m && !m.hidden;")
+        app.s.keys("Escape")
+        time.sleep(0.5)
+        up = seam in app.s.handles()
+        t.check("18 Escape over a dropped list keeps the window",
+                dropped and up and app.s.js(
+                    "return document.querySelector('#x-kind ~ .drop-menu').hidden"),
+                f"dropped {dropped}, window {'up' if up else 'gone'}")
+        if up:
+            app.s.click("#x-kind")
+            app.s.keys("End", "Enter")
+            time.sleep(0.5)
+            picked = app.s.js("return document.getElementById('x-kind').value")
+            t.check("18 the dropped list chooses with the keys", picked == "slide-bottom",
+                    repr(picked))
+            app.s.click("#cross-cancel")
+            seam_gone(app, seam)
+        after = app.save()["clips"][0].get("after") or {}
+        t.check("18 キャンセル keeps what OK wrote", after.get("kind") == "dissolve",
+                repr(after))
+
+
+# -- 19 --------------------------------------------------------------------
+def make_late_head(cfg):
+    """A recording with no key picture in its first 32 MB, which is as far as
+    the outline looks for the head (core lib.rs `first_picture`): MPEG-2 at
+    50 Mbit/s with an I picture every 20 s, and the first 2 MB -- the first I
+    with them -- cut off. Its first key picture is about 120 MB in, so the
+    editor reads its mark files only once the walk is over. Made only for the
+    scenario that needs it: about 190 MB."""
+    if os.path.exists(cfg.d):
+        return
+    full = cfg.d + ".full"
+    subprocess.run([
+        "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i",
+        "testsrc2=size=720x480:rate=30000/1001:duration=30,noise=alls=60:allf=t",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=30:sample_rate=48000",
+        "-c:v", "mpeg2video", "-g", "600", "-bf", "0",
+        "-b:v", "50M", "-minrate", "50M", "-maxrate", "50M", "-bufsize", "8M",
+        "-c:a", "mp2", "-b:a", "192k", "-f", "mpegts", full], check=True)
+    with open(full, "rb") as f, open(cfg.d + ".part", "wb") as o:
+        f.seek(188 * 10000)
+        shutil.copyfileobj(f, o, 1 << 20)
+    os.remove(full)
+    os.replace(cfg.d + ".part", cfg.d)
+
+
+def ctrl_h_before_marks_read(cfg, t):
+    """A first visit to a recording whose head the outline could not find:
+    its .keyframe is read once the walk is over, and Ctrl+H in that wait (with
+    環境設定 quietOverwrite on, so nothing asks) wrote the empty timeline
+    over it -- the file was gone before it was ever read. Ctrl+H is pressed
+    over and over from the moment the window is up until the marks are in:
+    the file must come through with its marks, the timeline must show them,
+    and the refusal must have been said (else the walk was too quick for any
+    press to land in it, and the run proves nothing)."""
+    make_late_head(cfg)
+    marks = [30, 60]
+    side = os.path.join(cfg.media, "d.keyframe")
+    with open(side, "w", newline="") as f:
+        f.write("".join(f"{n}\n" for n in marks))
+    with App(cfg, "ctrl_h_before_marks_read", [{"path": cfg.d}]) as app:
+        app.s.js("localStorage.setItem('smartcut.quietOverwrite', 'true');")
+        app.open_row(1, "d.ts", wait=False)
+        app.to_editor()
+        said = False
+        presses = 0
+        until = time.time() + 120
+        while time.time() < until:
+            try:
+                app.s.keys("Control+h")
+                presses += 1
+                st = app.state()
+            except WebDriverError:
+                continue
+            status = st["status"] or ""
+            said = said or "まだ読み込んでいない" in status or "only read once" in status
+            if st["keys"].startswith("2") and "読み込み中" not in st["plan"]:
+                break
+        time.sleep(0.5)
+        with open(side, "rb") as f:
+            got = [int(x) for x in f.read().split()]
+        st = app.state()
+        t.check("19 Ctrl+H during the walk leaves the .keyframe", got == marks,
+                f"d.keyframe {got} (want {marks}) after {presses} presses")
+        t.check("19 the marks reach the timeline", st["keys"].startswith("2"), repr(st["keys"]))
+        t.check("19 a press landed before the marks were read", said,
+                "refusal said" if said else "the walk ended before any press")
+
+
+
+# -- 20 --------------------------------------------------------------------
+def disc_join_crossing(cfg, t):
+    """Two clips on a disc folder joined with a long dissolve, ベリファイ on.
+    A disc's map does not say where its entry points' leading pictures are,
+    and the copies either side of a crossing are planned to end or begin
+    inside the ranges -- where the transition moves them -- not at the ends
+    the list asked for. Unmeasured there, the copy before a 20 s dissolve
+    ended on a guess (x264 open GOPs every 12 pictures): pictures doubled or
+    lost, and the rest of the join out against its sound. The answer the
+    command line gives with every point read (--index scan) is the count
+    to match; run twice, the second from the index the first left behind.
+    Needs the command line (GUITEST_CLI, default the tree's release build)
+    to write the disc, and re-encodes 20 s of 1080p: not in the default list."""
+    cli = os.environ.get("GUITEST_CLI", os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..",
+        "rust", "target", "release", "smartcut"))
+    disc = os.path.join(cfg.work, "disc_join_crossing")
+    clip = os.path.join(disc, "BDAV", "STREAM", "00001.m2ts")
+    if not os.path.exists(clip):
+        shutil.rmtree(disc, ignore_errors=True)
+        src = os.path.join(cfg.work, "disc_join_crossing.ts")
+        subprocess.run([
+            "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30000/1001:duration=40",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=40",
+            "-c:v", "libx264", "-preset", "veryfast", "-x264-params",
+            "open-gop=1:keyint=12:min-keyint=12:scenecut=0:bframes=3:b-adapt=0:"
+            "b-pyramid=normal:ref=4", "-b:v", "6M", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-f", "mpegts", src], check=True)
+        subprocess.run([cli, src, "--bdav", disc], check=True, capture_output=True)
+        os.remove(src)
+    want_file = os.path.join(cfg.work, "disc_join_crossing.want.ts")
+    subprocess.run([cli, clip, "--join", clip, "--transition", "dissolve",
+                    "--transition-seconds", "20", "--index", "scan", "-o", want_file],
+                   check=True, capture_output=True)
+    want = pictures(want_file)
+    os.remove(want_file)
+    rows = [{"path": clip, "after": {"kind": "dissolve", "seconds": 20}}, {"path": clip}]
+    with App(cfg, "disc_join_crossing", rows, {"joinAll": True}) as app:
+        app.to_list()
+        app.s.js("const b = document.getElementById('pref-verify');"
+                 "if (!b.checked) b.click();")
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("both rows on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == 2, 120)
+        time.sleep(0.5)
+        for visit in ("fresh", "from the cache"):
+            files = app.export(timeout=600)
+            notes = app.s.js(
+                "return [...document.querySelectorAll('#out-list > li .note')]"
+                ".map((n) => [n.innerText, n.title]);")
+            said = " | ".join(f"{a} [{b}]" for a, b in notes)
+            got = pictures(files[0]) if len(files) == 1 else None
+            t.check(f"20 dissolve 20 s on a disc clip ({visit})",
+                    got is not None and got == want,
+                    f"outputs {[os.path.basename(f) for f in files]}, {got} pictures "
+                    f"(the CLI with every point read: {want})")
+            t.check(f"20 ベリファイ OK ({visit})",
+                    bool(notes) and all("ベリファイ OK" in a and "不一致" not in b for a, b in notes),
+                    said)
+            for f in files:
+                os.remove(f)
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -870,11 +1149,14 @@ SCENARIOS = [
     join_verify,
     mode_switch_during_run,
     cut_shapes_export,
+    disc_fields_under_hand,
+    seam_window,
+    ctrl_h_before_marks_read,
 ]
 
 
 # Selectable by name, not run by default.
-EXTRA = [ok_then_reopen_fast]
+EXTRA = [ok_then_reopen_fast, disc_join_crossing]
 
 
 def main():

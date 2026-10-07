@@ -7435,13 +7435,16 @@ function renderOutset() {
     // typed or what the recording says about itself -- so that reading the
     // screen is reading the disc, and typing is editing rather than
     // guessing. The same reason the disc's own title is filled in below.
-    fill("out-programme", programmeOf(clip));
-    fill("out-channel", channelOf(clip) ?? "");
-    fill("out-channel-number", channelNumberOf(clip) ? String(channelNumberOf(clip)) : "");
-    fill("out-made", madeOf(clip) ?? "");
-    fill("out-about", descriptionOf(clip) ?? "");
-    paintIndexFields();
-    if (!settings.discTitle) el("out-disc-title").value = discTitleFor(list);
+    //
+    // Except the field the hand is in, while it is still the same row's: this
+    // screen is redrawn by things that land on their own -- a row read, a
+    // recording's listing, the disc's name -- and each of those wrote what the
+    // row keeps back over what was being typed: an emptied name came straight
+    // back as the recording's, a space typed into a date was trimmed out from
+    // under the caret, a leading 0 of a channel number went. What was typed
+    // is put back into its one shape on the way out of the field, as above.
+    const hand = document.activeElement;
+    paintDiscFields(clip, list, was === select.value ? hand : null, hand);
   }
   const i = clip.info;
   const keeps = keepsOf(clip);
@@ -7485,6 +7488,24 @@ function renderOutset() {
   });
 }
 el("outset-clip").addEventListener("change", renderOutset);
+
+/// The row's index fields and the disc's name, as `renderOutset` draws them,
+/// leaving alone a row's field in `hand` and the disc's name where it is
+/// `titleHand` (see there).
+function paintDiscFields(clip, list, hand, titleHand) {
+  const put = (id, value) => el(id) === hand || fill(id, value);
+  put("out-programme", programmeOf(clip));
+  put("out-channel", channelOf(clip) ?? "");
+  put("out-channel-number", channelNumberOf(clip) ? String(channelNumberOf(clip)) : "");
+  put("out-made", madeOf(clip) ?? "");
+  put("out-about", descriptionOf(clip) ?? "");
+  paintIndexFields();
+  // The disc's name is the list's rather than the row's, so only the hand
+  // in it counts.
+  if (!settings.discTitle && el("out-disc-title") !== titleHand) {
+    el("out-disc-title").value = discTitleFor(list);
+  }
+}
 
 // The four things the index says about one recording, which are per clip and
 // not per list unlike everything in the panel beside them: what a recording
@@ -7549,6 +7570,23 @@ el("out-channel-number").addEventListener("change", () => {
   if (!clip) return;
   fill("out-channel-number", clip.channelNumber ? String(clip.channelNumber) : "");
 });
+// And once the hand has left a field, it shows what the redraws it was
+// spared would have put there: the disc's name worked out again where it was
+// emptied, and a row's listing or the disc's name that landed while the field
+// was in use and nothing had been typed (no `change` to put it back). After
+// the `change` handlers above, which run first. Looked at once the focus has
+// moved: a field also blurs when the whole window does (another program, a
+// dialog), and the hand is still in it then -- a date half typed with its
+// space was trimmed under it on the way back.
+for (const id of ["out-programme", "out-channel", "out-channel-number", "out-made",
+  "out-about", "out-disc-title"]) {
+  el(id).addEventListener("blur", () => setTimeout(() => {
+    if (document.activeElement === el(id) || !bdavMode()) return;
+    const list = ready();
+    const clip = byId(Number(el("outset-clip").value)) || list[0];
+    if (clip) paintDiscFields(clip, list, document.activeElement, document.activeElement);
+  }, 0));
+}
 
 // --- what will actually be re-encoded -------------------------------------
 //

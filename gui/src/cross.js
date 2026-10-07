@@ -1114,7 +1114,10 @@ if (listen) {
 // being played and put the head back at its start.
 onLangChange(() => {
   updateReadouts();
-  paintNote();
+  // The crossing's sentence only once the pair is in: before that the line
+  // is what the load said -- still reading, or why the recordings could not
+  // be read -- and a language change wiped the reason off the window.
+  if (facts) paintNote();
   // The play button's tooltip is its state's, written by `setPlaying` alone,
   // and the level's carries the number, written by `showVolume`.
   setPlaying(playing);

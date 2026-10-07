@@ -6485,10 +6485,38 @@ async fn export_joined(
                 .map(|(src, clip)| plan_with(src, &clip.ranges, clean_join))
                 .collect()
         };
+        let afters: Vec<smartcut_core::transition::Transition> = clips
+            .iter()
+            .map(|c| c.after.clone().map(Crossing::into_transition).unwrap_or_default())
+            .collect();
+        // The instants inside a range where a transition moves its copy's
+        // end or start, which the engine plans on and nothing above measured
+        // (it measured the ends of the ranges the list asked for). Taken from
+        // the engine itself, so that what is measured here is what it plans
+        // on: see `smartcut_core::cut::transition_bounds`.
+        if !sound_only {
+            let all_plans: Vec<&[smartcut_core::RangePlan]> =
+                plans.iter().map(Vec::as_slice).collect();
+            let bounds = smartcut_core::cut::transition_bounds(&all_plans, &afters);
+            for (src, at) in sources.iter_mut().zip(&bounds) {
+                if !src.leading_known && !at.is_empty() {
+                    let at: Vec<(f64, f64)> = at.iter().map(|&t| (t, t)).collect();
+                    index::refine_leading(
+                        &src.input.url.clone(),
+                        &src.video.clone(),
+                        src.start_time,
+                        src.byte_seekable,
+                        &mut src.points,
+                        &at,
+                        &src.joins.clone(),
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+        }
         // Which of them the file takes its shape from, and whose streams it
-        // is declared with. Read off the list before the clips are consumed
-        // below: the tracks the output declares are the master's, and a
-        // stream index means nothing outside the file it came from.
+        // is declared with: the tracks the output declares are the master's,
+        // and a stream index means nothing outside the file it came from.
         let master = master.min(clips.len() - 1);
         let poster = if sound_only {
             None
@@ -6501,10 +6529,6 @@ async fn export_joined(
         let by_index = clips[master].drop_streams.clone();
         let by_pid = clips[master].drop_pids.clone();
         let ranges: Vec<Vec<(f64, f64)>> = clips.iter().map(|c| c.ranges.clone()).collect();
-        let afters: Vec<smartcut_core::transition::Transition> = clips
-            .into_iter()
-            .map(|c| c.after.map(Crossing::into_transition).unwrap_or_default())
-            .collect();
         let reels: Vec<smartcut_core::cut::Reel> = sources
             .iter()
             .zip(&plans)

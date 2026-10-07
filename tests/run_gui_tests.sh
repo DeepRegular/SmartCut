@@ -24,7 +24,9 @@
 #
 # GUITEST_WORK   where the recordings, profiles and outputs go
 #                (default ~/.cache/smartcut-guitest; not /tmp, a small tmpfs on
-#                the dev VM). About 15 MB, outputs deleted as they are checked.
+#                the dev VM). About 215 MB (most of it one 190 MB recording whose first
+#                key picture is far in, made once and kept), outputs deleted as
+#                they are checked.
 # GUITEST_LANG   the locale the program is started in (default ja_JP.UTF-8).
 set -u
 cd "$(dirname "$0")/.."
