@@ -383,12 +383,35 @@ fn not_this_disc(from: &Path, to: &Path) -> Option<String> {
     if !old.files().iter().any(|e| in_bdav(&e.path)) {
         return Some(what());
     }
+    // A stream the image holds without its clip index is not a recording of
+    // that disc: it is a number another run had reserved, or was still
+    // cutting into, when the image was made (the image takes the folder as
+    // it finds it). Held to it, the run that then finished that recording was
+    // refused its own image -- the old one "held" an empty 00003.m2ts the
+    // disc no longer had at that length -- after its cut, every time two
+    // runs shared a disc, until somebody moved the image away by hand. What
+    // such a stream was is in the folder now, whole or given back.
+    let indexed: Vec<String> = old
+        .files()
+        .iter()
+        .filter_map(|e| {
+            let up = e.path.to_ascii_uppercase();
+            up.strip_prefix("BDAV/CLIPINF/")
+                .and_then(|n| n.strip_suffix(".CLPI"))
+                .map(str::to_string)
+        })
+        .collect();
     let mut held: Vec<crate::udf::Entry> = old
         .files()
         .iter()
         .filter(|e| {
             let up = e.path.to_ascii_uppercase();
-            up.starts_with("BDAV/STREAM/") || up.starts_with("BDAV/CLIPINF/")
+            match up.strip_prefix("BDAV/STREAM/") {
+                Some(name) => name
+                    .strip_suffix(".M2TS")
+                    .is_some_and(|stem| indexed.iter().any(|i| i == stem)),
+                None => up.starts_with("BDAV/CLIPINF/"),
+            }
         })
         .cloned()
         .collect();
@@ -1913,6 +1936,37 @@ mod tests {
         write(&other, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
         let _ = std::fs::remove_dir_all(&other);
         write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        let _ = std::fs::remove_file(&image);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// An image made while another run was still cutting into the disc holds
+    /// that run's stream as it was then -- empty, with no clip index -- and
+    /// is no reason to refuse the image made once that recording is whole.
+    #[test]
+    fn a_stream_still_being_cut_does_not_hold_the_image_back() {
+        let at = std::env::temp_dir().join(format!("udfw-reserved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        for dir in ["STREAM", "CLIPINF"] {
+            std::fs::create_dir_all(at.join("BDAV").join(dir)).unwrap();
+        }
+        std::fs::write(at.join("BDAV/info.bdav"), b"x").unwrap();
+        std::fs::write(at.join("BDAV/STREAM/00001.m2ts"), [0u8; 192]).unwrap();
+        std::fs::write(at.join("BDAV/CLIPINF/00001.clpi"), b"first").unwrap();
+        std::fs::write(at.join("BDAV/STREAM/00002.m2ts"), b"").unwrap();
+        let image = PathBuf::from(format!("{}.iso", at.display()));
+        let _ = std::fs::remove_file(&image);
+        write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        // The other run finishes its recording.
+        std::fs::write(at.join("BDAV/STREAM/00002.m2ts"), [0u8; 384]).unwrap();
+        std::fs::write(at.join("BDAV/CLIPINF/00002.clpi"), b"second").unwrap();
+        write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        let held = crate::udf::Image::open(&image).unwrap();
+        assert_eq!(held.find("BDAV/STREAM/00002.m2ts").unwrap().size, 384);
+        // A recording the image holds whole is still held to.
+        std::fs::write(at.join("BDAV/STREAM/00002.m2ts"), [0u8; 192]).unwrap();
+        let e = write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap_err();
+        assert!(e.to_string().contains("BDAV/STREAM/00002.m2ts"), "{e}");
         let _ = std::fs::remove_file(&image);
         let _ = std::fs::remove_dir_all(&at);
     }

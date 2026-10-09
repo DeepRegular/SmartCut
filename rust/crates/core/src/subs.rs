@@ -386,26 +386,16 @@ impl Reader {
             let Some(data) = packet.data() else {
                 continue;
             };
-            let at = match packet.pts() {
-                Some(pts) => pts as f64 * tb - start_time,
-                // A crawl is sent asynchronously -- a PES packet with no
-                // header and so no time -- and every one of them was passed
-                // over here, so the crawl track never showed anything. A
-                // receiver puts it up as it arrives, so it is timed by the
-                // last picture read before it: within a second or so, which
-                // for a crawl is near enough.
-                None if kind == Kind::Superimpose => match clock {
-                    Some(t) => t,
-                    None => continue,
-                },
-                None => continue,
-            };
-            if at > to {
-                break;
-            }
             if kind == Kind::Ttml {
                 // The packet's own stamp is a counter, so what says the read
-                // has gone past the window is the document.
+                // has gone past the window is the document -- and the stamp
+                // is not read at all, which is why this comes before it.
+                // Read as a time, a counter of 1, 2, 3 can be taken by the
+                // demuxer for a clock that has wrapped -- a clip whose own
+                // clock starts more than a minute in -- and moved 26 hours
+                // on, and the read stopped at the first document as past the
+                // window; a document with no stamp was passed over. The cut
+                // never reads the stamp either (`take_ttml` in `cut.rs`).
                 if crate::ttml::cue(data).is_some_and(|(begin, _)| base + begin > to) {
                     break;
                 }
@@ -427,6 +417,23 @@ impl Reader {
                     }
                 }
                 continue;
+            }
+            let at = match packet.pts() {
+                Some(pts) => pts as f64 * tb - start_time,
+                // A crawl is sent asynchronously -- a PES packet with no
+                // header and so no time -- and every one of them was passed
+                // over here, so the crawl track never showed anything. A
+                // receiver puts it up as it arrives, so it is timed by the
+                // last picture read before it: within a second or so, which
+                // for a crawl is near enough.
+                None if kind == Kind::Superimpose => match clock {
+                    Some(t) => t,
+                    None => continue,
+                },
+                None => continue,
+            };
+            if at > to {
+                break;
             }
             match decoder.as_mut() {
                 None => {

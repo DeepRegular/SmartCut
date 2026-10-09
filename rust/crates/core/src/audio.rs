@@ -708,6 +708,10 @@ pub struct Reencoder {
     /// taken should be. See `take`, where a hole in the sound is filled.
     window: Option<(i64, i64)>,
     next: i64,
+    /// Where the window's sound really opens: its own start, or later where
+    /// the sound laid down before it already runs past the place its
+    /// pictures begin. See `align`.
+    opens: i64,
     /// The end of the window being taken, held back from the encoder until
     /// the window closes. See `close_window`.
     stage: Pcm,
@@ -832,6 +836,7 @@ impl Reencoder {
             last_frames: Vec::new(),
             window: None,
             next: 0,
+            opens: 0,
             stage: vec![Vec::new(); channels as usize],
             stage_tail: 0,
             lead,
@@ -960,6 +965,7 @@ impl Reencoder {
             self.close_window();
             self.window = Some(window);
             self.next = window.0;
+            self.opens = window.0;
             self.stage_tail = fades.tail;
             if let Some(at) = at_out {
                 self.align(at);
@@ -1034,7 +1040,8 @@ impl Reencoder {
             }
             _ => frame.samples() as i64,
         };
-        let lo = window.0.max(first);
+        let opens = self.opens.max(window.0);
+        let lo = opens.max(first);
         let hi = window.1.min(first + n);
         if hi <= lo {
             return Ok(());
@@ -1086,7 +1093,7 @@ impl Reencoder {
             let added = b - a;
             for ch in self.stage.iter_mut().take(self.channels) {
                 let held = ch.len();
-                fade_run(&mut ch[held - added..], first + a as i64, window, head);
+                fade_run(&mut ch[held - added..], first + a as i64, (opens, window.1), head);
             }
         }
         self.spill();
@@ -1141,9 +1148,20 @@ impl Reencoder {
     }
 
     /// Fill up to `at` seconds of the output with silence, where the sound
-    /// laid down so far falls short of it. Never the other way: sound
-    /// already written is not taken back, and a range that begins a frame
-    /// late is the lesser harm.
+    /// laid down so far falls short of it.
+    ///
+    /// **And where it runs past it, open this window that much later.**
+    /// Sound already written is not taken back; what is given up instead is
+    /// the same length off the head of this window, which is what the copied
+    /// sound of a smart cut does at the same place (it opens on a later
+    /// frame -- `pick_from` in [`crate::cut`]). A window is the range's two
+    /// times, and the pictures written for it can be fewer: a range that
+    /// ends at a recorder BD-RE seam wrote a picture's worth less than its
+    /// window. Left to run on, every such seam put the rest of the sound a
+    /// picture later than its pictures, and nothing ever brought it back --
+    /// a recorder title cut across three seams with its sound re-encoded
+    /// was 26-73 ms late after each of them, where the same cut's copied
+    /// sound was on time.
     fn align(&mut self, at: f64) {
         let out = f64::from(self.out_rate.max(1));
         let laid = (self.fed - self.lead) as f64
@@ -1154,6 +1172,12 @@ impl Reencoder {
         if short > out / 50.0 {
             let samples = short * f64::from(self.sample_rate) / out;
             self.silence(samples.round() as usize);
+        } else if -short > out / 50.0 {
+            if let Some((from, to)) = self.window {
+                let skip = (-short * f64::from(self.sample_rate) / out).round() as i64;
+                self.opens = from.saturating_add(skip).min(to);
+                self.next = self.opens;
+            }
         }
     }
 

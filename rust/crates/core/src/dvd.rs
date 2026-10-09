@@ -176,6 +176,8 @@ pub fn read(at: &Path) -> Result<Disc> {
             // the first sector is what says where that clock stood.
             marks: t.chapters,
             start: t.start,
+            // A DVD title plays the cells it names, which is what is opened.
+            plays: Vec::new(),
             home: home.clone(),
             stem: crate::disc::filename(&label_row),
             label: label_row,

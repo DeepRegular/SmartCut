@@ -2156,10 +2156,54 @@ fn run() -> Result<()> {
             fmt_hms(src.duration)
         );
     }
+    // A title off a disc of recordings, cut with no ranges of its own, keeps
+    // what the disc's playlist plays: the clip it is opened as holds a second
+    // of the programme before, the moment either side of every break the
+    // recorder was stopped for, and the start of the programme after. Cut as
+    // the window cuts them when it puts the row down (see `unplayed_in`):
+    // on the pictures, so that both count them alike.
+    let unplayed: Vec<(f64, f64)> = match &off_a_disc {
+        Some(entry) if cuts.is_empty() && keeps.is_empty() => {
+            smartcut_core::disc::unplayed_in(&src, &entry.plays)
+        }
+        _ => Vec::new(),
+    };
+    if std::env::var("SMARTCUT_DEBUG").is_ok() {
+        if let Some(entry) = &off_a_disc {
+            let rel: Vec<String> = entry
+                .plays
+                .iter()
+                .map(|(a, b)| format!("{:.3}-{:.3}", a - src.start_time, b - src.start_time))
+                .collect();
+            smartcut_core::say!(
+                "  plays {} head={:.3} dur={:.3} seams={:?}",
+                rel.join(" "),
+                src.points.first().map_or(0.0, |p| p.time),
+                src.duration,
+                src.joins.iter().map(|j| (j.ends, j.time)).collect::<Vec<_>>()
+            );
+        }
+    }
+    if !unplayed.is_empty() {
+        let shown: Vec<String> = unplayed
+            .iter()
+            .map(|(a, b)| format!("{}-{}", fmt_hms(*a), fmt_hms(*b)))
+            .collect();
+        tell!(
+            "plays : the disc's playlist leaves out {} stretch(es), which are cut: {}",
+            unplayed.len(),
+            shown.join(", ")
+        );
+    }
+    // Whether every cut in front of a range is the playlist's: those are
+    // not chapters (see the marks below).
+    let cut_by_the_playlist = cuts.is_empty() && keeps.is_empty() && !unplayed.is_empty();
     let ranges = if !cuts.is_empty() {
         complement(&mut cuts, src.duration)
     } else if !keeps.is_empty() {
         merge_ranges(keeps)
+    } else if !unplayed.is_empty() {
+        complement(&mut unplayed.clone(), src.duration)
     } else {
         vec![(0.0, src.duration)]
     };
@@ -2370,6 +2414,13 @@ fn run() -> Result<()> {
         None => video_share,
     };
 
+    // What a disc cannot describe, refused before anything is cut or a slot
+    // on the disc taken. The recording the output is shaped like: with
+    // `--master N` that is one of the joined recordings, which are read
+    // further down and asked there.
+    if bdav.is_some() && master == 0 {
+        disc_can_hold(&src, audio_codec, &drop_streams)?;
+    }
     // `--analyze` stops here, before the disc is touched. Reserving a slot on
     // one makes its directories and takes a number the next run counts past,
     // and asking what a cut would do is not asking for either.
@@ -2642,6 +2693,9 @@ fn run() -> Result<()> {
         0 => &src,
         n => joined_src.get(n - 1).unwrap_or(&src),
     };
+    if bdav.is_some() && master > 0 {
+        disc_can_hold(shaped_like, audio_codec, &drop_streams)?;
+    }
     // A number that names no track that can be dropped would drop nothing,
     // and the run would go ahead as though it had been obeyed.
     let droppable = |n: usize| {
@@ -2914,24 +2968,52 @@ fn run() -> Result<()> {
     };
     let mut marks = Vec::new();
     let mut chapters = Vec::new();
+    // The range asked for that the last chapter of a cut was put down for.
+    let mut marked: Option<Option<usize>> = None;
     for plan in &plans {
-        // Not where the planner split a range at a seam the recorder left
-        // (`plan_on`): nobody cut there, and the editor puts no chapter
-        // there either. A split is a plan that starts on or past a seam
-        // lying inside a range asked for, as `at_the_seams` cuts it (its
-        // `SLIVER` is 0.1 s). Not told by how far the plan starts after the
-        // range: a range that begins on a seam is moved on to the first
-        // entry point past it (`past_the_seam`), which on a recorder's
-        // stream is half a second or more, and it is still where a cut is.
-        let half_frame = src.video.frame_duration() / 2.0;
-        let split = ranges.iter().any(|&(a, b)| {
-            plan.t_in < b
-                && src.joins.iter().any(|j| {
-                    j.time > a + 0.1 && j.time < b - 0.1 && plan.t_in >= j.time - half_frame
-                })
-        });
-        if !split {
-            marks.push(at_out);
+        // One where each range asked for begins, and not where the planner
+        // split one at a seam the recorder left (`plan_on`): nobody cut
+        // there, and the editor puts no chapter there either. Told by which
+        // range asked for the plan lies in, not by how near the seam is to
+        // the range's ends: `at_the_seams` splits at every seam inside a
+        // range however near either end, and a range that begins on a seam
+        // is moved on to the first entry point past it (`past_the_seam`),
+        // half a second or more on a recorder's stream, and is still where a
+        // cut is. Held to a margin of 0.1 s, a seam just inside a range's
+        // end put a chapter a few pictures before the cut, or one a moment
+        // before the end of the file.
+        //
+        // The first piece of a range that has a picture in it: a piece in
+        // front of a seam can be shorter than one (it is not written), and
+        // the chapter goes on the piece after it rather than nowhere.
+        // A frame's grace in front: a plan opens on the picture it found,
+        // up to half a frame either side of the instant asked for.
+        let frame = src.video.frame_duration();
+        let asked = ranges
+            .iter()
+            .position(|&(a, b)| plan.t_in >= a - frame && plan.t_in < b);
+        //
+        // Nor where the cut in front of the range is one the disc's playlist
+        // made (`unplayed_in`): the recorder stepped over that moment, and
+        // nobody cut there either. The disc's own marks say where its
+        // chapters are, and a title kept as its playlist plays it has those
+        // and no more -- the window's rule as well (`chaptersFor`). Where
+        // the disc has a mark on the range's start (within a frame: the
+        // recorder sets one on an item's IN, and the start is on a picture),
+        // that chapter is the range's start, and wins over a mark of the
+        // range before half a second away as a range start does.
+        if !plan.segments.is_empty() && marked != Some(asked) {
+            let marked_there = |i: usize| {
+                came_with
+                    .iter()
+                    .map(|m| m - src.start_time)
+                    .any(|s| s >= ranges[i].0 - frame && s < ranges[i].0 + frame)
+            };
+            let playlists = cut_by_the_playlist && marked.is_some();
+            if !playlists || asked.is_some_and(marked_there) {
+                marks.push(at_out);
+            }
+            marked = Some(asked);
         }
         // And the chapters it came with, where they are still in what is
         // kept. A disc read and written straight back used to
@@ -3200,6 +3282,40 @@ fn run() -> Result<()> {
 }
 
 /// A disc's stream taken for this run, given back unless the run keeps it.
+/// Refuse a recording whose pictures or kept sound a disc of recordings has
+/// no coding type for, as each will be written (see
+/// `smartcut_core::carry::on_a_disc_as`). A transport stream takes Opus, so
+/// the cut went ahead and the disc's index refused it once it was written.
+fn disc_can_hold(
+    src: &smartcut_core::Source,
+    asked: smartcut_core::AudioCodec,
+    dropped: &[usize],
+) -> Result<()> {
+    use smartcut_core::carry::{disc_holds_audio, disc_holds_video, on_a_disc_as};
+    if !disc_holds_video(&src.video.codec) {
+        bail!(
+            "--bdav: a disc of recordings has no coding type for {} pictures ({}); \
+             cut it into a file instead",
+            src.video.codec,
+            src.path
+        );
+    }
+    for a in src.audios.iter().filter(|a| !dropped.contains(&a.stream_index)) {
+        let written = on_a_disc_as(&a.codec, asked.as_str());
+        if !disc_holds_audio(written) {
+            bail!(
+                "--bdav: a disc of recordings has no coding type for {written} sound (stream {} \
+                 of {}); --audio-codec aac, ac3 or lpcm writes it in one a disc has, or \
+                 --drop-stream {} leaves it out",
+                a.stream_index,
+                src.path,
+                a.stream_index
+            );
+        }
+    }
+    Ok(())
+}
+
 struct Slot(Option<std::path::PathBuf>);
 
 impl Slot {

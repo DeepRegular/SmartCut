@@ -400,6 +400,183 @@ pub(crate) fn on_screen_at(video: &VideoInfo, points: &[AccessPoint], t: f64) ->
     }
 }
 
+/// `t` as a bound on the picture nearest it, as [`on_the_pictures`] moves a
+/// range's bounds: for an instant meant to be on a picture that was worked
+/// out rather than read off one -- the start of a clip moved on by a whole
+/// number of its own pictures, which is where the clip after an overlapping
+/// crossing resumes (see `ranges_with_transitions` in [`crate::cut`]). On a
+/// coarse clock its picture's stored time can land either side of it; moved
+/// two ticks ahead of the picture, every comparison after this has one
+/// answer. Left as it is on a fine clock.
+pub(crate) fn on_a_picture(
+    video: &VideoInfo,
+    duration: f64,
+    points: &[AccessPoint],
+    t: f64,
+) -> f64 {
+    on_the_pictures(video, duration, points, &[(t, t)])[0].0
+}
+
+/// Whether the pictures of a recording can sit off any grid a bound could be
+/// worked out on, so that a transition's bounds have to be read off the
+/// pictures themselves; see [`picture_on_screen`].
+///
+/// **A picture held for three fields moves every picture after it half a
+/// frame.** Soft telecine does it two pictures in four, an interlaced
+/// broadcast now and then, a DVD of a film all through, a Blu-ray's VC-1
+/// where the disc says so -- and a remux of any of them need not say
+/// `pulldown` (see [`on_the_pictures`]), so MPEG-2 and VC-1 are read off
+/// their pictures always. A field point is not a picture's start there:
+/// [`on_screen_at`] put the body of a range before a dissolve on one in the
+/// middle of a 3-field picture, the body wrote that picture and the
+/// crossing opened on it again (a soft-telecine clip joined to itself, a
+/// one-second dissolve: output pictures 350 and 351 both its picture 84).
+/// And a recording whose pictures do not come at a rate has no grid at all,
+/// and kept the doubling [`on_screen_at`] was written to end.
+pub(crate) fn pictures_off_the_grid(video: &VideoInfo) -> bool {
+    video.pulldown
+        || video.variable_rate
+        || matches!(video.codec.as_str(), "mpeg1video" | "mpeg2video" | "vc1")
+}
+
+/// The stored times of the pictures that begin between `lo` and `hi`, read
+/// off the recording's packets, in order. `None` where they could not all be
+/// read -- a packet with no time, a read that failed, nothing there.
+fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
+    let mut ictx = crate::input::demux(&src.input.url).ok()?;
+    let idx = src.video.stream_index;
+    crate::input::keep_only(&mut ictx, &[idx]);
+    if crate::index::seek_to_entry(&mut ictx, src, lo).is_none() {
+        // As the cutter seeks where the index has no byte for the entry:
+        // a margin early, and read forwards from there.
+        let at = src
+            .points
+            .iter()
+            .rev()
+            .find(|p| p.time <= lo + 1e-6)
+            .map_or(0.0, |p| p.time);
+        let landing = at - src.seek_margin;
+        let target = if landing <= 0.0 {
+            i64::MIN / 2
+        } else {
+            ((landing + src.start_time) * ffmpeg_next::ffi::AV_TIME_BASE as f64) as i64
+        };
+        ictx.seek(target, ..target).ok()?;
+    }
+    let tb = src.video.time_base;
+    let fd = src.video.frame_duration();
+    // A field coded on its own is half a picture, and the second of a pair
+    // begins nothing: a recorder's 1080i stamps it half a frame into the
+    // picture, and taken for a start it put the picture on screen half a
+    // frame late and the clip after a crossing resuming in the middle of
+    // one. Told apart as [`crate::index`] tells them, counted in pairs from
+    // the entry point's own picture.
+    let codec = src.video.codec.as_str();
+    let framing = src.video.framing;
+    let mut shape = src.video.field_shape;
+    let mut half_open = false;
+    let mut opened = false;
+    let mut starts = Vec::new();
+    let mut reading = ictx.read_packets();
+    for (stream, packet) in reading.by_ref() {
+        if stream.index() != idx {
+            continue;
+        }
+        if !opened {
+            if !packet.is_key() {
+                continue;
+            }
+            opened = true;
+        }
+        let second_half = src.video.field_shape.is_some() && {
+            if let Some(restated) = packet
+                .data()
+                .and_then(|d| crate::bitstream::restated_field_shape(codec, d, framing))
+            {
+                shape = restated;
+            }
+            let field = packet.data().is_some_and(|d| {
+                crate::bitstream::is_field_picture(d, codec, framing, shape.as_ref())
+            });
+            let second = field && half_open;
+            half_open = field && !second;
+            second
+        };
+        // In decode order: once a picture is decoded past `hi` -- a little
+        // past, for a field coded on its own -- nothing after it is shown
+        // before `hi`.
+        let pts = packet.pts().map(|p| p as f64 * tb - src.start_time);
+        let dts = packet.dts().map(|p| p as f64 * tb - src.start_time);
+        // Without a decode time to go by (Matroska), on presentation times
+        // a generous way past, for the pictures reordered behind one.
+        if dts.map_or(pts.is_some_and(|t| t > hi + 1.0), |t| t > hi + 2.0 * fd) {
+            break;
+        }
+        if second_half {
+            continue;
+        }
+        let t = pts?;
+        if t >= lo && t <= hi {
+            starts.push(t);
+        }
+    }
+    reading.finished().ok()?;
+    starts.sort_by(f64::total_cmp);
+    starts.dedup();
+    (!starts.is_empty()).then_some(starts)
+}
+
+/// A picture's stored time as a bound on it: itself on a fine clock, two of
+/// the clock's ticks ahead of it on a coarse one, where everything after this
+/// tells a picture from a bound with a slack of a few ticks; see
+/// [`on_the_pictures`].
+fn as_a_bound(video: &VideoInfo, t: f64) -> f64 {
+    let fd = video.frame_duration();
+    let tick = video.time_base.min(fd / 12.0);
+    if tick.is_finite() && fd.is_finite() && tick > fd * 0.01 {
+        t - 2.0 * tick
+    } else {
+        t
+    }
+}
+
+/// [`on_screen_at`] read off the pictures rather than worked out on a grid:
+/// the start of the picture on screen at `t`, as a bound. For a recording
+/// [`pictures_off_the_grid`] answers for; `None` where its pictures could not
+/// be read there, and the caller falls back on the grid.
+pub(crate) fn picture_on_screen(src: &crate::Source, t: f64) -> Option<f64> {
+    let video = &src.video;
+    let fd = video.frame_duration();
+    if !(fd.is_finite() && fd > 0.0) || !t.is_finite() {
+        return None;
+    }
+    // A bound already on a picture -- two ticks ahead of it on a coarse
+    // clock -- is that picture's.
+    let ahead = (3.0 * video.time_base).min(fd / 3.0).max(fd * 1e-3);
+    let starts = picture_starts(src, t - 2.0 * fd, t + fd)?;
+    let on = starts.iter().rev().find(|&&p| p <= t + ahead)?;
+    // A picture is shown for three fields at the most; one further back
+    // than that is not the one on screen, whatever was read.
+    (*on > t - 2.0 * fd).then(|| as_a_bound(video, *on).min(t))
+}
+
+/// The start of the first picture to begin after `t` -- after `t + slack`,
+/// the slack a picture on screen at `t` is looked for with -- as a bound:
+/// where a clip resumes whose picture on screen at `t` has been shown. Any
+/// recording: what is on screen at `t` depends on where its pictures really
+/// are, which a grid knows only where `t` was put on one. `None` where its
+/// pictures could not be read there.
+pub(crate) fn picture_after(src: &crate::Source, t: f64, slack: f64) -> Option<f64> {
+    let video = &src.video;
+    let fd = video.frame_duration();
+    if !(fd.is_finite() && fd > 0.0) || !t.is_finite() {
+        return None;
+    }
+    let starts = picture_starts(src, t - fd, t + 2.0 * fd)?;
+    let next = starts.iter().find(|&&p| p > t + slack)?;
+    (*next <= t + 2.0 * fd).then(|| as_a_bound(video, *next))
+}
+
 pub fn plan_range(
     video: &VideoInfo,
     duration: f64,
@@ -664,7 +841,13 @@ fn own_points(src: &crate::Source, plan: &RangePlan) -> Option<Vec<AccessPoint>>
         // Unread is taken as running past: a GOP re-encoded that need not
         // have been costs less than pictures written past the range.
         let last = stretch_last_picture(src, lo, wall);
-        if last.is_some_and(|t| t < stop - eps) {
+        // A quarter of a frame and not half: what is read is the last
+        // *packet's* time, and a field-coded recording (a recorder's 1080i)
+        // stamps a frame's second field a tick past half a frame into it. A
+        // stretch that ends exactly where its seam says has its last frame's
+        // second field there, and at half a frame that was taken for a
+        // picture past the seam and the last GOP re-encoded for nothing.
+        if last.is_some_and(|t| t < stop - fd / 4.0) {
             return None;
         }
     }
@@ -1171,6 +1354,30 @@ mod tests {
         // (A quarter of a frame: MPEG-2's grid is of fields, see above.)
         let between = stored(46) + fd / 4.0;
         assert_eq!(on_the_pictures(&video, 300.0, &points, &[(between, 300.0)]), [(between, 300.0)]);
+    }
+
+    /// An instant worked out to be on a picture -- a clip's start moved on by
+    /// whole frames -- is put two ticks ahead of the picture on a coarse
+    /// clock whichever side of it the arithmetic landed, so that the picture
+    /// is the first one at or after it; and left alone on a fine clock.
+    #[test]
+    fn an_instant_on_a_picture_is_the_pictures() {
+        let mut video = video();
+        video.time_base = 1.0 / 1000.0;
+        let fd = video.frame_duration();
+        let points = stored_points(40, fd);
+        let grid = |n: usize| 0.011 + n as f64 * fd;
+        let stored = |n: usize| (grid(n) * 1000.0).round() / 1000.0;
+        for n in [37usize, 46, 100, 233] {
+            for t in [grid(n), stored(n), grid(n) - 0.0019, grid(n) + 0.0015] {
+                let at = on_a_picture(&video, 300.0, &points, t);
+                assert!(at <= stored(n) - 0.0009, "{n} {t}: {at}");
+                assert!(at > stored(n - 1) + fd / 2.0, "{n} {t}: {at}");
+            }
+        }
+        // A fine clock compares a bound on a picture as the picture.
+        let fine = super::tests::video();
+        assert_eq!(on_a_picture(&fine, 300.0, &points, grid(46)), grid(46));
     }
 
     /// A tail of one picture -- an entry point's leading picture, the range

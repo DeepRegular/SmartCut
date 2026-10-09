@@ -322,6 +322,21 @@ pub struct Entry {
     /// last of those three, which is why the first is carried rather than
     /// folded in.
     pub start: f64,
+    /// What the disc's own playlist plays of it: each play item's IN and OUT,
+    /// on the same clock as [`Entry::start`], in order.
+    ///
+    /// **A recorder's title is less than the clip it is opened as.** The
+    /// clip begins a second or so ahead of the first IN -- the end of the
+    /// programme before, or a station spot -- and runs on past the last OUT
+    /// into the next one; and where the recorder was stopped to leave a
+    /// break out, the clip still holds the moment either side of the stop,
+    /// which the playlist steps over. Opened whole, all of that was cut into
+    /// the output. See [`unplayed`], which turns these into what a cut with
+    /// no ranges of its own leaves out.
+    ///
+    /// Empty where the disc is not a disc of recordings: a pressed disc's
+    /// play items are not something this reader leaves anything out by.
+    pub plays: Vec<(f64, f64)>,
     /// Where a cut of it belongs when no output folder has been chosen.
     ///
     /// Beside the disc rather than in it: a cut of `Anime.iso` is written in
@@ -727,6 +742,10 @@ fn read_bluray(at: &Path) -> Result<Disc> {
                 duration: c.end - c.start,
                 marks: c.marks.clone(),
                 start: c.start,
+                plays: match shape {
+                    Shape::Bdav => c.plays.clone(),
+                    Shape::Bdmv | Shape::Dvd => Vec::new(),
+                },
                 home: home.clone(),
                 stem: filename(&label_row),
                 label: label_row,
@@ -790,6 +809,9 @@ struct Row {
     end: f64,
     /// The chapter points inside it, in seconds from `start`.
     marks: Vec<f64>,
+    /// Each play item's IN and OUT, on the same clock as `start`. One pair
+    /// for a row of one item; one per item for a joined clip.
+    plays: Vec<(f64, f64)>,
 }
 
 /// Turn the items a playlist plays into the rows a list offers.
@@ -832,6 +854,7 @@ fn rows_of(clips: &[Clip], shape: Shape, vol: &mut Volume) -> Vec<Row> {
                 start: c.start,
                 end: c.end,
                 marks: c.marks.clone(),
+                plays: vec![(c.start, c.end)],
             })),
         }
         i = j;
@@ -886,13 +909,198 @@ fn whole_clip(
         })
         .collect();
     marks.sort_by(f64::total_cmp);
+    let plays = run
+        .iter()
+        .enumerate()
+        .map(|(k, c)| (c.start + moved(k), c.end + moved(k)))
+        .collect();
     Some(Row {
         clip: run[0].name.clone(),
         path: run[0].path.clone(),
         start,
         end,
         marks,
+        plays,
     })
+}
+
+/// The shortest stretch [`unplayed`] cuts. See there.
+///
+/// Measured: a playlist authored onto a disc states its IN and OUT within a
+/// millisecond of the clip's first and last picture (67 titles of eleven discs
+/// of that kind); what a recorder leaves out is 0.13 s at the least and
+/// mostly seconds (40 titles of seven discs). The window cuts by the same
+/// number (`UNPLAYED_LEAST` in `shared.js`).
+pub const UNPLAYED_LEAST: f64 = 0.1;
+
+/// What a disc's playlist leaves out of the clip a title is opened as, as
+/// stretches of the recording to cut: in the recording's own seconds, the
+/// clip's start being `start_time` on the clock [`Entry::plays`] is on, and
+/// in order.
+///
+/// What a cut with no ranges of its own cuts away, so that it keeps what the
+/// disc plays: the head before the first IN, every stretch from one item's
+/// OUT to the next one's IN -- the moment either side of a break the
+/// recorder was stopped for -- and what runs on past the last OUT. The
+/// command line takes these as its cuts and the window puts them down as the
+/// row's first cuts, so the two write the same thing.
+///
+/// A stretch shorter than `least` is not one: a playlist written to the
+/// pictures a clip holds -- every pressed disc, and a disc authored onto a
+/// recorder's format -- states its IN and OUT within a frame of the clip's
+/// own ends, and cutting that rounding away would be a cut of no pictures
+/// that still changed what the planner was asked. Nor is the head, where the
+/// first IN is not past `head` -- the first picture there is, before which
+/// nothing is kept anyway.
+pub fn unplayed(
+    plays: &[(f64, f64)],
+    start_time: f64,
+    head: f64,
+    duration: f64,
+    least: f64,
+) -> Vec<(f64, f64)> {
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    if plays.is_empty() || duration.is_nan() || duration <= 0.0 {
+        return out;
+    }
+    let mut windows: Vec<(f64, f64)> = plays
+        .iter()
+        .map(|&(a, b)| (a - start_time, b - start_time))
+        .filter(|(a, b)| a.is_finite() && b.is_finite() && b > a)
+        .collect();
+    windows.sort_by(|x, y| x.0.total_cmp(&y.0));
+    if windows.is_empty() {
+        return out;
+    }
+    let mut take = |a: f64, b: f64| {
+        let (a, b) = (a.max(0.0), b.min(duration));
+        if b - a >= least {
+            out.push((a, b));
+        }
+    };
+    // Measured from the first picture: what lies ahead of it is not kept
+    // whatever this says.
+    if windows[0].0 - head.max(0.0) >= least {
+        take(0.0, windows[0].0);
+    }
+    let mut reach = windows[0].1;
+    for &(a, b) in &windows[1..] {
+        if a > reach {
+            take(reach, a);
+        }
+        reach = reach.max(b);
+    }
+    take(reach, duration);
+    out
+}
+
+/// [`unplayed`] for a recording that has been walked, each end of each
+/// stretch moved onto a picture (see [`onto_pictures`]).
+///
+/// A playlist's IN and OUT are the recorder's instants, not pictures of the
+/// clip it is opened as, and a cut ending between two pictures was counted
+/// one way by whatever numbers pictures and another by the cut: the window's
+/// Trim line of a title kept one picture more than the cut written from the
+/// same row, and a mark standing on an IN came back out of a `.keyframe` half
+/// a frame early, inside the cut, and was dropped. On the pictures, the
+/// command line and the window cut the same stretches and every count of
+/// them agrees.
+///
+/// The pictures are counted from the walk's own entry points, one stretch of
+/// the clip at a time: a recorder's seam starts its stretch on a phase of its
+/// own, so a grid laid from the first picture of the recording is off by up
+/// to a picture past the first seam. See [`onto_pictures`].
+pub fn unplayed_in(src: &crate::Source, plays: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let head = src.points.first().map_or(0.0, |p| p.time);
+    let cuts = unplayed(plays, src.start_time, head, src.duration, UNPLAYED_LEAST);
+    if src.video.variable_rate {
+        // No grid to count along: the instants as the playlist says them.
+        return cuts;
+    }
+    // Named by the frame they fall in, as the window has them (see
+    // `weave::on_frame`), so that a bound lands on a frame the editor steps
+    // to.
+    let points: Vec<f64> = src.points.iter().map(|p| crate::weave::on_frame(src, p.time)).collect();
+    let seams: Vec<f64> = src.joins.iter().map(|s| s.time).collect();
+    onto_pictures(&cuts, &points, &seams, src.video.frame_duration(), src.duration)
+}
+
+/// How far ahead of an entry point's stated time its picture can be: a
+/// disc's entry point map keeps the time to 512 ticks of 90 kHz (the eleven
+/// bits of a fine entry start at bit nine), and an index read off it states
+/// every entry point up to that much early. A walk's are exact, and lose
+/// nothing by the allowance.
+const POINT_EARLY: f64 = 512.0 / 90_000.0;
+
+/// Move each end of `cuts` onto a picture: counted in frames of `fd` from the
+/// last entry point (`points`, in order) of the stretch the end lies in, a
+/// stretch running from one of `seams` to the next.
+///
+/// A cut's start (a playlist item's OUT) goes to the first picture at or
+/// after it, and its end (the next item's IN) to the picture on screen at
+/// it: what is cut is the pictures the playlist shows none of. A recorder's
+/// 1080i starts and stops an item on a frame's second field, and the frame
+/// whose one field is played is kept -- which is what the cut always did
+/// there, and on an IN that is an entry point's second field it is a copy
+/// from that entry point rather than a picture short and a stretch
+/// re-encoded.
+///
+/// Where a picture is, it is known to within [`POINT_EARLY`] after the grid
+/// laid from an entry point's stated time, and an end is put on that grid:
+/// no later than the picture, so a cut from there takes it or a range from
+/// there keeps it, and most of a frame after the picture before. An end on a
+/// picture already -- a playlist states its times in ticks of 45 kHz, the
+/// pictures are on a clock of 90 -- moves by no more than that allowance.
+///
+/// An end ahead of every entry point of its stretch -- the moment after a
+/// seam before its first picture, which no cut writes -- goes to that first
+/// entry point; one at either end of the recording stays where it is.
+fn onto_pictures(
+    cuts: &[(f64, f64)],
+    points: &[f64],
+    seams: &[f64],
+    fd: f64,
+    duration: f64,
+) -> Vec<(f64, f64)> {
+    if fd.is_nan() || fd <= 0.0 || points.is_empty() {
+        return cuts.to_vec();
+    }
+    let slack = fd * 0.01;
+    // `start`: the first picture at or after `t`; otherwise the one on
+    // screen at it.
+    let on = |t: f64, start: bool| -> f64 {
+        if t.is_nan() || t <= 0.0 || t >= duration {
+            return t;
+        }
+        let since = seams
+            .iter()
+            .copied()
+            .filter(|s| *s <= t + slack)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let anchor = points
+            .iter()
+            .rev()
+            .copied()
+            .find(|p| *p <= t + slack && *p >= since - slack);
+        let at = match anchor {
+            Some(p) if start => p + ((t - p - POINT_EARLY - slack) / fd).ceil().max(0.0) * fd,
+            Some(p) => p + ((t - p + slack) / fd).floor().max(0.0) * fd,
+            None => points.iter().copied().find(|p| *p >= t - slack).unwrap_or(t),
+        };
+        at.min(duration)
+    };
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for &(a, b) in cuts {
+        let (a, b) = (on(a, true), on(b, false));
+        if b <= a {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
 }
 
 /// Which rows to offer already ticked.
@@ -2990,6 +3198,83 @@ mod tests {
         assert!((row.marks[0] - 0.0).abs() < 1e-9);
         assert!((row.marks[1] - 5.0).abs() < 1e-9);
         assert!((row.marks[2] - 12.0).abs() < 1e-9);
+    }
+
+    /// What a playlist steps over is what a cut with no ranges of its own
+    /// leaves out: the head, the stretch between two items, and the tail.
+    #[test]
+    fn what_a_playlist_leaves_out_is_cut() {
+        let plays = [(101.0, 111.0), (112.0, 120.0)];
+        let cuts = unplayed(&plays, 100.5, 0.2, 21.0, UNPLAYED_LEAST);
+        assert_eq!(cuts.len(), 3);
+        assert!((cuts[0].0 - 0.0).abs() < 1e-9 && (cuts[0].1 - 0.5).abs() < 1e-9);
+        assert!((cuts[1].0 - 10.5).abs() < 1e-9 && (cuts[1].1 - 11.5).abs() < 1e-9);
+        assert!((cuts[2].0 - 19.5).abs() < 1e-9 && (cuts[2].1 - 21.0).abs() < 1e-9);
+        // In any order the items come in.
+        let back = [plays[1], plays[0]];
+        assert_eq!(unplayed(&back, 100.5, 0.2, 21.0, UNPLAYED_LEAST), cuts);
+        // A playlist written to the pictures, within a millisecond of either
+        // end: nothing.
+        assert!(unplayed(&[(100.5, 121.5004)], 100.5, 0.0, 21.0, UNPLAYED_LEAST).is_empty());
+        assert!(unplayed(&[(100.4996, 121.5)], 100.5, 0.0, 21.0, UNPLAYED_LEAST).is_empty());
+        // An IN no further in than the first picture is no head to cut.
+        assert!(unplayed(&[(100.9, 121.5)], 100.5, 0.45, 21.0, UNPLAYED_LEAST).is_empty());
+        // Items that overlap or touch leave nothing between them.
+        assert!(unplayed(&[(100.5, 111.0), (110.0, 121.5)], 100.5, 0.0, 21.0, UNPLAYED_LEAST)
+            .is_empty());
+        // And nothing at all said is nothing cut.
+        assert!(unplayed(&[], 100.5, 0.0, 21.0, UNPLAYED_LEAST).is_empty());
+    }
+
+    /// The ends of what a playlist leaves out go onto pictures, counted from
+    /// the entry points of the stretch each end lies in: past a seam the
+    /// pictures are on a phase of their own.
+    #[test]
+    fn what_a_playlist_leaves_out_ends_on_pictures() {
+        let fd = 0.04;
+        // Entry points every second from 0.5; a seam at 10.013, whose
+        // stretch's first entry point is 10.03 and whose pictures are 10.03
+        // + n * fd from there -- off the first stretch's grid by a quarter.
+        let points = [0.5, 1.5, 2.5, 10.03, 11.03];
+        let near = |got: &[(f64, f64)], want: &[(f64, f64)]| {
+            got.len() == want.len()
+                && got
+                    .iter()
+                    .zip(want)
+                    .all(|(g, w)| (g.0 - w.0).abs() < 1e-9 && (g.1 - w.1).abs() < 1e-9)
+        };
+        // A cut's start between two pictures: the next one. Its end between
+        // two: the one on screen there, which the cut leaves. On a picture,
+        // give or take a tick of 90 kHz: that one. The recording's own ends
+        // stay.
+        let got = onto_pictures(
+            &[(0.0, 1.51), (2.5 - 1.0 / 90_000.0, 3.0), (12.0, 20.0)],
+            &points,
+            &[10.013],
+            fd,
+            20.0,
+        );
+        assert!(near(&got, &[(0.0, 1.5), (2.5, 2.98), (12.03, 20.0)]), "{got:?}");
+        // Before the seam, on the first stretch's phase; after it, on the
+        // second's -- not on a grid laid from the first picture, which has
+        // a picture at 10.5.
+        let got = onto_pictures(&[(9.99, 10.5)], &points, &[10.013], fd, 20.0);
+        assert!(near(&got, &[(10.02, 10.47)]), "{got:?}");
+        // After the seam but ahead of its stretch's first entry point: that
+        // entry point, which is where anything after the seam is written from.
+        let got = onto_pictures(&[(5.0, 10.015)], &points, &[10.013], fd, 20.0);
+        assert!(near(&got, &[(5.02, 10.03)]), "{got:?}");
+        // Two that meet once on the pictures are one; one that holds no
+        // whole picture is none.
+        let got = onto_pictures(&[(3.0, 3.1), (3.09, 4.0), (6.001, 6.03)], &points, &[], fd, 20.0);
+        assert!(near(&got, &[(3.02, 3.98)]), "{got:?}");
+        // An entry point stated 3 ms early, as a disc's map states them:
+        // the picture three frames on is at 0.62, and an end a tick before
+        // it is on it (put on the stated grid, no later than the picture).
+        // A start half a frame past it goes on to the next. A start ahead of
+        // the first entry point goes to it.
+        let got = onto_pictures(&[(0.3, 0.62 - 1.0 / 90_000.0), (0.64, 1.0)], &[0.497], &[], fd, 20.0);
+        assert!(near(&got, &[(0.497, 0.617), (0.657, 0.977)]), "{got:?}");
     }
 
     /// And anything less than the whole clip is left as it was: a row per

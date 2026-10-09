@@ -488,6 +488,33 @@ fn on_screen_slack(in_tb: f64, step: f64) -> Option<f64> {
     (in_tb.is_finite() && in_tb > fine).then(|| (3.5 * in_tb).min(step / 3.0).max(fine))
 }
 
+/// The slack the clip on the far side of a crossing is read with: a picture
+/// arriving that much after an instant is still the one on screen at it.
+/// See [`FarSide::at`]; [`crate::cut`] works out where that clip resumes
+/// after the crossing with the same one.
+pub(crate) fn far_slack(in_tb: f64, step: f64) -> f64 {
+    on_screen_slack(in_tb, step).unwrap_or(step * 1e-3)
+}
+
+/// How many pictures a stretch of `src` written afresh from `start` to `end`
+/// comes to, as [`pictures_afresh`] lays them: one at every instant a frame
+/// (`step`, the master's) apart from `start`, up to the stretch's end or the
+/// recording's, whichever is first. Which is how far into the clip on the
+/// far side a crossing over that stretch reads -- the instants
+/// [`FarSide::at`] is asked for -- and so where that clip has to resume.
+pub(crate) fn instants(src: &Source, step: f64, start: f64, end: f64) -> i64 {
+    if !(step.is_finite() && step > 0.0 && start.is_finite() && end.is_finite()) {
+        return 0;
+    }
+    let until = if src.duration > 0.0 { end.min(src.duration) } else { end };
+    let slack = far_slack(src.video.time_base, step);
+    let mut made = 0i64;
+    while start + made as f64 * step < until - slack {
+        made += 1;
+    }
+    made
+}
+
 /// The master's pixel format, where its parameters state one.
 ///
 /// **Not every recording does.** A Blu-ray's VC-1 can be probed without a
@@ -695,7 +722,7 @@ impl FarSide {
         let want = self.from + elapsed;
         // The clip's own clock may be too coarse to put a picture exactly on
         // the instant it belongs to; see [`on_screen_slack`].
-        let slack = on_screen_slack(self.in_tb, into.video.frame_duration()).unwrap_or(1e-9);
+        let slack = far_slack(self.in_tb, into.video.frame_duration());
         loop {
             match self.ahead.take() {
                 Some((t, frame)) if t <= want + slack => self.held = Some(frame),

@@ -616,6 +616,37 @@ pub struct Source {
     pub byte_seekable: bool,
 }
 
+impl Source {
+    /// The stretches of the recording no cut of it writes, whatever is kept:
+    /// at each seam, from where the stretch before it stops having pictures
+    /// to the first entry point of the stretch after it. In seconds, in
+    /// order; empty for every recording without seams.
+    ///
+    /// The planner's own two rules, said once more for whoever has to know
+    /// how long a cut comes out without planning it: a range stops at a
+    /// seam's `ends` ([`plan`]'s `at_the_seams`), and one that resumes past
+    /// a seam resumes at the first entry point there (`past_the_seam`). On
+    /// most recorder discs that is a few pictures; where a sequence table
+    /// overstates a stretch it is seconds of clock with no picture at all,
+    /// and a list that counted them put every chapter after them that much
+    /// late.
+    pub fn unwritten(&self) -> Vec<(f64, f64)> {
+        let eps = self.video.frame_duration() / 2.0;
+        self.joins
+            .iter()
+            .filter_map(|seam| {
+                let from = seam.ends.min(seam.time);
+                let to = self
+                    .points
+                    .iter()
+                    .find(|p| p.time >= seam.time - eps)
+                    .map_or(seam.time, |p| p.time);
+                (to - from > eps).then_some((from, to))
+            })
+            .collect()
+    }
+}
+
 /// How to name one track where a person will read it.
 ///
 /// `pid 0x1100` off a transport stream, `stream 1` out of anything else. The

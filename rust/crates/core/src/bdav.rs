@@ -1702,12 +1702,21 @@ fn rpls(clip_name: &str, clip: &Clip, rec: &Recording) -> Vec<u8> {
     // own chapter a moment before the end of what was kept then lands past
     // the play item's out time, which is a mark into nothing. And a mark
     // ahead of zero is ahead of the in time, not on it.
+    //
+    // Nor one within half a second of the out time: a chapter of nothing is
+    // a skip that lands on the last picture. The rule a file's chapter list
+    // is held to (`cut::chapter_points`), here so that every caller's marks
+    // are held to it -- a recorder's playlist that ends on an item of a
+    // picture or two put a range start, and with it a chapter, 0.07 s before
+    // the end of the disc's recording, where the same cut written to a file
+    // had none.
+    let last = clip.end as f64 - 0.5 * TICK;
     let mut when: Vec<u32> = rec
         .marks
         .iter()
         .filter(|at| at.is_finite())
         .map(|at| (clip.start as f64 + at * TICK).max(clip.start as f64) as u32)
-        .filter(|t| *t == clip.start || *t < clip.end)
+        .filter(|t| *t == clip.start || (*t < clip.end && f64::from(*t) < last))
         .collect();
     when.sort_unstable();
     when.dedup();
@@ -1987,7 +1996,8 @@ mod tests {
 
     /// Only marks inside the play item go in, in order and once each: the
     /// clip here is thirty seconds long, and a mark past that or ahead of
-    /// its start is a mark into nothing.
+    /// its start is a mark into nothing, and so is one in its last half
+    /// second.
     #[test]
     fn a_mark_outside_the_recording_is_left_out() {
         let rec = Recording {
@@ -1998,7 +2008,9 @@ mod tests {
             description: None,
             channel: None,
             channel_number: 0,
-            marks: vec![12.5, 0.0, 30.0, 31.2, -0.2, f64::NAN, 12.5],
+            // 29.6 is inside, but half a second or less from the end: a
+            // chapter of nothing, as a file's chapter list has it.
+            marks: vec![12.5, 0.0, 30.0, 31.2, -0.2, f64::NAN, 12.5, 29.6],
         };
         let raw = rpls("00001", &clip(), &rec);
         let marks_at = u32::from_be_bytes(raw[12..16].try_into().unwrap()) as usize;

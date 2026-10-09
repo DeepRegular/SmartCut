@@ -707,6 +707,10 @@ pub fn build_with_sound(
     // One picture's packets: the key packet, and the one behind it where the
     // material is field coded and the picture is two.
     let mut pending: Vec<ff::Packet> = Vec::new();
+    // Which stretch of a recorder's clip the pictures are in, so that an
+    // entry picture the cut never writes is not held either: see
+    // [`crate::preview::Stretches`].
+    let mut stretches = crate::preview::Stretches::new(src);
     for (stream, packet) in ictx.read_packets() {
         if let Some(f) = stop.as_ref() {
             if f() {
@@ -738,6 +742,7 @@ pub fn build_with_sound(
         // Which packets those are is [`crate::EntryPictures`]: a key packet
         // is the whole of an entry picture until the material is PAFF, where
         // it is the first field of one and the packet behind it is the rest.
+        stretches.reach(packet.position());
         match entries.step(&packet) {
             crate::Step::Skip => continue,
             // Half a picture: nothing can come out until its partner goes in,
@@ -745,6 +750,17 @@ pub fn build_with_sound(
             crate::Step::Half => pending.push(packet),
             crate::Step::Whole => {
                 pending.push(packet);
+                // Timed by the first of its packets that says, as the strip's
+                // entry runs time it; one that says nothing is decoded and
+                // timed by what comes out, as before.
+                let at = pending
+                    .iter()
+                    .find_map(|p| p.pts())
+                    .map(|pts| pts as f64 * src.video.time_base - src.start_time);
+                if at.is_some_and(|t| stretches.outside(t)) {
+                    pending.clear();
+                    continue;
+                }
                 pool.push(std::mem::take(&mut pending));
                 // Whatever the pool has finished in the meantime, in the
                 // order the file holds it -- which is what the drain below

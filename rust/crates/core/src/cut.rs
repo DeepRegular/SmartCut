@@ -6455,7 +6455,15 @@ fn graft_tables(
             // than saying nothing. A track in another codec is further from
             // the description again.
             faithful: setup.downmix.is_none() && !setup.recoded,
-            declared: setup.recoded.then(|| declared_as(setup.target)).flatten(),
+            // And Blu-ray LPCM carried as it was, where the map being
+            // corrected is the muxer's own: a plain `.ts` muxer calls it
+            // private data, and a recording's own map that would have said
+            // otherwise is not being written. See `unnamed` in [`cut_into`].
+            declared: (setup.recoded
+                || (tables == crate::si::Tables::Muxer
+                    && setup.target == ff::codec::Id::PCM_BLURAY))
+                .then(|| declared_as(setup.target))
+                .flatten(),
             language: setup.info.language.clone(),
             extra: Vec::new(),
         });
@@ -6781,6 +6789,7 @@ pub fn transition_bounds(
 /// with the pictures on either side. See [`crate::transition`].
 fn ranges_with_transitions(
     reels: &[Reel],
+    master: usize,
     fits: &[crate::conform::Fit],
     opts: &CutOptions,
 ) -> Vec<Vec<RangePlan>> {
@@ -6791,10 +6800,23 @@ fn ranges_with_transitions(
     let crossing = |n: usize| crossings[n].clone();
     let plans: Vec<&[RangePlan]> = reels.iter().map(|r| r.plans).collect();
     let takes_at = takes_at(&plans, &crossings);
+    // The output's frame, which a stretch written afresh -- a crossing -- is
+    // laid out on.
+    let step = reels
+        .get(master)
+        .map_or(0.0, |r| r.src.video.frame_duration());
+    // How much of the clip after each overlapping crossing the crossing
+    // really showed: the clip before's last pictures from where its body
+    // ended, which is on a picture and so up to a frame more than was asked
+    // for -- in its seconds, and in the frames it was written as, the last
+    // of which shows the picture this clip had on screen that far in. Set by
+    // each reel for the one after it.
+    let mut given: Option<(f64, i64)> = None;
     reels
         .iter()
         .enumerate()
         .map(|(n, reel)| {
+            let head_given = given.take();
             // What the reel before this one gives way with, which is what
             // takes from this reel's head. The first reel has nothing in
             // front of it.
@@ -6842,7 +6864,43 @@ fn ranges_with_transitions(
                 // itself starts later -- sound with it.
                 let overlapped_head = take_head > 0.0 && head.kind.overlaps();
                 let t_in = if overlapped_head {
-                    plan.t_in + take_head
+                    match head_given {
+                        // On the first picture of this clip that the
+                        // crossing did not show: the first to begin after the
+                        // one on screen at its last frame, read off the
+                        // pictures, as a bound. Worked out from the seconds
+                        // the crossing took, it was a picture out wherever
+                        // this clip's own pictures were not where those
+                        // seconds said: on a field point in the middle of a
+                        // picture under pulldown (shown twice), or past one
+                        // where the range opened part-way into a picture (the
+                        // crossing opens on the picture on screen there, and
+                        // one picture was lost).
+                        Some((given, shown)) if !fits[n].video => {
+                            let read = (shown > 0).then(|| {
+                                crate::plan::picture_after(
+                                    reel.src,
+                                    plan.t_in + (shown - 1) as f64 * step,
+                                    conformed::far_slack(reel.src.video.time_base, step),
+                                )
+                            })
+                            .flatten();
+                            read.unwrap_or_else(|| {
+                                crate::plan::on_a_picture(
+                                    &reel.src.video,
+                                    reel.src.duration,
+                                    &reel.src.points,
+                                    plan.t_in + given,
+                                )
+                            })
+                        }
+                        // Written afresh on the output's frames, on the one
+                        // after the crossing's last: the clip resumes on the
+                        // instant it would have reached with no crossing.
+                        Some((_, shown)) if shown > 0 => plan.t_in + shown as f64 * step,
+                        Some((given, _)) => plan.t_in + given,
+                        None => plan.t_in + take_head,
+                    }
                 } else {
                     plan.t_in
                 };
@@ -6853,17 +6911,89 @@ fn ranges_with_transitions(
                 let mut body_end = plan.t_out - take_tail;
                 // On the picture there, so that the body and the transition
                 // after it do not both write it; see
-                // [`crate::plan::on_screen_at`]. A reel written afresh whole
-                // is laid out on one clock and meets already.
-                if take_tail > 0.0 && !fits[n].video {
-                    body_end = crate::plan::on_screen_at(
-                        &reel.src.video,
-                        &reel.src.points,
-                        body_end,
-                    );
-                }
+                // [`crate::plan::on_screen_at`]; a reel written afresh, on
+                // the output's frames (below). Where the
+                // pictures are off any grid -- pulldown, a variable rate --
+                // the picture is read off them; see
+                // [`crate::plan::pictures_off_the_grid`]. And the same for the
+                // end of a fade's tinted head, where the body after it opens.
+                let on_screen = |t: f64| {
+                    crate::plan::pictures_off_the_grid(&reel.src.video)
+                        .then(|| crate::plan::picture_on_screen(reel.src, t))
+                        .flatten()
+                        .unwrap_or_else(|| {
+                            crate::plan::on_screen_at(&reel.src.video, &reel.src.points, t)
+                        })
+                };
+                // How near the end of a stretch written afresh an instant
+                // can come and still have a frame laid there; see
+                // `cut_conform::pictures_afresh`.
+                let slack = conformed::far_slack(reel.src.video.time_base, step);
+                // A reel written afresh is laid out on the output's frames,
+                // counted off from each segment's own start (see
+                // `cut_conform::pictures_afresh`), so its segments meet only
+                // where each one ends on a frame of the one before: an end
+                // between two of them had the segment before lay a frame
+                // short of it and the one after open a frame at it, and the
+                // picture on screen there was written by both (an x264 clip
+                // written into an HEVC master, a 2.2 s slide: its picture
+                // 161 twice where the body met the crossing). So its bounds
+                // go to the first frame at or after them -- unless that
+                // leaves nothing of the range for the transition.
+                let on_the_frames = |from: f64, t: f64| -> f64 {
+                    // Counted off from where the segment's pictures begin,
+                    // which is never before the recording's first: see
+                    // [`crate::plan::reencode_range`].
+                    let from = from.max(reel.src.points.first().map_or(from, |p| p.time));
+                    if !(step.is_finite() && step > 0.0 && from.is_finite() && t.is_finite()) {
+                        return t;
+                    }
+                    let mut k = 0i64;
+                    while from + k as f64 * step < t - slack {
+                        k += 1;
+                    }
+                    let at = from + k as f64 * step;
+                    if at < plan.t_out - slack { at } else { t }
+                };
                 let tinted_head = take_head > 0.0 && !head.kind.overlaps();
-                let body_start = if tinted_head { t_in + take_head } else { t_in };
+                let body_start = if tinted_head {
+                    let moved = if fits[n].video {
+                        on_the_frames(t_in, t_in + take_head)
+                    } else {
+                        on_screen(t_in + take_head)
+                    };
+                    // Not onto the range's own first picture: a head that
+                    // ends where it begins lays no frame, and the whole run
+                    // stopped on it with `no pictures decoded` (one picture
+                    // kept between two fades -- its fade-in ends inside it).
+                    // Left where it was asked to end, the head is that
+                    // picture, as it was before bounds were put on pictures.
+                    if moved > t_in + slack { moved } else { t_in + take_head }
+                } else {
+                    t_in
+                };
+                if take_tail > 0.0 {
+                    body_end = if fits[n].video {
+                        on_the_frames(body_start, body_end)
+                    } else {
+                        on_screen(body_end)
+                    };
+                    // Never before where the body opens. A range given whole
+                    // to the transitions at its two ends -- a short clip
+                    // between two crossings, each taking half of it -- has
+                    // its head shown up to the picture this range resumes
+                    // after, which can be a picture past the one on screen
+                    // where the tail's transition was asked to begin, and the
+                    // tail opened on that picture again (a 2 s clip between
+                    // two 1.5 s dissolves: its picture 30 twice). Unless
+                    // that leaves the tail no frame to lay: a crossing of
+                    // nothing stops the whole run (`no pictures decoded`,
+                    // a two-picture clip between two dissolves, both shown
+                    // by the first), where a picture shown again does not.
+                    if body_end < body_start && body_start < plan.t_out - slack {
+                        body_end = body_start;
+                    }
+                }
                 let mut segments = Vec::new();
                 if tinted_head {
                     segments.push(Segment {
@@ -6927,6 +7057,12 @@ fn ranges_with_transitions(
                             }
                         }
                     }
+                }
+                if take_tail > 0.0 && tail.kind.overlaps() {
+                    given = Some((
+                        plan.t_out - body_end,
+                        conformed::instants(reel.src, step, body_end, plan.t_out),
+                    ));
                 }
                 // Where the range's pictures really begin, for the sound to be
                 // anchored on, as [`crate::plan::plan_range`] reports it.
@@ -7575,7 +7711,7 @@ fn cut_into(
     // does not match the master -- there is no picture in such a reel a copy
     // could carry -- and with the transitions cut into them. A run with
     // neither comes back out of this the plan it went in as.
-    let reel_plans: Vec<Vec<RangePlan>> = ranges_with_transitions(reels, &fits, opts);
+    let reel_plans: Vec<Vec<RangePlan>> = ranges_with_transitions(reels, master, &fits, opts);
     let plans = &reel_plans[master];
     // Every range of every reel, in the order they are written, so that
     // anything counted over the whole job is counted over the whole job.
@@ -8606,13 +8742,22 @@ fn cut_into(
                                 .and_then(|p| reel.src.audios.get(p).cloned())
                         })
                         .collect(),
+                    // Captions by place among their own kind and format, though:
+                    // a broadcast lists its caption and its crawl in either
+                    // order, and counted together the second recording's
+                    // captions went onto the master's crawl, and an ARIB
+                    // track could be handed to a TTML one.
                     captions: captions
                         .iter()
                         .map(|c| {
+                            let same = |x: &&crate::CaptionInfo| {
+                                x.kind == c.kind && x.format == c.format
+                            };
                             src.captions
                                 .iter()
+                                .filter(same)
                                 .position(|x| x.stream_index == c.stream_index)
-                                .and_then(|p| reel.src.captions.get(p).cloned())
+                                .and_then(|p| reel.src.captions.iter().filter(same).nth(p).cloned())
                         })
                         .collect(),
                     graphics: false,
@@ -9702,8 +9847,10 @@ fn cut_into(
     // cannot name. Asked for a plain `.ts` libavformat declares Blu-ray LPCM
     // as private data of no stated kind, and everything reads that back as
     // `bin_data`: a cut of a DVD title arrived with its sound carried,
-    // declared, and silent. A disc's subtitles come off the same edge of the
-    // same problem. (Asked for a `.m2ts` the same muxer gets both right,
+    // declared, and silent. A Blu-ray's own LPCM copied through is the same
+    // track under the same name, recoded or not: cut from a `.m2ts` into a
+    // `.ts` with `--tables muxer` it came out as `bin_data` too. A disc's
+    // subtitles come off the same edge of the same problem. (Asked for a `.m2ts` the same muxer gets both right,
     // which is why only this shape needs the visit.) So the map is rebuilt
     // from the one the muxer itself wrote, with those corrections and
     // nothing else added -- no selection table, no service, no event: there
@@ -9713,7 +9860,7 @@ fn cut_into(
         && !writing_m2ts(output)
         && (setups
             .iter()
-            .any(|s| s.recoded && s.target == ff::codec::Id::PCM_BLURAY)
+            .any(|s| s.target == ff::codec::Id::PCM_BLURAY)
             || !graphics.is_empty()
             || !converted_streams.is_empty());
     // Of the three, the sound is the one a file cannot do without: left as
@@ -9721,7 +9868,7 @@ fn cut_into(
     let pcm = unnamed
         && setups
             .iter()
-            .any(|s| s.recoded && s.target == ff::codec::Id::PCM_BLURAY);
+            .any(|s| s.target == ff::codec::Id::PCM_BLURAY);
     let own_map = if unnamed {
         let at = crate::input::Input::plain(output);
         match crate::si::read_service(&at, pids.video(video_pid) as u16, &[]) {

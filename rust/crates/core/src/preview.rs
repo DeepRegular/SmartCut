@@ -383,10 +383,12 @@ fn entry_packets(
     let mut first = None;
     let mut pending: Vec<ff::Packet> = Vec::new();
     let mut at: Option<f64> = None;
+    let mut stretches = Stretches::new(src);
     for (stream, packet) in ictx.read_packets() {
         if stream.index() != idx {
             continue;
         }
+        stretches.reach(packet.position());
         let step = entries.step(&packet);
         if step == crate::Step::Skip {
             continue;
@@ -409,6 +411,12 @@ fn entry_packets(
             pending.clear();
             continue;
         };
+        // Not a picture of the stretch it was read in, as [`walk`] passes
+        // it over: neither shown nor counted as where the read landed.
+        if stretches.outside(when) {
+            pending.clear();
+            continue;
+        }
         // Set before the run is cut short, exactly as `walk` sets it: a
         // landing past everything asked for is what says the seek has to be
         // tried again, and that has to be reported rather than dropped.
@@ -1633,9 +1641,8 @@ fn walk(
     // expected.
     let tol = src.video.frame_duration() * 1e-3;
     let stops = |k: usize| src.joins.get(k).map(|j| j.ends.min(j.time));
-    let outside = |t: f64, since: Option<f64>, stop: Option<f64>| {
-        since.is_some_and(|s| t < s - quarter) || stop.is_some_and(|e| t >= e - tol)
-    };
+    let outside =
+        |t: f64, since: Option<f64>, stop: Option<f64>| off_stretch(t, since, stop, quarter, tol);
     let mut packets = ictx.read_packets();
     'outer: for (stream, packet) in packets.by_ref() {
         if stream.index() != idx {
@@ -1781,6 +1788,74 @@ fn walk(
         }
     }
     Ok(first)
+}
+
+/// Whether a picture presented at `t`, read inside the stretch that begins at
+/// `since` and stops at `stop`, is one the cut never writes: a leading
+/// picture of the stretch's first GOP stamped before it begins, or one past
+/// where the plan ends the range before the seam after it. See [`walk`],
+/// whose rule this is; [`Stretches`] asks it for the readers that take entry
+/// pictures alone.
+fn off_stretch(t: f64, since: Option<f64>, stop: Option<f64>, quarter: f64, tol: f64) -> bool {
+    since.is_some_and(|s| t < s - quarter) || stop.is_some_and(|e| t >= e - tol)
+}
+
+/// Which stretch of a recorder's joined clip a read of its pictures is in,
+/// told by the bytes as [`walk`] tells it, for the readers that pick the
+/// entry pictures out of the packets without decoding the rest: the film
+/// strip's entry runs ([`entry_packets`]) and the thumbnail pass
+/// ([`crate::thumbs::build_with_sound`]).
+///
+/// **They pass over the same pictures [`walk`] passes over.** The stretches
+/// of a recorder's clip overlap on the joined clock, and the last entry
+/// picture of the stretch before a seam can present past the instant the
+/// plan ends the range there -- a picture the cut never writes, and one the
+/// editor no longer stands on. Taken by the strip, a cell at that instant
+/// showed the end of the previous recording inside the next one, and the
+/// thumbnail track held it in place of the next stretch's first entry
+/// picture. Nothing changes on a recording without seams.
+pub(crate) struct Stretches<'a> {
+    joins: &'a [crate::restamp::Seam],
+    next: usize,
+    since: Option<f64>,
+    quarter: f64,
+    tol: f64,
+}
+
+impl<'a> Stretches<'a> {
+    pub(crate) fn new(src: &'a Source) -> Self {
+        let fd = src.video.frame_duration();
+        Self::of(&src.joins, fd)
+    }
+
+    fn of(joins: &'a [crate::restamp::Seam], fd: f64) -> Self {
+        Self {
+            joins,
+            next: 0,
+            since: None,
+            quarter: fd / 4.0,
+            tol: fd * 1e-3,
+        }
+    }
+
+    /// A packet of the pictures at byte `pos` has been read; a negative one
+    /// says nowhere and leaves the read where the last one put it.
+    pub(crate) fn reach(&mut self, pos: isize) {
+        if pos < 0 {
+            return;
+        }
+        while let Some(j) = self.joins.get(self.next).filter(|j| pos as u64 >= j.at) {
+            self.since = Some(j.time);
+            self.next += 1;
+        }
+    }
+
+    /// Whether a picture at `t`, read where the read now is, is outside the
+    /// stretch it was read in.
+    pub(crate) fn outside(&self, t: f64) -> bool {
+        let stop = self.joins.get(self.next).map(|j| j.ends.min(j.time));
+        off_stretch(t, self.since, stop, self.quarter, self.tol)
+    }
 }
 
 /// Every coded picture presented in `[from, to)`, in presentation order.
@@ -1959,6 +2034,55 @@ mod tests {
         let at: Vec<Option<f64>> = got.iter().map(|s| s.as_ref().map(|s| s.time)).collect();
         assert_eq!(at, vec![Some(1.02), None, Some(2.05), None]);
         assert_eq!(got[0].as_ref().unwrap().jpeg, vec![2]);
+    }
+
+    /// A recorder's clip with two seams: the stretches overlap on the joined
+    /// clock, and the second's table end is past its pictures. Read by the
+    /// bytes, a picture belongs to the stretch it was read in, and one past
+    /// where the plan ends the range before the next seam -- or a leading
+    /// picture stamped before its own stretch begins -- is outside it.
+    #[test]
+    fn stretches_are_told_by_their_bytes() {
+        use crate::restamp::Seam;
+        let fd = 1.0 / 30.0;
+        let joins = [
+            // Stretch 1 begins at 100.0, though stretch 0 runs on to 100.3.
+            Seam { at: 1000, time: 100.0, ends: 100.0 },
+            // Stretch 1's pictures end at 150.0 (mended); stretch 2 at 160.0.
+            Seam { at: 2000, time: 160.0, ends: 150.0 },
+        ];
+        let mut s = Stretches::of(&joins, fd);
+        // Nothing read yet: the first stretch, which begins with the clip.
+        s.reach(-1);
+        assert!(!s.outside(0.0));
+        s.reach(500);
+        assert!(!s.outside(99.9));
+        // Past the seam's instant on the joined clock, still stretch 0's.
+        assert!(s.outside(100.3));
+        // A hair under the instant is the range's, as the cut writes it.
+        assert!(!s.outside(100.0 - fd * 0.5));
+        assert!(s.outside(100.0 - fd * 1e-4));
+        // A packet that says nowhere leaves the read where it was.
+        s.reach(-1);
+        assert!(s.outside(100.3));
+        // Into stretch 1 by the bytes: its own pictures are in, a leading
+        // one stamped well before it begins is not.
+        s.reach(1000);
+        assert!(!s.outside(100.3));
+        assert!(!s.outside(100.0 - fd / 8.0));
+        assert!(s.outside(99.8));
+        // Its end is where its pictures end, not where its table says.
+        assert!(!s.outside(149.9));
+        assert!(s.outside(150.0));
+        assert!(s.outside(155.0));
+        // Two seams in one step land in the last of them.
+        let mut s = Stretches::of(&joins, fd);
+        s.reach(5000);
+        assert!(!s.outside(170.0));
+        assert!(s.outside(155.0));
+        // No seams, nothing is outside.
+        let s = Stretches::of(&[], fd);
+        assert!(!s.outside(-5.0) && !s.outside(1e9));
     }
 
     #[test]

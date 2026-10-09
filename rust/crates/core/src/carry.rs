@@ -160,6 +160,24 @@ pub fn disc_holds_audio(codec: &str) -> bool {
     )
 }
 
+/// The codec a kept sound track goes onto a disc as, for asking
+/// [`disc_holds_audio`] before the cut rather than after it: the one asked
+/// for (`""` or `"source"` for the recording's own), linear PCM being
+/// Blu-ray's, and a DVD's LPCM copied being rewritten as Blu-ray's -- the
+/// same rule as `carriage` in [`crate::cut`].
+///
+/// A transport stream holds Opus and a disc's index has no coding type for
+/// it, so a cut onto a disc was refused only once it had been written --
+/// and in the window, with every recording of the run after it.
+pub fn on_a_disc_as<'a>(codec: &'a str, asked: &'a str) -> &'a str {
+    match asked {
+        "" | "source" if codec == "pcm_dvd" => "pcm_bluray",
+        "" | "source" => codec,
+        "lpcm" | "pcm" => "pcm_bluray",
+        named => named,
+    }
+}
+
 /// libav's name for a codec, spelled the way every stream this program has
 /// read is spelled: the identifier, lowercased.
 pub fn name_of(id: ff::codec::Id) -> String {
@@ -201,6 +219,18 @@ mod tests {
         // Matroska, and a container this program does not write.
         assert!(holds("mkv", "vp8") && holds("mkv", "truehd"));
         assert!(holds("", "vp8"));
+    }
+
+    #[test]
+    fn a_disc_is_asked_about_the_sound_as_it_will_be_written() {
+        // A DVD's LPCM copied, and anything asked for as linear PCM, is
+        // Blu-ray's; Opus copied is not anything a disc can describe.
+        assert!(disc_holds_audio(on_a_disc_as("pcm_dvd", "source")));
+        assert!(disc_holds_audio(on_a_disc_as("opus", "lpcm")));
+        assert!(disc_holds_audio(on_a_disc_as("opus", "aac")));
+        assert!(!disc_holds_audio(on_a_disc_as("opus", "")));
+        assert!(holds("ts", "opus"));
+        assert!(disc_holds_audio(on_a_disc_as("aac_latm", "source")));
     }
 
     #[test]

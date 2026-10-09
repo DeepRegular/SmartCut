@@ -709,8 +709,14 @@ pub fn blocks_from_logo(
             // the block runs from the very start rather than from the first
             // picture the logo was missing on.
             let at_head = a <= EDGE;
+            let start = if at_head { 0.0 } else { start };
             Block {
-                start: if at_head { 0.0 } else { start },
+                start,
+                // Held against the start the block keeps, not the junction
+                // the head's start was snapped to and then dropped: a short
+                // absence at the head whose nearest junction stands seconds
+                // past the logo's return ran the block on to that junction,
+                // over programme the logo had already come back on.
                 end: end.max(start),
                 junctions: inside,
                 score: if inside >= 2 { 1.0 } else { 0.7 },
@@ -957,6 +963,30 @@ mod tests {
         }
         assert_eq!(loud_bounds(&frame, 0.003), Some((400, 400)));
         assert_eq!(loud_bounds(&frame, 0.05), None);
+    }
+
+    /// A short absence at the head of a recording ends where the logo came
+    /// back, not at a junction its start was snapped to past that.
+    #[test]
+    fn a_head_absence_is_not_run_on_to_a_later_junction() {
+        let at = |time: f64| Candidate {
+            time,
+            silence: 1.0,
+            start: time - 0.5,
+            end: time + 0.5,
+            run: 2,
+            score: 0.8,
+        };
+        let opts = DetectOptions::default();
+        let blocks =
+            blocks_from_logo(&[at(5.9), at(65.0)], &[(0.3, 2.3)], &[], &opts, 3.0, 100.0, None);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!((blocks[0].start, blocks[0].end), (0.0, 2.3));
+        // ...while one whose junction stands at the logo's return still
+        // ends on it.
+        let blocks =
+            blocks_from_logo(&[at(2.0), at(65.0)], &[(0.3, 2.3)], &[], &opts, 3.0, 100.0, None);
+        assert_eq!((blocks[0].start, blocks[0].end), (0.0, 2.0));
     }
 
     /// An interleaved frame's element index is not its sample position.
