@@ -133,6 +133,23 @@ Japanese recording the chapter marks are frequently the commercial breaks
 themselves. The ones in what is kept go out with the cut even when the cut
 editor was never opened on it.
 
+**A recorder's title arrives with what its playlist does not play already
+cut.** The clip a recorder writes begins a second or so into the programme
+before and runs on into the next one, and where the recorder left a break out
+it still holds the moment either side of it. The playlist steps over all of
+that, and so does the row: those stretches are its first cuts, put on the
+pictures, and a cut written without opening the editor keeps what the disc
+plays and no more. They put no chapter where they are. **Undo** in the cut
+editor brings them back, as one step. A pressed disc, a DVD and a disc made
+with an authoring tool play the whole clip, and arrive with nothing cut.
+
+Where the recorder stopped and started inside a clip, the time from the last
+picture before the seam to the first picture a copy can start from after it is
+not written — a few pictures on most discs, seconds where the disc's own table
+overstates a stretch. The
+chapters, the lengths and the frame counts in the list and the editor leave it
+out as well, so they match the file that is written.
+
 Cuts are written **beside the disc** unless the output settings say otherwise,
 because there is nowhere to write inside a disc.
 
@@ -1228,6 +1245,11 @@ something the words can tell you. This window composites the seconds either
 side of the join exactly as the output will composite them, and plays them
 with their sound. Like the cut editor, it is left with OK or Cancel.
 
+**It follows the list while it is open.** Move a row, add one or take one out,
+and the joins it offers change with it; a setting not yet confirmed stays with
+the join it was made on. A join that is no longer in the list when OK is
+pressed is not written onto whichever join now stands in its place.
+
 | Field | |
 |---|---|
 | **Which join** | Which join is being described. A transition belongs to the clip that gives way, so the list is every row but the last. The two thumbnails above it are the clips either side |
@@ -1452,7 +1474,17 @@ which is where the commercial breaks were — plus any marks put down in the cut
 editor, and for a recording opened off a disc, the disc's own chapters in what
 is kept. On a disc that is the list a viewer actually uses, which is why the
 `.keyframe` sidecar is not offered here: the same list would be written twice,
-and a player only looks at one of the two.
+and a player only looks at one of the two. The stretches a recorder's playlist
+leaves out (see [Discs](#discs-blu-ray-and-dvd)) are cuts that put no chapter
+down, and a chapter in the last half second of a recording is left off, since
+skipping to it lands on the end.
+
+**A recording the disc cannot describe is refused before the run starts.** A
+disc's index has a coding type for MPEG-1 and -2, H.264, HEVC and VC-1
+pictures and for the sound a broadcast or a disc carries; Opus, for one, is
+not among them. The run does not start: it names the row and opens the output
+settings on it. For sound, choose another **Audio codec**, or switch the track
+off in the cut editor.
 
 **A second run adds to the disc.** The numbering carries on from what is already
 there, and nothing already on the disc is removed or rewritten, so a disc can be

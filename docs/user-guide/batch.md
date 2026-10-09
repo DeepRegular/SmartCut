@@ -104,6 +104,12 @@ Without the numbers the second one would overwrite the first, and the program
 would report two exports while leaving one file. Delete one of them and the
 other goes back to its unnumbered name.
 
+**Names that differ only in the extension count as the same name.** One row
+written as `cut_x.ts` and another as `cut_x.mkv` become `cut_x_1.ts` and
+`cut_x_2.mkv`: the files written beside a cut — the `.keyframe`, the subtitles
+— are named after it without its extension, and the second row's would
+overwrite the first's.
+
 ### Dividing a clip into parts
 
 ![Dividing a clip](../images/usage-divide.png)

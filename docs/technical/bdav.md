@@ -271,6 +271,18 @@ than from the codec libavformat named, so the index and the map cannot
 disagree — which is the failure that would have a player hand AAC frames to a
 decoder that was told they were private data.
 
+**A stream the index has no coding for is refused before the run.** There are
+five codings for pictures and a handful for sound; a transport stream holds
+more than that, Opus among them, so a cut onto a disc used to go ahead and be
+refused by the index once it had been written — and in the window, with every
+recording of the run after it. The command line now asks before the cut and
+before a slot on the disc is taken (`disc_can_hold`; with `--master N`, of the
+recording the output is shaped like), and the window asks of every row before
+anything starts (`disc_cannot_hold`). Each track is asked about as it will be
+written (`carry::on_a_disc_as`): the codec `--audio-codec` names, linear PCM as
+Blu-ray's, a DVD's LPCM copied as Blu-ray's, and a track switched off not at
+all.
+
 **The language of a sound track goes in only where there is one.** A broadcast
 does not say, and a track whose language is unknown was going out as three
 zero bytes — a language field filled in with nothing, in an entry a byte
@@ -438,6 +450,15 @@ in characters. The channel's twenty are the tightest of them: a name like
 which is where the commercial breaks were, plus whatever marks were put down
 in the editor. That is the one thing on a recorder's disc a viewer uses every
 time.
+
+Not where a recorder's own playlist stepped over something (see
+[what the playlist plays](disc.md#what-the-playlist-plays-and-what-it-steps-over)):
+nobody cut there. And not in the last half second of the recording, the rule a
+file's chapter list is held to (`cut::chapter_points`), now applied where the
+playlist is written (`rpls`) so that every caller's marks are held to it. A
+recorder's playlist ending on an item of a picture or two put a chapter 0.07
+seconds before the end of the disc's recording, where the same cut written to
+a file had none.
 
 A mark opens with what kind of mark it is and then the maker who wrote it,
 which is the pair a playlist of several clips has to be read past to reach the

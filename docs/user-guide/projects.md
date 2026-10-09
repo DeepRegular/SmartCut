@@ -54,6 +54,9 @@ A project saves **the things you decided**:
 - the programme names and chapters read from a disc, and what a disc written
   from the list will say about each recording — the name, the channel, when it
   was recorded and what it was about, including anything typed over
+- for a recorder's title off a disc, what its playlist plays, and whether the
+  stretches the playlist leaves out have been cut yet. A project saved before
+  the recording was read cuts them when it is opened again
 - the output settings, once you have settled any of them
 
 It does not save **anything it can work out again**. Length, resolution and

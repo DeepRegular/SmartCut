@@ -64,7 +64,18 @@ by as much. Now a hole of more than half a frame inside a range is filled with
 silence (until 2026-10-08, more than a whole frame: the one frame a broadcast
 loses where it is damaged was read past, and moved the rest of the range 21 ms
 ahead of its pictures), and at the start of each range silence is added until the
-sound reaches the output time the range's pictures start at. The frame before each
+sound reaches the output time the range's pictures start at. **Where the sound
+laid down already runs past that time, the range's own sound opens that much
+later** (`Reencoder::align`; more than a fiftieth of a second either way). The
+sound already written is not taken back; what is given up is the same length
+off the head of the range, which is where the copied sound of a smart cut
+gives it up too (it opens on a later frame — `pick_from` in `cut.rs`). Until
+2026-10-09 only the short side was handled. A range ending at a recorder
+BD-RE's seam writes a picture fewer than its two times say, and every such
+seam put the rest of the re-encoded sound that much behind its pictures: a
+title cut across three seams was 26 to 73 ms late after each, where the same
+cut's copied sound was on time. Ranges whose pictures fill them come out byte
+for byte as before. The frame before each
 range's first is decoded as well and thrown away: AAC, AC-3 and MP2 decode a frame
 against the one before it, and without it the first frame of every range was mixed
 with the end of the range before — a click at each join.

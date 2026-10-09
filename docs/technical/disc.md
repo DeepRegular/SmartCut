@@ -1066,6 +1066,64 @@ Ordinary recordings are untouched by any of this, and measured to be: cuts of
 three broadcast transport streams, of two reference Blu-rays and of two DVD
 titles are **byte for byte** what they were before.
 
+### What the playlist plays, and what it steps over
+
+**A recorder's title is less than the clip it is opened as.** The clip begins
+a moment ahead of the first play item's IN — the end of the programme before,
+or a station's spot — and runs on past the last OUT into the next programme.
+Where the recorder left a break out, the clip still holds the moment either
+side of it, and the playlist steps from one item's OUT to the next one's IN
+over it. Opened as the whole clip, a title cut with no ranges of its own wrote
+all of that. Measured on an HD recorder's BD-REs: 0.17 to 2.5 seconds at the
+head, 0.5 to 5.4 between two items (22.5 at the seam
+[mended below](#a-stretch-whose-map-is-about-something-else)), 0.03 to 2.6 at
+the tail; on a 4K recorder's, 0.5 to 1.0 at either end and 0.19 to 0.38
+between.
+
+So a row off a disc of recordings carries what its playlist plays
+(`disc::Entry::plays`, each item's IN and OUT on the joined clock), and
+`disc::unplayed` turns that into the stretches a cut with no ranges of its own
+leaves out: the head, every gap between two items, and the tail. A pressed
+disc's and a DVD's rows carry none. **A stretch shorter than a tenth of a
+second is not one** (`UNPLAYED_LEAST`): a playlist an authoring tool wrote
+states its IN and OUT within a millisecond of the clip's first and last
+picture (67 titles of eleven discs), and the least a recorder leaves out is
+0.13 seconds (40 titles of seven discs). Cutting the rounding away would ask
+the planner for a cut of no pictures.
+
+**The ends go onto pictures** (`disc::unplayed_in`). A playlist's times are
+the recorder's instants, in ticks of 45 kHz, not pictures of the clip. Left
+as they were, the window's `Trim` line of a title kept one picture more than
+the cut written from the same row, and a mark standing on an IN came back out
+of a `.keyframe` half a frame early, inside the cut, and was dropped. An OUT
+goes to the first picture at or after it and an IN to the picture on screen at
+it, so the frame of a 1080i item whose one field is played is kept. The
+pictures are counted from the last entry point of the stretch the end lies in,
+not from the start of the recording: a seam starts its stretch on a phase of
+its own. An entry point read off a disc's map can be stated up to 512 ticks of
+90 kHz early (the eleven bits of a fine entry start at bit nine), and the grid
+allows for it (`POINT_EARLY`).
+
+| | |
+|---|---|
+| Command line | `--title N` with no `--cut` and no `--keep` cuts them, and says so on a `plays :` line |
+| Window | They are the row's first cuts, put down once the recording has been read: by the list (`takePlays`) or, where the editor reads it first, by the editor (`applyPlays`) as part of the arrival rather than as an edit. **Undo** takes them back in one step |
+| Project | The row keeps `plays` and `playsOwed` (still to be cut); the edit keeps `unplayed` (what was cut that way) and `playsDue` (an editor visit that ended before its walk landed) |
+| Chapters | None at them. The recorder stepped over that moment and nobody cut there; the disc's own marks say where its chapters are. Where the disc has a mark within a frame of where a kept range begins, that mark is the chapter |
+
+What a pressed disc, an authored BDAV title or a broadcast `.ts` writes is
+unchanged: the last two byte for byte, the first frame for frame.
+
+**The window counts the stretches no cut writes, too.** At each seam the cut
+stops where the stretch before it runs out of pictures and resumes at the
+first entry point after it (`at_the_seams`, `past_the_seam` above).
+`Source::unwritten` names those stretches, and the list and the editor split
+every kept range around them before counting chapters, lengths and the
+`Trim` line. Until 2026-10-09 they mapped the recording onto the output as
+one stretch, and on one title every chapter after a seam was 18.9 and then
+28.1 seconds late, and the editor's length 2752.4 seconds against the 2724.2
+written.
+
 ## DVD-Video
 
 A DVD arrives by the same door and shares nothing else with a Blu-ray, so it is

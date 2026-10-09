@@ -70,6 +70,11 @@ the next, a stream index is something libavformat makes up per file, and a
 language is missing more often than not. Two recordings of the same broadcast
 carry their tracks in the same order, which is the case this is for.
 
+Captions are counted the same way, but **among their own kind and format**: a
+broadcast lists its captions and its crawl in either order, and
+counted together the second recording's captions were written onto the
+master's crawl, and an ARIB track could be handed to a TTML one.
+
 A reel with fewer tracks than the master leaves a gap in the ones it has not
 got, and a reel with more has the spare ones left out. Both are said once,
 before anything is written.
@@ -307,6 +312,34 @@ both wrote that one: every picture of the transition came a frame late and the
 clip's own last picture was left out. Where the body is not written afresh whole,
 its end is moved to the start of the picture on screen there
 (`plan::on_screen_at`) before it is planned.
+
+**The clip after resumes on the picture after the last one the crossing
+showed.** An overlapping crossing writes a whole number of the clip after's
+pictures, and the range after it used to resume at its start plus the
+crossing's length in seconds — which, on those same 29.97 frames, is inside
+the last of them, so that picture was written twice or the one after it was
+lost. The crossing now counts the pictures it writes, and a copied clip after
+resumes on the first picture to begin after the last of them, read off its
+packets (`plan::picture_after`); a clip written afresh on the master's grid
+resumes that many of its frames on.
+
+**And not every recording has a grid to work a bound out on.** A picture held
+for three fields moves every picture after it half a frame — soft telecine, a
+DVD of a film, an interlaced broadcast now and then — and a remux need not say
+so; a recording with no fixed rate has no grid at all. For those, and for
+MPEG-1, MPEG-2 and VC-1 always (`plan::pictures_off_the_grid`), the end of the
+body before a crossing is read off the pictures (`plan::picture_on_screen`),
+a field-coded picture's two fields counted as one. On a soft-telecine clip
+joined to itself with a one-second dissolve, output pictures 350 and 351 were
+both its picture 84.
+
+Measured on 2026-10-09: soft-telecine joins from the command line went from 8
+wrong in 12 to none in 67, variable-rate ones from 6 in 6 to none in 10. Three
+more doublings went with them: a reel written afresh on the master's grid
+showed a picture twice at every transition, a range short enough to have
+crossings at both ends did so at each, and a field-coded recording had its
+second field taken for a picture's start. A file with no transition in it is
+written byte for byte as before.
 
 **So the sound is not mixed.** The clip before plays through the crossing and
 the clip after starts where it ends. That is a decision and not an omission:
