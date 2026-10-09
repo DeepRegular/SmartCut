@@ -99,7 +99,7 @@ make things *more* fragile across environments, so the exclusion stays. What is 
 can be checked by extracting:
 
 ```bash
-./SmartCut_0.8.22_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.8.23_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (system)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (bundled)
@@ -130,8 +130,8 @@ runtime, and `appdir-lint.sh` finds no fatal issues.
 
 ```bash
 JAMMY=/path/to/root gui/jammy/build.sh   # AppImage, tar.gz and deb (Ubuntu 22.04 root)
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.22-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.22_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.23-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.23_amd64.deb
 ```
 
 One build of SmartCut, packed two ways. Both install **the GUI as `smartcut` and the
@@ -142,13 +142,13 @@ The cargo crate is named `gui`, so left alone Tauri installs it straight to
 `/usr/bin/gui` — not a name anyone should be occupying. `mainBinaryName` in
 `tauri.conf.json` pins it to `smartcut` (since 0.2.0; before that it was set for Windows
 only). The bundle *files* Tauri writes are named after `productName` instead —
-`SmartCut_0.8.22_amd64.deb` and the like — which is why they and the deb's package name
+`SmartCut_0.8.23_amd64.deb` and the like — which is why they and the deb's package name
 `smartcut` differ. `build-linux.sh` reads both out of `tauri.conf.json`.
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
-| `SmartCut-0.8.22-linux-x86_64.tar.gz` | 192.9 MB | Bundled | glibc 2.35 or newer. No FUSE needed |
-| `smartcut_0.8.22_amd64.deb` | 29.4 MB | Bundled (`/usr/lib/smartcut`) | Ubuntu 22.04 or later, Debian 13 or later |
+| `SmartCut-0.8.23-linux-x86_64.tar.gz` | 192.9 MB | Bundled | glibc 2.35 or newer. No FUSE needed |
+| `smartcut_0.8.23_amd64.deb` | 29.4 MB | Bundled (`/usr/lib/smartcut`) | Ubuntu 22.04 or later, Debian 13 or later |
 
 **The tar.gz contains the same AppDir as the AppImage, extracted.** The 633 libraries
 linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a
@@ -219,7 +219,7 @@ binary comes from Tauri's deb, and the tar.gz's from the AppDir.
 
 ### What was verified
 
-- On a bare Ubuntu 22.04 (ubuntu-base 22.04.5), `apt install ./smartcut_0.8.22_amd64.deb`
+- On a bare Ubuntu 22.04 (ubuntu-base 22.04.5), `apt install ./smartcut_0.8.23_amd64.deb`
   installs it: every dependency resolves, neither binary has a library it cannot find,
   and `smartcut-cli` loads `/usr/lib/smartcut/libavcodec.so.61`.
 - A 30-second cut of a broadcast recording made there matches the tar.gz's
@@ -234,7 +234,7 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.22_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.23_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 

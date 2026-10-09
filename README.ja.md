@@ -137,11 +137,11 @@ CM 自動検出で決めた 5 区間・22 分の書き出しでは、**40589 フ
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.22_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.8.22-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.22_amd64.deb` | `sudo apt install ./smartcut_0.8.22_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 29.4 MB で済みます |
-| **Windows** | `SmartCut_0.8.22_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
-| **Windows** | `smartcut-portable-x64-0.8.22.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
+| **Linux** | `SmartCut_0.8.23_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.8.23-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.23_amd64.deb` | `sudo apt install ./smartcut_0.8.23_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 29.4 MB で済みます |
+| **Windows** | `SmartCut_0.8.23_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
+| **Windows** | `smartcut-portable-x64-0.8.23.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
 
 **動作条件。** AppImage と tar.gz には glibc 2.35 以降が必要です（Ubuntu 22.04、
 Debian 12、Fedora 36 以降）。deb は Ubuntu 22.04 以降と Debian 13 以降で
