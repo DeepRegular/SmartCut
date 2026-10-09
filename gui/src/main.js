@@ -29,7 +29,8 @@ const dialog = dialogOver(T);
 const jlog = (m) => invoke && invoke("log", { msg: String(m) });
 jlog("main.js start");
 
-import { fmt, chLabel, cmNote, blankKey, noBrowserMenu, noNativeDrag, notch, dialogOver } from "./shared.js";
+import { fmt, chLabel, cmNote, blankKey, noBrowserMenu, noNativeDrag, notch, dialogOver, unplayedOf, cutsBeyond }
+  from "./shared.js";
 import { t as tr, applyStatic, setLang, onLangChange, confirmWithOs } from "./i18n.js";
 import * as prefs from "./prefs.js";
 
@@ -63,6 +64,9 @@ let dragging = null;
 /// handler under the scrubber.
 let dragFrom = null;
 let cuts = []; // source ranges taken out
+/// What the cuts keep, as the ranges handed to the engine: `keeps` before
+/// a recorder's seams take out what no cut writes. See `rebuildTimeline`.
+let keptRanges = [];
 let keeps = []; // [{a, b, at}] source ranges that survive, with output offset
 let gops = []; // output times where a GOP starts
 let seams = []; // output times of the joins in `joinTimes()`
@@ -220,6 +224,7 @@ const onFrame = (t) => {
 /// the output.
 function rebuildTimeline() {
   keeps = [];
+  keptRanges = [];
   gops = [];
   seams = [];
   outDur = 0;
@@ -229,14 +234,32 @@ function rebuildTimeline() {
   // timeline there is what makes the frame counter agree with the file that
   // actually gets written.
   let pos = headTime();
+  const ranges = [];
   for (const c of cuts) {
     // A cut past the end keeps nothing, rather than a range that runs
     // backwards and takes its length off everything after it.
     const a = Math.min(c.a, src.duration);
-    if (a > pos + 1e-6) keeps.push({ a: pos, b: a });
+    if (a > pos + 1e-6) ranges.push({ a: pos, b: a });
     pos = Math.max(pos, c.b);
   }
-  if (pos < src.duration - 1e-6) keeps.push({ a: pos, b: src.duration });
+  if (pos < src.duration - 1e-6) ranges.push({ a: pos, b: src.duration });
+  keptRanges = ranges;
+  // Less the clock a recorder's seam holds no pictures at, which no cut
+  // writes (`unwritten`; see `Source::unwritten` in the engine): counted, it
+  // put the output counter, the marks and the chapters after it that much
+  // late. A piece that resumes past one is `gap` -- the same range, and no
+  // join anybody made.
+  const holes = Array.isArray(src.unwritten) ? src.unwritten : [];
+  for (const r of ranges) {
+    let at = r.a;
+    const from = keeps.length;
+    for (const [a, b] of holes) {
+      if (!(b > at) || !(a < r.b)) continue;
+      if (a > at + 1e-6) keeps.push({ a: at, b: a, gap: keeps.length > from });
+      at = Math.max(at, b);
+    }
+    if (at < r.b - 1e-6) keeps.push({ a: at, b: r.b, gap: keeps.length > from });
+  }
   for (const k of keeps) {
     k.at = outDur;
     outDur += k.b - k.a;
@@ -262,7 +285,7 @@ function rebuildTimeline() {
 /// Source ranges to hand the engine, kept inside the file whatever rounding
 /// the index arrived with.
 const outputRanges = () =>
-  keeps.map((k) => [Math.max(0, k.a), Math.min(src ? src.duration : k.b, k.b)]);
+  keptRanges.map((k) => [Math.max(0, k.a), Math.min(src ? src.duration : k.b, k.b)]);
 const outFrames = () => Math.round(outDur * (src ? src.fps : 30));
 
 /// Source time to output time; null when the material has been cut away.
@@ -567,7 +590,8 @@ function applyCuts(next) {
 /// the recording leaves only one segment and so no *internal* join -- but its
 /// new beginning is a join like any other, and counts here.
 function joinTimes() {
-  const list = keeps.slice(1).map((k) => k.a);
+  // Not where a range resumes past a seam: nobody cut there.
+  const list = keeps.slice(1).filter((k) => !k.gap).map((k) => k.a);
   const head = headTime();
   if (keeps.length && keeps[0].a > head + frame() / 2) list.push(keeps[0].a);
   return list.sort((a, b) => a - b);
@@ -1709,7 +1733,7 @@ function draw() {
   // seams: where a cut closed up. The material is gone, so all that is left
   // to show is the join.
   ctx.fillStyle = "#d05a5a";
-  for (const k of keeps.slice(1)) ctx.fillRect(Math.round(timeToX(k.at, w)) - 1, TOP, 2, HGT);
+  for (const k of keeps.slice(1)) if (!k.gap) ctx.fillRect(Math.round(timeToX(k.at, w)) - 1, TOP, 2, HGT);
 
   ctx.strokeStyle = "#4a4a4a";
   ctx.strokeRect(0.5, TOP + 0.5, w - 1, HGT - 1);
@@ -5432,9 +5456,26 @@ async function readKeyframeFile(path) {
   // Pictures counted from the recording's first, as `markNumbers` writes
   // them -- not positions on the cut. Read as those, a list saved after a
   // cut came back late by everything cut before each mark.
+  // A mark written on the first picture after a cut comes back up to half a
+  // frame either side of where the cut ends -- the file counts frames from
+  // the first picture, and a cut the row came with (what a disc's playlist
+  // leaves out, past a recorder's seam) need not end on that count. Half a
+  // frame early it was inside the cut, and dropped. Only a mark that was on
+  // what is kept is written (`markNumbers`), so it goes back there. Only
+  // onto the end of a cut the row came with: a cut made here ends on a
+  // picture the editor stepped to, and a mark half a frame ahead of it is
+  // one the file put inside that cut.
+  const came = partCuts.concat(unplayedCuts);
   const times = frames
     .map((n) => headTime() + n / src.fps)
-    .filter((t) => t <= src.duration + 1e-6);
+    .filter((t) => t <= src.duration + 1e-6)
+    .map((t) => {
+      const c = cuts.find(
+        (r) =>
+          t >= r.a && t < r.b && r.b - t < frame() / 2 && came.some((o) => Math.abs(o.b - r.b) < 1e-6)
+      );
+      return c ? c.b : t;
+    });
   if (!times.length) return 0;
   addKeyframes(times);
   el("status").textContent = tr("keyframes.read", {
@@ -5528,7 +5569,7 @@ function trimBody() {
   // Not past the last picture there is: a recording whose sound runs on
   // after its pictures has a container end a frame or two beyond it.
   const end = tailSrc === null ? Infinity : tailSrc + frame();
-  for (const k of keeps) {
+  for (const k of keptRanges) {
     const a = Math.max(0, no(k.a));
     const b = no(Math.min(k.b, end)) - 1;
     // An end of 0 is AviSynth's "to the end of the clip", so a single frame
@@ -5718,16 +5759,31 @@ async function saveMarks(kind, ask) {
     }
   }
   if (gen !== openGen) return;
+  // The backend refuses the recording it has open, and until the walk lands
+  // that is the recording before this one, or nothing: a name typed over
+  // this one's in that wait was written over it. The name as it stands is
+  // checked here, and the recording is named to the backend, which answers
+  // for the other spellings of the same file.
+  const plain = (p) => {
+    const s = p.replace(/\\/g, "/");
+    return /^[A-Za-z]:\//.test(s) ? s.toLowerCase() : s;
+  };
+  if (plain(to) === plain(src.path)) {
+    el("status").textContent = tr("marks.isRecording", { file: leaf(to) });
+    return;
+  }
   try {
     let n;
     if (kind === "keyframe") {
-      n = await invoke("write_keyframes", { path: to, frames: markNumbers(), fps: src.fps });
+      n = await invoke("write_keyframes", {
+        path: to, frames: markNumbers(), fps: src.fps, recording: src.path,
+      });
     } else if (kind === "cm") {
-      await invoke("write_sidecar", { path: to, body: cmBody() });
+      await invoke("write_sidecar", { path: to, body: cmBody(), recording: src.path });
       n = cmBlocks.length;
     } else {
-      await invoke("write_sidecar", { path: to, body: trimBody() });
-      n = keeps.length;
+      await invoke("write_sidecar", { path: to, body: trimBody(), recording: src.path });
+      n = keptRanges.length;
     }
     el("status").textContent = tr(
       kind === "keyframe" ? "marks.saved" : kind === "cm" ? "cm.saved" : "trim.saved",
@@ -6201,6 +6257,26 @@ function trimCuts(body) {
   return out;
 }
 
+/// A Trim line's cuts, each end within half a frame of an end of one of
+/// `own` taken onto that end.
+///
+/// The line counts frames from the first picture, and a cut the row came
+/// with -- what a disc's playlist leaves out, put on the pictures past a
+/// recorder's seam (`disc::unplayed_in`), or a division's -- need not sit on
+/// that count: written out and read back, its end came back up to half a
+/// frame off, and merged with the cut it was written from the two together
+/// cut the more of either. The row counted a picture or two short, and kept
+/// a picture fewer where the line's end fell after the picture the cut began
+/// on. It is the same end.
+function onBounds(cuts, own) {
+  const near = (t) => {
+    const o = own.find((c) => Math.abs(c.a - t) < frame() / 2) || own.find((c) => Math.abs(c.b - t) < frame() / 2);
+    if (!o) return t;
+    return Math.abs(o.a - t) < frame() / 2 ? o.a : o.b;
+  };
+  return cuts.map((c) => ({ a: near(c.a), b: near(c.b) }));
+}
+
 /// Pick up a Trim line saved beside the recording, if there is one.
 ///
 /// Unlike the keyframe list this one *cuts*: the file is the edit, and
@@ -6232,7 +6308,7 @@ async function readTrimFile(path) {
   // An empty list is a Trim line that keeps the whole recording. Nothing to
   // do, and still an answer: the file was there and it has been read.
   // On a part of a divided row, the rest of the recording stays cut away.
-  if (out.length) applyCuts(partCuts.length ? normalise(out.concat(partCuts)) : out);
+  if (out.length) applyCuts(partCuts.length ? normalise(onBounds(out, partCuts).concat(partCuts)) : out);
   el("status").textContent = tr("trim.read", { n: out.length, file: leaf(path) });
   return true;
 }
@@ -6272,6 +6348,61 @@ async function loadMarkFiles() {
     }
   }
   return false;
+}
+
+/// Read again a keyframe list or a Trim line that was read before the walk,
+/// where the walk put the first picture somewhere else.
+///
+/// Their numbers count from the first picture (`headTime`), and before the
+/// walk that is the outline's `head`: the first key picture at the front of
+/// the file. The walk's answer is `points[0]`, and on a disc that answer is
+/// the disc's own map -- which on a recorder's BD-RE can leave the first GOP
+/// out: measured half a second (15 frames) after the head on one clip. The
+/// marks then stood 15 frames early, and a Trim line cut 15 frames early at
+/// every end, against the file this window itself had written (`markNumbers`
+/// counts from `points[0]`).
+///
+/// Only while nothing has been done by hand since: the file's marks are then
+/// the whole of what arrived, and are put back to what was there before them
+/// and read again on the head the rest of the window counts from. A disc's
+/// map is read in a moment, so the walk is over long before a hand gets in.
+async function recountEarly(before) {
+  if (!src || Math.abs(headTime() - before.head) < 1e-6) return;
+  if (touched()) {
+    jlog(`marks read on head ${before.head}, walk says ${headTime()}: edited since, left`);
+    return;
+  }
+  const kind = markFileKind;
+  const gen = openGen;
+  await settle(async () => {
+    // As `pointsArrived` moves what it finds: a cut to the old end runs to
+    // the end the walk found.
+    cuts = normalise(
+      before.cuts.map((c) => ({
+        a: c.a,
+        b: c.b >= before.duration - 1e-6 ? Math.max(c.b, src.duration) : c.b,
+      }))
+    );
+    const keys = before.keyframes.map(onFrame).sort((x, y) => x - y);
+    keyframes = keys.filter((t, i) => i === 0 || t - keys[i - 1] > frame() / 2);
+    activeKey = before.activeKey === null ? null : onFrame(before.activeKey);
+    pickedKeys = [];
+    rebuildTimeline();
+    selGone = before.selGone;
+    selA = Math.min(before.selA, outDur);
+    selB = before.selB >= before.outDur - 1e-9 ? outDur : Math.min(before.selB, outDur);
+    if (kind === "trim") await readTrimFile(markPath("trim"));
+    else await readKeyframeFile(markPath("keyframe"));
+  });
+  if (gen !== openGen) return;
+  rebuildTimeline();
+  renderKeyframes();
+  updateReadouts();
+  draw();
+  stripCache = null;
+  scheduleStrip();
+  schedulePlan();
+  if (!playing) await showFrame(playhead);
 }
 
 /// The chapter points a recorder wrote on a BDAV disc, as marks.
@@ -6439,8 +6570,11 @@ function paintSourceInfo() {
 /// and the disc's is the answer when nobody has given one.
 /// Counts opens, so that one overtaken by the next can tell. See `openPath`.
 let openGen = 0;
+/// The head a first visit's mark files were read on before the walk, while
+/// the walk's answer is still to come; null otherwise. See `recountEarly`.
+let recountHead = null;
 
-async function openPath(picked, saved, side, name, chapters, dropPids, detected) {
+async function openPath(picked, saved, side, name, chapters, dropPids, detected, plays) {
   jlog(`openPath ${picked}`);
   // A part of a divided row that has not been in here yet arrives with its
   // cuts and nothing else, and everything a first visit does is still owed:
@@ -6449,6 +6583,12 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   const first = !saved || !!saved.fresh;
   if (!picked) return;
   marksDue = first;
+  // The playlist's cuts, where the list still owes them: on a first visit,
+  // or on one after a first visit left before its walk had landed.
+  playsDue = Array.isArray(plays) && plays.length > 0 && (first || !!(saved && saved.playsDue));
+  // Which of the row's cuts the playlist made, whoever made them.
+  unplayedCuts =
+    saved && Array.isArray(saved.unplayed) ? saved.unplayed.map((c) => ({ a: c.a, b: c.b })) : [];
   // A second row can be sent while this one is still coming up. Everything
   // below the first wait writes the window's state, so an open that has been
   // overtaken stops at the next one rather than finishing on top of the row
@@ -6458,6 +6598,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
   const gen = ++openGen;
   const overtaken = () => gen !== openGen;
   walkFailed = null;
+  recountHead = null;
   // Whatever is moving the playhead is moving it through the row being left.
   // Playback went on sounding the last recording and putting its pictures
   // and instants into this one's timeline until the first picture below
@@ -6509,7 +6650,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // `open_source` is the same question asked properly, and it is started
     // here and picked up at the end of this: everything between is set up
     // that does not depend on the answer.
-    const exact = invoke("open_source", { path: picked });
+    // With the play items where their cuts are owed: they come back put
+    // on the pictures the walk finds (`unplayed`; see `applyPlays`).
+    const exact = invoke("open_source", { path: picked, plays: playsDue ? plays : [] });
     // A failure has to be somebody's, or the promise is unhandled and the
     // window gets a console error instead of a message. Answered again below.
     exact.catch(() => {});
@@ -6560,6 +6703,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // pictures landing after `forgetGlances` below were kept as this one's,
     // and a magnifier's picture put `zoomShown` back on the old frame.
     previewToken++;
+    // And a step asked for during the wait above, which is on the last
+    // recording's timeline too (`scrubPending` was let go of before it).
+    scrubPending = null;
     stripToken++;
     subsToken++;
     meterToken++;
@@ -6604,6 +6750,12 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     dropStreams = saved ? (saved.dropStreams || []).slice() : [];
     poster = saved && Number.isFinite(saved.poster) ? saved.poster : null;
     partCuts = saved && saved.fresh && Array.isArray(saved.partCuts) ? saved.partCuts : [];
+    // What the disc's playlist left out, where the list has already cut it
+    // (`takePlays` in app.js); this visit may cut it itself below.
+    playsCut =
+      saved && saved.fresh && Array.isArray(saved.unplayed)
+        ? saved.unplayed.map((c) => ({ a: c.a, b: c.b }))
+        : [];
     trackList = null;
     // A first visit to a recording that came off a disc starts from the
     // answer given when the disc was read. That answer is in PIDs, because it
@@ -6677,7 +6829,26 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // clock's own zero puts them, so that one waits for the walk after all.
     const early = first && src.points.length === 0 && src.head !== null;
     let marks = false;
-    if (early) marks = await settle(() => loadMarkFiles());
+    // What the timeline held before the files were read, and the head they
+    // were counted from, for the one case the walk answers differently: see
+    // `recountEarly`.
+    let readEarly = null;
+    if (early) {
+      const before = {
+        head: headTime(),
+        duration: src.duration,
+        cuts: cuts.map((c) => ({ a: c.a, b: c.b })),
+        keyframes: keyframes.slice(),
+        activeKey,
+        selA,
+        selB,
+        selGone,
+        outDur,
+      };
+      marks = await settle(() => loadMarkFiles());
+      if (marks && (markFileKind === "keyframe" || markFileKind === "trim")) readEarly = before;
+    }
+    recountHead = readEarly && !overtaken() ? readEarly.head : null;
     if (overtaken()) return;
     if (early) marksDue = false;
     // A file beside the recording has answered for the chapters: said now
@@ -6703,6 +6874,13 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     // find.
     await pointsArrived(exact, picked);
     if (overtaken()) return;
+    if (readEarly) await recountEarly(readEarly);
+    if (overtaken()) return;
+    // What a disc title's playlist leaves out, where the list has not cut
+    // it yet: on the walk's clock and length, as the list would have.
+    if (playsDue) await settle(() => applyPlays(plays));
+    if (overtaken()) return;
+    playsDue = false;
     if (first && !early) marks = await settle(() => loadMarkFiles());
     if (overtaken()) return;
     marksDue = false;
@@ -6723,6 +6901,8 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected)
     await settle(() => loadFlatCached(first));
     if (overtaken()) return;
     settleMark();
+    // The playlist's cuts came with the row; 取消 takes them back.
+    if (playsCut.length) undoablePlays();
     // The waveform once the pictures pass is over, not beside it: that pass
     // reads every packet and outlines the sound on the way past, so what is
     // asked for then is nearly always already kept. Asked beside it, the
@@ -6837,6 +7017,10 @@ async function pointsArrived(exact, picked) {
     settleMark();
   }
   src = full;
+  // Mark files read on another head are read again once this is over
+  // (`recountEarly`); written before that, they were counted on the wrong
+  // one. Refused until then, as before a first read.
+  if (recountHead !== null && Math.abs(headTime() - recountHead) >= 1e-6) marksDue = true;
   for (const step of stepsAtEnd) step.selB = keptLength(step.cuts);
   tailSrc = null;
   // The marks that came up with the row, onto the frames they show now that
@@ -7594,6 +7778,69 @@ let dropStreams = [];
 /// its first visit. A Trim line beside the recording replaces the cuts, and
 /// these go back on top of it. See `divideRows` in app.js.
 let partCuts = [];
+
+/// What of the cuts a disc title's playlist made on this row's first visit
+/// -- the list's (`takePlays` in app.js) or this window's (`applyPlays`) --
+/// for the one step of history that takes them back.
+let playsCut = [];
+
+/// Which of the row's cuts the disc's playlist made, on any visit: not
+/// chapters (`chaptersFor` in app.js), so the list has to be told which they
+/// are. Carried in the edit as `unplayed`.
+let unplayedCuts = [];
+
+/// Whether this visit still owes the row the playlist's cuts: until the walk
+/// has landed and `applyPlays` has run. Told to the list (`playsDue` in the
+/// edit), which otherwise took an edit sent during the walk -- a cut made
+/// while it read, then the next row -- for the editor having had its say,
+/// and the row was written with everything the playlist leaves out.
+let playsDue = false;
+
+/// Cut what a disc title's playlist leaves out: the list's `takePlays`, on a
+/// first visit that came before the list could. Part of the row arriving,
+/// not an edit; see `undoablePlays` for the way back.
+///
+/// Where the engine has put them on the pictures the walk found
+/// (`disc::unplayed_in`, sent with the walk as `unplayed`), those; worked
+/// out here only from a backend that did not.
+function applyPlays(plays) {
+  if (!src) return;
+  const u = Array.isArray(src.unplayed)
+    ? src.unplayed.filter((r) => Array.isArray(r) && r[1] > r[0]).map(([a, b]) => ({ a, b }))
+    : unplayedOf(plays, src.start_time, headTime(), src.duration);
+  const beyond = cutsBeyond(u, cuts);
+  if (!beyond.length) return;
+  cuts = normalise(cuts.concat(u));
+  partCuts = normalise(partCuts.concat(u));
+  playsCut = normalise(playsCut.concat(beyond));
+  unplayedCuts = normalise(unplayedCuts.concat(beyond));
+  rebuildTimeline();
+  if (selGone) {
+    selA = 0;
+    selB = outDur;
+  }
+  playhead = outToSrc(clamp(srcToOutSeam(playhead), 0, lastStop()));
+  renderKeyframes();
+  updateReadouts();
+  draw();
+  stripCache = null;
+  scheduleStrip();
+  schedulePlan();
+  showFrame(playhead);
+}
+
+/// One step at the bottom of the history: the row as it arrived, less the
+/// playlist's cuts. They went down as though somebody had made them, and
+/// that is the way back from a cut somebody made.
+function undoablePlays() {
+  const base = past.length ? past[0] : snapshot();
+  const back = { ...base, cuts: cutsBeyond(base.cuts, playsCut) };
+  playsCut = [];
+  if (JSON.stringify(back.cuts) === JSON.stringify(base.cuts)) return;
+  past.unshift(back);
+  if (past.length > HISTORY_DEPTH) past.pop();
+  paintHistory();
+}
 
 // --- サムネイル ------------------------------------------------------------
 //
@@ -8367,6 +8614,11 @@ function captureEdit() {
     // it is run before; see `markFileKind`.
     markFileKind,
     chaptersDue,
+    // Which cuts the disc's playlist made, and whether its cuts are still
+    // owed because this visit's walk has not landed. See `unplayedCuts` and
+    // `playsDue`.
+    unplayed: unplayedCuts.map((c) => ({ a: c.a, b: c.b })),
+    playsDue,
     // Whether anything in here was done by the hand rather than arrived with
     // the recording. The list marks its row with it, which is what tells the
     // rows that have been settled from the rows that have only been read; the
@@ -8498,7 +8750,7 @@ if (listen) {
     if (!playing) scheduleMeterAt();
   });
   hear("editor-open", async (ev) => {
-    const { id, path, name, side, saved, chapters, dropPids } = ev.payload;
+    const { id, path, name, side, saved, chapters, dropPids, plays } = ev.payload;
     let { cm } = ev.payload;
     // A frame number typed for the last recording is not one for this one.
     closeJump();
@@ -8540,7 +8792,7 @@ if (listen) {
       editId = id;
       editedWhileArriving = false;
       try {
-        await openPath(path, saved, side, name, chapters, dropPids, ev.payload.detected);
+        await openPath(path, saved, side, name, chapters, dropPids, ev.payload.detected, plays);
       } catch (e) {
         // `openPath` has put the reason on the status line already. The row
         // is let go of here so that being sent it again is another attempt
@@ -8755,6 +9007,12 @@ onLangChange(() => {
     renderKeyframes();
     // Not under a playback, for the reason `prepare` gives.
     if (!playing) showFrame(playhead);
+  }
+  // A recording on its way in: the title says so (see `openPath`), and
+  // `applyStatic` has just put the markup's 読み込み中… back over it.
+  if (inbound) {
+    el("title").textContent = tr("editor.analysing");
+    el("title").removeAttribute("title");
   }
   // Whatever state it is in -- nothing open, a recording on its way in, a
   // plan -- the band is written again in the language now in force. It is

@@ -18,6 +18,7 @@ driver first.
 
 import fcntl
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -916,7 +917,10 @@ def seam_window(cfg, t):
         app.s.click('button.tab[data-screen="outset"]')
         wait_for("the seam button", lambda: app.s.js(
             "const r = document.getElementById('row-cross');"
-            "return !!r && !r.hidden;"), 60)
+            "const b = document.getElementById('open-cross');"
+            # The row shows while one row is still being read, with the
+            # button greyed (no join yet): a click then does nothing.
+            "return !!r && !r.hidden && !!b && !b.disabled;"), 60)
         before = set(app.s.handles())
         app.s.click("#open-cross")
         seam = wait_for("the seam window", lambda: (
@@ -989,11 +993,166 @@ def seam_window(cfg, t):
             picked = app.s.js("return document.getElementById('x-kind').value")
             t.check("18 the dropped list chooses with the keys", picked == "slide-bottom",
                     repr(picked))
-            app.s.click("#cross-cancel")
+            try:
+                app.s.click("#cross-cancel")
+            except WebDriverError:
+                # The window closes inside its own click, as with Escape.
+                pass
             seam_gone(app, seam)
         after = app.save()["clips"][0].get("after") or {}
         t.check("18 キャンセル keeps what OK wrote", after.get("kind") == "dissolve",
                 repr(after))
+
+
+# -- 28 --------------------------------------------------------------------
+def seam_follows_list(cfg, t):
+    """継ぎ目の編集 open on the join a -> b of a three-row join (a, b, c); in
+    the list the first row is moved down (b, a, c) while the window is up.
+    The window was left on the old joins, and OK wrote the crossing by the
+    row before the join -- onto a, which is now followed by c, a seam nobody
+    looked at. The window must be told the new joins (it starts afresh on the
+    first, b -> a), and OK then writes onto b."""
+    rows = [{"path": cfg.a}, {"path": cfg.b}, {"path": cfg.c}]
+    with App(cfg, "seam_follows_list", rows, {"joinAll": True}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled"
+            " && document.querySelectorAll('#out-master option').length === 3;"), 90)
+        before = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+        app.s.switch(seam)
+        names = lambda: app.s.js(  # noqa: E731
+            "return [document.getElementById('name-before').textContent,"
+            " document.getElementById('name-after').textContent]")
+        first = wait_for("the join's names", lambda: (lambda n: n[0] not in ("", "—") and n)(names()), 60)
+        app.s.switch(app.main)
+        app.s.click('button.tab[data-screen="input"]')
+        app.s.click("#cliplist > li:nth-child(1) .nm")
+        wait_for("下に移動", lambda: not app.s.js(
+            "return document.getElementById('move-down').disabled"), 15)
+        app.s.click("#move-down")
+        app.s.switch(seam)
+        moved = wait_for("the window on the new joins",
+                         lambda: (lambda n: n != first and n)(names()), 15)
+        app.s.js(
+            "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+            "k.dispatchEvent(new Event('change', {bubbles: true}));")
+        time.sleep(0.5)
+        try:
+            app.s.click("#cross-ok")
+        except WebDriverError:
+            pass
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+        app.s.switch(app.main)
+        saved = app.save()["clips"]
+        order = [os.path.basename(c["path"]) for c in saved]
+        afters = [(c.get("after") or {}).get("kind") for c in saved]
+        t.check("28 the seam window follows a row moved in the list",
+                order == ["b.mkv", "a.ts", "c.ts"] and afters[0] == "dissolve" and not afters[1],
+                f"window {first} -> {moved}; order {order}; after {afters}")
+
+
+# -- 30 --------------------------------------------------------------------
+def seam_keeps_unsaved(cfg, t):
+    """継ぎ目の編集 open on the join a -> b, a dissolve set in it and not yet
+    OK'd; in the list a join is added behind it (b duplicated: a, b, b'),
+    which is what a row finishing its read does too while the output
+    settings screen is up. The window is told the joins again (see
+    `followCross`), and that must not throw away what was set in it for the
+    join that is still there, nor move it off that join: OK then writes the
+    dissolve onto a."""
+    with App(cfg, "seam_keeps_unsaved", clips(cfg), {"joinAll": True}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled;"), 90)
+        before = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+        app.s.switch(seam)
+        names = lambda: app.s.js(  # noqa: E731
+            "return [document.getElementById('name-before').textContent,"
+            " document.getElementById('name-after').textContent]")
+        first = wait_for("the join's names", lambda: (lambda n: n[0] not in ("", "—") and n)(names()), 60)
+        app.s.js(
+            "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+            "k.dispatchEvent(new Event('change', {bubbles: true}));")
+        time.sleep(0.5)
+        app.s.switch(app.main)
+        app.s.click('button.tab[data-screen="input"]')
+        app.s.click("#cliplist > li:nth-child(2) .nm")
+        wait_for("クリップを複製", lambda: not app.s.js(
+            "return document.getElementById('duplicate-clip').disabled"), 15)
+        app.s.click("#duplicate-clip")
+        wait_for("three rows", lambda: app.s.js(
+            "return document.querySelectorAll('#cliplist > li').length") == 3, 15)
+        app.s.click('button.tab[data-screen="outset"]')
+        time.sleep(1.5)
+        app.s.switch(seam)
+        now = names()
+        kind = app.s.js("return document.getElementById('x-kind').value")
+        t.check("30 the seam window keeps a join's unsaved crossing when a join is added",
+                # b's name takes the twin's number; it is still a -> b.
+                kind == "dissolve" and now[0] == first[0] and now[1].startswith(first[1]),
+                f"kind {kind!r}; join {first} -> {now}")
+        try:
+            app.s.click("#cross-ok")
+        except WebDriverError:
+            pass
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+        app.s.switch(app.main)
+        saved = app.save()["clips"]
+        afters = [(c.get("after") or {}).get("kind") for c in saved]
+        t.check("30 OK writes it onto the join it was set on",
+                len(saved) == 3 and afters[0] == "dissolve" and not afters[1],
+                f"after {afters}")
+
+
+# -- 29 --------------------------------------------------------------------
+def disc_refuses_opus(cfg, t):
+    """A BDAV run of three rows whose second has Opus sound (an H.264 + Opus
+    .mkv, as a web download is). A transport stream takes Opus, so the cut
+    went ahead, the disc's index refused the stream after it was written, and
+    the index failure took the second and third recordings off the disc with
+    it. The run must not start, say which row and why, and write nothing."""
+    home = os.path.join(cfg.work, "opus")
+    os.makedirs(home, exist_ok=True)
+    op = os.path.join(home, "op.mkv")
+    if not os.path.exists(op):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30000/1001:duration=10",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=10:sample_rate=48000",
+                        "-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-pix_fmt", "yuv420p",
+                        "-c:a", "libopus", "-b:a", "96k", "-f", "matroska", op + ".part"], check=True)
+        os.replace(op + ".part", op)
+    rows = [{"path": cfg.a}, {"path": op}, {"path": cfg.b}]
+    with App(cfg, "disc_refuses_opus", rows, {"mode": "bdav", "discTitle": "t"}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("three rows on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == 3, 60)
+        label = wait_for("the start button", lambda: app.s.js(
+            "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 60)
+        time.sleep(0.5)
+        app.s.click("#run-export")
+        said = wait_for("the run's sentence", lambda: app.s.js(
+            "return document.getElementById('out-note').textContent"), 30, 0.2)
+        time.sleep(1.0)
+        written = [os.path.join(r, f) for r, _, fs in os.walk(app.out) for f in fs]
+        button = app.s.js("return document.getElementById('run-export').innerText")
+        t.check("29 nothing cut onto the disc", not written,
+                f"{[os.path.relpath(f, app.out) for f in written][:6]}")
+        t.check("29 the run names the row and the codec, and is over",
+                "op" in said and "opus" in said and button == label,
+                f"note {said!r}, button {button!r}")
 
 
 # -- 19 --------------------------------------------------------------------
@@ -1052,7 +1211,7 @@ def ctrl_h_before_marks_read(cfg, t):
                 continue
             status = st["status"] or ""
             said = said or "まだ読み込んでいない" in status or "only read once" in status
-            if st["keys"].startswith("2") and "読み込み中" not in st["plan"]:
+            if st["keys"].startswith("2") and "読み込んで" not in st["plan"]:
                 break
         time.sleep(0.5)
         with open(side, "rb") as f:
@@ -1212,6 +1371,54 @@ def no_free_folder(cfg, t):
                 f"note {said!r}, button {button!r}")
 
 
+# -- 24 --------------------------------------------------------------------
+def keyframe_twins(cfg, t):
+    """Two rows both called `x`, from a .ts and a .mkv, written under 入力と同じ
+    with the marks list on. The cuts were `cut_x.ts` and `cut_x.mkv` -- two
+    names only by their extension, so not numbered -- and both lists (and any
+    subtitle side files) were `cut_x.*`: the second row's written over the
+    first's. Rows whose names differ only by extension are twins and get
+    numbered: `cut_x_1.ts` + `cut_x_1.keyframe` (frame 60 only) and
+    `cut_x_2.mkv` + `cut_x_2.keyframe`, and the output screen says so before
+    the run."""
+    rows = [
+        {"path": cfg.a, "renamed": "x", "edit": {"cuts": [], "keyframes": [2.0]}},
+        {"path": cfg.b, "renamed": "x", "edit": {"cuts": [], "keyframes": [5.0, 7.0]}},
+    ]
+    with App(cfg, "keyframe_twins", rows, {"number": False, "keyframes": True, "container": ""}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("both rows on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == 2, 60)
+        label = wait_for("the start button", lambda: app.s.js(
+            "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 60)
+        shown = []
+        for k in (0, 1):
+            shown.append(wait_for(f"row {k + 1}'s output name", lambda k=k: app.s.js(
+                "const s = document.getElementById('outset-clip');"
+                f"s.selectedIndex = {k}; s.dispatchEvent(new Event('change'));"
+                "return document.getElementById('outset-format').innerText"), 30))
+        t.check("24 the output screen names the twins _1 and _2",
+                "cut_x_1.ts" in shown[0] and "cut_x_1.keyframe" in shown[0]
+                and "cut_x_2.mkv" in shown[1] and "cut_x_2.keyframe" in shown[1],
+                f"shown {[s[-160:] for s in shown]!r}")
+        time.sleep(0.5)
+        app.s.click("#run-export")
+        time.sleep(1.0)
+        wait_for("the run to finish", lambda: app.s.js(
+            "return document.getElementById('run-export').innerText") == label, 300, 0.5)
+        names = sorted(os.listdir(app.out))
+
+        def body(name):
+            side = os.path.join(app.out, name)
+            return open(side).read().split() if os.path.exists(side) else None
+        t.check("24 both cuts written, numbered", "cut_x_1.ts" in names and "cut_x_2.mkv" in names,
+                f"files {names}")
+        first, second = body("cut_x_1.keyframe"), body("cut_x_2.keyframe")
+        t.check("24 each row has its own marks list", first == ["60"] and second is not None
+                and len(second) == 2, f"cut_x_1.keyframe {first}, cut_x_2.keyframe {second}")
+
+
 # -- 20 --------------------------------------------------------------------
 def disc_join_crossing(cfg, t):
     """Two clips on a disc folder joined with a long dissolve, ベリファイ on.
@@ -1275,6 +1482,790 @@ def disc_join_crossing(cfg, t):
             for f in files:
                 os.remove(f)
 
+# -- 27 --------------------------------------------------------------------
+def disc_head_recount(cfg, t):
+    """A recorder BD-RE clip whose disc map starts its entry points after the
+    first key picture at the front of the file (half a second on the clip
+    measured): the outline's head and the walk's points[0] disagree. A
+    .keyframe beside it, written by this program, counts from points[0]; read
+    before the walk (on the outline's head) its marks stood 15 frames early,
+    and a Trim line cut 15 frames early. Ctrl+H once the walk is in must
+    write back the numbers that were read. Needs such a disc: GUITEST_HEAD_CLIP
+    names the clip (a path through an image is fine); not in the default list."""
+    clip = os.environ.get("GUITEST_HEAD_CLIP")
+    if not clip or not os.path.exists(clip.split(".iso/")[0] + (".iso" if ".iso/" in clip else "")):
+        t.check("27 GUITEST_HEAD_CLIP names a clip", False, repr(clip))
+        return
+    home = os.path.join(cfg.work, "disc_head_recount")
+    shutil.rmtree(home, ignore_errors=True)
+    os.makedirs(home)
+    marks = [300, 600, 900]
+    side = os.path.join(home, "h.keyframe")
+    for kind, body in (("keyframe", "".join(f"{n}\r\n" for n in marks)),
+                       ("trim", "Trim(300,599) ++ Trim(900,1199)\r\n")):
+        for f in os.listdir(home):
+            os.remove(os.path.join(home, f))
+        name = side if kind == "keyframe" else os.path.join(home, "h.m2ts.trim.avs")
+        with open(name, "w", newline="") as f:
+            f.write(body)
+        rows = [{"path": clip, "home": home, "stem": "h"}]
+        with App(cfg, "disc_head_recount", rows) as app:
+            app.s.js("localStorage.setItem('smartcut.quietOverwrite', 'true');")
+            app.open_row(1, "h", wait=False)
+            app.to_editor()
+            # The plan line says 「録画を読み込んでいます」 until the open is
+            # over, recount and all (`opening` holds it).
+            wait_for("the walk", lambda: (lambda st: st["frames"] is not None and st["plan"]
+                     and "読み込んで" not in st["plan"] and "Reading" not in st["plan"])(app.state()),
+                     180, 0.3)
+            time.sleep(2)
+            keys = "Control+h" if kind == "keyframe" else "Control+Shift+h"
+            app.s.keys(keys)
+            time.sleep(1.5)
+            with open(name, "rb") as f:
+                got = f.read().decode()
+            want = body
+            t.check(f"27 {kind} read and written back the same", got == want,
+                    f"{got!r} (want {want!r}); status {app.state()['status']!r}")
+            app.escape(discard=True, expect_dialog=False)
+            app.gone()
+    shutil.rmtree(home, ignore_errors=True)
+
+
+# -- 28 --------------------------------------------------------------------
+def _cli():
+    return os.environ.get("GUITEST_CLI", os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..",
+        "rust", "target", "release", "smartcut"))
+
+
+def _hms(text):
+    h, m, s = text.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def _disc_row(cfg, disc, n, name):
+    """Row `n` (1-based) of a disc, as the disc chooser hands it to the list:
+    asked of the program itself (`resolve_paths`), so the play items and the
+    chapters are what the window would have."""
+    with App(cfg, name, clips(cfg)) as app:
+        app.to_list()
+        app.s.js("window.__found = null;"
+                 "window.__TAURI__.core.invoke('resolve_paths', {paths: [arguments[0]]})"
+                 ".then((r) => { window.__found = r; }, (e) => { window.__found = {error: String(e)}; });",
+                 disc)
+        got = wait_for("the disc read", lambda: app.s.js("return window.__found"), 300, 0.5)
+    found = got[0]["files"][0]
+    return found["clips"][n - 1]
+
+
+def _chapters(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_chapters", "-show_entries",
+                          "format=duration", "-of", "json", path],
+                         capture_output=True, text=True).stdout
+    j = json.loads(out or "{}")
+    return ([float(c["start_time"]) for c in j.get("chapters", [])],
+            float(j.get("format", {}).get("duration", "nan")))
+
+
+def _written(out):
+    return sorted(os.path.join(out, f) for f in os.listdir(out) if f.endswith(".mkv"))
+
+
+def _same_times(a, b, tol):
+    return len(a) == len(b) and all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+def disc_plays(cfg, t):
+    """A recorder's title cut with no ranges of its own keeps what the disc's
+    playlist plays: not the second of the programme before its first IN, the
+    stretch either side of every break the recorder was stopped for, or the
+    start of the next programme after its last OUT. The list cuts those as the
+    row's first cuts once its walk has said where the clock begins, and the
+    command line cuts the same (`disc::unplayed`): the row's cuts, the
+    editor's counter, and the written file's length and chapters are the
+    command line's. The editor shows them cut, 取消 takes them back, and a
+    visit that comes before the list's walk (lanes stopped) cuts them itself;
+    Escape out of that visit leaves them owed, and OK hands them over. Twice
+    over: two rows of the title, the second from the index the first left.
+
+    Needs a disc of recordings: GUITEST_PLAYS_DISC names the image or folder,
+    GUITEST_PLAYS_TITLE the title (default 1), GUITEST_PLAYS_OUT a folder with
+    room for two cuts of it. Not in the default list."""
+    disc = os.environ.get("GUITEST_PLAYS_DISC")
+    out = os.environ.get("GUITEST_PLAYS_OUT")
+    n = int(os.environ.get("GUITEST_PLAYS_TITLE", "1"))
+    if not disc or not os.path.exists(disc) or not out or not os.path.isdir(out):
+        t.check("28 GUITEST_PLAYS_DISC/OUT name a disc and a folder", False, f"{disc!r} {out!r}")
+        return
+    said = subprocess.run([_cli(), disc, "--title", str(n), "--analyze"], text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+    line = next((l for l in said.splitlines() if l.startswith("plays :")), "")
+    want = [tuple(_hms(x) for x in p.strip().split("-")) for p in line.split("cut:", 1)[1].split(",")] \
+        if "cut:" in line else []
+    total = next((float(l.split(",")[1].split("s output")[0]) for l in said.splitlines()
+                  if l.startswith("plan  :")), None)
+    fps = next((float(l.split("fps")[0].split()[-1]) for l in said.splitlines()
+                if "fps" in l and l.lstrip().startswith(("h264", "mpeg2video", "hevc", "vc1"))), 29.97)
+    # And the title kept whole, which is what 取消 goes back to.
+    whole_said = subprocess.run([_cli(), disc, "--title", str(n), "--keep", "0-99999", "--analyze"],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+    whole = next((float(l.split(",")[1].split("s output")[0]) for l in whole_said.splitlines()
+                  if l.startswith("plan  :")), None)
+    if not t.check("28 the command line cuts what the playlist leaves out", bool(want) and total and whole,
+                   f"{line!r}; plan total {total}, whole {whole}"):
+        return
+    row = _disc_row(cfg, disc, n, "disc_plays")
+    base = {"path": row["path"], "name": "p", "stem": "p", "home": out,
+            "chapters": row["chapters"], "plays": row["plays"], "playsOwed": True}
+    near = lambda got: len(got) == len(want) and all(
+        abs(a - x) < 0.002 and abs(b - y) < 0.002 for (a, b), (x, y) in zip(got, want))
+    cli_file = os.path.join(out, "cli.mkv")
+    subprocess.run([_cli(), disc, "--title", str(n), "-o", cli_file],
+                   check=True, capture_output=True)
+    cli_chapters, cli_length = _chapters(cli_file)
+    os.remove(cli_file)
+    # The same stretches cut as somebody's own cuts: a chapter where each
+    # range begins. The playlist's own cuts make none (the maintainer's
+    # decision, 2026-10-09): what they keep is the disc's marks, so the
+    # chapters are those of the cut by hand less some range starts.
+    cut_args = []
+    for a, b in want:
+        cut_args += ["--cut", f"{a:.6f}-{b:.6f}"]
+    subprocess.run([_cli(), disc, "--title", str(n), "-o", cli_file] + cut_args,
+                   check=True, capture_output=True)
+    hand_chapters, _ = _chapters(cli_file)
+    os.remove(cli_file)
+    t.check("28 the playlist's cuts make no chapters of their own",
+            all(any(abs(c - h) <= 0.1 for h in hand_chapters) for c in cli_chapters)
+            and len(cli_chapters) < len(hand_chapters),
+            f"{cli_chapters} vs cut by hand {hand_chapters}")
+
+    # The list first: its walk lands, the rows take their cuts.
+    with App(cfg, "disc_plays", [dict(base), dict(base, name="q", stem="q")],
+             {"dir": out, "container": "mkv"}) as app:
+        def taken():
+            p = app.save()
+            return p if all(cuts_of(p, k) for k in (1, 2)) else None
+        p = wait_for("the rows' playlist cuts", taken, 600, 2)
+        for k, visit in ((1, "fresh"), (2, "from the index")):
+            got = cuts_of(p, k)
+            t.check(f"28 list cuts = the command line's ({visit})", near(got),
+                    f"{fmt(got)} want {fmt(want)}")
+        app.open_row(1, "p")
+        wait_for("the walk", lambda: (lambda st: st["plan"] and "読み込んで" not in st["plan"]
+                                      and "Reading" not in st["plan"])(app.state()), 300, 0.3)
+        f1 = app.state()["frames"]
+        t.check("28 editor counter = the command line's plan", abs(f1 - total * fps) <= 0.5 * fps,
+                f"{f1} pictures, plan {total:.3f} s = {total * fps:.0f}")
+        app.s.keys("Control+z")
+        time.sleep(1)
+        f2 = app.state()["frames"]
+        t.check("28 取消 takes the playlist's cuts back", abs(f2 - whole * fps) <= 0.5 * fps,
+                f"{f1} -> {f2} pictures (the title whole: {whole:.3f} s = {whole * fps:.0f})")
+        app.escape(discard=True)
+        app.gone()
+        app.export(timeout=1800)
+        files = _written(out)
+        t.check("28 both rows written", len(files) == 2, f"{files}")
+        for k, f in enumerate(files):
+            ch, length = _chapters(f)
+            t.check(f"28 written length = the command line's (row {k + 1})",
+                    abs(length - cli_length) < 0.1, f"{length:.3f} vs {cli_length:.3f}")
+            t.check(f"28 chapters = the command line's (row {k + 1})",
+                    _same_times(ch, cli_chapters, 0.1), f"{ch} vs {cli_chapters}")
+            os.remove(f)
+
+    # The editor first: the lanes stopped before the walk, so the visit cuts.
+    with App(cfg, "disc_plays", [dict(base)], {"dir": out, "container": "mkv"}) as app:
+        app.to_list()
+        app.s.js("const b = document.getElementById('stop-batch'); if (b && !b.disabled) b.click();")
+        time.sleep(1)
+        owed = cuts_of(app.save(), 1)
+        app.open_row(1, "p")
+        wait_for("the walk", lambda: (lambda st: st["plan"] and "読み込んで" not in st["plan"]
+                                      and "Reading" not in st["plan"])(app.state()), 300, 0.3)
+        time.sleep(2)
+        f1 = app.state()["frames"]
+        t.check("28 a first visit before the list's walk cuts them",
+                owed == [] and abs(f1 - total * fps) <= 0.5 * fps,
+                f"list had {fmt(owed)}; {f1} pictures, plan {total * fps:.0f}")
+        app.escape(discard=False, expect_dialog=False)
+        app.gone()
+        p = app.save()
+        t.check("28 Escape leaves them owed", cuts_of(p, 1) == [] and p["clips"][0].get("playsOwed"),
+                f"cuts {fmt(cuts_of(p, 1))}, owed {p['clips'][0].get('playsOwed')}")
+        app.open_row(1, "p")
+        wait_for("the walk", lambda: (lambda st: st["plan"] and "読み込んで" not in st["plan"]
+                                      and "Reading" not in st["plan"])(app.state()), 300, 0.3)
+        time.sleep(2)
+        app.ok()
+        app.gone()
+        p = app.save()
+        got = cuts_of(p, 1)
+        t.check("28 OK hands the editor's cuts over", near(got) and not p["clips"][0].get("playsOwed"),
+                f"{fmt(got)} want {fmt(want)}; owed {p['clips'][0].get('playsOwed')}")
+
+
+def disc_seam_gap_chapters(cfg, t):
+    """A recorder's title whose sequence table overstates a stretch: the
+    joined clock runs seconds past the stretch's last picture before the next
+    begins, and no cut writes that clock. A row of it with nothing cut (no
+    playlist cuts either, as a project from before them or a clip opened
+    bare) is written with every chapter where the command line puts it -- the
+    list counted the empty clock, and every chapter after it landed that much
+    late, the last ones past the end. Needs GUITEST_PLAYS_DISC and
+    GUITEST_PLAYS_OUT as `disc_plays`, and GUITEST_GAP_TITLE the title with
+    such a seam. Not in the default list."""
+    disc = os.environ.get("GUITEST_PLAYS_DISC")
+    out = os.environ.get("GUITEST_PLAYS_OUT")
+    n = os.environ.get("GUITEST_GAP_TITLE")
+    if not disc or not os.path.exists(disc) or not out or not os.path.isdir(out) or not n:
+        t.check("29 GUITEST_PLAYS_DISC/OUT/GAP_TITLE", False, f"{disc!r} {out!r} {n!r}")
+        return
+    n = int(n)
+    row = _disc_row(cfg, disc, n, "disc_seam_gap_chapters")
+    cli_file = os.path.join(out, "cli.mkv")
+    # The whole clip, as the row is: an explicit keep, so no playlist cuts.
+    subprocess.run([_cli(), disc, "--title", str(n), "--keep", "0-99999", "-o", cli_file],
+                   check=True, capture_output=True)
+    cli_chapters, cli_length = _chapters(cli_file)
+    os.remove(cli_file)
+    rows = [{"path": row["path"], "name": "g", "stem": "g", "home": out, "chapters": row["chapters"]}]
+    with App(cfg, "disc_seam_gap_chapters", rows, {"dir": out, "container": "mkv"}) as app:
+        for visit in ("fresh", "from the index"):
+            app.export(timeout=1800)
+            files = _written(out)
+            got = _chapters(files[0]) if len(files) == 1 else ([], float("nan"))
+            t.check(f"29 chapters across an empty seam = the command line's ({visit})",
+                    _same_times(got[0], cli_chapters, 0.1),
+                    f"{got[0]} vs {cli_chapters}; length {got[1]:.3f} vs {cli_length:.3f}")
+            for f in files:
+                os.remove(f)
+        app.s.click('button.tab[data-screen="input"]')
+        app.open_row(1, "g")
+        wait_for("the walk", lambda: (lambda st: st["plan"] and "読み込んで" not in st["plan"]
+                                      and "Reading" not in st["plan"])(app.state()), 300, 0.3)
+        f1 = app.state()["frames"]
+        fps = 30000 / 1001
+        t.check("29 editor counter = the written length", abs(f1 - cli_length * fps) <= 0.5 * fps,
+                f"{f1} pictures, written {cli_length:.3f} s = {cli_length * fps:.0f}")
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+
+
+def _title_facts(disc, n, out):
+    """What the command line says of title `n` cut with no ranges: the
+    stretches the playlist leaves out, the first picture, the rate, and the
+    written file's length and chapters (an .mkv cut, removed again)."""
+    said = subprocess.run([_cli(), disc, "--title", str(n), "--analyze"], text=True,
+                          env=dict(os.environ, SMARTCUT_DEBUG="1"),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+    line = next((l for l in said.splitlines() if l.startswith("plays :")), "")
+    want = [tuple(_hms(x) for x in p.strip().split("-")) for p in line.split("cut:", 1)[1].split(",")] \
+        if "cut:" in line else []
+    dbg = next((l for l in said.splitlines() if l.startswith("  plays ")), "")
+    head = float(dbg.split("head=")[1].split()[0]) if "head=" in dbg else None
+    dur = float(dbg.split("dur=")[1].split()[0]) if "dur=" in dbg else None
+    fps = next((float(l.split("fps")[0].split()[-1]) for l in said.splitlines()
+                if "fps" in l and l.lstrip().startswith(("h264", "mpeg2video", "hevc", "vc1"))), 29.97)
+    f = os.path.join(out, f"cli{n}.mkv")
+    subprocess.run([_cli(), disc, "--title", str(n), "-o", f], check=True, capture_output=True)
+    chapters, length = _chapters(f)
+    os.remove(f)
+    return {"want": want, "head": head, "dur": dur, "fps": fps, "chapters": chapters, "length": length}
+
+
+def _near_cuts(got, want, tol=0.002):
+    return len(got) == len(want) and all(
+        abs(a - x) < tol and abs(b - y) < tol for (a, b), (x, y) in zip(got, want))
+
+
+def _walked(app, n):
+    """Row `n` of the list has been read (its cuts, if any, are in)."""
+    return app.s.js(
+        "const li = document.querySelector(`#cliplist > li:nth-child(${arguments[0]})`);"
+        "return !!li && li.innerText.includes('インデックス');", n)
+
+
+def disc_plays_rows(cfg, t):
+    """The playlist's cuts (see `disc_plays`) through everything else a row
+    goes through: a duplicate; a project saved and opened again (the cuts
+    not taken twice, 取消 still there, 破棄 keeping them); rows of a project
+    written before the playlist was read (no `plays` in them: their cuts are
+    left as they were, and a row nobody cut stays whole); a Trim line written
+    by the editor and read back on a first visit; a division into two parts
+    written out with their .keyframe files; two titles joined into one file;
+    and a disc of recordings written from the row. Every length and chapter
+    against the command line's cut of the same title.
+
+    Needs GUITEST_PLAYS_DISC / GUITEST_PLAYS_TITLE / GUITEST_PLAYS_OUT as
+    `disc_plays`, and GUITEST_PLAYS_TITLE2 (default the title after) for the
+    join. Not in the default list."""
+    import re
+    disc = os.environ.get("GUITEST_PLAYS_DISC")
+    out = os.environ.get("GUITEST_PLAYS_OUT")
+    n1 = int(os.environ.get("GUITEST_PLAYS_TITLE", "1"))
+    n2 = int(os.environ.get("GUITEST_PLAYS_TITLE2", str(n1 + 1)))
+    if not disc or not os.path.exists(disc) or not out or not os.path.isdir(out):
+        t.check("30 GUITEST_PLAYS_DISC/OUT name a disc and a folder", False, f"{disc!r} {out!r}")
+        return
+    f1 = _title_facts(disc, n1, out)
+    f2 = _title_facts(disc, n2, out)
+    if not t.check("30 the command line cuts both titles", f1["want"] and f2["want"] and f1["head"] is not None,
+                   f"{fmt(f1['want'])} / {fmt(f2['want'])} head {f1['head']}"):
+        return
+    fps = f1["fps"]
+    r1 = _disc_row(cfg, disc, n1, "disc_plays_rows")
+    r2 = _disc_row(cfg, disc, n2, "disc_plays_rows")
+    owed = lambda r, name: {"path": r["path"], "name": name, "stem": name, "home": out,  # noqa: E731
+                            "chapters": r["chapters"], "plays": r["plays"], "playsOwed": True}
+    old = lambda r, name, edit=None: dict(  # noqa: E731
+        {"path": r["path"], "name": name, "stem": name, "home": out, "chapters": r["chapters"]},
+        **({"edit": edit} if edit else {}))
+    hand = [(100.0, 200.0)]
+    for f in os.listdir(out):
+        if f.endswith((".trim.avs", ".keyframe", ".mkv")):
+            os.remove(os.path.join(out, f))
+    settings = {"dir": out, "container": "mkv"}
+
+    # -- the list: four rows, one duplicated, saved --------------------------
+    rows = [owed(r1, "a"), old(r1, "o", {"cuts": [{"a": 100.0, "b": 200.0}], "keyframes": []}),
+            old(r1, "w"), owed(r2, "c")]
+    with App(cfg, "disc_plays_rows", rows, settings) as app:
+        def taken():
+            p = app.save()
+            return p if cuts_of(p, 1) and cuts_of(p, 4) and all(_walked(app, k) for k in (1, 2, 3, 4)) else None
+        p = wait_for("the rows' playlist cuts", taken, 900, 2)
+        time.sleep(3)
+        p = app.save()
+        t.check("30 a row owing them takes the playlist's cuts", _near_cuts(cuts_of(p, 1), f1["want"])
+                and _near_cuts(cuts_of(p, 4), f2["want"]), f"{fmt(cuts_of(p, 1))} / {fmt(cuts_of(p, 4))}")
+        t.check("30 a row from before keeps its own cuts, nothing added", cuts_of(p, 2) == hand,
+                fmt(cuts_of(p, 2)))
+        t.check("30 a row from before, never cut, stays whole", cuts_of(p, 3) == [], fmt(cuts_of(p, 3)))
+        e1 = p["clips"][0].get("edit") or {}
+        t.check("30 saved: not yet visited, the playlist's part said, nothing owed",
+                e1.get("fresh") is True and e1.get("unplayed") and not p["clips"][0].get("playsOwed"),
+                f"fresh {e1.get('fresh')} unplayed {e1.get('unplayed')} owed {p['clips'][0].get('playsOwed')}")
+        app.to_list()
+        app.s.click("#cliplist > li:nth-child(1) .nm")
+        wait_for("クリップを複製", lambda: not app.s.js(
+            "return document.getElementById('duplicate-clip').disabled"), 15)
+        app.s.click("#duplicate-clip")
+        wait_for("five rows", lambda: app.rows() == 5, 15)
+        p = app.save()
+        t.check("30 a duplicate carries the cuts", _near_cuts(cuts_of(p, 2), f1["want"]),
+                fmt(cuts_of(p, 2)))
+        saved = p["clips"]
+
+    # -- the project opened again ------------------------------------------
+    with App(cfg, "disc_plays_rows", saved, settings) as app:
+        wait_for("the rows read", lambda: all(_walked(app, k) for k in range(1, 6)), 900, 2)
+        time.sleep(3)
+        p = app.save()
+        t.check("30 reopened: the cuts as saved, not taken again",
+                _near_cuts(cuts_of(p, 1), f1["want"]) and _near_cuts(cuts_of(p, 2), f1["want"])
+                and cuts_of(p, 3) == hand and cuts_of(p, 4) == [] and _near_cuts(cuts_of(p, 5), f2["want"]),
+                " / ".join(fmt(cuts_of(p, k)) for k in range(1, 6)))
+        total = round(sum(b - a for a, b in _keeps_of(f1["want"], f1["dur"])) * fps)
+        app.open_row(1, "a")
+        wait_for("the walk", lambda: (lambda st: st["plan"] and "読み込んで" not in st["plan"]
+                                      and "Reading" not in st["plan"])(app.state()), 300, 0.3)
+        time.sleep(2)
+        a1 = app.state()["frames"]
+        app.s.keys("Control+z")
+        time.sleep(1)
+        a2 = app.state()["frames"]
+        t.check("30 reopened project: the counter, and 取消 takes the playlist's cuts back",
+                abs(a1 - f1["length"] * fps) <= 2 and a2 > a1 + 0.5 * fps,
+                f"{a1} -> {a2} (written {f1['length'] * fps:.0f}; keeps {total})")
+        app.escape(discard=True)
+        app.gone()
+        app.open_row(1, "a")
+        wait_for("the walk", lambda: (lambda st: st["plan"] and "読み込んで" not in st["plan"]
+                                      and "Reading" not in st["plan"])(app.state()), 300, 0.3)
+        time.sleep(2)
+        a3 = app.state()["frames"]
+        t.check("30 破棄 of 取消 keeps the playlist's cuts", a3 == a1, f"{a1} then {a3}")
+        # The Trim line of the row (Ctrl+Shift+H), beside it in `home`.
+        for f in os.listdir(out):
+            if f.endswith(".trim.avs"):
+                os.remove(os.path.join(out, f))
+        app.s.keys("Control+Shift+h")
+        trim = wait_for("the Trim line", lambda: ([f for f in os.listdir(out) if f.endswith(".trim.avs")]
+                                                  or [None])[0], 15)
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+    with open(os.path.join(out, trim), encoding="utf-8-sig") as fh:
+        body = fh.read()
+    got = [tuple(int(x) for x in m) for m in re.findall(r"Trim\((\d+),\s*(-?\d+)\)", body)]
+    keeps = _keeps_of(f1["want"], f1["dur"])
+    no = lambda s: round((s - f1["head"]) * fps)  # noqa: E731
+    exp = [(max(0, no(a)), no(b) - 1) for a, b in keeps]
+    t.check("30 the Trim line keeps what the playlist plays",
+            len(got) == len(exp) and all(abs(x - y) <= 1 and (abs(u - v) <= 1 or v >= no(f1["dur"]) - 2)
+                                         for (x, u), (y, v) in zip(got, exp)),
+            f"{got} want {exp}")
+
+    # -- that Trim line read back on a first visit -------------------------
+    with App(cfg, "disc_plays_rows", [old(r1, "a")], settings) as app:
+        app.open_row(1, "a")
+        wait_for("the walk", lambda: (lambda st: st["plan"] and "読み込んで" not in st["plan"]
+                                      and "Reading" not in st["plan"])(app.state()), 300, 0.3)
+        time.sleep(3)
+        b1 = app.state()["frames"]
+        app.ok()
+        app.gone()
+        p = app.save()
+        back = cuts_of(p, 1)
+        inner = lambda cs: [c for c in cs if c[0] > f1["head"] + 0.01 and c[1] < f1["dur"] - 0.2]  # noqa: E731
+        t.check("30 the Trim line read back gives the same cuts and counter",
+                _near_cuts(inner(back), inner(f1["want"]), 1.5 / fps) and abs(b1 - a1) <= 3,
+                f"{fmt(back)} want {fmt(f1['want'])}; {b1} pictures vs {a1}")
+    os.remove(os.path.join(out, trim))
+
+    # -- divided in two, written out with the marks ------------------------
+    with App(cfg, "disc_plays_rows", [owed(r1, "d")], dict(settings, keyframes=True)) as app:
+        wait_for("the row's playlist cuts", lambda: cuts_of(app.save(), 1), 600, 2)
+        app.to_list()
+        app.s.click("#cliplist > li:nth-child(1) .nm")
+        wait_for("分割 to be offered", lambda: app.s.js(
+            "return !document.getElementById('divide-clip').disabled"), 60)
+        app.s.click("#divide-clip")
+        wait_for("the divide box", lambda: app.s.js(
+            "return !document.getElementById('divide').hidden"), 5)
+        app.s.js("const f = document.getElementById('divide-rule'); f.value = 'parts';"
+                 "f.dispatchEvent(new Event('change'));"
+                 "const v = document.getElementById('divide-value'); v.value = '2';"
+                 "v.dispatchEvent(new Event('input'));")
+        wait_for("分割 to be pressable", lambda: app.s.js(
+            "return !document.getElementById('divide-ok').disabled"), 60)
+        app.s.click("#divide-ok")
+        wait_for("two rows", lambda: app.rows() == 2, 10)
+        p = app.save()
+        c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+        t.check("30 both parts keep the playlist's cuts",
+                all(any(a <= x + 0.002 and y <= b + 0.002 for a, b in c) for c in (c1, c2) for x, y in f1["want"]),
+                f"{fmt(c1)} / {fmt(c2)}")
+        for f in os.listdir(out):
+            if f.endswith((".mkv", ".keyframe")):
+                os.remove(os.path.join(out, f))
+        app.export(timeout=1800)
+        mkvs = _written(out)
+        sides = sorted(os.path.join(out, f) for f in os.listdir(out) if f.endswith(".keyframe"))
+        parts = [_chapters(f) for f in mkvs]
+        length = sum(l for _, l in parts)
+        t.check("30 the two parts are the title's cut", len(mkvs) == 2 and abs(length - f1["length"]) < 0.2,
+                f"{[os.path.basename(f) for f in mkvs]}: {length:.3f} vs {f1['length']:.3f}")
+        joined = parts[0][0] + [parts[0][1] + c for c in parts[1][0]] if len(parts) == 2 else []
+        cli = f1["chapters"]
+        t.check("30 the parts' chapters are the title's (and the second part's start)",
+                len(parts) == 2 and all(any(abs(c - j) < 0.1 for j in joined) for c in cli)
+                and all(any(abs(c - j) < 0.1 for j in cli) or abs(c - parts[0][1]) < 0.1 for c in joined),
+                f"{joined} vs {cli}")
+        ok = True
+        said = []
+        for f, (ch, _) in zip(mkvs, parts):
+            side = f[:-4] + ".keyframe"
+            if side not in sides:
+                continue
+            with open(side, encoding="utf-8-sig") as fh:
+                nums = [int(x) for x in re.findall(r"\d+", fh.read())]
+            said.append((os.path.basename(side), nums[:8]))
+            ok = ok and bool(nums) and all(any(abs(k / fps - c) <= 0.6 for c in ch) for k in nums)
+        t.check("30 each part's .keyframe stands on its chapters", ok and said, f"{said}")
+        for f in mkvs + sides:
+            os.remove(f)
+
+    # -- two titles joined into one file -------------------------------------
+    with App(cfg, "disc_plays_rows", [owed(r1, "a"), owed(r2, "c")],
+             dict(settings, joinAll=True)) as app:
+        wait_for("both rows' playlist cuts", lambda: (lambda p: cuts_of(p, 1) and cuts_of(p, 2))(app.save()),
+                 600, 2)
+        app.export(timeout=2400)
+        mkvs = _written(out)
+        ch, length = _chapters(mkvs[0]) if len(mkvs) == 1 else ([], float("nan"))
+        want_ch = f1["chapters"] + [f1["length"] + c for c in f2["chapters"]]
+        t.check("30 the join is the two titles' cuts end to end",
+                len(mkvs) == 1 and abs(length - f1["length"] - f2["length"]) < 0.2
+                and _same_times(ch, want_ch, 0.12),
+                f"{length:.3f} vs {f1['length'] + f2['length']:.3f}; {ch} vs {want_ch}")
+        for f in mkvs:
+            os.remove(f)
+
+    # -- a disc of recordings from the row ----------------------------------
+    with App(cfg, "disc_plays_rows", [owed(r1, "a")], {"dir": out, "mode": "bdav", "discTitle": "p"}) as app:
+        wait_for("the row's playlist cuts", lambda: cuts_of(app.save(), 1), 600, 2)
+        before = set(os.listdir(out))
+        app.export(timeout=1800)
+    made = [os.path.join(out, f) for f in os.listdir(out) if f not in before]
+    folder = next((f for f in made if os.path.isdir(os.path.join(f, "BDAV"))),
+                  out if any(os.path.basename(f) == "BDAV" for f in made) else None)
+    row = _disc_row(cfg, folder, 1, "disc_plays_rows") if folder else {"chapters": []}
+    # Less a mark within half a second of the end, which a file's chapter list
+    # leaves out (`chapter_points`) and a disc's playlist does not: the
+    # playlist's last item can be two pictures long.
+    end = row["chapters"][0] + f1["length"] - 0.5 if row["chapters"] else 0
+    got = [c for c in row["chapters"] if c < end]
+    steps = lambda c: [round(y - x, 2) for x, y in zip(c, c[1:])]  # noqa: E731
+    t.check("30 the disc's chapters are the command line's",
+            len(got) == len(f1["chapters"]) and all(abs(x - y) < 0.12 for x, y in
+                                                    zip(steps(got), steps(f1["chapters"]))),
+            f"{[os.path.basename(f) for f in made]}: {steps(got)} vs {steps(f1['chapters'])}; "
+            f"length {row.get('duration')} vs {f1['length']:.3f}")
+    for f in made:
+        shutil.rmtree(f, ignore_errors=True) if os.path.isdir(f) else os.remove(f)
+
+
+def _keeps_of(cuts, dur):
+    keeps, pos = [], 0.0
+    for a, b in sorted(cuts):
+        if a > pos + 1e-6:
+            keeps.append((pos, a))
+        pos = max(pos, b)
+    if pos < dur - 1e-6:
+        keeps.append((pos, dur))
+    return keeps
+
+
+def disc_plays_switch(cfg, t):
+    """A disc row looked at in the editor and left for the next row before
+    its walk has landed: the editor reported the row as it stood then (no
+    playlist cuts yet, the visit's own cuts nothing), and the row must still
+    take the playlist's cuts once the list reads it -- it was written whole
+    before. The list's lanes are stopped first so that the editor's visit is
+    the first. Needs GUITEST_PLAYS_DISC / GUITEST_PLAYS_TITLE /
+    GUITEST_PLAYS_OUT as `disc_plays`. Not in the default list."""
+    disc = os.environ.get("GUITEST_PLAYS_DISC")
+    out = os.environ.get("GUITEST_PLAYS_OUT")
+    n = int(os.environ.get("GUITEST_PLAYS_TITLE", "1"))
+    if not disc or not os.path.exists(disc) or not out or not os.path.isdir(out):
+        t.check("31 GUITEST_PLAYS_DISC/OUT name a disc and a folder", False, f"{disc!r} {out!r}")
+        return
+    said = subprocess.run([_cli(), disc, "--title", str(n), "--analyze"], text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+    line = next((l for l in said.splitlines() if l.startswith("plays :")), "")
+    want = [tuple(_hms(x) for x in p.strip().split("-")) for p in line.split("cut:", 1)[1].split(",")] \
+        if "cut:" in line else []
+    row = _disc_row(cfg, disc, n, "disc_plays_switch")
+    rows = [{"path": row["path"], "name": name, "stem": name, "home": out, "chapters": row["chapters"],
+             "plays": row["plays"], "playsOwed": True} for name in ("a", "b")]
+    for leave in ("editor", "list", "stepped", "cut"):
+        with App(cfg, "disc_plays_switch", rows, {"dir": out, "container": "mkv"}) as app:
+            app.to_list()
+            app.s.js("const b = document.getElementById('stop-batch'); if (b && !b.disabled) b.click();")
+            time.sleep(1)
+            app.open_row(1, "a")
+            time.sleep(0.5)
+            early = app.state()["plan"]
+            if leave == "stepped":
+                # A step along the timeline first, which the editor reports.
+                app.s.keys("Right")
+                time.sleep(0.6)
+            if leave == "cut":
+                # A cut of somebody's own during the walk (allowed), which is
+                # an edit the list is told of at once.
+                app.cut(300, 329)
+                time.sleep(0.6)
+                early = app.state()["plan"]
+            if leave in ("editor", "stepped", "cut"):
+                # The next row, from the list, while row 1 is still being read.
+                app.open_row(2, "b", wait=False)
+                app.editor_ready("b")
+            else:
+                app.escape(discard=False, expect_dialog=False)
+                app.gone()
+            app.to_list()
+            p0 = app.save()
+            e0 = p0["clips"][0].get("edit") or {}
+            left = (f"left with cuts {fmt(cuts_of(p0, 1))} fresh {e0.get('fresh')} "
+                    f"owed {p0['clips'][0].get('playsOwed')}")
+            # The lanes again: the list reads the rows now.
+            app.s.js("const b = document.getElementById('stop-batch'); if (b && !b.disabled) b.click();")
+            try:
+                wait_for("row 1 read", lambda: "インデックス" in app.s.js(
+                    "return document.querySelector('#cliplist > li:nth-child(1)').innerText"), 600, 2)
+            except Failure:
+                pass
+            time.sleep(3)
+            if app.editor():
+                app.to_editor()
+                app.escape(discard=True, expect_dialog=False)
+                app.gone()
+            p = app.save()
+            got = cuts_of(p, 1)
+            # Every one of them, beside the hand's own cut where there is one.
+            t.check(f"31 a row left mid-walk ({leave}) still takes the playlist's cuts",
+                    bool(got) and all(any(a <= x + 0.002 and y <= b + 0.002 for a, b in got) for x, y in want)
+                    and len(got) <= len(want) + 1,
+                    f"{fmt(got)} want {fmt(want)}; plan when left: {early!r}; {left}; "
+                    f"owed {p['clips'][0].get('playsOwed')}")
+
+
+def disc_plays_due(cfg, t):
+    """An edit the editor sent before its walk had landed -- a cut made while
+    it read, on a first visit that came before the list's walk -- holds the
+    hand's cut and none of the playlist's (`playsDue` in it). The list must
+    still cut what the playlist leaves out on top of it: when its own walk
+    lands, and at once where it has landed already. Before, the list took
+    such an edit for the editor having had its say and dropped the
+    playlist's cuts, and the row was written with all of it.
+
+    The editor's walk of a disc title is its map, which lands faster than a
+    hand can cut, so the edit is sent the way the editor sends it
+    (`editor-state`) rather than by racing the walk. Needs
+    GUITEST_PLAYS_DISC / GUITEST_PLAYS_TITLE / GUITEST_PLAYS_OUT as
+    `disc_plays`. Not in the default list."""
+    disc = os.environ.get("GUITEST_PLAYS_DISC")
+    out = os.environ.get("GUITEST_PLAYS_OUT")
+    n = int(os.environ.get("GUITEST_PLAYS_TITLE", "1"))
+    if not disc or not os.path.exists(disc) or not out or not os.path.isdir(out):
+        t.check("33 GUITEST_PLAYS_DISC/OUT name a disc and a folder", False, f"{disc!r} {out!r}")
+        return
+    said = subprocess.run([_cli(), disc, "--title", str(n), "--analyze"], text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+    line = next((l for l in said.splitlines() if l.startswith("plays :")), "")
+    want = [tuple(_hms(x) for x in p.strip().split("-")) for p in line.split("cut:", 1)[1].split(",")] \
+        if "cut:" in line else []
+    if not t.check("33 the command line cuts what the playlist leaves out", bool(want), line):
+        return
+    row = _disc_row(cfg, disc, n, "disc_plays_due")
+    rows = [{"path": row["path"], "name": "a", "stem": "a", "home": out, "chapters": row["chapters"],
+             "plays": row["plays"], "playsOwed": True}]
+    hand = (300.0, 329.0)
+
+    def sent(app):
+        app.to_list()
+        app.s.js("window.__TAURI__.event.emit('editor-state', {id: 1, path: arguments[0],"
+                 " cuts: [{a: arguments[1], b: arguments[2]}], keyframes: [], activeKey: null,"
+                 " cmBlocks: [], cmNote: '', cmFinding: null, detectedWith: {}, flatRuns: [],"
+                 " markFileKind: null, chaptersDue: true, unplayed: [], playsDue: true, touched: true,"
+                 " dropStreams: [], poster: null, playhead: 0, selA: 0, selB: 0, selGone: true});",
+                 row["path"], hand[0], hand[1])
+        time.sleep(1.5)
+
+    def all_in(got):
+        return all(any(a <= x + 0.002 and y <= b + 0.002 for a, b in got) for x, y in want) \
+            and any(a <= hand[0] + 0.002 and hand[1] <= b + 0.002 for a, b in got)
+
+    for when in ("before the list's walk", "after it"):
+        with App(cfg, "disc_plays_due", rows, {"dir": out, "container": "mkv"}) as app:
+            app.to_list()
+            if when == "before the list's walk":
+                app.s.js("const b = document.getElementById('stop-batch'); if (b && !b.disabled) b.click();")
+                time.sleep(1)
+                had = cuts_of(app.save(), 1)
+                sent(app)
+                app.s.js("const b = document.getElementById('stop-batch'); if (b && !b.disabled) b.click();")
+                try:
+                    wait_for("row 1 read", lambda: _walked(app, 1), 600, 2)
+                except Failure:
+                    pass
+                time.sleep(2)
+            else:
+                wait_for("row 1 read", lambda: _walked(app, 1), 600, 2)
+                had = cuts_of(app.save(), 1)
+                sent(app)
+            p = app.save()
+            got = cuts_of(p, 1)
+            t.check(f"33 an edit sent mid-walk still takes the playlist's cuts ({when})",
+                    all_in(got) and not p["clips"][0].get("playsOwed")
+                    and not (p["clips"][0].get("edit") or {}).get("playsDue"),
+                    f"{fmt(got)} want {fmt(want)} + {hand}; before {fmt(had)}; "
+                    f"owed {p['clips'][0].get('playsOwed')} due {(p['clips'][0].get('edit') or {}).get('playsDue')}")
+
+
+def disc_plays_recount(cfg, t):
+    """A disc title's row with the playlist's cuts (taken by the list) and a
+    Trim line or a .keyframe beside it that this program wrote for the same
+    row: a first visit reads the file before the walk, on the outline's head,
+    and on a recorder's clip whose map starts later than that (see
+    `disc_head_recount`) reads it again on the walk's head, with the
+    playlist's cuts kept on top. Written back at once (Ctrl+Shift+H / Ctrl+H)
+    the file must come out as it went in, and the counter as it was. Needs
+    GUITEST_PLAYS_DISC / GUITEST_PLAYS_TITLE / GUITEST_PLAYS_OUT as
+    `disc_plays`; worth running on a title whose first clip is such a clip.
+    Not in the default list."""
+    disc = os.environ.get("GUITEST_PLAYS_DISC")
+    out = os.environ.get("GUITEST_PLAYS_OUT")
+    n = int(os.environ.get("GUITEST_PLAYS_TITLE", "1"))
+    if not disc or not os.path.exists(disc) or not out or not os.path.isdir(out):
+        t.check("32 GUITEST_PLAYS_DISC/OUT name a disc and a folder", False, f"{disc!r} {out!r}")
+        return
+    r = _disc_row(cfg, disc, n, "disc_plays_recount")
+    rows = [{"path": r["path"], "name": "h", "stem": "h", "home": out, "chapters": r["chapters"],
+             "plays": r["plays"], "playsOwed": True}]
+
+    def sides():
+        return sorted(f for f in os.listdir(out) if f.startswith("h.") and f.endswith((".keyframe", ".trim.avs")))
+
+    def clear():
+        for f in sides():
+            os.remove(os.path.join(out, f))
+
+    def walked(app):
+        wait_for("the walk", lambda: (lambda st: st["frames"] is not None and st["plan"]
+                 and "読み込んで" not in st["plan"] and "Reading" not in st["plan"])(app.state()), 300, 0.3)
+        time.sleep(2)
+
+    clear()
+    written = {}
+    with App(cfg, "disc_plays_recount", rows, {"dir": out}) as app:
+        app.s.js("localStorage.setItem('smartcut.quietOverwrite', 'true');")
+        wait_for("the row's playlist cuts", lambda: cuts_of(app.save(), 1), 600, 2)
+        app.open_row(1, "h")
+        walked(app)
+        frames = app.state()["frames"]
+        for keys in ("Control+Shift+h", "Control+h"):
+            app.s.keys(keys)
+            time.sleep(1.5)
+        for f in sides():
+            with open(os.path.join(out, f), "rb") as fh:
+                written[f] = fh.read().decode()
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+    if not t.check("32 the Trim line and the marks written", len(written) == 2, f"{sorted(written)}"):
+        return
+    for name, body in sorted(written.items()):
+        clear()
+        with open(os.path.join(out, name), "w", newline="") as fh:
+            fh.write(body)
+        with App(cfg, "disc_plays_recount", rows, {"dir": out}) as app:
+            app.s.js("localStorage.setItem('smartcut.quietOverwrite', 'true');")
+            wait_for("the row's playlist cuts", lambda: cuts_of(app.save(), 1), 600, 2)
+            # Twice: the second visit is a first one still (Escape with
+            # nothing done), and reads the index the first one left.
+            seen = []
+            for visit in ("fresh", "from the index"):
+                app.open_row(1, "h")
+                walked(app)
+                got_frames = app.state()["frames"]
+                app.s.keys("Control+Shift+h" if name.endswith(".trim.avs") else "Control+h")
+                time.sleep(1.5)
+                with open(os.path.join(out, name), "rb") as fh:
+                    seen.append((fh.read().decode(), got_frames))
+                status = app.state()["status"]
+                app.escape(discard=True, expect_dialog=False)
+                app.gone()
+                # The file as it was, for the second visit to read.
+                with open(os.path.join(out, name), "w", newline="") as fh:
+                    fh.write(body)
+            got, got_frames = seen[0]
+            if seen[1] != seen[0]:
+                got += f" [second visit: {seen[1][0][:120]!r}, {seen[1][1]} pictures]"
+        # Every mark back where it was, the one on a playlist item's IN as
+        # well: it came back up to half a frame inside the cut in front of
+        # it and was dropped (rev27 p2plays: 4 of 8 on one title), until the
+        # cuts went on the pictures and a mark read that close to a cut's
+        # end went back onto it (`readKeyframeFile`).
+        same = got == body
+        t.check(f"32 {name} read on a first visit and written back the same",
+                same and abs(got_frames - frames) <= 1,
+                f"{got[:200]!r} (want {body[:200]!r}); {got_frames} pictures (were {frames}); {status!r}")
+    clear()
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -1302,11 +2293,17 @@ SCENARIOS = [
     marks_over_recording,
     rename_during_run,
     no_free_folder,
+    keyframe_twins,
+    seam_follows_list,
+    seam_keeps_unsaved,
+    disc_refuses_opus,
 ]
 
 
 # Selectable by name, not run by default.
-EXTRA = [ok_then_reopen_fast, disc_join_crossing]
+EXTRA = [ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
+         disc_seam_gap_chapters, disc_plays_rows, disc_plays_switch,
+         disc_plays_recount, disc_plays_due]
 
 
 def main():

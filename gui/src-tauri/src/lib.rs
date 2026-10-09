@@ -378,6 +378,17 @@ struct SourceInfo {
     /// editor puts them down as marks on a first visit where the row brought
     /// no disc chapters with it. See [`smartcut_core::Source::chapters`].
     chapters: Vec<f64>,
+    /// The stretches no cut of this recording writes, whatever it keeps: the
+    /// clock a recorder's seam holds no pictures at. In seconds, as the
+    /// points are; empty for everything but a joined recorder's clip, and
+    /// until the walk has been over it. The timeline closes up over them as
+    /// the output does. See [`smartcut_core::Source::unwritten`].
+    unwritten: Vec<(f64, f64)>,
+    /// What the disc's playlist leaves out of the recording, for a title
+    /// opened with its play items (`plays`): the stretches to cut, on the
+    /// pictures. Empty for anything else, and until the walk has been over
+    /// it. See [`smartcut_core::disc::unplayed_in`].
+    unplayed: Vec<(f64, f64)>,
 }
 
 /// One row of the clip list, once the recording behind it has been read.
@@ -424,6 +435,11 @@ struct ClipInfo {
     /// The file's own chapter points, for a row that did not come off a
     /// disc. See [`SourceInfo::chapters`].
     chapters: Vec<f64>,
+    /// See [`SourceInfo::unwritten`]: what a row's length and chapters
+    /// leave out as the cut does.
+    unwritten: Vec<(f64, f64)>,
+    /// See [`SourceInfo::unplayed`]: what the list cuts a disc title by.
+    unplayed: Vec<(f64, f64)>,
     /// The pictures, where this read produced them. Present only on the
     /// one-read path -- a recording on a share, where reading it twice would
     /// be transferring it twice -- and `None` where the list is to ask for
@@ -644,6 +660,11 @@ struct DiscClip {
     /// says where a chapter is -- so they are read once, here, and travel
     /// with the row until the editor can put them down as marks.
     chapters: Vec<f64>,
+    /// What the disc's playlist plays of it, each item's IN and OUT on the
+    /// same clock as `chapters`. The list cuts what lies outside them before
+    /// the row is first written or opened. See
+    /// [`smartcut_core::disc::Entry::plays`].
+    plays: Vec<(f64, f64)>,
     duration: f64,
     /// How much of the disc it occupies. On a disc whose index names
     /// everything `000NN`, length and size are what tell an episode from a
@@ -673,6 +694,7 @@ impl From<smartcut_core::disc::Entry> for DiscClip {
             // clock the demuxer reports and the only one the editor can
             // rebase.
             chapters: e.marks.iter().map(|m| e.start + m).collect(),
+            plays: e.plays,
             path: e.path,
             label: e.label,
             stem: e.stem,
@@ -955,7 +977,11 @@ static OPEN_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// on screen with the first recording under it once that walk came back --
 /// the stage, the strip and the plan all answered out of the wrong file.
 #[tauri::command]
-async fn open_source(path: String, app: tauri::AppHandle) -> Result<SourceInfo, String> {
+async fn open_source(
+    path: String,
+    plays: Option<Vec<(f64, f64)>>,
+    app: tauri::AppHandle,
+) -> Result<SourceInfo, String> {
     let ticket = OPEN_TICKET.fetch_add(1, Ordering::SeqCst) + 1;
     // The editor's own detections were asked about the recording it had up,
     // and the window is now on another: the row it was handed is the one its
@@ -964,7 +990,7 @@ async fn open_source(path: String, app: tauri::AppHandle) -> Result<SourceInfo, 
     // over the new row's button. Stopped as the open is asked for, so that a
     // detection pressed once this recording is up is not caught by it.
     app.state::<BatchStop>().editor.fetch_add(1, Ordering::SeqCst);
-    off_thread(move || open_now(&path, &app, ticket)).await
+    off_thread(move || open_now(&path, plays.as_deref().unwrap_or(&[]), &app, ticket)).await
 }
 
 /// What the container says about a recording, for a window that has not read
@@ -1014,6 +1040,10 @@ async fn open_outline(path: String) -> Result<SourceInfo, String> {
             head: o.head,
             start_time: o.start_time,
             chapters: o.chapters.clone(),
+            // The seams' own say, which the walk has.
+            unwritten: Vec::new(),
+            // And the pictures the playlist's cuts are put on.
+            unplayed: Vec::new(),
         })
     })
     .await
@@ -1273,6 +1303,8 @@ fn info_of(src: &Source) -> SourceInfo {
         head: None,
         start_time: src.start_time,
         chapters: src.chapters.clone(),
+        unwritten: src.unwritten(),
+        unplayed: Vec::new(),
     }
 }
 
@@ -1300,7 +1332,15 @@ static SHORT_OPEN: AtomicU64 = AtomicU64::new(0);
 
 /// Reading a recording's index is a pass over the file, so it runs on a
 /// worker thread; see [`off_thread`].
-fn open_now(path: &str, app: &tauri::AppHandle, ticket: u64) -> Result<SourceInfo, String> {
+///
+/// `plays` are a disc title's play items, where the editor still owes the
+/// row the playlist's cuts: they come back as [`SourceInfo::unplayed`].
+fn open_now(
+    path: &str,
+    plays: &[(f64, f64)],
+    app: &tauri::AppHandle,
+    ticket: u64,
+) -> Result<SourceInfo, String> {
     // Asked for nothing but the mark a read leaves when it gives up: a walk
     // cut short by a share that went away is shown, and must not be written
     // down as the recording's index. See [`SHORT_OPEN`].
@@ -1312,7 +1352,8 @@ fn open_now(path: &str, app: &tauri::AppHandle, ticket: u64) -> Result<SourceInf
     if stale() {
         return Err("another recording was opened in the meantime".into());
     }
-    let info = info_of(&src);
+    let mut info = info_of(&src);
+    info.unplayed = smartcut_core::disc::unplayed_in(&src, plays);
     // All of it under the recording's own lock, because `prepare` reads the
     // recording and the count together under that lock and then takes the
     // held index. Done one by one, a `prepare` for the recording just closed
@@ -3048,13 +3089,20 @@ async fn clip_outline(path: String) -> Result<ClipOutline, String> {
 /// is open and being cut.
 /// `keeps` is only wanted where this ends up doing the pictures as well --
 /// see [`ClipInfo::pictures`] -- and is what the poster is taken from then.
+///
+/// `plays` are a disc title's play items, where the row still owes the
+/// playlist's cuts: they come back as [`ClipInfo::unplayed`].
 #[tauri::command]
 async fn index_clip(
     path: String,
     keeps: Vec<(f64, f64)>,
+    plays: Option<Vec<(f64, f64)>>,
     app: tauri::AppHandle,
 ) -> Result<ClipInfo, String> {
-    off_thread_behind(move || index_clip_now(&path, &keeps, &app)).await
+    off_thread_behind(move || {
+        index_clip_now(&path, &keeps, plays.as_deref().unwrap_or(&[]), &app)
+    })
+    .await
 }
 
 /// Every recording [`index_clip`] has been asked about in this session: the
@@ -3099,6 +3147,7 @@ async fn list_rows(paths: Vec<String>, app: tauri::AppHandle) -> Result<(), Stri
 fn index_clip_now(
     path: &str,
     keeps: &[(f64, f64)],
+    plays: &[(f64, f64)],
     app: &tauri::AppHandle,
 ) -> Result<ClipInfo, String> {
     let began = std::time::Instant::now();
@@ -3135,7 +3184,7 @@ fn index_clip_now(
 
     // See [`one_read`]: off unless it is asked for.
     if one_read() {
-        return merged_clip_now(path, keeps, app, began, &on, &stopped);
+        return merged_clip_now(path, keeps, plays, app, began, &on, &stopped);
     }
 
     // A walk given up because the row was taken out of the list reads as the
@@ -3162,7 +3211,9 @@ fn index_clip_now(
     }
 
     say(tr!("完了", "Done"), 1.0);
-    Ok(clip_info_of(path, &src, cached, began.elapsed().as_secs_f64()))
+    let mut info = clip_info_of(path, &src, cached, began.elapsed().as_secs_f64());
+    info.unplayed = smartcut_core::disc::unplayed_in(&src, plays);
+    Ok(info)
 }
 
 /// What the list is told about a recording it has now read. Shared by the two
@@ -3196,6 +3247,8 @@ fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInf
         first_point: src.points.first().map_or(0.0, |p| p.time),
         start_time: src.start_time,
         chapters: src.chapters.clone(),
+        unwritten: src.unwritten(),
+        unplayed: Vec::new(),
         pictures: None,
         cached,
         seconds,
@@ -3235,6 +3288,7 @@ fn one_read() -> bool {
 fn merged_clip_now(
     path: &str,
     keeps: &[(f64, f64)],
+    plays: &[(f64, f64)],
     app: &tauri::AppHandle,
     began: std::time::Instant,
     on: &(dyn Fn(f64) + Sync),
@@ -3258,6 +3312,7 @@ fn merged_clip_now(
     }
     remember(app, &src, Some(&track));
     let mut info = clip_info_of(path, &src, false, began.elapsed().as_secs_f64());
+    info.unplayed = smartcut_core::disc::unplayed_in(&src, plays);
     // Empty is what the list sends for a clip nothing has been cut out of,
     // because before this pass it had no exact length or first picture to
     // work the ranges out from. It has both now.
@@ -5737,6 +5792,27 @@ fn containers_holding(
         .collect()
 }
 
+/// Which of these codecs a disc of recordings has no coding type for, as
+/// each will be written: the pictures as they are, the sound as `asked`
+/// turns it (see [`smartcut_core::carry::on_a_disc_as`]). Asked before a
+/// disc run starts; the index refused them only after the cut, and its
+/// failure takes the run's later recordings off the disc with it.
+#[tauri::command]
+fn disc_cannot_hold(video: Vec<String>, audio: Vec<String>, asked: Option<String>) -> Vec<String> {
+    use smartcut_core::carry::{disc_holds_audio, disc_holds_video, on_a_disc_as};
+    let asked = asked.unwrap_or_default();
+    video
+        .into_iter()
+        .filter(|c| !disc_holds_video(c))
+        .chain(
+            audio
+                .iter()
+                .map(|c| on_a_disc_as(c, &asked).to_string())
+                .filter(|c| !disc_holds_audio(c)),
+        )
+        .collect()
+}
+
 /// A name for the folder a run makes that none of `dirs` already has.
 ///
 /// A run writing into a folder of its own makes that folder as the first cut
@@ -7551,10 +7627,11 @@ async fn write_keyframes(
     path: String,
     frames: Vec<u32>,
     fps: f64,
+    recording: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<usize, String> {
     off_thread(move || {
-        not_the_recording(&app, &local_path(&path)?)?;
+        not_the_recording(&app, &local_path(&path)?, recording.as_deref())?;
         write_keyframes_now(&path, &frames, fps)
     })
     .await
@@ -7571,16 +7648,27 @@ const MARKS_OVER_RECORDING: &str = "\u{0}recording";
 /// answered, and the recording was written over with a list of numbers.
 /// Asked of the files, as [`save_frame`] asks through `refuse_as_output`,
 /// so a disc title's image and a DVD title's other parts count as well.
-fn not_the_recording(app: &tauri::AppHandle, path: &std::path::Path) -> Result<(), String> {
+///
+/// Of the recording the window names (`recording`) as well as the one held
+/// open: `Opened` is only set once the walk lands, so during a first visit's
+/// walk, or a revisit's, it is the recording before this one or nothing.
+fn not_the_recording(
+    app: &tauri::AppHandle,
+    path: &std::path::Path,
+    recording: Option<&str>,
+) -> Result<(), String> {
     // Copied out and the lock let go before the `stat`s, which can be
     // questions to a share. See [`opened_clone`].
     let input = locked(&app.state::<Opened>().0).as_ref().map(|s| s.input.clone());
-    match input {
-        Some(input) if input.refuse_as_output(&path.to_string_lossy()).is_err() => {
-            Err(MARKS_OVER_RECORDING.to_string())
-        }
-        _ => Ok(()),
+    let named = recording.filter(|r| !r.is_empty()).and_then(|r| {
+        let local = local_path(r).ok()?;
+        smartcut_core::input::Input::parse(&local.to_string_lossy()).ok()
+    });
+    let out = path.to_string_lossy();
+    if input.iter().chain(named.iter()).any(|i| i.refuse_as_output(&out).is_err()) {
+        return Err(MARKS_OVER_RECORDING.to_string());
     }
+    Ok(())
 }
 
 fn write_keyframes_now(path: &str, frames: &[u32], fps: f64) -> Result<usize, String> {
@@ -7736,9 +7824,14 @@ fn read_keyframes_now(path: &str) -> Result<Option<Vec<u32>>, String> {
 /// survives a cut is up there. So this takes the text whole, the way
 /// [`write_project`] does, and owns only the disc.
 #[tauri::command]
-async fn write_sidecar(path: String, body: String, app: tauri::AppHandle) -> Result<(), String> {
+async fn write_sidecar(
+    path: String,
+    body: String,
+    recording: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     off_thread(move || {
-        not_the_recording(&app, std::path::Path::new(&path))?;
+        not_the_recording(&app, std::path::Path::new(&path), recording.as_deref())?;
         write_whole(std::path::Path::new(&path), body.as_bytes())
             .map_err(|e| trf!("保存できません: {} ({})", "Cannot save: {} ({})", path, e))
     })
@@ -9298,6 +9391,7 @@ pub fn run() {
             bdav_drop,
             audio_limits,
             containers_holding,
+            disc_cannot_hold,
             index_clip,
             list_rows,
             clip_outline,

@@ -870,6 +870,11 @@ const CATALOG = {
       "BDAV 出力にはディスクを作成する場所が必要です。出力先フォルダーを選んでください",
     "out.madeUnreadable":
       "「{name}」の記録日時が読み取れません。YYYY-MM-DD HH:MM:SS の形式で入力してください",
+    "out.discNoVideo":
+      "「{name}」の映像（{codec}）は BDAV のディスクに記録できません。ファイル出力を使ってください",
+    "out.discNoAudio":
+      "「{name}」の音声（{codec}）は BDAV のディスクに記録できません。" +
+      "出力設定で音声の形式を変えるか、編集画面でそのトラックを外してください",
     // 出力一覧に並ぶ、カットのあとに続く 2 行。
     "out.stepIndex": "ディスクの管理情報",
     "out.stepImage": "ディスクイメージ（UDF {udf}）",
@@ -2202,6 +2207,11 @@ const CATALOG = {
     "out.needDiscFolder": "A BDAV disc needs somewhere to be built: choose an output folder",
     "out.madeUnreadable":
       "{name}: that is not a moment a playlist can carry. Write it as YYYY-MM-DD HH:MM:SS",
+    "out.discNoVideo":
+      "{name}: a BDAV disc has no coding type for {codec} pictures. Write it to a file instead",
+    "out.discNoAudio":
+      "{name}: a BDAV disc has no coding type for {codec} sound. Choose another audio format " +
+      "on the output settings screen, or switch the track off in the editor",
     // The two rows that follow the cuts in the output list.
     "out.stepIndex": "The disc index",
     "out.stepImage": "The disc image (UDF {udf})",

@@ -486,6 +486,10 @@ async function showJoin() {
   // in; nothing is asked of it for this join until then.
   facts = null;
   updateReadouts();
+  // The scrubber too: left as it was, it went on showing the join before's
+  // crossing and playhead under this join's names -- for good where this
+  // join's recordings could not be read, since only a span redraws it.
+  drawScrub();
   if (!invoke) return;
   sayNote("xw.reading");
   const run = ++joinRun;
@@ -854,7 +858,10 @@ el("x-all").addEventListener("click", () => {
   // Changed here as much as a field is: see the `cross-open` handler, which
   // would otherwise take the list's joins back over these.
   changedHere = true;
-  paintNote();
+  // The crossing's sentence only once the pair is in, as on a language
+  // change: before that the line is the load's -- still reading, or why the
+  // recordings could not be read -- and this wiped the reason off the window.
+  if (facts) paintNote();
 });
 
 el("x-clear").addEventListener("click", () => {
@@ -996,7 +1003,7 @@ async function done() {
     // this window and pressing OK put a `*` on a project nobody had touched.
     const said = (a) => !!a && (a.kind !== "none" || a.fadeOut > 0 || a.fadeIn > 0);
     await emit("cross-done", {
-      joins: joins.map((j) => ({ id: j.id, after: said(j.after) ? j.after : null })),
+      joins: joins.map((j) => ({ id: j.id, afterId: j.afterId, after: said(j.after) ? j.after : null })),
     }).catch((e) => jlog(`cross-done: ${e}`));
   }
   invoke && invoke("close_cross");
@@ -1072,27 +1079,50 @@ if (listen) {
     // recording are rows over one path, and two of them swapped in the list
     // left every path in place while each join's id moved -- the setting made
     // here for one seam went back in `cross-done` as another's.
-    const same =
-      theirs.length === joins.length &&
-      theirs.every(
-        (j, k) =>
-          j.id === joins[k].id &&
-          j.beforePath === joins[k].beforePath &&
-          j.afterPath === joins[k].afterPath,
-      );
-    if (changedHere && same) {
+    //
+    // Join by join: the list also says the joins again on its own whenever
+    // they change under this window (`followCross`), and a row added at the
+    // end of the list -- or one finishing its read while the output settings
+    // are up -- is a new join behind the others. Taken as "not the same
+    // joins", it threw away everything set in here and not yet OK'd on the
+    // joins that were all still there.
+    const key = (j) => `${j.id}\n${j.afterId}\n${j.beforePath}\n${j.afterPath}`;
+    const had = new Map(joins.map((j) => [key(j), j]));
+    const was = join();
+    if (changedHere) {
       // Only the transitions are this window's. Where each join falls is the
       // list's, and a cut moved there since put the preview on the old
       // bounds; the id is the list's too, which `cross-done` answers by.
-      joins = theirs.map((j, k) => ({ ...j, after: joins[k].after }));
+      joins = theirs.map((j) => {
+        const mine = had.get(key(j));
+        return mine ? { ...j, after: mine.after } : j;
+      });
+      changedHere = theirs.some((j) => had.has(key(j)));
     } else {
       joins = theirs;
-      changedHere = false;
+    }
+    // Said again by the list on its own, rather than by the button: the join
+    // in hand stays in hand where it is still one of them.
+    const stay = said.follow === true && was ? joins.findIndex((j) => key(j) === key(was)) : -1;
+    if (stay >= 0) {
+      at = stay;
+      const j = joins[at];
+      // And where it falls is where it fell: nothing to load again, and the
+      // playback in hand can go on. Only its names can have moved (a twin
+      // of one of its rows numbered).
+      if (["beforeIn", "beforeOut", "afterIn", "afterOut", "heard"].every((k) => j[k] === was[k])) {
+        el("name-before").textContent = j.beforeName || "";
+        el("name-after").textContent = j.afterName || "";
+        if (j.beforePic) el("pic-before").src = j.beforePic;
+        if (j.afterPic) el("pic-after").src = j.afterPic;
+        nameWindow(j);
+        return;
+      }
     }
     // What is playing is the join that was up. Carried on over another, it
     // drew the old crossing's frames while the head moved along the new one.
     stopPlay(false);
-    at = clamp(Number(said.pick) || 0, 0, Math.max(0, joins.length - 1));
+    if (stay < 0) at = clamp(Number(said.pick) || 0, 0, Math.max(0, joins.length - 1));
     // Nothing to build for the picker: its list is drawn on the way down, so
     // it is always the joins as they are now and in the language the window
     // is in now.

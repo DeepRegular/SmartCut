@@ -455,3 +455,59 @@ export function dialogOver(T) {
     },
   };
 }
+
+// --- a disc title's playlist ------------------------------------------------
+
+/// The shortest stretch a disc's playlist leaves out that is cut. The
+/// engine's `disc::UNPLAYED_LEAST`, which the command line cuts by. Here
+/// because both windows cut by it: the list (`takePlays` in app.js) and the
+/// editor, on a visit that comes first (`applyPlays` in main.js).
+export const UNPLAYED_LEAST = 0.1;
+
+/// A disc row's play items as they arrive -- off the disc, or out of a
+/// project -- held to pairs of numbers in order.
+export function playsFrom(plays) {
+  if (!Array.isArray(plays)) return [];
+  return plays
+    .filter((p) => Array.isArray(p) && p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] > p[0])
+    .map((p) => [p[0], p[1]]);
+}
+
+/// What a disc's playlist leaves out of the recording, as cuts in its own
+/// seconds: the engine's `disc::unplayed`, which is what the command line
+/// cuts a title by when it is given no ranges. `head` is the first picture,
+/// ahead of which nothing is kept anyway.
+export function unplayedOf(plays, startTime, head, duration) {
+  const out = [];
+  if (!plays.length || !(duration > 0) || !Number.isFinite(startTime)) return out;
+  const w = plays.map(([a, b]) => [a - startTime, b - startTime]).sort((x, y) => x[0] - y[0]);
+  const take = (a, b) => {
+    a = Math.max(a, 0);
+    b = Math.min(b, duration);
+    if (b - a >= UNPLAYED_LEAST) out.push({ a, b });
+  };
+  if (w[0][0] - Math.max(head, 0) >= UNPLAYED_LEAST) take(0, w[0][0]);
+  let reach = w[0][1];
+  for (const [a, b] of w.slice(1)) {
+    if (a > reach) take(reach, a);
+    reach = Math.max(reach, b);
+  }
+  take(reach, duration);
+  return out;
+}
+
+/// What of `cuts` is not inside `had`: the part of each that a cut already
+/// there did not take.
+export function cutsBeyond(cuts, had) {
+  const out = [];
+  for (const c of cuts) {
+    let pos = c.a;
+    for (const h of had.filter((r) => r.b > r.a).slice().sort((x, y) => x.a - y.a)) {
+      if (h.b <= pos || h.a >= c.b) continue;
+      if (h.a > pos) out.push({ a: pos, b: h.a });
+      pos = Math.max(pos, h.b);
+    }
+    if (pos < c.b) out.push({ a: pos, b: c.b });
+  }
+  return out.filter((r) => r.b - r.a > 1e-6);
+}

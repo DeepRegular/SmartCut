@@ -20,7 +20,8 @@
 // lanes here and a window of its own, and the passes hold themselves to part
 // of the machine while that window is up.
 
-import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag, wireDrops, adoptDrop, dialogOver }
+import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag, wireDrops, adoptDrop, dialogOver,
+         playsFrom, unplayedOf, cutsBeyond }
   from "./shared.js";
 import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
@@ -173,8 +174,10 @@ function asAsked(saved) {
 /// out of a project, which is the same shape written down.
 function makeClip(found) {
   const { path, name, renamed, stem, home, chapters, dropPids, made, description,
-          channel, channelNumber, programme, after, edited, audioChannels, ran } =
+          channel, channelNumber, programme, after, edited, audioChannels, ran,
+          plays, playsOwed } =
     typeof found === "string" ? { path: found } : found;
+  const played = playsFrom(plays);
   // A saved row can be a hand's work, and these go to the engine as strings
   // and numbers of one kind: a `5` where a text belongs failed the disc's
   // index at the end of an hour's run. Anything else is nobody having said.
@@ -206,6 +209,15 @@ function makeClip(found) {
     /// spot: only the editor knows where the container's clock begins, and it
     /// is the one that owns marks. Empty for a file with no chapter list.
     chapters: Array.isArray(chapters) ? chapters.filter((c) => Number.isFinite(c)) : [],
+    /// What the disc's playlist plays of the recording: each play item's IN
+    /// and OUT, `[a, b]`, on the stream's own clock like `chapters`. Empty
+    /// for anything that did not come off a disc of recordings.
+    plays: played,
+    /// Whether what lies outside those is still to be cut. Cut once, as the
+    /// row's first cuts, by whichever window first knows where the
+    /// recording's clock begins -- `takePlays` here, `openPath` in
+    /// `main.js` -- and from then on they are cuts like any other.
+    playsOwed: playsOwed === true && played.length > 0,
     /// Streams switched off when the disc was read, by PID.
     ///
     /// A PID rather than a stream index because this answer was given before
@@ -637,6 +649,11 @@ function tellEditor() {
     // whether or not this row has been in there before; the editor puts them
     // down on a first visit only, the same as the marks beside the file.
     chapters: editing.chapters,
+    // What the disc's playlist plays, while what lies outside it is still to
+    // be cut: the editor cuts it on this visit, where nothing here has yet
+    // known where the recording's clock begins. Empty once it has been cut,
+    // by either window. See `takePlays`.
+    plays: editing.playsOwed ? editing.plays : [],
     // Tracks switched off in the chooser when the disc was read, by PID. The
     // editor turns them into its own answer on a first visit and owns it from
     // then on -- see `makeClip`.
@@ -716,6 +733,16 @@ if (listen) {
     // every detection are not edits, whichever window ran them.
     if (state.touched) clip.edited = true;
     clip.edit = state;
+    // A visit that came before the list's walk and has not had its own walk
+    // land: the playlist's cuts are not in what it sent, and still owed. A
+    // row the window has already left -- the next row double-clicked while
+    // this one was being read -- takes them here, as soon as the list knows
+    // where its clock begins; left to the walk landing, that had already
+    // happened and nothing took them, and the row was written whole.
+    if (state.playsDue && Array.isArray(clip.plays) && clip.plays.length) {
+      clip.playsOwed = true;
+      if (clip !== editing) takePlays(clip);
+    }
     const known = state.detectedWith || {};
     if (state.cmNote && (landed || !booked)) {
       const had = clip.cmState === "done";
@@ -897,6 +924,9 @@ if (listen) {
     // the cache, and this is where the row goes and reads them.
     editing = null;
     before = null;
+    // The playlist's cuts, where the visit ended without the editor having
+    // its say (キャンセル) and the walk landed while it was up.
+    if (was) takePlays(was);
     paintList();
     pump();
     if (was) restoreFlat(was);
@@ -906,14 +936,28 @@ if (listen) {
   // the settings back on OK, and says nothing at all on キャンセル -- which is
   // what makes it a cancel: nothing in the list is touched until `cross-done`
   // arrives.
-  listen("cross-ready", () => tellCross());
+  listen("cross-ready", () => {
+    crossUp = true;
+    tellCross();
+  });
 
   listen("cross-done", (ev) => {
     const said = (ev.payload && ev.payload.joins) || [];
     let changed = false;
+    const list = ready();
     for (const answer of said) {
       const clip = byId(answer.id);
       if (!clip) continue;
+      // Only onto the join the window was showing: the row is still followed
+      // by the row it was followed by there. A row moved, taken out or added
+      // since, the setting would land on another seam; `followCross` has sent
+      // the window the new joins, and this answer was on its way before they
+      // got there.
+      const k = list.indexOf(clip);
+      if (answer.afterId != null && (k < 0 || !list[k + 1] || list[k + 1].id !== answer.afterId)) {
+        jlog(`cross-done: the join after row ${answer.id} has changed, not written`);
+        continue;
+      }
       const was = JSON.stringify(clip.after || null);
       // Written back as the window left it, including `null` for a join it
       // cleared: a crossing nobody has said anything about is absent rather
@@ -930,6 +974,8 @@ if (listen) {
 
   listen("cross-closed", () => {
     if (crossOpening) return;
+    crossUp = false;
+    crossSent = "";
     // The plan and the line beside the button both describe what the
     // transitions cost, and either may have been changed in there.
     renderCrossing();
@@ -1117,6 +1163,8 @@ function closeChooser(take) {
         stem: clip.stem,
         home: clip.home,
         chapters: clip.chapters,
+        plays: clip.plays,
+        playsOwed: true,
         made: clip.made,
         ran: clip.ran,
         description: clip.description,
@@ -1626,7 +1674,9 @@ async function runIndex(clip) {
   const keeps = clip.edit && clip.edit.cuts.length ? rangesOf(clip) : [];
   const was = cutsSig(clip);
   try {
-    clip.info = await invoke("index_clip", { path: clip.path, keeps });
+    // And a disc title's play items, which come back as what the playlist
+    // leaves out, put on the pictures the walk found (`unplayed`).
+    clip.info = await invoke("index_clip", { path: clip.path, keeps, plays: clip.plays || [] });
     // A file's own chapter list, for a row that brought none off a disc: it
     // is held the way a disc's chapters are, so that the row counts them and
     // a cut of it nobody opened the editor on still writes them. See
@@ -1634,6 +1684,9 @@ async function runIndex(clip) {
     if (!clip.chapters.length && Array.isArray(clip.info.chapters)) {
       clip.chapters = clip.info.chapters.filter((c) => Number.isFinite(c));
     }
+    // And a disc title's playlist, which can be put on the recording's clock
+    // now: what it leaves out becomes the row's first cuts.
+    takePlays(clip);
     clip.state = "ready";
     clip.progress = 1;
     clip.phase = indexNote(clip);
@@ -2208,6 +2261,7 @@ function paintList() {
   // Everything that adds, removes, reorders or duplicates a row ends here,
   // so this is where the title finds out whether there is work to save.
   touch();
+  followCross();
 }
 
 /// Write `text` into `node` only when it is not already what is there.
@@ -3449,6 +3503,9 @@ function divideRows(found) {
           chaptersDue: true,
           fresh: true,
           partCuts: normalise(owed.concat(away)),
+          // Which of the cuts the disc's playlist made, which are no
+          // chapters (`chaptersFor`) and are what 取消 takes back.
+          unplayed: was && Array.isArray(was.unplayed) ? was.unplayed.map((r) => ({ a: r.a, b: r.b })) : undefined,
         };
       } else {
         row.edit = {
@@ -4367,6 +4424,33 @@ function normalise(list) {
 /// for the one thing that asks this early, which is where to take the row's
 /// picture from.
 function keepsOf(clip) {
+  const keeps = [];
+  // Less what no cut of the recording writes: the clock a recorder's seam
+  // holds no pictures at (`unwritten`). A piece that resumes past one is
+  // `gap`: the same kept range, and no join anybody made.
+  const holes = unwrittenOf(clip);
+  for (const k of keptRanges(clip)) {
+    let pos = k.a;
+    const from = keeps.length;
+    for (const [a, b] of holes) {
+      if (b <= pos || a >= k.b) continue;
+      if (a > pos + 1e-6) keeps.push({ a: pos, b: a, gap: keeps.length > from });
+      pos = Math.max(pos, b);
+    }
+    if (pos < k.b - 1e-6) keeps.push({ a: pos, b: k.b, gap: keeps.length > from });
+  }
+  let at = 0;
+  for (const k of keeps) {
+    k.at = at;
+    at += k.b - k.a;
+  }
+  return keeps;
+}
+
+/// The ranges kept, as they are asked of the engine: whole, seams and all.
+/// What it then leaves out at a seam it leaves out the same way whichever
+/// window asked; see `keepsOf` for where that is counted.
+function keptRanges(clip) {
   const facts = factsOf(clip);
   if (!facts) return [];
   const dur = facts.duration;
@@ -4380,15 +4464,87 @@ function keepsOf(clip) {
     pos = Math.max(pos, c.b);
   }
   if (pos < dur - 1e-6) keeps.push({ a: pos, b: dur });
-  let at = 0;
-  for (const k of keeps) {
-    k.at = at;
-    at += k.b - k.a;
-  }
   return keeps;
 }
 
-const rangesOf = (clip) => keepsOf(clip).map((k) => [k.a, k.b]);
+/// Where a recorder's clip, read as one, has clock and no pictures: at each
+/// seam, from where the stretch before it stops to the first entry point of
+/// the one after. The engine plans every range around them, so a range over
+/// one comes out that much shorter, and every chapter after it that much
+/// earlier, than the clock says. Empty for everything else, and until the
+/// walk has been over the recording. See `Source::unwritten` in the engine.
+function unwrittenOf(clip) {
+  const u = clip.info && Array.isArray(clip.info.unwritten) ? clip.info.unwritten : [];
+  return u.filter((r) => Array.isArray(r) && Number.isFinite(r[0]) && Number.isFinite(r[1]) && r[1] > r[0]);
+}
+
+const rangesOf = (clip) => keptRanges(clip).map((k) => [k.a, k.b]);
+
+/// Cut what a disc title's playlist leaves out, once, as the row's first
+/// cuts.
+///
+/// **A recorder's title is less than the clip it is opened as.** The clip
+/// begins a second or so before the programme -- the end of the one before
+/// it, a station's spot -- and runs on into the next, and where the recorder
+/// was stopped to leave a break out it still holds the moment either side of
+/// the stop. The playlist steps over all of it. Opened whole, a row written
+/// out untouched carried every bit of it into the cut.
+///
+/// So they are cut here, as though somebody had cut them: the row's length,
+/// the disc gauge, its chapters and its export all follow from its cuts, and
+/// the editor opens on them and can take them back (取消). Left with the row
+/// as a part not yet visited (`fresh`), the same as a division's cuts, so
+/// that a first visit still reads the files beside the recording; what was
+/// cut here goes in `unplayed`, which is the step 取消 takes back.
+///
+/// Needs where the recording's clock begins, which only the walk says (the
+/// container's own length is not good enough for the end of the last item
+/// either). The editor does the same on a visit that comes first; a row it
+/// has had its say about owes nothing.
+///
+/// An edit the editor sent before its walk landed (`playsDue`) has not had
+/// its say: the cuts in it are somebody's, made during the walk, and the
+/// playlist's are still owed on top of them.
+function takePlays(clip) {
+  if (!clip.playsOwed || clip === editing) return;
+  const due = !!(clip.edit && clip.edit.playsDue);
+  if (opened(clip) && !due) {
+    clip.playsOwed = false;
+    return;
+  }
+  const i = clip.info;
+  if (!i || !Number.isFinite(i.start_time)) return;
+  clip.playsOwed = false;
+  if (clip.edit) delete clip.edit.playsDue;
+  // On the pictures, from the walk (`disc::unplayed_in`): worked out here
+  // from the play items, the ends fell between two pictures and every count
+  // of the row's frames was a picture off the cut's. The same answer the
+  // command line cuts by.
+  const u = Array.isArray(i.unplayed)
+    ? i.unplayed.filter((r) => Array.isArray(r) && r[1] > r[0]).map(([a, b]) => ({ a, b }))
+    : unplayedOf(clip.plays, i.start_time, i.first_point || 0, i.duration);
+  const had = clip.edit ? normalise(clip.edit.cuts) : [];
+  const fresh = cutsBeyond(u, had);
+  if (!fresh.length) return;
+  if (clip.edit) {
+    clip.edit.cuts = normalise(had.concat(u));
+    // A part of a division, not yet visited, keeps what makes it a part.
+    if (clip.edit.fresh) clip.edit.partCuts = normalise((clip.edit.partCuts || []).concat(u));
+    clip.edit.unplayed = normalise((clip.edit.unplayed || []).concat(fresh));
+  } else {
+    clip.edit = {
+      id: clip.id,
+      cuts: normalise(u),
+      keyframes: [],
+      chaptersDue: true,
+      fresh: true,
+      partCuts: normalise(u),
+      unplayed: fresh,
+    };
+  }
+  paintRow(clip);
+  paintTotals();
+}
 
 /// How long the cut of a clip runs, or `null` where nothing has been cut out
 /// of it.
@@ -4859,11 +5015,17 @@ function outputBase(clip) {
 /// disc is called `00001`. Left alone, the second of them would be written
 /// over the first without a word -- the run would report two files written
 /// and one would be gone.
+///
+/// Twins by folder and name, whatever their extension. `ep.ts` and `ep.mkv`
+/// (two recordings cut under 入力と同じ), or `ep.aac` and `ep.ac3` as sound
+/// alone, are two files, but what is written beside a cut is named after its
+/// stem -- the `.sup`, the `.idx`/`.sub`, the `.keyframe` -- and the second
+/// cut's were written over the first's.
 function outNo(clip) {
   const mine = outputBase(clip);
   const twins = (runOrder || clips).filter((c) => {
     const it = outputBase(c);
-    return it.dir === mine.dir && it.name === mine.name && it.ext === mine.ext;
+    return it.dir === mine.dir && it.name === mine.name;
   });
   return twins.length > 1 ? String(twins.indexOf(clip) + 1) : "";
 }
@@ -6225,17 +6387,46 @@ function subpictureDrops(clip) {
 /// boundary is one chapter and not two.
 function chaptersFor(clip) {
   const keeps = keepsOf(clip);
-  const cuts = keeps.map((k) => k.at).sort((a, b) => a - b);
+  const marks = marksOf(clip);
+  const facts = factsOf(clip);
+  const frame = 1 / (facts && facts.fps > 0 ? facts.fps : 30);
+  // Not where a range only resumes past a seam: nobody cut there. Nor where
+  // the cut in front of it is one the disc's playlist made (`unplayed`):
+  // the recorder stepped over that moment, and the disc's own marks are
+  // where its chapters are. Unless one of them is on the range's start
+  // (within a frame: a recorder sets one on an item's IN): that chapter is
+  // the range's start, and wins over a mark half a second before it as a
+  // range start does. The command line's rule too (`marks` in main.rs).
+  // The first range opens the file whatever cut it.
+  const cuts = keeps
+    .filter(
+      (k, n) =>
+        !k.gap &&
+        (n === 0 || !playlistCutBefore(clip, k.a) || marks.some((m) => m >= k.a - frame && m < k.a + frame))
+    )
+    .map((k) => k.at)
+    .sort((a, b) => a - b);
   const out = cuts.filter((at, i) => i === 0 || at - cuts[i - 1] > 0.5);
   // Within half a second of one another is one chapter, and where one of
   // the two is a range boundary it is the boundary that stays: a mark a
   // moment ahead of it is the tail of the range before, and a chapter put
   // there opens on what was cut up to.
-  for (const at of marksOf(clip)) {
+  for (const at of marks) {
     const mapped = srcToOut(keeps, at);
     if (mapped !== null && !out.some((o) => Math.abs(o - mapped) <= 0.5)) out.push(mapped);
   }
   return out.sort((a, b) => a - b);
+}
+
+/// Whether the cut a kept range resumes after, at `a`, is one the disc's
+/// playlist made and nobody else: wholly inside what `takePlays` (or the
+/// editor's `applyPlays`) cut. A cut of somebody's own that runs into one is
+/// a cut of theirs, and its range starts a chapter.
+function playlistCutBefore(clip, a) {
+  const e = clip.edit;
+  if (!e || !Array.isArray(e.unplayed) || !e.unplayed.length) return false;
+  const cut = normalise(e.cuts || []).find((c) => Math.abs(c.b - a) < 1e-6);
+  return !!cut && cutsBeyond([cut], e.unplayed).every((r) => r.b - r.a < 1e-3);
 }
 
 /// Where the chapter points of a file go: the disc's rule, where the
@@ -7128,6 +7319,7 @@ function whyOf(fit, video = true) {
 /// costs the output, which is the one thing about a transition that cannot
 /// be seen by looking at it.
 function renderCrossing() {
+  followCross();
   const row = el("row-cross");
   row.hidden = !joining();
   if (row.hidden) return;
@@ -7181,6 +7373,11 @@ let crossPick = 0;
 /// Whether a seam window is being built right now, so that a `cross-closed`
 /// landing meanwhile can be told to be about the window before this one.
 let crossOpening = false;
+/// Whether the seam window is up and has been told the joins (`cross-ready`
+/// came, `cross-closed` has not), and what it was last told; see
+/// `followCross`.
+let crossUp = false;
+let crossSent = "";
 
 /// Which of each clip's sound tracks a join is heard on: where the first
 /// track the master keeps sits among all of the master's. The cutter takes
@@ -7219,6 +7416,7 @@ function joinsForWindow() {
     const first = ak[0];
     out.push({
       id: before.id,
+      afterId: after.id,
       beforePath: before.path,
       afterPath: after.path,
       beforeName: clipLabel(before),
@@ -7238,11 +7436,41 @@ function joinsForWindow() {
   return out;
 }
 
-function tellCross() {
+/// What the seam window is shown of the joins, less the transitions, which
+/// are the window's own until OK.
+/// Nor the pictures, which arrive on their own and would start the preview
+/// over each time one did.
+const crossPrint = (joins) =>
+  JSON.stringify(joins.map((j) => ({ ...j, after: null, beforePic: "", afterPic: "" })));
+
+/// `follow` where the list says it on its own rather than for the button: the
+/// window then stays on the join it is showing where that is still a join.
+function tellCross(follow = false) {
   if (!emit) return;
   const joins = joinsForWindow();
   if (!joins.length) return;
-  emit("cross-open", { joins, pick: Math.min(crossPick, joins.length - 1) });
+  crossSent = crossPrint(joins);
+  emit("cross-open", { joins, pick: Math.min(crossPick, joins.length - 1), follow });
+}
+
+/// Tell an open seam window the joins again when the list has changed under
+/// it. Rows reordered, removed, added or cut again while it was up left it on
+/// the old joins -- the old bounds in the preview -- and OK wrote each setting
+/// by the row before the join, onto whatever row now followed it. The window
+/// keeps what was changed in it on each join that is still the same two
+/// rows, and stays on the join it shows while that is one of them (see
+/// `cross-open` in cross.js). Where no join is left there is nothing for it
+/// to set, and it is closed.
+function followCross() {
+  if (!crossUp || crossOpening) return;
+  const joins = joinsForWindow();
+  if (!joins.length) {
+    crossUp = false;
+    crossSent = "";
+    invoke("close_cross").catch(() => {});
+    return;
+  }
+  if (crossPrint(joins) !== crossSent) tellCross(true);
 }
 
 async function openCrossWindow(pick = 0) {
@@ -7464,7 +7692,8 @@ function renderOutset() {
     fps: i.fps.toFixed(2),
     scan: t(i.interlaced ? "outset.interlaced" : "media.progressive"),
     audio: audioSummary(clip, containerFor(clip)),
-    keeps: keeps.length,
+    // The ranges cut, not the pieces a recorder's seams leave of them.
+    keeps: keeps.filter((k) => !k.gap).length,
     kept: fmt(kept),
     dur: fmt(i.duration),
     cuts: clip.edit ? clip.edit.cuts.length : 0,
@@ -8849,6 +9078,38 @@ async function startExport() {
     el("out-made").focus();
     return;
   }
+  // A codec a disc's index has no type for -- Opus, which a transport stream
+  // takes -- was refused only once the cut was written, when the index was
+  // made; and that failure takes every recording of the run after it off the
+  // disc. So it is asked here, of each recording as it will be written,
+  // before anything is cut.
+  if (disc) {
+    const lower = (s) => String(s || "").toLowerCase();
+    for (const clip of list) {
+      const facts = factsOf(clip) || {};
+      let cannot = [];
+      try {
+        cannot = await invoke("disc_cannot_hold", {
+          video: [lower(facts.codec)].filter(Boolean),
+          // A track whose codec was not read is not one to refuse on.
+          audio: keptAudio(clip).map((a) => lower(a.codec)).filter(Boolean),
+          asked: audioCodecOut() || "",
+        });
+      } catch (e) {
+        jlog(`disc_cannot_hold: ${e}`);
+      }
+      if (!cannot.length) continue;
+      const pictures = cannot[0] === lower(facts.codec);
+      note(t(pictures ? "out.discNoVideo" : "out.discNoAudio", {
+        name: clipLabel(clip),
+        codec: cannot[0],
+      }));
+      show("outset");
+      el("outset-clip").value = String(clip.id);
+      renderOutset();
+      return;
+    }
+  }
   // A pass over another recording would be competing for the same disc, and
   // unlike the editor this is work with an end in sight that somebody is
   // watching. Both lanes stand aside until the list is written out.
@@ -8954,6 +9215,8 @@ async function startExport() {
   // a later one renamed `ep` -- was given the name of a file this run had
   // just written, and was written over it.
   const writtenHere = [];
+  // And the marks lists beside them; see the `.keyframe` below.
+  const sidesHere = [];
   // **One file, written once.** Everything below this is the same run seen
   // from the other side: the disc pass is skipped -- a disc holds
   // recordings, and joining is the one thing it cannot do -- and the
@@ -9109,10 +9372,20 @@ async function startExport() {
         // prefix and no number, `録画.m2ts` is cut to `録画.ts` beside it, and
         // its `録画.keyframe` -- somebody's marks, numbered against the
         // recording -- was written over with the cut's.
-        const theirs = clips.map((c) => `${sidecarBase(c)}.keyframe`);
-        if (frames.length && (await invoke("names_an_input", { output: side, inputs: theirs }))) {
-          jlog(`keyframes: ${side} is a recording's own list, not written`);
+        // Every recording of the run, a row taken out of the list since
+        // included, as `runInputs` has them.
+        const theirs = [...new Set([...(runOrder || []), ...clips])].map((c) => `${sidecarBase(c)}.keyframe`);
+        // Nor over the list an earlier row of this run wrote. Cuts that
+        // differ only by extension are numbered as twins (see `outNo`); this
+        // is for a row renamed during the run onto a name already written.
+        if (
+          frames.length &&
+          (sidesHere.includes(side) ||
+            (await invoke("names_an_input", { output: side, inputs: [...theirs, ...sidesHere] })))
+        ) {
+          jlog(`keyframes: ${side} is a recording's own list or one this run wrote, not written`);
         } else if (frames.length) {
+          sidesHere.push(side);
           const n = await invoke("write_keyframes", { path: side, frames, fps: clip.info.fps });
           extra = t("out.doneKeyframes", { n });
         }
@@ -9542,7 +9815,8 @@ function rowAsSaved(saved) {
 const EDIT_KEYS = new Set([
   "id", "path", "cuts", "keyframes", "activeKey", "cmBlocks", "cmNote", "cmFinding",
   "detectedWith", "flatRuns", "markFileKind", "chaptersDue", "touched", "dropStreams",
-  "poster", "playhead", "selA", "selB", "selGone", "fresh", "partCuts",
+  "poster", "playhead", "selA", "selB", "selGone", "fresh", "partCuts", "unplayed",
+  "playsDue",
 ]);
 
 /// Somebody has just answered for this project's output.
@@ -9600,6 +9874,9 @@ function captureProject(settled = outputSettled, forRun = false) {
       // Written for the same reason as the name: reopening the project must
       // not need the disc back in the drive to know where the chapters were.
       chapters: c.chapters.length ? c.chapters : undefined,
+      // And what its playlist plays, while the rest is still to be cut.
+      plays: c.plays.length ? c.plays : undefined,
+      playsOwed: c.playsOwed || undefined,
       // And for the same reason again: the tracks switched off when the disc
       // was read are an answer given to a question the disc asked, and
       // asking it again would mean reading the disc again.
@@ -10249,6 +10526,10 @@ async function loadProject(path, given = null) {
         // it threw there, and the part could not be opened.
         partCuts: Array.isArray(saved.edit.partCuts)
           ? saved.edit.partCuts.filter((r) => r && Number.isFinite(r.a) && Number.isFinite(r.b))
+          : undefined,
+        // And what of those cuts the disc's playlist left out (`takePlays`).
+        unplayed: Array.isArray(saved.edit.unplayed)
+          ? saved.edit.unplayed.filter((r) => r && Number.isFinite(r.a) && Number.isFinite(r.b))
           : undefined,
         // The other two lists read without asking: the row's sound tracks
         // and the editor's timeline both iterate them, and a number there
