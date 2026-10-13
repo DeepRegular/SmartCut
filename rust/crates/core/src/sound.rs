@@ -177,6 +177,53 @@ fn overlapped(pieces: &[Piece]) -> Vec<Vec<(f64, f64)>> {
     out
 }
 
+/// The ranges less what no cut of the recording writes: the stretches at a
+/// recorder's seams, from where the pictures before one stop to the first
+/// entry point after it. See [`Source::unwritten`].
+///
+/// **The picture writer plans a range across a seam as two**
+/// ([`crate::plan::plan_on`]), and its sound is cut against those two. Taken
+/// whole here, an audio-only run kept what lies between: a recorder BD-RE
+/// title kept across a seam whose clock runs on for 18.9 s with no picture
+/// in it came out as a `.wav` 35.0 s long, 18.9 s of it silence laid in by
+/// the re-encoder, where the cut with pictures is 16.1 s.
+///
+/// The piece after a hole is kept only where it is more than half a picture
+/// long, as the planner keeps it only where an entry point lies inside it.
+pub(crate) fn written(src: &Source, ranges: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let holes = src.unwritten();
+    if holes.is_empty() {
+        return ranges.to_vec();
+    }
+    less(ranges, &holes, src.video.frame_duration() / 2.0)
+}
+
+/// `ranges` with `holes` (in order) taken out of them. See [`written`].
+fn less(ranges: &[(f64, f64)], holes: &[(f64, f64)], eps: f64) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(ranges.len() + holes.len());
+    for &(a, b) in ranges {
+        let mut at = a;
+        let mut after_hole = false;
+        for &(from, to) in holes {
+            if to <= at || from >= b {
+                continue;
+            }
+            if from > at {
+                out.push((at, from));
+            }
+            at = at.max(to);
+            after_hole = true;
+            if at >= b {
+                break;
+            }
+        }
+        if at < b && (!after_hole || b - at > eps) {
+            out.push((at, b));
+        }
+    }
+    out
+}
+
 /// A range on the recording's own sample clock.
 fn window(range: (f64, f64), rate: u32) -> (i64, i64) {
     (
@@ -196,6 +243,16 @@ fn run(
     if pieces.is_empty() {
         return Err(anyhow!("nothing to write"));
     }
+    // The ranges as the picture writer cuts them at a recorder's seams, which
+    // every count below -- ranges, fades, windows -- is then taken from. See
+    // [`written`].
+    let split: Vec<Vec<(f64, f64)>> = pieces.iter().map(|p| written(p.src, p.ranges)).collect();
+    let pieces: Vec<Piece> = pieces
+        .iter()
+        .zip(&split)
+        .map(|(p, ranges)| Piece { src: p.src, ranges, after: p.after.clone() })
+        .collect();
+    let pieces = &pieces[..];
     // The piece the file takes its shape from; the tracks it declares are
     // the master's, as the picture writer's are.
     let master = master.min(pieces.len() - 1);
@@ -970,7 +1027,23 @@ fn write_encoded(
 
 #[cfg(test)]
 mod tests {
-    use super::{flac_block, opus_samples};
+    use super::{flac_block, less, opus_samples};
+
+    #[test]
+    fn ranges_lose_the_unwritten_stretches() {
+        let holes = [(10.0, 12.0), (20.0, 20.5)];
+        let eps = 0.0167;
+        // Across both, as the planner cuts it: up to each, on from its end.
+        assert_eq!(less(&[(5.0, 25.0)], &holes, eps), vec![(5.0, 10.0), (12.0, 20.0), (20.5, 25.0)]);
+        // Opening or ending inside one; wholly inside one.
+        assert_eq!(less(&[(11.0, 15.0)], &holes, eps), vec![(12.0, 15.0)]);
+        assert_eq!(less(&[(8.0, 11.0)], &holes, eps), vec![(8.0, 10.0)]);
+        assert_eq!(less(&[(10.5, 11.5)], &holes, eps), Vec::<(f64, f64)>::new());
+        // Less than half a picture past one is not a piece.
+        assert_eq!(less(&[(8.0, 12.01)], &holes, eps), vec![(8.0, 10.0)]);
+        // Clear of them, however short.
+        assert_eq!(less(&[(1.0, 1.01), (13.0, 19.0)], &holes, eps), vec![(1.0, 1.01), (13.0, 19.0)]);
+    }
 
     #[test]
     fn flac_block_sizes() {

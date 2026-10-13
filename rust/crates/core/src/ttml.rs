@@ -62,6 +62,117 @@ pub fn cue(payload: &[u8]) -> Option<(f64, f64)> {
     (end > begin).then_some((begin, end))
 }
 
+/// The moment the pictures around byte `pos` of the recording are shown, on
+/// the clock everything else is measured on: the entry picture at or before
+/// it, carried on toward the next one by how far between the two the byte
+/// lies.
+///
+/// **This is when a document goes up, where its own `begin` says otherwise.**
+/// A recorder sends each one beside the pictures it belongs over, and that
+/// is where a receiver reading the stream puts it on the screen. The time the
+/// document states is on a clock of the broadcaster's that stops between
+/// lines: on most clips it trails the pictures by a steady 0.6 s (see
+/// [`placed`] for why that is let stand), but on some it falls behind a
+/// second or several at every pause in the dialogue,
+/// and by the end of one recording measured here it was 7 s behind, on
+/// another 12 -- every caption timed by it went up that long before its line
+/// was spoken (measured against where the speech starts in the sound), and a
+/// cut lost the captions of the last seconds of each range. A clip cut off a
+/// recording's middle by another tool had none at all: its pictures begin
+/// minutes into a clock the documents count from nought.
+///
+/// `None` where the index says nowhere: no entry of it has a position.
+pub fn shown_at(points: &[crate::AccessPoint], pos: i64) -> Option<f64> {
+    if pos < 0 {
+        return None;
+    }
+    // Asked of every entry rather than searched for, so that an entry the
+    // index could not place (a position of -1) or one out of order costs
+    // nothing but itself.
+    let mut before: Option<&crate::AccessPoint> = None;
+    let mut after: Option<&crate::AccessPoint> = None;
+    let mut first: Option<&crate::AccessPoint> = None;
+    for p in points.iter().filter(|p| p.pos >= 0 && p.time.is_finite()) {
+        if first.is_none_or(|f| p.pos < f.pos) {
+            first = Some(p);
+        }
+        if p.pos <= pos {
+            if before.is_none_or(|b| p.pos > b.pos) {
+                before = Some(p);
+            }
+        } else if after.is_none_or(|a| p.pos < a.pos) {
+            after = Some(p);
+        }
+    }
+    // What an entry picture stands for here is the first of its group to be
+    // shown, which in an open group is a leading picture a few frames before
+    // it: those are the pictures the bytes behind it carry.
+    let at = |p: &crate::AccessPoint| {
+        if p.lead_start.is_finite() && p.lead_start <= p.time {
+            p.lead_start
+        } else {
+            p.time
+        }
+    };
+    let Some(b) = before else {
+        // In front of the first entry picture, which is the head of the file
+        // and as near as anything says.
+        return first.map(at);
+    };
+    // Carried toward the next entry only where the two are one stretch of
+    // pictures apart: across a recorder's seam, or a hole the index steps
+    // over, the next one's time says nothing about this byte.
+    const STRETCH: f64 = 2.0;
+    let (from, to) = (at(b), after.map(at));
+    Some(match to {
+        Some(to) if to > from && to - from <= STRETCH => {
+            let a = after.expect("asked above");
+            let along = (pos - b.pos) as f64 / (a.pos - b.pos) as f64;
+            from + along * (to - from)
+        }
+        _ => from,
+    })
+}
+
+/// How far a document's own time may stand behind where it arrives and
+/// still be taken as the time it goes up.
+///
+/// A recorder's documents trail the pictures they arrive beside by 0.2 to
+/// 0.8 s on the clips measured, and a cut written here puts each one beside
+/// the pictures of the time it states, which on reading it back lands a
+/// picture or two either side of that time. Inside this, the document's own
+/// time is the better answer -- it is exact for a cut, and a re-cut of a cut
+/// does not move its lines -- and outside it, the document's clock is not
+/// the pictures' any more: see [`shown_at`].
+const OWN_TIME_SLACK: f64 = 1.0;
+
+/// Where a document goes up and comes down on the recording's clock, and how
+/// far its own times are moved to be on that clock.
+///
+/// `shown` is [`shown_at`] for the packet that carried it. The document's
+/// own times are taken, counted from `base` (see
+/// [`crate::CaptionInfo::base`]), where they are no more than
+/// [`OWN_TIME_SLACK`] behind that, or ahead of it, or where it is not known;
+/// a document whose own time is further behind where it arrives goes up at
+/// `shown` and stands for as long as it says. The preview and the cut both
+/// place a document by this and by nothing else, so a line shown at an
+/// instant in the window is the line a cut keeps there.
+pub fn placed(payload: &[u8], shown: Option<f64>, base: f64) -> Option<(f64, f64, f64)> {
+    let (begin, end) = cue(payload)?;
+    // A document sent ahead of its own time is held until then, as a
+    // receiver holds it: a recorder sends two lines back to back now and
+    // then, the second 4 s before it is due. Only so far ahead, though: one
+    // that says it is minutes away is counting from somewhere this file does
+    // not begin -- a clip cut out of a recording's middle by another tool.
+    const AHEAD_MOST: f64 = 30.0;
+    let shift = match shown {
+        Some(at) if at - (begin + base) > OWN_TIME_SLACK => at - begin,
+        Some(at) if at - (begin + base) < -AHEAD_MOST => at - begin,
+        _ => base,
+    };
+    Some((begin + shift, end + shift, shift))
+}
+
 /// The same document with its times moved by `shift` and clipped to
 /// `window`, or `None` where the caption does not belong in that window at
 /// all.
@@ -466,6 +577,51 @@ fn unescape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn point(time: f64, pos: i64) -> crate::AccessPoint {
+        crate::AccessPoint {
+            time,
+            lead_start: time,
+            lead_indices: Vec::new(),
+            droppable: true,
+            pos,
+            measured: true,
+        }
+    }
+
+    /// A document goes up where it arrives: between two entry pictures by
+    /// how far between them its byte lies, and not carried across a seam.
+    #[test]
+    fn a_document_is_shown_where_it_arrives() {
+        let points = [point(10.0, 1000), point(10.5, 2000), point(30.0, 3000), point(1.0, -1)];
+        assert_eq!(shown_at(&points, 1000), Some(10.0));
+        assert_eq!(shown_at(&points, 1500), Some(10.25));
+        // 19.5 s on: a seam, so the byte belongs to the stretch it is in.
+        assert_eq!(shown_at(&points, 2500), Some(10.5));
+        assert_eq!(shown_at(&points, 9000), Some(30.0));
+        assert_eq!(shown_at(&points, 10), Some(10.0));
+        assert_eq!(shown_at(&points, -1), None);
+        assert_eq!(shown_at(&[point(1.0, -1)], 500), None);
+
+        // A document that says it went up at 2:21.667 and arrived beside
+        // the pictures of 160 s is shown at 160 s, for as long as it says.
+        let p = packet("00:02:21.667", "00:02:26.667", "テスト");
+        let (begin, end, shift) = placed(&p, Some(160.0), 2.0).unwrap();
+        assert_eq!(begin, 160.0);
+        assert!((end - 165.0).abs() < 1e-9 && (shift - 18.333).abs() < 1e-9);
+        // Sent 4 s ahead of its own time, it waits for it; sent minutes
+        // ahead, its clock is not this file's.
+        let (begin, _, _) = placed(&p, Some(139.667), 2.0).unwrap();
+        assert!((begin - 143.667).abs() < 1e-9);
+        let (begin, _, _) = placed(&p, Some(40.0), 2.0).unwrap();
+        assert_eq!(begin, 40.0);
+        // Arriving within the slack of its own time, it keeps that.
+        let (begin, _, shift) = placed(&p, Some(144.3), 2.0).unwrap();
+        assert!((begin - 143.667).abs() < 1e-9 && shift == 2.0);
+        // And with nowhere to place it, by its own times from `base`.
+        let (begin, _, shift) = placed(&p, None, 2.0).unwrap();
+        assert!((begin - 143.667).abs() < 1e-9 && shift == 2.0);
+    }
 
     #[test]
     fn a_clock_is_digits() {

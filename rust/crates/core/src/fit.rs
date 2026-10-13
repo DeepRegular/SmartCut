@@ -143,6 +143,7 @@ pub fn rates(src: &Source) -> Rates {
             .video
             .bit_rate
             .filter(|r| r.is_finite() && *r > 0.0)
+            .map(|r| r * written_scale(src))
             .unwrap_or_else(|| file_rate(src) * 0.9),
         audio: src.audios.iter().map(audio_rate).sum(),
         can_shrink: src.video.codec == "mpeg2video",
@@ -337,7 +338,41 @@ fn file_rate(src: &Source) -> f64 {
     if src.duration <= 0.0 || bytes == 0 {
         return 0.0;
     }
-    bytes as f64 * 8.0 / src.duration
+    bytes as f64 * 8.0 / src.duration * written_scale(src)
+}
+
+/// How much more a second of the recording that is written costs than a
+/// second of its clock.
+///
+/// **Both rates are an average over the clock, and the clock has stretches
+/// no cut writes** ([`Source::unwritten`]): at a recorder's seam, from where
+/// one stretch stops to the first entry point of the next. Mostly a few
+/// pictures; on one recorder title measured here 18.9 s of clock holding 14
+/// of them. The bytes were spread over the whole clock, the seconds kept (the
+/// list's `keepsOf`, the planner's ranges) are counted around those
+/// stretches, and their product came out short by the share of the clock
+/// they take -- 0.7% on that title, most of [`MARGIN`]. 1 for every
+/// recording without seams.
+pub(crate) fn written_scale(src: &Source) -> f64 {
+    clock_per_written(src.duration, &src.unwritten())
+}
+
+/// [`written_scale`] from the length of the clock and its unwritten
+/// stretches.
+fn clock_per_written(duration: f64, holes: &[(f64, f64)]) -> f64 {
+    if duration.is_nan() || duration <= 0.0 {
+        return 1.0;
+    }
+    let held: f64 = holes
+        .iter()
+        .map(|&(a, b)| (b.min(duration) - a.max(0.0)).max(0.0))
+        .sum();
+    let written = duration - held;
+    if held > 0.0 && written > 0.0 {
+        duration / written
+    } else {
+        1.0
+    }
 }
 
 /// What a list of cuts comes to against a disc.
@@ -460,6 +495,23 @@ mod tests {
     #[test]
     fn a_stated_nought_is_not_a_rate() {
         assert_eq!(audio_rate(&track("aac", 1, Some(0))), 96_000.0);
+    }
+
+    /// A recorder's title of 2752 s whose seams hold 19.4 s of clock with
+    /// (near enough) no pictures in it: its bytes were measured over the
+    /// whole clock and are written in the rest of it, 0.7% more a second.
+    #[test]
+    fn the_clock_no_cut_writes_does_not_thin_the_rate() {
+        let holes = [(1641.19, 1641.26), (1968.66, 1987.56), (2284.65, 2285.04)];
+        let k = clock_per_written(2752.4, &holes);
+        assert!((k - 2752.4 / (2752.4 - 19.36)).abs() < 1e-9, "{k}");
+        assert_eq!(clock_per_written(2752.4, &[]), 1.0);
+        // A stretch past the end counts only as far as the end; one past
+        // it, or a clock of nothing, changes nothing.
+        assert!((clock_per_written(100.0, &[(90.0, 120.0)]) - 100.0 / 90.0).abs() < 1e-12);
+        assert_eq!(clock_per_written(100.0, &[(150.0, 160.0)]), 1.0);
+        assert_eq!(clock_per_written(0.0, &holes), 1.0);
+        assert_eq!(clock_per_written(10.0, &[(0.0, 10.0)]), 1.0);
     }
 
     fn clip(bytes: u64, video: u64) -> Estimate {

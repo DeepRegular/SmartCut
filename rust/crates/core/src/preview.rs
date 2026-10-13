@@ -2085,6 +2085,51 @@ mod tests {
         assert!(!s.outside(-5.0) && !s.outside(1e9));
     }
 
+    /// The shapes a read can meet a seam in besides walking up to it: a seek
+    /// that lands past it, two seams on the same byte, a packet exactly on
+    /// the seam's byte, and a stretch a mend has emptied -- its pictures end
+    /// before it begins, so none of them is the range's, as the plan has it
+    /// (`at_the_seams` keeps no piece there).
+    #[test]
+    fn stretches_at_their_edges() {
+        use crate::restamp::Seam;
+        let fd = 1.0 / 25.0;
+        let joins = [
+            Seam { at: 100, time: 10.0, ends: 10.0 },
+            Seam { at: 200, time: 20.0, ends: 20.0 },
+            // Stretch 2's pictures were mended to end at 15 s, before it
+            // begins at 20 s.
+            Seam { at: 300, time: 30.0, ends: 15.0 },
+        ];
+        // A seek straight into stretch 1: the seam before it is passed with
+        // the first packet, and the stop is the next seam's.
+        let mut s = Stretches::of(&joins, fd);
+        s.reach(150);
+        assert!(s.outside(9.0) && !s.outside(10.0) && !s.outside(19.9) && s.outside(20.0));
+        // On the seam's own byte is the stretch after it.
+        let mut s = Stretches::of(&joins, fd);
+        s.reach(99);
+        assert!(!s.outside(9.99) && s.outside(10.0));
+        s.reach(100);
+        assert!(!s.outside(10.0) && s.outside(9.9));
+        // The emptied stretch holds nothing the range writes.
+        s.reach(250);
+        for t in [14.0, 15.0, 20.0, 25.0, 29.9] {
+            assert!(s.outside(t), "{t}");
+        }
+        // And past it, the last stretch runs on to the end.
+        s.reach(300);
+        assert!(!s.outside(30.0) && !s.outside(1e6) && s.outside(29.0));
+        // Two seams on one byte: the read is in the later one's stretch.
+        let twins = [
+            Seam { at: 100, time: 10.0, ends: 10.0 },
+            Seam { at: 100, time: 12.0, ends: 12.0 },
+        ];
+        let mut s = Stretches::of(&twins, fd);
+        s.reach(100);
+        assert!(s.outside(11.0) && !s.outside(12.0) && !s.outside(50.0));
+    }
+
     #[test]
     fn the_entry_before_and_a_late_landing() {
         let points: Vec<AccessPoint> = [0.5, 1.0, 1.5]

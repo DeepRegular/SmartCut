@@ -191,6 +191,10 @@ pub struct Reader {
     id: i32,
     /// See [`crate::CaptionInfo::base`].
     base: f64,
+    /// The recording's entry pictures, for a 4K recording's subtitles: what
+    /// places a document is where in the file it arrives. See
+    /// [`crate::ttml::shown_at`]. Empty for every other kind.
+    points: Vec<crate::AccessPoint>,
     kind: Kind,
     /// The picture the subtitles are drawn over, which is what a disc's
     /// positions are measured against.
@@ -232,11 +236,16 @@ impl Reader {
             .iter()
             .find(|c| c.pid == id)
             .map_or(0.0, |c| c.base);
+        let points = match track.kind {
+            Kind::Ttml => src.points.clone(),
+            _ => Vec::new(),
+        };
         Ok(Reader {
             url: src.input.url.clone(),
             start_time: src.start_time,
             id,
             base,
+            points,
             kind: track.kind,
             screen: (src.video.width as u16, src.video.height as u16),
             palette,
@@ -387,28 +396,33 @@ impl Reader {
                 continue;
             };
             if kind == Kind::Ttml {
-                // The packet's own stamp is a counter, so what says the read
-                // has gone past the window is the document -- and the stamp
-                // is not read at all, which is why this comes before it.
-                // Read as a time, a counter of 1, 2, 3 can be taken by the
-                // demuxer for a clock that has wrapped -- a clip whose own
-                // clock starts more than a minute in -- and moved 26 hours
-                // on, and the read stopped at the first document as past the
-                // window; a document with no stamp was passed over. The cut
-                // never reads the stamp either (`take_ttml` in `cut.rs`).
-                if crate::ttml::cue(data).is_some_and(|(begin, _)| base + begin > to) {
+                // The packet's own stamp is a counter, so it is not read at
+                // all, which is why this comes before it: read as a time, a
+                // counter of 1, 2, 3 can be taken by the demuxer for a clock
+                // that has wrapped -- a clip whose own clock starts more than
+                // a minute in -- and moved 26 hours on.
+                //
+                // Nor are the document's own times always what place it:
+                // where they have drifted from the pictures it arrives
+                // beside, it goes up where it arrives and stands for as long
+                // as it says. See [`crate::ttml::shown_at`] and
+                // [`crate::ttml::placed`], which the cut places it by too
+                // (`take_ttml` in `cut.rs`).
+                let shown = crate::ttml::shown_at(&self.points, packet.position() as i64);
+                let Some((begin, end, _)) = crate::ttml::placed(data, shown, base) else {
+                    continue;
+                };
+                if begin > to {
                     break;
                 }
-                // A document says when it goes up and when it comes down,
-                // and the packet it arrives in says nothing: a recorder
-                // stamps these with a counter. So the times come out of the
-                // document, counted from where the disc says the clip
-                // begins to present. See [`crate::ttml`].
                 if let Some(written) = crate::ttml::written(data) {
+                    // A document is one page, timed by the document's own
+                    // pair of times (see [`crate::ttml::written`]), and those
+                    // are what `begin` and `end` are, moved.
                     for page in written.pages {
                         events.push(Event {
-                            at: base + f64::from(page.at),
-                            until: page.until.map(|u| base + f64::from(u)),
+                            at: begin,
+                            until: Some(end),
                             shown: Some(Shown::Text {
                                 plane: written.plane,
                                 runs: page.runs,

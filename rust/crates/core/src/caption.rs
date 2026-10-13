@@ -146,6 +146,135 @@ pub fn text_units(body: &[u8], out: &mut Vec<u8>) {
     });
 }
 
+/// What a caption statement leaves on the plane some time after it was sent.
+/// See [`left_up`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Left {
+    /// Nothing: it only cleared the plane, or the pages it put up have come
+    /// down again by then.
+    Nothing,
+    /// A page that stands until the next statement replaces it, which is
+    /// how most captions are sent.
+    Standing,
+    /// The one page it put up as it was sent, still up, and taken down by
+    /// the statement's own wait (`TIME`, then a clear): the other way a
+    /// broadcaster sends a line. Sent again later it would wait the whole
+    /// wait again; [`waited`] shortens it.
+    Waits,
+    /// Pages on the statement's own clock in any other shape.
+    Timed,
+}
+
+/// What one statement data group leaves on screen `after` seconds past the
+/// moment it was sent, read with `layout` (which keeps the format and the
+/// glyphs for the statements after it, as [`Layout::statement`] does).
+///
+/// `None` for a group with no text in it, which says nothing about the
+/// plane -- the preview passes those over too. The same reading the
+/// preview's is (`subs.rs`), so that a cut opening on a line carries the
+/// line the editor showed there.
+pub fn left_up(layout: &mut Layout, body: &[u8], after: f64) -> Option<Left> {
+    layout.glyphs(body);
+    let mut units = Vec::new();
+    text_units(body, &mut units);
+    if units.is_empty() {
+        return None;
+    }
+    let written = layout.statement(&units);
+    let Some(page) = written.pages.iter().rev().find(|p| f64::from(p.at) <= after) else {
+        // Nothing written, or a page that is still to go up.
+        return Some(if written.pages.is_empty() { Left::Nothing } else { Left::Timed });
+    };
+    Some(match page.until {
+        Some(u) if f64::from(u) <= after => Left::Nothing,
+        None if written.pages.len() == 1 && page.at == 0.0 => Left::Standing,
+        Some(_) if written.pages.len() == 1 && page.at == 0.0 => Left::Waits,
+        _ => Left::Timed,
+    })
+}
+
+/// A caption packet whose one statement waits (`TIME`) before it clears,
+/// with that wait shortened by `elapsed` seconds, for writing again where
+/// the line has already been up that long ([`Left::Waits`]).
+///
+/// `None` where the packet is not that shape: no wait or more than one in
+/// its text, or nothing left of the wait. The data group's CRC is written
+/// again, since a receiver checks it.
+pub fn waited(payload: &[u8], elapsed: f64) -> Option<Vec<u8>> {
+    if payload.len() < 3 || !matches!(payload[0], 0x80 | 0x81) {
+        return None;
+    }
+    // Where the one wait's value byte is, and the data group it is in.
+    let mut found: Option<(usize, usize, usize)> = None;
+    let mut waits = 0;
+    let mut i = 3 + (payload[2] & 0x0F) as usize;
+    while i + 5 <= payload.len() {
+        let id = payload[i] >> 2;
+        let size = ((payload[i + 3] as usize) << 8) | payload[i + 4] as usize;
+        let end = i + 5 + size;
+        if end + 2 > payload.len() {
+            return None;
+        }
+        if is_statement(id) {
+            let body = i + 5;
+            let first = payload[body];
+            let tmd = first >> 6;
+            let mut u = body + 1 + if tmd == 1 || tmd == 2 { 5 } else { 0 } + 3;
+            while u + 5 <= end && payload[u] == 0x1F {
+                let param = payload[u + 1];
+                let n = ((payload[u + 2] as usize) << 16)
+                    | ((payload[u + 3] as usize) << 8)
+                    | payload[u + 4] as usize;
+                let data = u + 5;
+                if data + n > end {
+                    return None;
+                }
+                if param == 0x20 {
+                    // 0x9D is TIME and nothing else in a caption's text:
+                    // every parameter of every control is 0x20 to 0x7F.
+                    for k in data..data + n {
+                        if payload[k] == 0x9D {
+                            waits += 1;
+                            if k + 2 < data + n
+                                && payload[k + 1] == 0x20
+                                && (0x40..=0x7F).contains(&payload[k + 2])
+                            {
+                                found = Some((k + 2, i, end));
+                            }
+                        }
+                    }
+                }
+                u = data + n;
+            }
+        }
+        i = end + 2;
+    }
+    let (at, group, end) = found.filter(|_| waits == 1)?;
+    let left = f64::from(payload[at] & 0x3F) / 10.0 - elapsed;
+    let tenths = (left * 10.0).round();
+    if tenths < 1.0 {
+        return None;
+    }
+    let mut out = payload.to_vec();
+    out[at] = 0x40 | tenths.min(63.0) as u8;
+    let crc = crc16(&out[group..end]);
+    out[end..end + 2].copy_from_slice(&crc.to_be_bytes());
+    Some(out)
+}
+
+/// The CRC a caption data group ends with: CRC-16-CCITT, from zero, over the
+/// group's header and data.
+fn crc16(bytes: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in bytes {
+        crc ^= u16::from(b) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+        }
+    }
+    crc
+}
+
 /// Whether the bytes are a non-empty run of CSI sequences and nothing else.
 ///
 /// CSI is 0x9B, then digits and semicolons, then a space, then a letter. The
@@ -1437,6 +1566,66 @@ mod tests {
         // says nothing about when it comes down again.
         assert_eq!(written.pages[1].at, 1.0);
         assert_eq!(written.pages[1].until, None);
+    }
+
+    /// What a cut opening `after` seconds past a statement carries of it
+    /// (`read_caption_before` in `cut.rs`).
+    #[test]
+    fn what_a_statement_leaves_up_later() {
+        let left = |text: Vec<u8>, after: f64| {
+            left_up(&mut Layout::default(), &body(&[(0x20, text)]), after)
+        };
+        // A line stands until the next statement.
+        assert_eq!(left(statement(7, 0, &KANJI), 5.0), Some(Left::Standing));
+        // A reset writes nothing: a cut on a junction is given nothing.
+        let mut reset = statement(7, 0, &[]);
+        reset.truncate(reset.len() - 3);
+        assert_eq!(left(reset.clone(), 0.1), Some(Left::Nothing));
+        // Nor with the NUL a broadcaster sends in a unit of its own first.
+        let units = body(&[(0x20, vec![0x00]), (0x20, reset)]);
+        assert_eq!(left_up(&mut Layout::default(), &units, 0.1), Some(Left::Nothing));
+        // A line on its own clock: up for its wait, and down after it.
+        let mut timed = statement(7, 0, &KANJI);
+        timed.extend_from_slice(&[0x9D, 0x20, 0x54, 0x0C]);
+        assert_eq!(left(timed.clone(), 1.0), Some(Left::Waits));
+        assert_eq!(left(timed.clone(), 2.5), Some(Left::Nothing));
+        // Two pages on its own clock: not a shape written again.
+        let mut paced = timed;
+        paced.extend_from_slice(&[0x1C, 0x40 + 7, 0x40]);
+        paced.extend_from_slice(&KANJI);
+        assert_eq!(left(paced, 2.5), Some(Left::Timed));
+        // A group with no text says nothing about the plane.
+        assert_eq!(left_up(&mut Layout::default(), &body(&[]), 1.0), None);
+    }
+
+    /// A line written again part-way through its wait waits only what is
+    /// left of it, and the group's CRC still checks.
+    #[test]
+    fn a_wait_is_shortened_by_what_has_gone() {
+        // As a broadcast sends it, CRC and all: two seconds and three
+        // tenths, then a clear.
+        let sent = [
+            0x80, 0xFF, 0xF0, 0x04, 0x00, 0x00, 0x00, 0x0F, 0x3F, 0x00, 0x00, 0x0B, 0x1F, 0x20,
+            0x00, 0x00, 0x06, 0x30, 0x21, 0x9D, 0x20, 0x57, 0x0C,
+        ];
+        let mut payload = sent.to_vec();
+        let crc = crc16(&payload[3..payload.len()]);
+        payload.extend_from_slice(&crc.to_be_bytes());
+        let out = waited(&payload, 1.0).expect("a wait to shorten");
+        assert_eq!(out[21], 0x40 + 13);
+        assert_eq!(crc16(&out[3..]), 0, "the group's CRC checks");
+        assert_eq!(out.len(), payload.len());
+        // Nothing left of it: not written at all.
+        assert_eq!(waited(&payload, 2.28), None);
+        // Two waits: not a shape this shortens.
+        let mut two = sent.to_vec();
+        two.splice(19..19, [0x9D, 0x20, 0x45]);
+        for size in [7, 11, 16] {
+            two[size] += 3;
+        }
+        let crc = crc16(&two[3..]);
+        two.extend_from_slice(&crc.to_be_bytes());
+        assert_eq!(waited(&two, 1.0), None);
     }
 
     #[test]

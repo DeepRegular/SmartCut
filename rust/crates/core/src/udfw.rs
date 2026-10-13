@@ -620,31 +620,52 @@ fn say_what_was_left_out(from: &Path, left_out: &[String]) {
         .iter()
         .filter(|p| !Path::new(p).file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
         .collect();
-    if left_out.is_empty() {
-        return;
-    }
     // Named the way the folder names them, rather than by the path this
     // program happens to have been handed.
-    let named: Vec<String> = left_out
-        .iter()
-        .take(4)
-        .map(|p| {
-            Path::new(p)
-                .strip_prefix(from)
-                .unwrap_or(Path::new(p))
-                .to_string_lossy()
-                .into_owned()
-        })
-        .chain((left_out.len() > 4).then(|| "...".to_string()))
-        .collect();
-    crate::say!(
-        "note: {} file(s) under {} are not named the way a disc names its files -- a UDF volume \
-         written here carries plain ASCII names of 200 characters or fewer -- and are not in \
-         the image: {}",
-        left_out.len(),
-        from.display(),
-        named.join(", "),
-    );
+    let named = |files: &[&String]| -> String {
+        files
+            .iter()
+            .take(4)
+            .map(|p| {
+                Path::new(p.as_str())
+                    .strip_prefix(from)
+                    .unwrap_or(Path::new(p.as_str()))
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .chain((files.len() > 4).then(|| "...".to_string()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    // Not every file left out is left out for its name: a run's unfinished
+    // `.ats` or `.part`, a link to a folder and a pipe are left out under
+    // names a disc could have. Told it was their names, somebody with a
+    // stamp pass's leftover in the disc went looking for a name to change.
+    let (misnamed, other): (Vec<&String>, Vec<&String>) = left_out.into_iter().partition(|p| {
+        Path::new(p.as_str())
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .is_some_and(|n| !n.is_ascii() || n.len() > 200)
+    });
+    if !misnamed.is_empty() {
+        crate::say!(
+            "note: {} file(s) under {} are not named the way a disc names its files -- a UDF \
+             volume written here carries plain ASCII names of 200 characters or fewer -- and are \
+             not in the image: {}",
+            misnamed.len(),
+            from.display(),
+            named(&misnamed),
+        );
+    }
+    if !other.is_empty() {
+        crate::say!(
+            "note: {} file(s) under {} are not in the image: a file another run has not \
+             finished writing (.ats, .part), a link to a folder, or not a file at all: {}",
+            other.len(),
+            from.display(),
+            named(&other),
+        );
+    }
 }
 
 /// Where everything goes, in blocks.

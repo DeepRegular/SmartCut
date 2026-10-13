@@ -100,7 +100,7 @@ for name in atx.ts full_ntv.ts terrestrial_nhke.ts animax_anime_01.ts; do
   # And the captions, which are the one non-audio stream a cut can move.
   cap=$(python3 tests/captions.py "$src" "$out" 20.0-80.0 120.0-180.0)
   if [ "$(field "$cap" ok)" = "1" ]; then
-    ok "$name の字幕" "$(field "$cap" cut) 個そのまま、ずれ幅 $(field "$cap" worst_spread_us) us"
+    ok "$name の字幕" "$(field "$cap" cut) 個（範囲の頭に出し直し $(field "$cap" carried) 個）、ずれ幅 $(field "$cap" worst_spread_us) us"
   elif [ "$(field "$cap" source)" = "0" ]; then
     skip "$name の字幕" "この録画に字幕はありません"
   else

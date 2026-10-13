@@ -2530,7 +2530,7 @@ fn take_caption(
     writer: &mut Writer,
 ) -> Result<bool> {
     if caption.ttml {
-        return take_ttml(caption, seg, first_segment, packet, writer);
+        return take_ttml(caption, src, seg, first_segment, packet, writer);
     }
     let Some(pts) = packet.pts() else {
         return Ok(false);
@@ -2560,6 +2560,7 @@ fn take_caption(
 /// range is not carried at all.
 fn take_ttml(
     caption: &CaptionCtx,
+    src: &Source,
     seg: &Segment,
     first_segment: bool,
     packet: ff::Packet,
@@ -2568,10 +2569,14 @@ fn take_ttml(
     let Some(data) = packet.data() else {
         return Ok(false);
     };
-    let Some((begin, _)) = crate::ttml::cue(data) else {
+    // Placed as the preview places it: see [`crate::ttml::placed`]. Timed
+    // by its own `begin` alone, a document on a clip whose captions' clock
+    // had fallen behind the pictures went into the cut up to 12 s before its
+    // line, and the last seconds of each range lost theirs.
+    let shown = crate::ttml::shown_at(&src.points, packet.position() as i64);
+    let Some((begin, _, shift)) = crate::ttml::placed(data, shown, caption.base) else {
         return Ok(false);
     };
-    let begin = begin + caption.base;
     // Documents arrive in the order they are shown, so one that begins past
     // this segment is the end of what this segment can hold.
     if begin >= seg.end {
@@ -2584,20 +2589,27 @@ fn take_ttml(
     if !claimed {
         return Ok(false);
     }
-    write_ttml(caption, data, begin, writer)?;
+    write_ttml(caption, data, begin, shift, writer)?;
     Ok(false)
 }
 
 /// Write one TTML document, moved onto the output's clock and clipped to the
-/// kept range.
-fn write_ttml(caption: &CaptionCtx, data: &[u8], begin: f64, writer: &mut Writer) -> Result<()> {
+/// kept range. `shift` is what puts the document's own times on the
+/// recording's clock ([`crate::ttml::placed`]).
+fn write_ttml(
+    caption: &CaptionCtx,
+    data: &[u8],
+    begin: f64,
+    shift: f64,
+    writer: &mut Writer,
+) -> Result<()> {
     // The document counts from the clip's presentation start and the cut
     // counts from the file's beginning, so both the window the document is
     // clipped to and the move it is given are put on the document's own
     // clock. What comes out is counted from the first picture of the cut,
     // which is where a file with no playlist in front of it begins.
-    let window = (caption.range.0 - caption.base, caption.range.1 - caption.base);
-    let Some(bytes) = crate::ttml::retimed(data, caption.base + caption.offset, window) else {
+    let window = (caption.range.0 - shift, caption.range.1 - shift);
+    let Some(bytes) = crate::ttml::retimed(data, shift + caption.offset, window) else {
         return Ok(());
     };
     let at = begin.max(caption.range.0) + caption.offset;
@@ -2619,7 +2631,11 @@ const TTML_LOOKBACK: f64 = 40.0;
 /// the first segment reads from, as often as not. Read here, as the DVD's
 /// and the Blu-ray's are (see [`read_subpictures_before`]); until 0.8.4 a
 /// line already up when a range began was left out of the cut.
-fn read_ttml_before(src: &Source, caption: &CaptionCtx, until: f64) -> Result<Vec<(f64, Vec<u8>)>> {
+fn read_ttml_before(
+    src: &Source,
+    caption: &CaptionCtx,
+    until: f64,
+) -> Result<Vec<(f64, f64, Vec<u8>)>> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     let from = until - TTML_LOOKBACK - src.seek_margin;
     if from > 0.0 {
@@ -2628,7 +2644,7 @@ fn read_ttml_before(src: &Source, caption: &CaptionCtx, until: f64) -> Result<Ve
     // The pictures as the clock, for the reason [`read_subpictures_before`]
     // gives: a track with nothing after the range's start never says so.
     crate::input::keep_with_pictures(&mut ictx, &[caption.in_index]);
-    let mut up: Vec<(f64, Vec<u8>)> = Vec::new();
+    let mut up: Vec<(f64, f64, Vec<u8>)> = Vec::new();
     for (stream, packet) in ictx.read_packets() {
         if stream.index() != caption.in_index {
             if crate::input::packet_time(&stream, &packet, src.start_time)
@@ -2639,18 +2655,135 @@ fn read_ttml_before(src: &Source, caption: &CaptionCtx, until: f64) -> Result<Ve
             continue;
         }
         let Some(data) = packet.data() else { continue };
-        let Some((begin, end)) = crate::ttml::cue(data) else {
+        // Placed as [`take_ttml`] places it.
+        let shown = crate::ttml::shown_at(&src.points, packet.position() as i64);
+        let Some((begin, end, shift)) = crate::ttml::placed(data, shown, caption.base) else {
             continue;
         };
-        let (begin, end) = (begin + caption.base, end + caption.base);
         if begin >= until {
             break;
         }
         if end > until {
-            up.push((begin, data.to_vec()));
+            up.push((begin, shift, data.to_vec()));
         }
     }
     Ok(up)
+}
+
+/// How far in front of a range to look for an ARIB caption still on screen
+/// when it opens. A broadcaster's line stands for a few seconds; a minute's
+/// look back would cost a minute's read at every range for the rare line
+/// that stands longer than this.
+const CAPTION_LOOKBACK: f64 = 30.0;
+
+/// The ARIB caption statements on screen at `until`, as the packets that
+/// sent them, in the order they were sent.
+///
+/// A statement is sent once, when the line goes up, and stands until the
+/// next one replaces or clears it -- so a range that opens in the middle of
+/// a line has the statement that put it there in front of it, outside every
+/// segment, and [`take_caption`] claims only what is sent inside one. Up to
+/// 0.8.23 the line was left out: up to several seconds of caption at every
+/// range's opening, while the editor's preview (which looks back) showed it.
+/// Read as the preview reads it ([`crate::caption::left_up`]): the last
+/// statement of each language before `until` that writes something and has
+/// not been cleared by then. A bare reset -- what a broadcaster that marks
+/// its junctions sends just before one -- writes nothing, so a cut on a
+/// junction is given nothing here.
+///
+/// A line the statement takes down after its own wait (`TIME`) is written
+/// with what is left of the wait ([`crate::caption::waited`]); one paced
+/// in any other shape is not carried, since written again at the opening
+/// it would run its clock again from the start.
+/// With a statement goes the last management data before it, which is what
+/// tells a receiver the languages; the next one may be seconds into the
+/// range.
+fn read_caption_before(
+    src: &Source,
+    caption: &CaptionCtx,
+    until: f64,
+) -> Result<Vec<ff::Packet>> {
+    let mut ictx = crate::input::demux(&src.input.url)?;
+    // Failing to look back costs the line, not the cut: see
+    // [`read_subpictures_before`].
+    let from = until - CAPTION_LOOKBACK - src.seek_margin;
+    if from > 0.0 && seek_to(&mut ictx, src, until - CAPTION_LOOKBACK).is_err() {
+        return Ok(Vec::new());
+    }
+    crate::input::keep_with_pictures(&mut ictx, &[caption.in_index]);
+    // One reader of the format per language, as a receiver keeps one.
+    let mut layouts: std::collections::HashMap<u8, crate::caption::Layout> =
+        std::collections::HashMap::new();
+    // Per language: the packet whose statement is up, with when it was sent.
+    let mut up: std::collections::BTreeMap<u8, (f64, ff::Packet)> = Default::default();
+    let mut management: Option<(f64, ff::Packet)> = None;
+    for (stream, packet) in ictx.read_packets() {
+        if stream.index() != caption.in_index {
+            if crate::input::packet_time(&stream, &packet, src.start_time)
+                .is_some_and(|t| t >= until + PAST_UNTIL)
+            {
+                break;
+            }
+            continue;
+        }
+        // Timed as [`take_caption`] times it; one with no time (a crawl's)
+        // is not carried there either.
+        let Some(pts) = packet.pts() else { continue };
+        let t = pts as f64 * caption.in_tb - src.start_time;
+        if t >= until {
+            break;
+        }
+        let Some(data) = packet.data() else { continue };
+        let mut said: Vec<(u8, Option<crate::caption::Left>)> = Vec::new();
+        let mut manages = false;
+        crate::caption::data_groups(data, |id, body| {
+            if !crate::caption::is_statement(id) {
+                manages = true;
+                return;
+            }
+            let language = id & 0x0F;
+            let layout = layouts.entry(language).or_default();
+            said.push((language, crate::caption::left_up(layout, body, until - t)));
+        });
+        if manages && said.is_empty() {
+            management = Some((t, packet.clone()));
+        }
+        for (language, left) in said {
+            use crate::caption::Left;
+            let carried = match left {
+                None => continue,
+                Some(Left::Standing) => Some(packet.clone()),
+                // Written again with what is left of its wait, as the
+                // preview shows it for what is left.
+                Some(Left::Waits) => crate::caption::waited(data, until - t).map(|bytes| {
+                    let mut p = ff::Packet::copy(&bytes);
+                    p.set_pts(packet.pts());
+                    p.set_flags(packet.flags());
+                    p
+                }),
+                Some(Left::Nothing | Left::Timed) => None,
+            };
+            match carried {
+                Some(p) => up.insert(language, (t, p)),
+                None => up.remove(&language),
+            };
+        }
+    }
+    let mut carried: Vec<(f64, ff::Packet)> = Vec::new();
+    for (t, packet) in up.into_values() {
+        // One packet can carry the statements of two languages.
+        if !carried.iter().any(|(at, p)| *at == t && p.data() == packet.data()) {
+            carried.push((t, packet));
+        }
+    }
+    if carried.is_empty() {
+        return Ok(Vec::new());
+    }
+    carried.sort_by(|a, b| a.0.total_cmp(&b.0));
+    if let Some(m) = management {
+        carried.insert(0, m);
+    }
+    Ok(carried.into_iter().map(|(_, p)| p).collect())
 }
 
 /// Take one packet of a graphics stream: give it to the plane, and carry the
@@ -5635,6 +5768,20 @@ fn carriage(source: ff::codec::Id, to_ts: bool, bits: u8, want: AudioCodec) -> f
         // else it is the plain big-endian samples.
         AudioCodec::Source => match source {
             ff::codec::Id::PCM_BLURAY | ff::codec::Id::PCM_DVD => pcm(),
+            // Plain PCM at the width asked for, in its own byte order: the
+            // 16 and 24 bit encoders write only their own width, so a .mkv
+            // of 24 bit PCM asked for as 16 was re-encoded, said to be
+            // 16 bit, and came out 24 bit again. At the recording's own
+            // width -- `pcm_bits` calls 32 bit samples 24 -- this is the
+            // codec it came in.
+            ff::codec::Id::PCM_S16LE if !to_ts && bits > 16 => ff::codec::Id::PCM_S24LE,
+            ff::codec::Id::PCM_S16BE if !to_ts && bits > 16 => ff::codec::Id::PCM_S24BE,
+            ff::codec::Id::PCM_S24LE | ff::codec::Id::PCM_S32LE if !to_ts && bits <= 16 => {
+                ff::codec::Id::PCM_S16LE
+            }
+            ff::codec::Id::PCM_S24BE | ff::codec::Id::PCM_S32BE if !to_ts && bits <= 16 => {
+                ff::codec::Id::PCM_S16BE
+            }
             _ => source,
         },
     }
@@ -5954,8 +6101,10 @@ pub(crate) fn plan_audio(
     // Whether the codec on the way out is one the caller named rather than
     // the one that came in. `carriage` can arrive at the same answer either
     // way -- AAC asked of an AAC recording is the recording's own codec --
-    // and where it does there is nothing here to explain or force.
-    let recoded = target != source_id;
+    // and where it does there is nothing here to explain or force. Plain PCM
+    // at another width is the same samples, not another codec: the width
+    // asked for is answered, and said, as a requantisation below.
+    let recoded = carriage(source_id, to_ts, source_bits, opts.audio_codec) != source_id;
     let asked_for = recoded && opts.audio_codec != AudioCodec::Source;
     // Lossless sound is never re-encoded here -- see `carried_whole` in
     // [`crate::audio`]. A whole-track re-encode of one, or a downmix, which
@@ -6314,8 +6463,11 @@ fn declared_as(target: ff::codec::Id) -> Option<crate::si::Declared> {
         })
     };
     match target {
-        // ADTS AAC, which is what everything here frames it as.
+        // ADTS AAC, which is what everything here frames it as -- except a
+        // track written in the framing of a 4K recording's own, LATM, which
+        // the map has to call that (see `graft_tables`).
         ff::codec::Id::AAC => plain(0x0F),
+        ff::codec::Id::AAC_LATM => plain(0x11),
         // 0x81 and a registration descriptor saying AC-3, which is what a
         // receiver looks for.
         ff::codec::Id::AC3 => Some(crate::si::Declared {
@@ -6459,10 +6611,20 @@ fn graft_tables(
             // corrected is the muxer's own: a plain `.ts` muxer calls it
             // private data, and a recording's own map that would have said
             // otherwise is not being written. See `unnamed` in [`cut_into`].
+            //
+            // Declared as the framing the frames really go out in: AAC asked
+            // of a 4K recording's LATM track is re-encoded and framed as LATM
+            // again (`frame_as`), and declared as ADTS (0x0F) it was a track
+            // a player looking for ADTS sync words found nothing in.
             declared: (setup.recoded
                 || (tables == crate::si::Tables::Muxer
                     && setup.target == ff::codec::Id::PCM_BLURAY))
-                .then(|| declared_as(setup.target))
+                .then(|| {
+                    declared_as(match setup.frame_as {
+                        Some(crate::aac::Framing::Latm(_)) => ff::codec::Id::AAC_LATM,
+                        _ => setup.target,
+                    })
+                })
                 .flatten(),
             language: setup.info.language.clone(),
             extra: Vec::new(),
@@ -9316,8 +9478,22 @@ fn cut_into(
         // A 4K recording's subtitles that are already up when the range
         // opens. See [`read_ttml_before`].
         for caption in caption_ctx.iter().filter(|c| c.ttml) {
-            for (begin, data) in read_ttml_before(rsrc, caption, plan.t_in)? {
-                write_ttml(caption, &data, begin, &mut writer)?;
+            for (begin, shift, data) in read_ttml_before(rsrc, caption, plan.t_in)? {
+                write_ttml(caption, &data, begin, shift, &mut writer)?;
+            }
+        }
+        // And a broadcast's caption line already up. See
+        // [`read_caption_before`]. Looked back from where the first segment
+        // begins claiming statements, so that none is carried twice or by
+        // neither.
+        let claims_from = plan.segments.first().map_or(plan.t_in, |s| s.start);
+        for caption in caption_ctx.iter().filter(|c| !c.ttml) {
+            for packet in read_caption_before(rsrc, caption, claims_from)? {
+                writer.push_caption(
+                    caption.track,
+                    packet,
+                    claims_from.min(plan.t_in) + caption.offset,
+                )?;
             }
         }
         // Only the master's, and the reason is in [`Threads::graphics`].

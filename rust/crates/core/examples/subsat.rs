@@ -20,8 +20,24 @@ fn main() -> Result<()> {
         let mut reader = smartcut_core::subs::Reader::open(&src, track.id)?;
         let mut shown = 0;
         let mut t = from;
+        // With SUBSAT_TEXT set, every instant the words on screen change.
+        let mut said: Option<String> = None;
+        let changes = std::env::var_os("SUBSAT_TEXT").is_some();
         while t < to {
-            if let Some(s) = reader.at(t)? {
+            let now = reader.at(t)?;
+            if changes {
+                let words = match now {
+                    Some(smartcut_core::subs::Shown::Text { runs, .. }) => {
+                        Some(runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                    }
+                    _ => None,
+                };
+                if words != said {
+                    println!("  {t:9.2}s  {}", words.as_deref().unwrap_or("-"));
+                    said = words;
+                }
+            }
+            if let Some(s) = now {
                 shown += 1;
                 if let smartcut_core::subs::Shown::Picture { x, y, width, height, png, .. } = s {
                     if shown <= 5 {

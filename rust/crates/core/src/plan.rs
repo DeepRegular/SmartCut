@@ -572,9 +572,20 @@ pub(crate) fn picture_after(src: &crate::Source, t: f64, slack: f64) -> Option<f
     if !(fd.is_finite() && fd > 0.0) || !t.is_finite() {
         return None;
     }
-    let starts = picture_starts(src, t - fd, t + 2.0 * fd)?;
+    // **Two frames, with room for the clock.** A recorder's 1080i of a film
+    // (PAFF) holds a picture for two whole frames every few pictures, and
+    // the picture after one that a crossing ended on the first frame of is
+    // exactly two frames on: at the edge of a reach of two, kept or not by
+    // the last bit of the sum. Missed, the clip resumed on the picture the
+    // crossing had ended on and showed it again (a recorder's film joined to
+    // itself with a half-second dissolve: its picture 13 on output frames 70
+    // and 71). A quarter of a frame more holds a coarse clock's rounding and
+    // still stops short of the next picture of one held longer, which is
+    // left to the caller's arithmetic, as it was.
+    let reach = t + 2.25 * fd;
+    let starts = picture_starts(src, t - fd, reach)?;
     let next = starts.iter().find(|&&p| p > t + slack)?;
-    (*next <= t + 2.0 * fd).then(|| as_a_bound(video, *next))
+    (*next <= reach).then(|| as_a_bound(video, *next))
 }
 
 pub fn plan_range(
@@ -956,7 +967,34 @@ fn at_the_seams(
     let mut out = Vec::new();
     for &(a, b) in ranges {
         let mut at = a;
+        // Whether the range ends in a seam's pictureless clock, and so has
+        // been written up to where its pictures stop.
+        let mut stopped = false;
         for seam in joins {
+            let stops = seam.ends.min(seam.time);
+            // A range that ends in the clock between where a stretch's
+            // pictures stop and its seam -- after `ends`, at or before
+            // `time` -- ends where the pictures do, as the range that runs
+            // on past the seam below does. Left to its OUT it was planned
+            // into clock the recording holds nothing at: one picture more
+            // than the sound cut from the same range (`--verify` said
+            // MISMATCH) and a plan line longer than what was written. Asked
+            // as [`Source::unwritten`] asks it, so that a seam it does not
+            // count as one is not one here either. A range that opens in that
+            // clock as well holds no picture and is no range.
+            if seam.time >= b && stops < b {
+                let first = points
+                    .iter()
+                    .find(|p| p.time >= seam.time - eps)
+                    .map_or(seam.time, |p| p.time);
+                if first - stops > eps {
+                    if stops > at {
+                        out.push((at, stops));
+                    }
+                    stopped = true;
+                    break;
+                }
+            }
             // Every seam inside the range, however near either end of it. A
             // range left whole across a seam a few pictures from its end
             // copied or re-encoded straight over it, and wrote the next
@@ -999,7 +1037,7 @@ fn at_the_seams(
                 .find(|p| p.time >= at - eps)
                 .is_some_and(|p| p.time < b - eps)
         };
-        if at == a || decodes() {
+        if !stopped && (at == a || decodes()) {
             out.push((at, b));
         }
     }
@@ -1523,6 +1561,16 @@ mod tests {
         assert_eq!(
             at_the_seams(&[(0.0, 40.0)], &joins),
             vec![(0.0, 22.0), (25.0, 40.0)]
+        );
+        // A range that ends in that clock ends where the pictures do, as
+        // the sound cut from it does ([`crate::sound`]); one that lies in it
+        // whole holds no picture. On the seam itself is in it.
+        assert_eq!(at_the_seams(&[(0.0, 24.0)], &joins), vec![(0.0, 22.0)]);
+        assert_eq!(at_the_seams(&[(20.0, 25.0)], &joins), vec![(20.0, 22.0)]);
+        assert_eq!(at_the_seams(&[(23.0, 24.0)], &joins), vec![]);
+        assert_eq!(
+            at_the_seams(&[(5.0, 10.0), (21.0, 23.0), (24.0, 30.0)], &joins),
+            vec![(5.0, 10.0), (21.0, 22.0), (25.0, 30.0)]
         );
         // Never past the seam, whatever a mend came back with.
         let joins = [Seam {

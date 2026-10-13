@@ -60,19 +60,39 @@ if not src:
     print("why=the recording carries no captions")
     sys.exit(0)
 
-# What should have come out: every statement inside a kept range, in order.
+# What should have come out: every statement inside a kept range, in order --
+# and, at the head of each range, what was still on screen there: the line sent
+# before the range began, written again at its start (with its wait shortened,
+# so compared by size and not by payload), and the management packet before it.
+# See `read_caption_before` in `cut.rs`.
 groups = [[(t, h, s) for t, h, s in src if a <= t < b] for a, b in ranges]
 want = [row for g in groups for row in g]
 print(f"expected={len(want)}")
-if len(want) != len(cut):
-    print("ok=0")
-    print(f"why=expected {len(want)} statements, got {len(cut)}")
-    sys.exit(0)
 
-bad = [i for i, (w, c) in enumerate(zip(want, cut)) if w[1] != c[1] or w[2] != c[2]]
-if bad:
+LOOK_BACK = 30.0
+at = 0
+carried = 0
+laid = []
+for (a, b), g in zip(ranges, groups):
+    sizes = {s for t, h, s in src if a - LOOK_BACK <= t < a}
+    for extra in range(0, 5):
+        seg = cut[at + extra:at + extra + len(g)]
+        if len(seg) == len(g) and all(w[1] == c[1] and w[2] == c[2] for w, c in zip(g, seg)):
+            head = cut[at:at + extra]
+            first = seg[0][0] if seg else float("inf")
+            if all(c[2] in sizes and c[0] <= first for c in head):
+                break
+    else:
+        print("ok=0")
+        print(f"why=range {a}-{b}: its statements are not in the cut as sent")
+        sys.exit(0)
+    carried += extra
+    laid.append(seg)
+    at += extra + len(g)
+print(f"carried={carried}")
+if at != len(cut):
     print("ok=0")
-    print(f"why={len(bad)} statement(s) came out different, first at {bad[0]}")
+    print(f"why=expected {len(want)} statements (+{carried} carried), got {len(cut)}")
     sys.exit(0)
 
 # One offset per range, and it has to be one number: a spread inside a range
@@ -80,10 +100,7 @@ if bad:
 # the pictures. A microsecond of it is the 90 kHz grid the output keeps time
 # on and nothing else.
 worst = 0.0
-at = 0
-for n, g in enumerate(groups):
-    seg = cut[at:at + len(g)]
-    at += len(g)
+for n, (g, seg) in enumerate(zip(groups, laid)):
     if not g:
         continue
     offs = [c[0] - w[0] for w, c in zip(g, seg)]

@@ -247,7 +247,37 @@ pub fn divide_source(
         Rule::Size(_) => weight(src)?,
         _ => 0.0,
     };
-    divide(keeps, &points, rule, on_points, src.video.frame_duration(), head, rate)
+    // Less the clock a recorder's seam holds no pictures at, which no part
+    // writes (see [`crate::Source::unwritten`]), exactly as the list counts a
+    // row's length (`keepsOf` in the window). Measured with it, the parts of
+    // a recorder's title came out unequal by up to the seconds of such a
+    // stretch, the lengths the box showed were not the ones the rows then
+    // showed, and a length shorter than one put a whole part where there is
+    // no picture to cut. Nothing changes for a recording without seams.
+    let keeps = without(keeps, &src.unwritten());
+    divide(&keeps, &points, rule, on_points, src.video.frame_duration(), head, rate)
+}
+
+/// `keeps` less `holes` (both in order): each keep split around every hole
+/// inside it, as `keepsOf` in the window splits it.
+fn without(keeps: &[(f64, f64)], holes: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(keeps.len());
+    for &(a, b) in keeps {
+        let mut pos = a;
+        for &(ha, hb) in holes {
+            if hb <= pos || ha >= b {
+                continue;
+            }
+            if ha > pos + 1e-6 {
+                out.push((pos, ha));
+            }
+            pos = pos.max(hb);
+        }
+        if pos < b - 1e-6 {
+            out.push((pos, b));
+        }
+    }
+    out
 }
 
 /// What a part weighs, in bytes a second of it.
@@ -271,14 +301,21 @@ pub fn weight(src: &crate::Source) -> Result<f64> {
             _ => f64::from(a.sample_rate) * f64::from(a.channels) * f64::from(a.bits),
         })
         .sum();
+    // The pictures' rate and the file's are both an average over the whole
+    // clock, and the seconds a part is measured in are counted around the
+    // stretches a recorder's seam holds no pictures at (see
+    // [`divide_source`]): scaled as `--fit` scales them, or every part came
+    // out heavier than asked by the share of the clock those take. 1 for a
+    // recording without seams. See [`crate::fit::written_scale`].
+    let scale = crate::fit::written_scale(src);
     if let Some(pictures) = src.video.bit_rate.filter(|r| *r > 0.0) {
-        return Ok((pictures + sound) * 1.05 / 8.0);
+        return Ok((pictures * scale + sound) * 1.05 / 8.0);
     }
     let bytes = src.input.bytes()?;
     if src.duration <= 0.0 || bytes == 0 {
         bail!("how much the recording weighs is not known");
     }
-    Ok(bytes as f64 / src.duration)
+    Ok(bytes as f64 / src.duration * scale)
 }
 
 #[cfg(test)]
@@ -473,6 +510,35 @@ mod tests {
                 assert!(d.lengths.iter().all(|&l| l <= most), "{why}");
             }
         }
+    }
+
+    /// The clock a recorder's seam holds no pictures at is taken out of the
+    /// keeps before they are divided, as the list takes it out of a row's
+    /// length: the parts are equal in what they write, none of them is put
+    /// where there is no picture, and a keep without holes is as it was.
+    #[test]
+    fn unwritten_clock_is_no_part() {
+        // Holes inside a keep, across a keep's end and past every keep, and
+        // one covering a whole keep.
+        let keeps = [(0.0, 100.0), (110.0, 120.0), (130.0, 200.0)];
+        let holes = [(40.0, 68.0), (95.0, 112.0), (300.0, 310.0)];
+        assert_eq!(
+            without(&keeps, &holes),
+            vec![(0.0, 40.0), (68.0, 95.0), (112.0, 120.0), (130.0, 200.0)]
+        );
+        assert_eq!(without(&keeps, &[]), keeps.to_vec());
+        assert!(without(&[(10.0, 20.0)], &[(5.0, 25.0)]).is_empty());
+        // An hour with 28 s of seam clock in its first half, divided in two:
+        // each part writes half of what is left, and the hole is in neither.
+        let line = without(&[(0.0, 3600.0)], &[(1000.0, 1028.0)]);
+        let d = divide(&line, &[], Rule::Parts(2), false, FD, 0.0, 0.0).unwrap();
+        assert!((d.lengths[0] - d.lengths[1]).abs() < FD, "{:?}", d.lengths);
+        assert!((d.lengths.iter().sum::<f64>() - 3572.0).abs() < 1e-6, "{:?}", d.lengths);
+        // Parts shorter than the hole: none of them begins inside it.
+        let line = without(&[(0.0, 100.0)], &[(30.0, 58.0)]);
+        let d = divide(&line, &points(1.0, 100.0), Rule::Every(10.0), true, FD, 0.0, 0.0).unwrap();
+        assert!(d.at.iter().all(|&t| !(t > 30.0 && t < 58.0)), "{:?}", d.at);
+        assert!(d.at.contains(&58.0), "{:?}", d.at);
     }
 
     /// Off the points, a size is still the most a part comes to, give or

@@ -474,11 +474,27 @@ pub fn check_placed(
         let end = if p.src.duration > 0.0 { b.min(p.src.duration) } else { b };
         (end - a.max(0.0)).max(0.0)
     };
-    let kept: f64 = pieces
+    //
+    // And as the cut writes them: less the clock a recorder's seam holds no
+    // pictures at ([`Source::unwritten`]), which the cut with pictures and
+    // the file of sound alone both leave out. Held to the ranges as asked, a
+    // title kept across a seam whose clock runs on for 18.9 s with nothing in
+    // it was held to 18.9 s more sound than any cut of it has -- and the
+    // sound the recording lacks in that stretch was allowed for as well,
+    // which no cut writes either. Everything the sound is measured against
+    // below is taken from these.
+    let written: Vec<Vec<(f64, f64)>> = pieces.iter().map(written_ranges).collect();
+    let heard: Vec<Piece> = pieces
+        .iter()
+        .zip(&written)
+        .map(|(p, w)| Piece { src: p.src, ranges: w, plans: p.plans })
+        .collect();
+    let heard = &heard[..];
+    let kept: f64 = heard
         .iter()
         .flat_map(|p| p.ranges.iter().map(move |r| within(p, r)))
         .sum::<f64>()
-        - crossed(pieces, after);
+        - crossed(heard, after);
     // How much of that the recordings' own sound does not cover. See
     // [`Report::sound_short`].
     let mut sound_short = 0.0;
@@ -489,7 +505,7 @@ pub fn check_placed(
     // And what each track lacks where it starts or stops inside a range, the
     // same way. See [`track_ends`].
     let mut own_short: Vec<Vec<f64>> = Vec::new();
-    for p in pieces {
+    for p in heard {
         if stop.load(Ordering::Relaxed) {
             break;
         }
@@ -836,12 +852,12 @@ pub fn check_placed(
                 }
                 // A recording with no sound at all is in `sound_short`
                 // already.
-                let gap: f64 = pieces
+                let gap: f64 = heard
                     .iter()
                     .filter(|p| !p.src.audios.is_empty() && p.src.audios.len() <= at)
                     .flat_map(|p| p.ranges.iter().map(move |r| within(p, r)))
                     .sum();
-                let seams: f64 = pieces
+                let seams: f64 = heard
                     .iter()
                     .zip(&seam_short)
                     .map(|(p, holes)| {
@@ -857,7 +873,7 @@ pub fn check_placed(
                 // the recording is a long stretch, and one left out of the
                 // cut would have had it allowed to every track kept. Only
                 // what all of them lack, then.
-                let own: f64 = pieces
+                let own: f64 = heard
                     .iter()
                     .zip(&own_short)
                     .map(|(p, lacks)| {
@@ -890,6 +906,20 @@ pub fn check_placed(
         t(1.0);
     }
     Ok(report)
+}
+
+/// A piece's ranges as the cut writes them: less [`Source::unwritten`], the
+/// clock at a recorder's seam from where the pictures before it stop to the
+/// first entry point after it. The piece after one is kept only where it is
+/// more than half a picture long, as the planner keeps it only where an entry
+/// point lies inside it. The ranges as they are for every recording without
+/// seams.
+///
+/// Asked of [`crate::sound`] itself rather than worked out again here: the
+/// file of sound alone is measured against the very ranges it was written
+/// from, so the two cannot come to differ.
+fn written_ranges(p: &Piece) -> Vec<(f64, f64)> {
+    crate::sound::written(p.src, p.ranges)
 }
 
 /// How long the crossings that overlap two pieces' sound take out of it.

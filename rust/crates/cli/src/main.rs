@@ -3281,7 +3281,6 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// A disc's stream taken for this run, given back unless the run keeps it.
 /// Refuse a recording whose pictures or kept sound a disc of recordings has
 /// no coding type for, as each will be written (see
 /// `smartcut_core::carry::on_a_disc_as`). A transport stream takes Opus, so
@@ -3316,6 +3315,7 @@ fn disc_can_hold(
     Ok(())
 }
 
+/// A disc's stream taken for this run, given back unless the run keeps it.
 struct Slot(Option<std::path::PathBuf>);
 
 impl Slot {
