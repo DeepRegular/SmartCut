@@ -76,6 +76,14 @@ let loading = Promise.resolve();
 /// Whether anything in this window has been changed since the list sent it.
 let changedHere = false;
 
+/// What this window holds for each join it has been shown while something
+/// in it was changed, by the join's key (see `cross-open`), kept after the
+/// join leaves the list. A row taken out of the list and put back
+/// (削除を元に戻す), or moved away and back, is the same two rows again --
+/// and the crossing set here for them and not yet OK'd went with the first
+/// telling, so the join came back with the list's.
+const saidHere = new Map();
+
 const wiring = [];
 const hear = (name, fn) => wiring.push(listen(name, fn));
 
@@ -841,9 +849,11 @@ function pairPicker() {
     ev.preventDefault();
     ev.stopPropagation();
   });
+
+  return close;
 }
 
-pairPicker();
+const closePicker = pairPicker();
 // And the three `<select>`s beside it -- 効果 and the two easing pickers.
 // The same lists the rest of the program draws for itself: see `wireDrops`.
 wireDrops();
@@ -1087,20 +1097,16 @@ if (listen) {
     // joins", it threw away everything set in here and not yet OK'd on the
     // joins that were all still there.
     const key = (j) => `${j.id}\n${j.afterId}\n${j.beforePath}\n${j.afterPath}`;
-    const had = new Map(joins.map((j) => [key(j), j]));
     const was = join();
-    if (changedHere) {
-      // Only the transitions are this window's. Where each join falls is the
-      // list's, and a cut moved there since put the preview on the old
-      // bounds; the id is the list's too, which `cross-done` answers by.
-      joins = theirs.map((j) => {
-        const mine = had.get(key(j));
-        return mine ? { ...j, after: mine.after } : j;
-      });
-      changedHere = theirs.some((j) => had.has(key(j)));
-    } else {
-      joins = theirs;
-    }
+    // A list that has moved under an open menu of the joins: its rows are
+    // the joins as they were, and a click on one picked by its place.
+    closePicker();
+    if (changedHere) for (const j of joins) saidHere.set(key(j), j.after);
+    // Only the transitions are this window's. Where each join falls is the
+    // list's, and a cut moved there since put the preview on the old bounds;
+    // the id is the list's too, which `cross-done` answers by.
+    joins = theirs.map((j) => (saidHere.has(key(j)) ? { ...j, after: saidHere.get(key(j)) } : j));
+    changedHere = theirs.some((j) => saidHere.has(key(j)));
     // Said again by the list on its own, rather than by the button: the join
     // in hand stays in hand where it is still one of them.
     const stay = said.follow === true && was ? joins.findIndex((j) => key(j) === key(was)) : -1;
@@ -1122,7 +1128,14 @@ if (listen) {
     // What is playing is the join that was up. Carried on over another, it
     // drew the old crossing's frames while the head moved along the new one.
     stopPlay(false);
-    if (stay < 0) at = clamp(Number(said.pick) || 0, 0, Math.max(0, joins.length - 1));
+    // Where the join in hand has gone from the list, the one now in its
+    // place rather than the one the window was opened on: `pick` is the
+    // button's, and said again by the list on its own it sent the window
+    // back to the first join after somebody had stepped to the tenth.
+    if (stay < 0) {
+      const to = said.follow === true ? at : Number(said.pick) || 0;
+      at = clamp(to, 0, Math.max(0, joins.length - 1));
+    }
     // Nothing to build for the picker: its list is drawn on the way down, so
     // it is always the joins as they are now and in the language the window
     // is in now.

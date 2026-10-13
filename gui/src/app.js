@@ -551,8 +551,18 @@ async function edit(clip) {
     editedBefore = clip.edited;
     owedBack = null;
   };
+  const left = again ? null : editing;
   editing = clip;
   if (!again) arrived();
+  // The row the window is leaving, where its last report came while it was
+  // still this window's row and before that visit's walk had landed
+  // (`playsDue`): nothing else is going to take the playlist's cuts for it.
+  // `editor-state` takes them only for a row the window has already left,
+  // and the walk landing only where it has not landed yet; a row read
+  // through before the visit was written with everything the playlist
+  // leaves out. A report still on its way is the newer word and takes
+  // them again on top of it (`editor-state`).
+  if (left && clips.includes(left)) takePlays(left);
   // A lane in flight on this very clip is left alone. It used to be stopped
   // here -- the editor is about to make the same pass, and reading one file
   // twice at once is the thing most worth avoiding -- but that traded a real
@@ -3173,6 +3183,11 @@ function duplicate(sources) {
     // you have to go looking in.
     clips.splice(clips.indexOf(src) + 1, 0, copy);
     made.push(copy);
+    // A copy of a disc row whose playlist's cuts are still owed, made of a
+    // row the editor is on (which takes them for that row, not for this
+    // one) and already read through: nothing else is coming to take them
+    // for the copy.
+    takePlays(copy);
   }
   if (!made.length) return;
   // Selected, and the sources not: the copy is what you are about to work on.
@@ -3770,6 +3785,10 @@ function restoreRemoved() {
     if (relang) relocaliseRow(clip);
     clip.selected = true;
     clips.splice(Math.min(at, clips.length), 0, clip);
+    // A disc row taken out while the editor was on it, before that visit's
+    // walk had cut what the playlist leaves out: the window went with it,
+    // and nothing else comes back to cut them.
+    takePlays(clip);
   }
   // Emptying the list let go of a 解析を中止, which is not something the
   // rows coming back asked for.
@@ -4476,6 +4495,36 @@ function keptRanges(clip) {
 function unwrittenOf(clip) {
   const u = clip.info && Array.isArray(clip.info.unwritten) ? clip.info.unwritten : [];
   return u.filter((r) => Array.isArray(r) && Number.isFinite(r[0]) && Number.isFinite(r[1]) && r[1] > r[0]);
+}
+
+/// The pieces the engine plans a clip's kept ranges as: `keepsOf`, cut again
+/// at every seam a recorder left in the clip (`seams`, the joined clock's
+/// seam times), as `at_the_seams` cuts them whether or not the seam leaves
+/// any clock unwritten. Most seams leave none, so `keepsOf` does not split
+/// there -- and a crossing is held to half the piece beside it, not half the
+/// range (`takes_at`): a 10 s dissolve after a range that ran 5.6 s past a
+/// seam took 2.8 s out of the file and 10 s here, and every chapter after it
+/// was 7.2 s early. A piece behind a seam shorter than half a picture is no
+/// piece, as the planner drops it. Only what a crossing is held to is asked
+/// of this; lengths are `keepsOf`'s.
+function crossingPieces(clip) {
+  const s = clip.info && Array.isArray(clip.info.seams) ? clip.info.seams : [];
+  const seams = s.filter(Number.isFinite).sort((a, b) => a - b);
+  const keeps = keepsOf(clip);
+  if (!seams.length) return keeps;
+  const facts = factsOf(clip);
+  const half = 0.5 / (facts && facts.fps > 0 ? facts.fps : 30);
+  const out = [];
+  for (const k of keeps) {
+    let a = k.a;
+    for (const t of seams) {
+      if (t <= a + 1e-3 || t >= k.b) continue;
+      out.push({ a, b: t });
+      a = t;
+    }
+    if (a === k.a || k.b - a > half) out.push({ a, b: k.b });
+  }
+  return out;
 }
 
 const rangesOf = (clip) => keptRanges(clip).map((k) => [k.a, k.b]);
@@ -6437,6 +6486,26 @@ function playlistCutBefore(clip, a) {
 const fileChapters = (out) =>
   prefs.get("chapters") !== false && /\.(mp4|m4v|mov|mkv|webm)$/i.test(out);
 
+/// How much of the file the crossing after clip `c` into `next` takes out:
+/// none for a plain cut or a fade, and for a kind that has both clips up at
+/// once its length, held to half the last piece the engine plans of `c` and
+/// the first of `next` (`crossingPieces`): its plans are cut at the seams
+/// (`plan_on`, `at_the_seams`), and `takes_at` holds a crossing to half the
+/// last plan before it and the first after it. Not the whole kept range --
+/// held to that, the crossing came out longer here than in the file, and
+/// every chapter of the clips after it early.
+function crossingOverlap(c, next) {
+  if (!next || !c.after || !OVERLAPPING.includes(c.after.kind)) return 0;
+  const half = (k) => (k ? Math.max(0, (k.b - k.a) / 2) : 0);
+  const mine = crossingPieces(c);
+  const theirs = crossingPieces(next);
+  return Math.min(
+    Math.min(30, Math.max(0, Number(c.after.seconds) || 0)),
+    half(mine[mine.length - 1]),
+    half(theirs[0])
+  );
+}
+
 /// The chapter points of several clips written into one file.
 ///
 /// Each clip's own, moved along by everything written before it, and one
@@ -6453,17 +6522,8 @@ function joinedChapters(list) {
     const length = keeps.reduce((s, k) => s + (k.b - k.a), 0);
     let ends = at + length;
     const next = list[n + 1];
-    let overlap = 0;
-    if (next && c.after && OVERLAPPING.includes(c.after.kind)) {
-      const half = (k) => (k ? Math.max(0, (k.b - k.a) / 2) : 0);
-      const theirs = keepsOf(next);
-      overlap = Math.min(
-        Math.min(30, Math.max(0, Number(c.after.seconds) || 0)),
-        half(keeps[keeps.length - 1]),
-        half(theirs[0])
-      );
-      ends -= overlap;
-    }
+    const overlap = crossingOverlap(c, next);
+    ends -= overlap;
     for (const p of chaptersFor(c)) {
       const t = at + p;
       if (!next || t < ends - 0.5) out.push(t);
@@ -7401,7 +7461,8 @@ function joinHeard(list) {
 /// The bounds are what is *kept* at the seam: the last surviving range of
 /// one clip and the first of the next. A recording is an hour long and what
 /// is being joined may be four minutes of it, so the cuts are what say where
-/// the join really falls. See `keepsOf`.
+/// the join really falls. See `keepsOf`, and `crossingPieces` for the seams
+/// of a recorder's title, which cut a range into pieces as the planner does.
 function joinsForWindow() {
   const list = ready();
   const heard = joinHeard(list);
@@ -7409,8 +7470,13 @@ function joinsForWindow() {
   for (let i = 0; i + 1 < list.length; i++) {
     const before = list[i];
     const after = list[i + 1];
-    const bk = keepsOf(before);
-    const ak = keepsOf(after);
+    // The pieces the engine plans either side of the join, cut at a
+    // recorder's seams as well (`crossingPieces`): the window holds the
+    // crossing to half of them as the cut does (`Seam::takes`), and bounded
+    // by the whole kept range it previewed a crossing longer than the one
+    // written -- 10 s of dissolve where the file has 2.8 s.
+    const bk = crossingPieces(before);
+    const ak = crossingPieces(after);
     if (!bk.length || !ak.length) continue;
     const last = bk[bk.length - 1];
     const first = ak[0];
@@ -8222,13 +8288,12 @@ function joinOffset(clip) {
   const list = ready();
   if (!joining() || list.length < 2) return 0;
   let at = 0;
-  for (const row of list) {
+  for (let i = 0; i < list.length; i++) {
+    const row = list[i];
     if (row === clip) return at;
-    at += keepsOf(row).reduce((n, k) => n + (k.b - k.a), 0);
-    const x = row.after;
-    if (x && x.kind && x.kind !== "none" && !x.kind.startsWith("fade")) {
-      at -= Math.max(0, Number(x.seconds) || 0);
-    }
+    // What a crossing takes out, as the chapters count it: held to the
+    // pieces beside it, as the engine holds it, not the length asked for.
+    at += keepsOf(row).reduce((n, k) => n + (k.b - k.a), 0) - crossingOverlap(row, list[i + 1]);
   }
   return 0;
 }
@@ -9955,7 +10020,50 @@ function autoProjectStem() {
 /// is not something that can be *lost*: a detection is cached beside the
 /// recording, and opening the project again works the flag out from it.
 function shapeOf() {
-  return JSON.stringify({
+  return JSON.stringify(shapeBody(), shapeKeys);
+}
+
+/// Each object's keys in one order, whatever order it was built in. The same
+/// edit arrives with its keys in the order the editor builds it, in the
+/// order the event's way through the backend leaves them, or in the order
+/// the file had them -- and compared as a string, a row of a project opened
+/// and left with OK unchanged read as changed. Arrays keep their order.
+/// Nothing is left out here; what the edit leaves out is `leanEdit`'s.
+const shapeKeys = (_, v) => {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return v;
+  // No prototype, so that a key a file names `__proto__` is a key.
+  const o = Object.create(null);
+  for (const k of Object.keys(v).sort()) o[k] = v[k];
+  return o;
+};
+
+/// An edit less the keys in it that say nothing -- null, false, "", [], or
+/// an object of nothing but those -- which read as keys that are not there.
+/// Every key added to the edit since a project was written arrives from the
+/// editor with such a value (`poster: null`, `detectedWith: {cm: null, ...}`,
+/// `flatRuns: []` ...) and is absent from the file, so a row of a project
+/// from an older version, opened and left with OK, read as changed. A key
+/// that comes to say something, or stops saying it, is still a change.
+/// Inside an array nothing is left out: a place there is a place.
+///
+/// Of the edit only. Beside it, nothing and empty are two answers: a
+/// description, channel or date emptied on 出力設定 is "write nothing
+/// there" where null is "what the recording says" (see `captureProject`),
+/// and read as the same, emptying one put no `*` up and closing the window
+/// lost it without asking.
+function leanEdit(v) {
+  if (Array.isArray(v)) return v.map(leanEdit);
+  if (!v || typeof v !== "object") return v;
+  const o = Object.create(null);
+  for (const k of Object.keys(v)) if (!saysNothing(v[k])) o[k] = leanEdit(v[k]);
+  return o;
+}
+const saysNothing = (v) =>
+  v === undefined || v === null || v === false || v === "" ||
+  (Array.isArray(v) ? !v.length : typeof v === "object" && Object.values(v).every(saysNothing));
+
+function shapeBody() {
+  return ({
     // The same question the file answers: an output nobody has settled is
     // not written, so it is not something the file can be behind on either.
     // Without this, walking onto the output settings screen -- which fills
@@ -9983,11 +10091,17 @@ function shapeOf() {
       // With what a later version wrote in it put back as `captureProject`
       // puts it back: the editor's edit has none of it, and a row from such
       // a file opened and left with OK read as changed.
-      edit: c.edit && {
+      edit: c.edit && leanEdit({
         ...(c.asSaved && c.asSaved.edit),
         ...c.edit,
         touched: undefined, playhead: undefined, selA: undefined, selB: undefined, selGone: undefined,
-      },
+        // And the two the editor always sends, empty and false on every
+        // recording that is not a disc title: a file written before they
+        // were kept has neither, and a row from it opened and left with OK
+        // read as changed. Compared where they say something.
+        unplayed: c.edit.unplayed && c.edit.unplayed.length ? c.edit.unplayed : undefined,
+        playsDue: c.edit.playsDue || undefined,
+      }),
       edited: c.edited,
       audioChannels: c.audioChannels,
       after: c.after,

@@ -597,6 +597,15 @@ function joinTimes() {
   return list.sort((a, b) => a - b);
 }
 
+/// Whether the cut that closes up at the join `t` is wholly one the disc's
+/// playlist made (`unplayedCuts`). The list's own rule (`playlistCutBefore`
+/// in app.js), on the same cuts.
+function playsJoin(t) {
+  if (!unplayedCuts.length) return false;
+  const cut = cuts.find((c) => Math.abs(c.b - t) < 1e-6);
+  return !!cut && cutsBeyond([cut], unplayedCuts).every((r) => r.b - r.a < 1e-3);
+}
+
 /// `back` is the state being put back, when this is a step through the
 /// history rather than an edit. It says where to leave the playhead and the
 /// selection, and it has already said which mark is picked out.
@@ -624,7 +633,12 @@ function afterCutsChanged(back = null) {
       pickedKeys = [];
     }
   }
-  const all = keyframes.concat(joins).sort((a, b) => a - b);
+  // Not where the cut before the join is one the disc's playlist made and
+  // nobody else: those make no chapter (`playlistCutBefore` in app.js), and a
+  // mark put down there by the next cut somebody made anywhere else was one
+  // all the same -- every stretch the playlist leaves out came out of the
+  // file with a chapter at its end.
+  const all = keyframes.concat(joins.filter((t) => !playsJoin(t))).sort((a, b) => a - b);
   keyframes = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
   paintHistory();
   playhead = outToSrc(clamp(back ? srcToOutSeam(back.playhead) : before, 0, outDur));
@@ -5759,6 +5773,13 @@ async function saveMarks(kind, ask) {
     }
   }
   if (gen !== openGen) return;
+  // And asked again: the walk can land while the question above is up, and
+  // where it put the first picture somewhere else the marks are owed a read
+  // on that head before they can be written (`recountEarly`).
+  if (marksDue) {
+    el("status").textContent = tr("marks.notRead");
+    return;
+  }
   // The backend refuses the recording it has open, and until the walk lands
   // that is the recording before this one, or nothing: a name typed over
   // this one's in that wait was written over it. The name as it stands is
@@ -6308,7 +6329,12 @@ async function readTrimFile(path) {
   // An empty list is a Trim line that keeps the whole recording. Nothing to
   // do, and still an answer: the file was there and it has been read.
   // On a part of a divided row, the rest of the recording stays cut away.
-  if (out.length) applyCuts(partCuts.length ? normalise(onBounds(out, partCuts).concat(partCuts)) : out);
+  // And on the ends of the playlist's cuts whatever the visit (`unplayedCuts`):
+  // a line written with them in it and read back by hand on a later visit,
+  // where `partCuts` is empty, came back up to half a frame off them too.
+  const own = partCuts.concat(unplayedCuts);
+  const read = own.length ? onBounds(out, own) : out;
+  if (out.length) applyCuts(partCuts.length ? normalise(read.concat(partCuts)) : read);
   el("status").textContent = tr("trim.read", { n: out.length, file: leaf(path) });
   return true;
 }
@@ -6827,7 +6853,15 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // A recording whose opening held no picture to find is the case the head
     // is unknown for. Its marks would land the second or so early that the
     // clock's own zero puts them, so that one waits for the walk after all.
-    const early = first && src.points.length === 0 && src.head !== null;
+    //
+    // And so does a disc title whose playlist's cuts this visit still owes
+    // (`playsDue`): they go down after the walk (`applyPlays`), and read
+    // before them a Trim line's ends and the marks just after each of those
+    // cuts were not put onto the cuts' own ends, as they are when the files
+    // are read on top of them (`partCuts` in `readTrimFile`, `came` in
+    // `readKeyframeFile`) -- a mark half a frame inside one was lost, and a
+    // Trim end half a frame past one kept a picture fewer.
+    const early = first && !playsDue && src.points.length === 0 && src.head !== null;
     let marks = false;
     // What the timeline held before the files were read, and the head they
     // were counted from, for the one case the walk answers differently: see
@@ -7810,14 +7844,42 @@ function applyPlays(plays) {
     : unplayedOf(plays, src.start_time, headTime(), src.duration);
   const beyond = cutsBeyond(u, cuts);
   if (!beyond.length) return;
+  // IN and OUT are places on the output, and these cuts move the output
+  // under them: set during the walk, they stood the length of every cut
+  // before them further on once it landed, over other pictures, and the Del
+  // that followed took those. Kept on their pictures instead -- and so are
+  // the steps of the history made in that wait, which hold the cuts as they
+  // were then: 取消 of a cut made during the walk put back a timeline with
+  // none of the playlist's cuts in it, and they went out of the file
+  // without a word.
+  const ends = (s) => ({ a: outToSrc(s.selA), b: s.selB >= outDur - 1e-9 ? null : outToSrc(s.selB) });
+  const onto = (e) => {
+    const a = clamp(srcToOutSeam(e.a), 0, outDur);
+    return { a, b: e.b === null ? outDur : clamp(srcToOutSeam(e.b), a, outDur) };
+  };
+  const live = ends({ selA, selB });
+  const steps = past.concat(undone).map((step) => {
+    const e = onCuts(step.cuts, () => ends(step));
+    step.cuts = normalise(step.cuts.concat(u));
+    return { step, e };
+  });
   cuts = normalise(cuts.concat(u));
   partCuts = normalise(partCuts.concat(u));
   playsCut = normalise(playsCut.concat(beyond));
   unplayedCuts = normalise(unplayedCuts.concat(beyond));
   rebuildTimeline();
+  for (const { step, e } of steps) {
+    const s = onCuts(step.cuts, () => onto(e));
+    step.selA = s.a;
+    step.selB = s.b;
+  }
   if (selGone) {
     selA = 0;
     selB = outDur;
+  } else {
+    const s = onto(live);
+    selA = s.a;
+    selB = s.b;
   }
   playhead = outToSrc(clamp(srcToOutSeam(playhead), 0, lastStop()));
   renderKeyframes();
@@ -7838,8 +7900,24 @@ function undoablePlays() {
   playsCut = [];
   if (JSON.stringify(back.cuts) === JSON.stringify(base.cuts)) return;
   past.unshift(back);
-  if (past.length > HISTORY_DEPTH) past.pop();
+  // The oldest of the rest makes room, as in `remember`: not the newest,
+  // which is the step 取消 is about to be pressed for.
+  if (past.length > HISTORY_DEPTH) past.splice(1, 1);
   paintHistory();
+}
+
+/// What `fn` answers on the timeline `list` would cut, the window's own put
+/// back afterwards.
+function onCuts(list, fn) {
+  const kept = cuts;
+  cuts = list;
+  rebuildTimeline();
+  try {
+    return fn();
+  } finally {
+    cuts = kept;
+    rebuildTimeline();
+  }
 }
 
 // --- サムネイル ------------------------------------------------------------

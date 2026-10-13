@@ -438,6 +438,11 @@ struct ClipInfo {
     /// See [`SourceInfo::unwritten`]: what a row's length and chapters
     /// leave out as the cut does.
     unwritten: Vec<(f64, f64)>,
+    /// Every recorder seam's time, those with no unwritten clock too: the
+    /// planner splits a range at each of them, and a crossing is held to
+    /// half the piece next to it, so the list's joined chapters split there
+    /// as well (`crossingPieces` in `app.js`).
+    seams: Vec<f64>,
     /// See [`SourceInfo::unplayed`]: what the list cuts a disc title by.
     unplayed: Vec<(f64, f64)>,
     /// The pictures, where this read produced them. Present only on the
@@ -3248,6 +3253,7 @@ fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInf
         start_time: src.start_time,
         chapters: src.chapters.clone(),
         unwritten: src.unwritten(),
+        seams: src.joins.iter().map(|s| s.time).collect(),
         unplayed: Vec::new(),
         pictures: None,
         cached,
