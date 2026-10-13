@@ -127,7 +127,10 @@ other row, and gets `_1`, `_2` the way duplicates do.
 | **Every so many bytes** | In MiB or GiB. The last part is whatever is left. A part's size is reckoned from the pictures as the index counted them and the sound, with 5% for the container, so it comes out at or a little under the size asked for |
 
 - **What is divided is what the cuts leave.** A clip with its commercials cut is
-  divided by its programme, not by the file.
+  divided by its programme, not by the file. On a recorder's title, the time
+  at a seam that no picture is written for is left out as well (see
+  [Discs](gui.md#discs-blu-ray-and-dvd)), so the parts are equal in what they
+  write and none begins where there is nothing to cut.
 - **Divide on lossless points** (on by default) moves each division to the
   nearest place a copy can start: within half a part either way, and for a size
   always before it. Nothing is re-encoded there but the one or two leading

@@ -347,7 +347,9 @@ re-encoded.
 **Broadcast extras (when writing a `.ts`):** captions are carried across byte
 for byte, and so is the **crawl** — the line a station writes across whatever is
 on air, for an earthquake or a vote count — which travels on a stream of its own
-and stays on one. A **4K** broadcast writes its subtitles as XML rather than as
+and stays on one. A caption line already on screen where a range begins is
+written again at its start, with only the time it has left to stay up changed.
+A **4K** broadcast writes its subtitles as XML rather than as
 ARIB characters; those are carried too, with the times moved *inside* each
 document, since that is where a 4K recorder puts them. Programme information, the
 station name and the broadcast clock are put back afterwards, and every stream

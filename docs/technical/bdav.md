@@ -790,6 +790,11 @@ of recordings has — the files on one are `00001.m2ts` and `info.bdav` — but
 `BDAV` is a folder anybody can put a file in. Anything else is left out of
 the image, and now said so, with up to four of the names printed the way the
 folder spells them. A dot-file is left out silently, being nobody's recording.
+Files left out for another reason are named in a note of their own: a `.ats`
+or a `.part` another run has not finished writing, a link to a folder, or
+something that is not a file at all. Their names would do on a disc, and told
+it was their names, somebody with a stamp pass's leftover in the folder went
+looking for a name to change.
 **A folder that held such a file is not taken away** after the image is made
 (`--iso-only`, or **Remove the folder once the image is written** in the output settings): the file
 would otherwise be in neither.

@@ -625,6 +625,21 @@ Otherwise walking onto the output settings screen — which fills a folder name 
 itself — would put a `*` in the title over a change no save would record and no save
 could clear.
 
+Nor does the shape count the order keys were built in (`shapeKeys`), or, in the edit,
+what says nothing (`leanEdit`). Every key added to the edit since a project was written
+arrives from the editor holding nothing — `poster: null`, `detectedWith: {cm: null, ...}`,
+`flatRuns: []` — and is absent from the file, and the same edit arrives with its keys in
+the order the editor built it, the backend passed it on, or the file had it. Compared as
+written, a row of a project from an older version, opened and left with OK and nothing
+changed, put a `*` up. So each object's keys are sorted, and in the edit a key whose value
+is null, false, empty, or an object of nothing but those is left out. Arrays keep their
+order and every element.
+
+Only in the edit. Outside it, empty and absent are two answers: a description, channel or
+date emptied on the output settings screen means "write nothing there", where absent means
+"what the recording says". Read as the same, emptying one put no `*` up, and closing the
+window lost it without asking.
+
 A flag would have to be lowered again by everything that puts the work back where it was:
 cancelling out of the editor, a clip added and then removed. The one place that forgets is
 a program insisting there is something to lose when there is not, which is the state in

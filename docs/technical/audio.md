@@ -412,6 +412,12 @@ channel arrangement described inside the frame, is declined, and those tracks ar
 as they were before. `aac::Framing` is which of the two a track uses; everything above
 this line works the same either way.
 
+**AAC asked for by name is declared as the framing it goes out in.** Asked of one of
+these tracks (`--audio-codec aac`, or AAC in the output settings) into a `.ts`, the track
+is re-encoded and framed as LATM again, and up to 0.8.23 the map was rewritten to say
+ADTS (`0x0F`) over it: a player looking for ADTS sync words found nothing in it. The map
+says `0x11` now, in a `.ts`, a `.m2ts` and a disc's clip index alike.
+
 Measured on a 4K recorder's disc: a two-range cut re-encodes four frames per track at
 the seams, the whole track decodes with no errors, and the largest sample-to-sample step
 across the seam is the same size as the ones either side of it.
@@ -693,7 +699,10 @@ declined with a message rather than quietly ignored.
 Where it does mean something, it means a great deal. In an MP4 it picks the codec
 outright — `pcm_s16be` or `pcm_s24be`, since there is no single box for PCM of any
 width. In a transport stream it picks the sample format the Blu-ray LPCM encoder is
-opened with: 16-bit, or 32-bit carrying 24. And it decides the file's size on its own:
+opened with: 16-bit, or 32-bit carrying 24. In an MKV or a MOV, a recording's own plain
+PCM is written at the width asked for, in its own byte order; up to 0.8.23 it was
+re-encoded, said to be at that width, and came out at its own again, because each of
+those encoders writes one width only. And it decides the file's size on its own:
 channels × width × rate, with nothing else in it.
 
 It also decides the *frame length*. The Blu-ray LPCM encoder frames 16-bit sound 240
@@ -741,7 +750,8 @@ Four things had to be settled to make that table true.
   still the codec it was, so the recording's own map entry stays true of everything but the
   channels; a track re-encoded as AC-3 is not, and an entry that says MPEG-2 AAC will have
   a player hand AC-3 frames to an AAC decoder. Where the codec changed, the entry is
-  written from what the cut produced: 0x0F for AAC, 0x81 and an `AC-3` registration
+  written from what the cut produced: 0x0F for AAC (0x11 where it goes out in
+  [LATM](#the-other-framing-latm-4k-recordings)), 0x81 and an `AC-3` registration
   descriptor, 0x82 for DTS, 0x80 for LPCM.
 - **LPCM in a transport stream needs the programme registered as HDMV.** There is no
   standard way to carry raw PCM in an MPEG-2 transport stream; there is only Blu-ray's,
@@ -1037,6 +1047,19 @@ clip later by the crossing's length, sound and all
 the same arithmetic — each end gives at most half its range, and the pair is
 held to the smaller. Before 0.8.1 it did not, and the file came out a
 crossing's length longer at every join. A fade takes nothing from either side.
+
+**A recorder's seam takes the same clock out of the sound as out of the
+pictures.** The picture writer plans a range across a seam as two, and leaves
+out the clock from where the pictures before it stop to the first entry point
+after it ([`Source::unwritten`](disc.md#what-the-playlist-plays-and-what-it-steps-over)).
+`sound::written` splits every range the same way, keeping the piece after such
+a stretch only where it is more than half a picture long, as the planner keeps
+it only where an entry point lies inside it. Up to 0.8.23 the ranges were taken
+whole: kept across a seam whose clock runs on for 18.9 seconds with no picture
+in it, a `.wav` came out 35.0 seconds long, 18.9 of them silence laid in by the
+re-encoder, where the cut with pictures is 16.1. `--verify` measures a file of
+sound alone against the ranges this function returns, so the two cannot come
+to differ.
 
 **A joined recording whose sound is another shape re-encodes the track.** The
 output stream is declared as the master's (the first recording's unless

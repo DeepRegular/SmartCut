@@ -347,6 +347,27 @@ each re-cut of a cut moved every caption 75 ms early, and a bare 4K clip 2.3
 seconds; the bare clip is still about half a second early, because nothing in the
 file says more.
 
+**Where a document's own clock has fallen behind, it goes up where it arrives.**
+A recorder sends each document beside the pictures it belongs over, and its
+`begin` is on the broadcaster's clock, which on most clips trails those pictures
+by a steady 0.04 to 0.8 seconds. On some it falls further behind at every pause
+in the dialogue: on three of the twenty 4K titles measured here it had reached
+1.7, 7.2 and 11.9 seconds by the end. Every caption timed by its own `begin`
+went up that long before its line was spoken (measured against where the speech
+starts in the sound), and a cut lost the captions of the last seconds of every
+range, which lie past what it reads.
+
+So `ttml::shown_at` takes the time of the pictures at the byte a document
+arrives at: the entry picture before it, carried on toward the next where that
+is within two seconds. `ttml::placed` keeps the document's own time where it is
+no more than a second behind that, or up to 30 seconds ahead of it (a recorder
+now and then sends a line four seconds before it is due); otherwise the
+document goes up at its arrival and stands for as long as it says. The preview
+and the cut both place by this and by nothing else, so the line the editor
+shows at an instant is the line the cut keeps there. Of 40 ranges cut from
+those twenty titles, 34 are byte for byte what they were, and the six that
+changed are all on those three clips.
+
 **A caption already up when a range opens is read back for.** A document is sent once,
 when it goes up, and one stood for 38 seconds on the recordings here — so the one a
 range opens in the middle of was sent well before the range, and usually before the
@@ -986,6 +1007,19 @@ pictures from a seam:
   (`cut::after_a_copy`), its head re-encoded up to the next entry point, which
   adds up to two seconds of re-encoding to a title.
 
+One more was found on 2026-10-13. **A range that ends in a seam's pictureless
+clock ends where the pictures do.** Where a stretch's pictures stop short of
+its seam, as they do where its map was mended
+([below](#a-stretch-whose-map-is-about-something-else)), the clock between its
+last picture and the seam holds nothing. A range whose OUT fell there was
+planned on into that clock: one picture more than the sound cut from the same
+range, so `--verify` said MISMATCH, and with a second range after it one
+picture was held for four seconds over five seconds of silence and the
+chapters moved. It now stops where the pictures stop (`plan::at_the_seams`,
+asked as `Source::unwritten` asks it), and a range that lies wholly in that
+clock plans nothing. The twenty titles of one recorder's discs plan byte for
+byte as they did.
+
 A row is joined only where the playlist accounts for the whole clip: every
 sequence it holds, in the order the file holds them, one play item each.
 Anything else is left as it was — a row per item, each named by the packets it
@@ -1107,9 +1141,9 @@ allows for it (`POINT_EARLY`).
 | | |
 |---|---|
 | Command line | `--title N` with no `--cut` and no `--keep` cuts them, and says so on a `plays :` line |
-| Window | They are the row's first cuts, put down once the recording has been read: by the list (`takePlays`) or, where the editor reads it first, by the editor (`applyPlays`) as part of the arrival rather than as an edit. **Undo** takes them back in one step |
+| Window | They are the row's first cuts, put down once the recording has been read: by the list (`takePlays`) or, where the editor reads it first, by the editor (`applyPlays`) as part of the arrival rather than as an edit. **Undo** takes them back in one step. A row duplicated, put back after a removal, or left for another row before its walk landed takes them too. The marks and the `Trim` line read on the editor's first visit are read on top of them, and an IN, an OUT or a step of the history made while the walk runs stays on its pictures |
 | Project | The row keeps `plays` and `playsOwed` (still to be cut); the edit keeps `unplayed` (what was cut that way) and `playsDue` (an editor visit that ended before its walk landed) |
-| Chapters | None at them. The recorder stepped over that moment and nobody cut there; the disc's own marks say where its chapters are. Where the disc has a mark within a frame of where a kept range begins, that mark is the chapter |
+| Chapters | None at them, and no mark: until 2026-10-13 the next cut made anywhere else in the editor put a mark at each of them. The recorder stepped over that moment and nobody cut there; the disc's own marks say where its chapters are. Where the disc has a mark within a frame of where a kept range begins, that mark is the chapter |
 
 What a pressed disc, an authored BDAV title or a broadcast `.ts` writes is
 unchanged: the last two byte for byte, the first frame for frame.
@@ -1123,6 +1157,25 @@ every kept range around them before counting chapters, lengths and the
 one stretch, and on one title every chapter after a seam was 18.9 and then
 28.1 seconds late, and the editor's length 2752.4 seconds against the 2724.2
 written.
+
+Everything else that counts a title's seconds leaves them out too since
+2026-10-13; until then each counted the clock whole.
+
+| | |
+|---|---|
+| Sound only (`crate::sound`) | Each range is split around them, as the pictures' is. Kept across the seam with 18.9 seconds of it, a `.wav` came out 35.0 seconds long, 18.9 of them silence, where the cut with pictures is 16.1 |
+| `--verify` | The sound is measured against the ranges less them. Held to the ranges as asked, a cut across that seam was allowed 27.4 seconds of missing sound in a 16.1-second file, and the sound-only file above would have been reported short |
+| `--fit` and the disc gauge | The rate is an average over the whole clock, so it is scaled by the clock over what is written: 0.7% on that title, most of the margin kept back |
+| Divide | The keeps are divided less them, so the parts are equal in what they write and none begins where there is no picture |
+
+**A join's chapters split at every seam**, those with nothing unwritten
+included. The planner splits a range at each seam and holds a crossing to half
+of the piece beside it; the list held it to half of the whole range, and on a
+title whose last kept range ran a few seconds past a seam, the chapters of the
+clips after a dissolve came out 7.2 seconds early. `ClipInfo::seams` hands the
+list every seam's time (`crossingPieces`), and the seam window is bounded by the same
+pieces: bounded by the whole range, it previewed a 10-second dissolve where the file
+has 2.8 seconds.
 
 ## DVD-Video
 

@@ -139,8 +139,12 @@ before and runs on into the next one, and where the recorder left a break out
 it still holds the moment either side of it. The playlist steps over all of
 that, and so does the row: those stretches are its first cuts, put on the
 pictures, and a cut written without opening the editor keeps what the disc
-plays and no more. They put no chapter where they are. **Undo** in the cut
-editor brings them back, as one step. A pressed disc, a DVD and a disc made
+plays and no more. They put no chapter where they are, and no mark. **Undo** in the cut
+editor brings them back, as one step. A row duplicated, put back with **Undo
+remove**, or left in the cut editor for another row before it had been read
+through keeps them too. A `.keyframe` and a `Trim` file beside the recording
+are read after they are made, so a mark or a cut end on the edge of one lands
+on it. A pressed disc, a DVD and a disc made
 with an authoring tool play the whole clip, and arrive with nothing cut.
 
 Where the recorder stopped and started inside a clip, the time from the last
@@ -148,7 +152,11 @@ picture before the seam to the first picture a copy can start from after it is
 not written — a few pictures on most discs, seconds where the disc's own table
 overstates a stretch. The
 chapters, the lengths and the frame counts in the list and the editor leave it
-out as well, so they match the file that is written.
+out as well, so they match the file that is written. So do a file of the sound
+only, the check after writing, the disc gauge and **Divide clip**. A range that
+ends in that time ends at the last picture before it. A join with a dissolve,
+a wipe or a slide puts the chapters of the clips after it where the file has
+them, whichever seam the crossing lies near.
 
 Cuts are written **beside the disc** unless the output settings say otherwise,
 because there is nowhere to write inside a disc.
@@ -1006,7 +1014,9 @@ program deciding what the recording is for.
   Japanese on both — the language code alone does not tell them apart. So the row
   carries the broadcaster's own word for the track beside the code, `eng 英語` or
   `jpn 音声解説`, wherever the broadcast gave one.
-- **Captions can only be kept when writing a `.ts`.**
+- **Captions can only be kept when writing a `.ts`.** A line already on screen
+  where a kept range begins is put up again at its first frame, as the preview
+  shows it. One still on screen where a range ends is not taken down there.
 - **The crawl is a track of its own, not part of the captions.** It belongs to
   the hour rather than to the programme — an earthquake warning is not a line of
   dialogue — so it is listed and switched separately. A 4K broadcast's subtitles,
@@ -1112,7 +1122,7 @@ What is set on either tab stays there when you switch.
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
 | **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch, 7.1ch. One answer for the list; to set it per row, use the **Audio:** line in the quick properties. AC-3 and DTS go no further than 5.1ch, so for a 7.1 recording they are greyed out until 5.1ch or fewer is chosen |
 | **Sample rate** | `Same as the input`, or 96 / 48 / 44.1 / 32 kHz |
-| **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM) |
+| **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM, a recording's own plain PCM in a `.mkv` or `.mov` included) |
 | **Audio bitrate** | For frames that are rebuilt. `Leave it to the engine` is the safe answer |
 | **A disc's subtitles** | Shown only for a recording off a disc. `Inside the cut (PGS)` by default — one file, with its subtitles in it — or beside the cut: `.idx / .sub`, the pair every player and subtitle tool reads, or `.sup`, the display sets themselves. **The line says which destination leaves them untouched**, and that is a different one for a DVD than for a Blu-ray. Written to a disc, they always go inside the cut, whatever this says |
 | **Write the keyframes to a separate .keyframe file** | Puts a `.keyframe` file next to the video, under the same name |
@@ -1370,6 +1380,12 @@ same as in a video run.
 recording in the join that has no sound at all is left out of the file, with a
 line on the export screen saying so.
 
+**A recorder's title leaves out what the video leaves out.** Where the recorder
+stopped and started inside a clip, the time no picture is written for (see
+[Discs](#discs-blu-ray-and-dvd)) is not in the sound either, so the file is as
+long as the video would be. Up to 0.8.23 that time was written as silence,
+18.9 seconds of it at one seam.
+
 It belongs to the file output. Switch to the disc tab and the recordings are
 written with their pictures, whatever the container list says; the choice is
 still there when you switch back.
@@ -1557,7 +1573,9 @@ frame at a time. Four things are checked:
 | Re-encoded frames | Every re-encoded frame is recognisably the frame at that place in the recording (luma PSNR of 25 dB or more) |
 | Decode errors | No more frames fail to decode than failed in the recording |
 
-Each sound track is also measured against the pictures. One that runs more
+Each sound track is also measured against the pictures, over the ranges as
+they are written: on a recorder's title, less the time at a seam that no cut
+writes. One that runs more
 than half a second long or short is mentioned — the row says
 `(see the sound)` — but it does not fail the check: a broadcast track that
 starts part way through a programme is common and not a fault.
@@ -1577,11 +1595,11 @@ Where a file cannot be lined up frame for frame, what can be checked is:
 | The pictures were written smaller to fit a disc | The frame count and decode errors. A rewritten frame is never the original |
 | Clips are joined with a transition between them | That the pictures decode, and the length of the sound. A transition's frames belong to neither recording |
 | A joined clip was rewritten to the master clip's format | That the pictures decode, and the length of the sound |
-
-In those two cases a decode error is reported but does not fail the check: it
-cannot be told apart from the recording's own reception errors. Only a file
-whose pictures do not decode at all fails.
 | Only the sound is written | That the sound runs as long as the kept ranges |
+
+In the two cases of a join, a decode error is reported but does not fail the
+check: it cannot be told apart from the recording's own reception errors. Only
+a file whose pictures do not decode at all fails.
 
 ### The run log
 

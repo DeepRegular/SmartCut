@@ -236,6 +236,18 @@ back by default. A *short* stretch is a different matter — the rates are means
 over a whole recording, and a minute taken out of the middle of one can be
 half again as busy as its mean.
 
+**A recorder's title is measured over clock that no cut writes.** At a seam,
+from where the pictures before it stop to the first entry point after it,
+nothing is written
+([the stretches no cut writes](disc.md#what-the-playlist-plays-and-what-it-steps-over)),
+and the seconds kept are counted around those stretches. The rates are spread
+over the whole clock, so their product came out short by the share of the
+clock the stretches take: 0.7% on one recorder title with 19.4 seconds of them,
+most of the hundredth kept back. The pictures' rate, and the file's where that
+is not known, are now scaled by the clock over what is written
+(`fit::written_scale`), which is 1 for every recording without seams.
+Dividing a row by size uses the same scale.
+
 The share that comes out is the same for every recording in the list. Each
 recording's own encoder decided how to spend its bits; giving the long one a
 harder time than the short one because it happens to be longer would undo that

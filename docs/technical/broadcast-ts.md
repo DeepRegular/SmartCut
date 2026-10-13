@@ -750,6 +750,30 @@ statement — and playback crosses the end of a window about once a minute. A di
 subtitles are read the same way; see
 [The subtitles a disc draws](disc.md#the-subtitles-a-disc-draws).
 
+### A line already up when a range opens
+
+A statement is sent once, when its line goes up, and the line stands until the next
+statement replaces or clears it. So a range that opens in the middle of a line has the
+statement that put it there in front of it, outside every segment, and a cut claims only
+what is sent inside one. Up to 0.8.23 that line was left out: up to several seconds of
+caption missing at the opening of every range, while the editor's preview, which reads
+back, showed it.
+
+The opening of each range now reads the 30 seconds in front of it
+(`cut::read_caption_before`) the way the preview reads them (`caption::left_up`). The last
+statement of each language that writes something and has not been cleared by then is
+written again at the range's first frame, with the management data before it, since that
+is what tells a receiver the languages. A line its statement takes down after a wait of
+its own (`TIME`) is written with what is left of the wait, and the data group's CRC is
+worked out again (`caption::waited`); a line paced in any other shape is not carried. A
+bare reset writes nothing, so a cut on a junction a broadcaster marks with one is given
+nothing and comes out as it did.
+
+**The end of a range is as it was.** A line still up there is not taken down at it.
+
+The look back is a read of its own at every range of a recording that carries captions,
+up to 30 seconds of the stream: one to three seconds more over a cut of ten ranges.
+
 ## Audio can be written out on its own as `.aac`
 
 In a DGIndex → x264 → mux workflow, the audio reaches the muxer as a **bare ADTS file**.

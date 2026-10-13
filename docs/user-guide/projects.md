@@ -103,7 +103,9 @@ window in that state and it asks whether to save first.
 The `*` is decided by **comparing the current list against the last saved
 version**, every time something changes — not by "you touched something, so
 flag it". So if you make a cut and immediately undo it, the `*` goes away
-again.
+again. A project saved by an older version is no different: open a row, close
+the editor with OK having changed nothing, and no `*` goes up, although the
+editor now keeps things about a row that the older file never had.
 
 There are two exceptions, both cases where a `*` would be wrong:
 
