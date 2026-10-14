@@ -173,6 +173,37 @@ pub fn placed(payload: &[u8], shown: Option<f64>, base: f64) -> Option<(f64, f64
     Some((begin + shift, end + shift, shift))
 }
 
+/// How far a document's [`decided_at`] can stand before an earlier one's.
+///
+/// Each is within [`OWN_TIME_SLACK`] of where its bytes are ([`shown_at`],
+/// which goes one way through the file), so a later document is decided at
+/// most twice that before an earlier one: where the clock's lag crosses the
+/// slack between two lines sent close together, the second can be placed
+/// in front of the first. A read that stops on the first document decided
+/// past the end of what it claims has lost the second; one that stops this
+/// much further on has not.
+pub const DECIDED_SPREAD: f64 = 2.0 * OWN_TIME_SLACK;
+
+/// Which part of a cut a document placed at `begin` ([`placed`]) is the
+/// business of: the instant that decides the segment that writes it.
+///
+/// Its `begin`, which is where it arrives as well -- except for a document
+/// sent well ahead of its own time and held to it. That one is decided where
+/// its bytes are, `shown` ([`shown_at`]). A cut reads each part of a range
+/// from a little in front of it and no further: decided by its `begin`, a
+/// line sent 4 s early was left by the part its bytes are in, as the next
+/// part's, and the next part's read began past them. Measured on a 4K BD-RE
+/// title: a range opening up to 2.5 s before the line lost it whole (7 s of
+/// dialogue), while the preview showed it. Inside [`OWN_TIME_SLACK`] the read
+/// in front of the next part (at least a second) still reaches the bytes, so
+/// a document no further ahead than that is decided by its `begin` as before.
+pub fn decided_at(begin: f64, shown: Option<f64>) -> f64 {
+    match shown {
+        Some(at) if begin - at > OWN_TIME_SLACK => at,
+        _ => begin,
+    }
+}
+
 /// The same document with its times moved by `shift` and clipped to
 /// `window`, or `None` where the caption does not belong in that window at
 /// all.
@@ -621,6 +652,14 @@ mod tests {
         // And with nowhere to place it, by its own times from `base`.
         let (begin, _, shift) = placed(&p, None, 2.0).unwrap();
         assert!((begin - 143.667).abs() < 1e-9 && shift == 2.0);
+
+        // Which part of a cut writes it: where it is held to, unless it was
+        // sent further ahead than the slack, when where its bytes are.
+        assert_eq!(decided_at(143.667, Some(139.667)), 139.667);
+        assert_eq!(decided_at(143.667, Some(143.0)), 143.667);
+        assert_eq!(decided_at(160.0, Some(160.0)), 160.0);
+        assert_eq!(decided_at(143.667, Some(144.3)), 143.667);
+        assert_eq!(decided_at(143.667, None), 143.667);
     }
 
     #[test]

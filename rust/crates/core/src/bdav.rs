@@ -626,6 +626,10 @@ pub struct Timing {
     /// Where every picture begins, so that an entry point can say how far
     /// past it the picture it names ends. See [`ep_map`].
     pub pictures: Vec<u32>,
+    /// The presentation time each of those carries, where it carries one:
+    /// what tells the second field of a picture coded as two from the next
+    /// picture. See [`read_clip`].
+    pub shown: Vec<Option<u64>>,
 }
 
 /// Where every packet arrives, on a clock that runs one packet every `step`
@@ -793,7 +797,7 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
     // write, so the first is a third of the work and the second the rest.
     const SURVEYED: f64 = 1.0 / 3.0;
     let mut told = crate::Told::new();
-    let (read, anchors, pictures) = survey(path, &mut |i: u64| {
+    let (read, anchors, pictures, shown) = survey(path, &mut |i: u64| {
         told.at(on, i as f64 / packets as f64 * SURVEYED)
     })?;
     let step = choose_step(&anchors);
@@ -885,6 +889,7 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
                 rate: rate_of(step),
                 first_clock: anchors.first().map_or(0, |(packet, _)| *packet),
                 pictures,
+                shown,
             })
         }
         Err(e) => {
@@ -903,11 +908,16 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
 /// video's own PID says a new payload does. Which PID that is comes out of
 /// the stream's own tables, read here rather than asked of libavformat: this
 /// pass is already reading every packet.
-fn survey(path: &Path, told: &mut dyn FnMut(u64)) -> Result<(u32, Vec<(u32, i64)>, Vec<u32>)> {
+#[allow(clippy::type_complexity)]
+fn survey(
+    path: &Path,
+    told: &mut dyn FnMut(u64),
+) -> Result<(u32, Vec<(u32, i64)>, Vec<u32>, Vec<Option<u64>>)> {
     let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
     let mut frame = [0u8; SOURCE_PACKET];
     let mut anchors: Vec<(u32, i64)> = Vec::new();
     let mut pictures: Vec<u32> = Vec::new();
+    let mut shown: Vec<Option<u64>> = Vec::new();
     let mut map_pid: Option<u16> = None;
     let mut video: Option<u16> = None;
     let (mut i, mut wrap, mut was) = (0u32, 0i64, -1i64);
@@ -931,6 +941,7 @@ fn survey(path: &Path, told: &mut dyn FnMut(u64)) -> Result<(u32, Vec<(u32, i64)
         }
         if video == Some(pid) && p[1] & 0x40 != 0 {
             pictures.push(i);
+            shown.push(pes_pts(p));
         }
         if let Some(pcr) = pcr_of(p) {
             let mut now = pcr as i64 + wrap;
@@ -951,7 +962,28 @@ fn survey(path: &Path, told: &mut dyn FnMut(u64)) -> Result<(u32, Vec<(u32, i64)
         i += 1;
         told(u64::from(i));
     }
-    Ok((i, anchors, pictures))
+    Ok((i, anchors, pictures, shown))
+}
+
+/// The presentation time stamp of the PES packet a transport stream packet
+/// begins, where its header carries one.
+fn pes_pts(p: &[u8]) -> Option<u64> {
+    let payload = match (p[3] >> 4) & 0x03 {
+        1 => p.get(4..)?,
+        3 => p.get(5 + *p.get(4)? as usize..)?,
+        _ => return None,
+    };
+    if payload.get(..3)? != [0, 0, 1] || payload.get(7)? & 0x80 == 0 {
+        return None;
+    }
+    let b = payload.get(9..14)?;
+    Some(
+        (u64::from(b[0] >> 1) & 0x07) << 30
+            | u64::from(b[1]) << 22
+            | u64::from(b[2] >> 1) << 15
+            | u64::from(b[3]) << 7
+            | u64::from(b[4] >> 1),
+    )
 }
 
 /// The section a packet begins, past the pointer that says where it starts.
@@ -1270,8 +1302,28 @@ fn read_clip(
     // the one after an entry is found by searching rather than by walking the
     // stream a third time. A last entry has no next picture, and ends where
     // the stream does.
+    //
+    // **A picture coded as two fields can be two packets of the stream.** A
+    // recorder's 1080i H.264 puts both fields of a picture in one; copied
+    // through libavformat, each field went out on its own with its own time,
+    // half a picture apart, and every entry on a recorder's disc cut again
+    // said its picture ended where its first field did -- the picture a
+    // fast forward fetches, cut off half way. A PES that follows the entry
+    // by less than a picture is the rest of it: the next picture in decoding
+    // order is never shown sooner than a whole picture after a key one.
+    let half = (src.video.frame_duration() * 90_000.0 * 0.75) as u64;
     let after = |packet: u32| -> u32 {
-        let at = timing.pictures.partition_point(|begins| *begins <= packet);
+        let mut at = timing.pictures.partition_point(|begins| *begins <= packet);
+        let own = at
+            .checked_sub(1)
+            .filter(|k| timing.pictures[*k] == packet)
+            .and_then(|k| timing.shown.get(k).copied().flatten());
+        if let (Some(own), Some(Some(next))) = (own, timing.shown.get(at)) {
+            let ahead = next.wrapping_sub(own) & ((1u64 << 33) - 1);
+            if ahead > 0 && ahead < half {
+                at += 1;
+            }
+        }
         timing.pictures.get(at).copied().unwrap_or(timing.packets)
     };
     let entries = src
@@ -1926,6 +1978,41 @@ mod tests {
                 entry(1 << 21, 200_000),
             ],
         }
+    }
+
+    /// The time a PES header carries, read back as the 33 bits it was
+    /// written as -- behind an adaptation field and without one. It is what
+    /// tells the second field of a picture from the next picture.
+    #[test]
+    fn a_pes_time_reads_back() {
+        let pts: u64 = (1 << 32) | 0x1234_5679;
+        let header = [
+            0x00,
+            0x00,
+            0x01,
+            0xE0,
+            0x00,
+            0x00,
+            0x80,
+            0x80,
+            0x05,
+            0x21 | (((pts >> 30) as u8 & 0x07) << 1),
+            (pts >> 22) as u8,
+            ((pts >> 15) as u8) << 1 | 1,
+            (pts >> 7) as u8,
+            ((pts as u8) << 1) | 1,
+        ];
+        let mut plain = vec![0x47, 0x41, 0x00, 0x10];
+        plain.extend_from_slice(&header);
+        plain.resize(PACKET, 0xFF);
+        assert_eq!(pes_pts(&plain), Some(pts));
+        let mut padded = vec![0x47, 0x41, 0x00, 0x30, 0x07, 0x10, 0, 0, 0, 0, 0, 0];
+        padded.extend_from_slice(&header);
+        padded.resize(PACKET, 0xFF);
+        assert_eq!(pes_pts(&padded), Some(pts));
+        // A PES with no time says so rather than inventing one.
+        plain[4 + 7] = 0x00;
+        assert_eq!(pes_pts(&plain), None);
     }
 
     /// The reader in `disc.rs` is the one thing here that can be pointed at

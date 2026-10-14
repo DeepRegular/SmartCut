@@ -2577,15 +2577,25 @@ fn take_ttml(
     let Some((begin, _, shift)) = crate::ttml::placed(data, shown, caption.base) else {
         return Ok(false);
     };
-    // Documents arrive in the order they are shown, so one that begins past
-    // this segment is the end of what this segment can hold.
-    if begin >= seg.end {
+    // Claimed by the segment its `begin` falls in -- or, for one sent well
+    // ahead of its own time, the segment its bytes are in, which is the only
+    // one sure to read them: see [`crate::ttml::decided_at`]. Such a one
+    // can begin in the next segment, or past the range's end, which
+    // [`write_ttml`] clips it to.
+    let decided = crate::ttml::decided_at(begin, shown);
+    // Documents arrive in the order they are shown, give or take
+    // [`crate::ttml::DECIDED_SPREAD`], so one that begins that far past this
+    // segment is the end of what this segment can hold.
+    if decided >= seg.end + crate::ttml::DECIDED_SPREAD {
         return Ok(true);
+    }
+    if decided >= seg.end {
+        return Ok(false);
     }
     // One already up when the range opens is the range's opening's to
     // write: see [`read_ttml_before`]. Claimed here, it was only ever the
     // ones inside the seek margin in front of the first segment.
-    let claimed = begin >= seg.start || (first_segment && begin >= caption.range.0);
+    let claimed = decided >= seg.start || (first_segment && decided >= caption.range.0);
     if !claimed {
         return Ok(false);
     }
@@ -2660,10 +2670,16 @@ fn read_ttml_before(
         let Some((begin, end, shift)) = crate::ttml::placed(data, shown, caption.base) else {
             continue;
         };
-        if begin >= until {
+        // Decided as [`take_ttml`] decides it. One sent well ahead of its
+        // time whose bytes are in front of the range is this read's to
+        // write even where it begins inside the range: the first segment's
+        // read starts a second or so in front of the range and may well be
+        // past its bytes. Its time stays its own (see [`write_ttml`]).
+        let decided = crate::ttml::decided_at(begin, shown);
+        if decided >= until + crate::ttml::DECIDED_SPREAD {
             break;
         }
-        if end > until {
+        if decided < until && end > until && begin < caption.range.1 {
             up.push((begin, shift, data.to_vec()));
         }
     }
@@ -2748,19 +2764,30 @@ fn read_caption_before(
         if manages && said.is_empty() {
             management = Some((t, packet.clone()));
         }
+        // Written again with what is left of its wait, as the preview shows
+        // it for what is left. The packet's bytes are carried one way only:
+        // where one language of it waits and another stands, both are the
+        // shortened bytes (which leave the standing one's statement as it
+        // was). Carried as sent for the standing one as well, the packet went
+        // out twice and the second put the waiting line back up for its
+        // whole wait.
+        let shortened = said
+            .iter()
+            .any(|(_, left)| matches!(left, Some(crate::caption::Left::Waits)))
+            .then(|| crate::caption::waited(data, until - t))
+            .flatten()
+            .map(|bytes| {
+                let mut p = ff::Packet::copy(&bytes);
+                p.set_pts(packet.pts());
+                p.set_flags(packet.flags());
+                p
+            });
         for (language, left) in said {
             use crate::caption::Left;
             let carried = match left {
                 None => continue,
-                Some(Left::Standing) => Some(packet.clone()),
-                // Written again with what is left of its wait, as the
-                // preview shows it for what is left.
-                Some(Left::Waits) => crate::caption::waited(data, until - t).map(|bytes| {
-                    let mut p = ff::Packet::copy(&bytes);
-                    p.set_pts(packet.pts());
-                    p.set_flags(packet.flags());
-                    p
-                }),
+                Some(Left::Standing) => Some(shortened.clone().unwrap_or_else(|| packet.clone())),
+                Some(Left::Waits) => shortened.clone(),
                 Some(Left::Nothing | Left::Timed) => None,
             };
             match carried {
@@ -5773,13 +5800,26 @@ fn carriage(source: ff::codec::Id, to_ts: bool, bits: u8, want: AudioCodec) -> f
             // of 24 bit PCM asked for as 16 was re-encoded, said to be
             // 16 bit, and came out 24 bit again. At the recording's own
             // width -- `pcm_bits` calls 32 bit samples 24 -- this is the
-            // codec it came in.
-            ff::codec::Id::PCM_S16LE if !to_ts && bits > 16 => ff::codec::Id::PCM_S24LE,
+            // codec it came in. Float samples are counted wide by `pcm_bits`
+            // too, and the float encoders take nothing but a float: asked
+            // for as 16 they were said to be requantised and came out
+            // 32 bit float again.
+            // Eight bit samples have no byte order, and their encoders take
+            // only eight bits: asked for as 24 they came out eight again.
+            ff::codec::Id::PCM_S16LE | ff::codec::Id::PCM_U8 | ff::codec::Id::PCM_S8
+                if !to_ts && bits > 16 =>
+            {
+                ff::codec::Id::PCM_S24LE
+            }
             ff::codec::Id::PCM_S16BE if !to_ts && bits > 16 => ff::codec::Id::PCM_S24BE,
-            ff::codec::Id::PCM_S24LE | ff::codec::Id::PCM_S32LE if !to_ts && bits <= 16 => {
+            ff::codec::Id::PCM_S24LE | ff::codec::Id::PCM_S32LE | ff::codec::Id::PCM_F32LE
+                if !to_ts && bits <= 16 =>
+            {
                 ff::codec::Id::PCM_S16LE
             }
-            ff::codec::Id::PCM_S24BE | ff::codec::Id::PCM_S32BE if !to_ts && bits <= 16 => {
+            ff::codec::Id::PCM_S24BE | ff::codec::Id::PCM_S32BE | ff::codec::Id::PCM_F32BE
+                if !to_ts && bits <= 16 =>
+            {
                 ff::codec::Id::PCM_S16BE
             }
             _ => source,
@@ -6605,8 +6645,12 @@ fn graft_tables(
             // A folded track no longer has the channels the recording's own
             // audio component descriptor names, and saying it does is worse
             // than saying nothing. A track in another codec is further from
-            // the description again.
-            faithful: setup.downmix.is_none() && !setup.recoded,
+            // the description again. So is a resampled one: the same
+            // descriptor states the sampling rate, and a track asked for at
+            // 44.1 kHz was still announced at the broadcast's 48.
+            faithful: setup.downmix.is_none()
+                && !setup.recoded
+                && (setup.sample_rate == setup.info.sample_rate || setup.info.sample_rate == 0),
             // And Blu-ray LPCM carried as it was, where the map being
             // corrected is the muxer's own: a plain `.ts` muxer calls it
             // private data, and a recording's own map that would have said
@@ -10133,6 +10177,24 @@ fn cut_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A width asked of plain PCM outside a transport stream is a codec of
+    /// that width, whatever spelling the samples came in: float and eight
+    /// bit samples included, whose encoders write only their own width.
+    #[test]
+    fn plain_pcm_is_written_at_the_width_asked_for() {
+        use ff::codec::Id::*;
+        let at = |source, bits| carriage(source, false, bits, AudioCodec::Source);
+        assert_eq!(at(PCM_F32LE, 16), PCM_S16LE);
+        assert_eq!(at(PCM_F32BE, 16), PCM_S16BE);
+        assert_eq!(at(PCM_F32LE, 24), PCM_F32LE);
+        assert_eq!(at(PCM_U8, 24), PCM_S24LE);
+        assert_eq!(at(PCM_U8, 16), PCM_U8);
+        assert_eq!(at(PCM_S24LE, 16), PCM_S16LE);
+        assert_eq!(at(PCM_S16BE, 24), PCM_S24BE);
+        // A transport stream keeps what it was given; see `carry`.
+        assert_eq!(carriage(PCM_F32LE, true, 16, AudioCodec::Source), PCM_F32LE);
+    }
 
     /// What reaches the muxer as chapters: one at the start, two within half
     /// a second one, none in the last half second,

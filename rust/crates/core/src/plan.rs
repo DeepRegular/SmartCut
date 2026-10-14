@@ -1572,6 +1572,27 @@ mod tests {
             at_the_seams(&[(5.0, 10.0), (21.0, 23.0), (24.0, 30.0)], &joins),
             vec![(5.0, 10.0), (21.0, 22.0), (25.0, 30.0)]
         );
+        // Two such seams in one range: cut at the first, and ended at the
+        // second where the range ends in its clock -- however the range
+        // begins, in the first one's clock or before it.
+        let two = [
+            Seam { at: 0, time: 25.0, ends: 22.0 },
+            Seam { at: 0, time: 45.0, ends: 40.0 },
+        ];
+        let points = [25.0, 45.0].map(|time| AccessPoint {
+            time,
+            lead_start: time,
+            lead_indices: Vec::new(),
+            droppable: true,
+            pos: -1,
+            measured: true,
+        });
+        let both = |r: &[(f64, f64)]| super::at_the_seams(r, &two, &points, &video);
+        assert_eq!(both(&[(0.0, 60.0)]), vec![(0.0, 22.0), (25.0, 40.0), (45.0, 60.0)]);
+        assert_eq!(both(&[(0.0, 42.0)]), vec![(0.0, 22.0), (25.0, 40.0)]);
+        assert_eq!(both(&[(23.0, 42.0)]), vec![(25.0, 40.0)]);
+        assert_eq!(both(&[(41.0, 45.0)]), vec![]);
+        assert_eq!(both(&[(30.0, 39.0)]), vec![(30.0, 39.0)]);
         // Never past the seam, whatever a mend came back with.
         let joins = [Seam {
             at: 0,

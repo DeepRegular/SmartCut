@@ -967,9 +967,12 @@ fn run() -> Result<()> {
                 let v = args
                     .get(i)
                     .context("--drop-subpicture needs a substream id, as 0x20")?;
-                let n = v.strip_prefix("0x").unwrap_or(v);
+                let n = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")).unwrap_or(v);
+                // A byte, as the disc numbers them: `i32` took `-20` and
+                // refused it later as "0xffffffe0".
                 drop_subpictures.push(
-                    i32::from_str_radix(n, 16)
+                    u8::from_str_radix(n, 16)
+                        .map(i32::from)
                         .with_context(|| format!("--drop-subpicture wants an id, got {v:?}"))?,
                 );
             }
@@ -3227,7 +3230,13 @@ fn run() -> Result<()> {
         // one after another onto the same disc has in common. The channel
         // only where the name says nothing at all -- see
         // [`smartcut_core::series`].
+        //
+        // Except on a disc that already has a name: a recording added to it
+        // is added to that disc, and the series of the one added renamed
+        // it every time -- a name given with --disc-title, or typed into the
+        // recorder, gone at the next run that did not repeat it.
         let title = disc_title
+            .or_else(|| smartcut_core::disc::bdav_title(&at))
             .or_else(|| smartcut_core::series::shared(std::slice::from_ref(&name)))
             .or_else(|| channel.clone())
             .unwrap_or_else(|| name.clone());

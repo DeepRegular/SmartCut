@@ -1338,11 +1338,17 @@ fn assemble(
     // measured here, one of its six stretches carries entry points six
     // seconds ahead of the pictures they name, and the cut of that clip
     // stopped. Asked only of a clip that has seams -- which is a clip a
-    // recorder wrote -- and only of an index that did not come from the
-    // stream, since a walk cannot disagree with what it read.
+    // recorder wrote. The points of an index that came from the stream are
+    // left as they are, since a walk cannot disagree with what it read; its
+    // seams are not, whatever the index: where each stretch's pictures stop
+    // is read off the stream, not off the walk, and a walked clip -- `--index
+    // scan`, a map that could not be read, a walk held from an earlier open --
+    // otherwise kept every span the sequence table gives (8.8 s of held
+    // picture and silence in a `--keep` across the stretch that needs mending).
     let mut mended_any = false;
-    if !idx.leading_known && !joins.is_empty() {
-        match index::mend_stretches(&input.url, &video, start_time, &mut joins, &mut points) {
+    if !joins.is_empty() {
+        let walked = idx.leading_known;
+        match index::mend_stretches(&input.url, &video, start_time, &mut joins, &mut points, walked) {
             Ok(mended) => {
                 mended_any = !mended.is_empty();
                 for at in mended {

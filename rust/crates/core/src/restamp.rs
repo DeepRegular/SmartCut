@@ -81,7 +81,8 @@ pub struct Seam {
     pub at: u64,
     /// When that stretch begins, in seconds on the joined clock.
     pub time: f64,
-    /// When the stretch *before* it stops, on the same clock.
+    /// When the stretch *before* it stops, on the same clock: where its last
+    /// picture stops being shown, where that is in front of `time`.
     ///
     /// The same instant as `time` on every clip whose sequence table can be
     /// believed, which is why it is written down separately only here: a

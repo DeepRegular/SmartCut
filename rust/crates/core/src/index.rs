@@ -1169,22 +1169,28 @@ pub fn refine_leading(
 /// notices.
 const STRETCH_SLACK: f64 = 1.0;
 
-/// How far a stretch's last entry point may stand from the seam after it
-/// before the pictures are read to see where they really end. See
-/// [`mend_stretches`].
+/// How far in front of its seam a stretch's pictures may end before the seam
+/// is moved back to them, in frames. See [`mend_stretches`].
 ///
-/// Wide, as [`STRETCH_SLACK`] is: across the twenty recorder clips measured
-/// here, a stretch the table describes has its last entry point up to 3.2 s
-/// short of its seam, and the one it does not describe 8.8 s. Below this the
-/// seam stands as it always has.
-const TAIL_SLACK: f64 = 5.0;
+/// A quarter of a frame: nothing a stretch that runs up to its seam can
+/// differ from it by (its last picture ends on the seam, to the tick), and
+/// less than the shortest thing a picture can be (a field, half a frame).
+const PICTURELESS: f64 = 0.25;
 
 /// How much of a stretch's end is read for its last picture: a couple of
 /// seconds at a recorder's rate, which is more than any reorder reaches.
 const TAIL_BYTES: u64 = 8 << 20;
 
-/// Where the pictures of the stretch `lo..hi` end: the last picture's own
-/// instant, as [`stretch_points`] gives it, read off the stretch's tail.
+/// How much is read first. Every seam's stretch is read on every open (see
+/// [`mend_stretches`]), and over a network share 8 MB a seam is seconds on a
+/// title with half a dozen of them; the last picture is within a fraction of
+/// a second of the end at any recorder's rate, and should this hold no
+/// picture at all the whole [`TAIL_BYTES`] is read after all.
+const TAIL_FIRST: u64 = 2 << 20;
+
+/// Where the pictures of the stretch `lo..hi` end -- the end of the time the
+/// last of them is shown for, as [`stretch_points`] gives it -- read off the
+/// stretch's tail.
 fn stretch_end(
     ictx: &mut ff::format::context::Input,
     video: &VideoInfo,
@@ -1192,6 +1198,22 @@ fn stretch_end(
     lo: u64,
     hi: u64,
 ) -> Option<f64> {
+    let first = hi.saturating_sub(TAIL_FIRST).max(lo);
+    match tail_read(ictx, video, start_time, first, hi) {
+        Some(None) if first > lo => tail_read(ictx, video, start_time, lo, hi).flatten(),
+        found => found.flatten(),
+    }
+}
+
+/// [`stretch_end`] over the last [`TAIL_BYTES`] at most, from `lo` on:
+/// `None` where the read failed, `Some(None)` where it held no picture.
+fn tail_read(
+    ictx: &mut ff::format::context::Input,
+    video: &VideoInfo,
+    start_time: f64,
+    lo: u64,
+    hi: u64,
+) -> Option<Option<f64>> {
     let from = hi.saturating_sub(TAIL_BYTES).max(lo);
     unsafe {
         if ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, from as i64, ff::ffi::AVSEEK_FLAG_BYTE) < 0 {
@@ -1199,27 +1221,134 @@ fn stretch_end(
         }
     }
     let mut last = f64::NEG_INFINITY;
-    let mut read_at = from;
+    let mut place = StretchRead::new(from, hi);
+    let mut broken = CutShort::default();
     let mut reading = ictx.read_packets();
     for (s, p) in reading.by_ref() {
-        if p.position() >= 0 {
-            read_at = p.position() as u64;
-        }
-        if read_at >= hi {
+        let video_packet = s.index() == video.stream_index;
+        let Some(at) = place.place(video_packet, p.position() as i64) else {
             break;
-        }
-        if s.index() != video.stream_index || read_at < from {
+        };
+        if !video_packet || at < from || broken.cut_short(&p, at) {
             continue;
         }
-        if let Some(pts) = p.pts() {
-            last = last.max(pts as f64 * video.time_base - start_time);
+        if let Some(end) = shown_until(&p, video, start_time) {
+            last = last.max(end);
         }
     }
     // As in [`stretch_points`]: half a read is not where the stretch ends.
     if reading.finished().is_err() {
         return None;
     }
-    last.is_finite().then_some(last)
+    Some(last.is_finite().then_some(last))
+}
+
+/// Where the packets of a read of the stretch that ends at byte `hi` stand.
+///
+/// **A read is not over at the first packet placed at or past `hi`.** A
+/// demuxer hands a picture over when the next one on its track begins, and
+/// the sound after the seam comes out ahead of it: stopped there, a read of a
+/// recorder stretch lost the pictures in front of the seam that were still on
+/// their way. So the picture track is read on to its first packet past `hi`,
+/// which can only come once everything in front of it has; another track, on
+/// to a tail's length past it, so that a stretch with no pictures there still
+/// ends.
+///
+/// And a picture packet with no position of its own -- the parser hands the
+/// second field of a field-coded frame over as one, after the first -- is
+/// placed with the picture packet before it, not with whatever was read last:
+/// placed after a packet of sound in front of the seam, the first frame of
+/// the next stretch counted as this one's.
+struct StretchRead {
+    hi: u64,
+    /// Where the last picture packet with a position was.
+    video_at: u64,
+    /// Where the last packet of any track with a position was.
+    at: u64,
+}
+
+impl StretchRead {
+    fn new(from: u64, hi: u64) -> StretchRead {
+        StretchRead { hi, video_at: from, at: from }
+    }
+
+    /// The byte a packet read next stands at, on the picture track (`video`)
+    /// or another, with the position the demuxer gave it; `None` once the
+    /// stretch has been read to its end. A packet of another track past `hi`
+    /// still comes back, for the caller to pass over.
+    fn place(&mut self, video: bool, pos: i64) -> Option<u64> {
+        if pos >= 0 {
+            self.at = pos as u64;
+            if video {
+                self.video_at = pos as u64;
+            }
+        }
+        if video {
+            (self.video_at < self.hi).then_some(self.video_at)
+        } else {
+            (self.at < self.hi.saturating_add(TAIL_BYTES)).then_some(self.at)
+        }
+    }
+}
+
+/// The pictures a recorder cut off when it stopped, in a read of a stretch's
+/// picture track.
+///
+/// **A recorder stops in the middle of a picture.** The last picture packet
+/// in front of most seams measured here is short of its own length -- the
+/// demuxer marks it corrupt -- and is often a reference picture sent ahead
+/// of the pictures shown before it, which were never written: a P picture
+/// stamped three frames past the last whole one, or an I picture. It decodes
+/// to a fragment, if at all, and the parser hands what follows it over as a
+/// further "picture" with a time of its own invented (a third of a second on).
+/// Neither is where the stretch's pictures end. So a packet marked corrupt is
+/// passed over, and with it everything else the parser hands over out of the
+/// same packet of the stream -- the packets after it with no position of
+/// their own, or with that same position again -- until one that begins
+/// somewhere else.
+#[derive(Default)]
+struct CutShort {
+    /// Where the stream packet the last corrupt picture came out of begins,
+    /// while what comes after it is still out of that packet.
+    open: Option<u64>,
+}
+
+impl CutShort {
+    /// Whether picture packet `p`, standing at `at` (see [`StretchRead`]),
+    /// is part of a picture the recorder cut short.
+    fn cut_short(&mut self, p: &ff::Packet, at: u64) -> bool {
+        if self.open.is_some_and(|o| p.position() >= 0 && p.position() as u64 != o) {
+            self.open = None;
+        }
+        if p.is_corrupt() {
+            self.open = Some(at);
+        }
+        self.open.is_some()
+    }
+}
+
+/// When the picture in packet `p` stops being shown, on the clock the points
+/// are on: its presentation time and the time it occupies.
+///
+/// **The end, not the start.** A seam's `ends` is where a range across it
+/// stops, and a range stops in front of the instant it is given: ended on the
+/// last picture's own instant, it left that picture out -- on the 4K
+/// recorder title whose playlist ends a stretch on the end of its last
+/// picture, the default cut lost one at three seams, and a `--keep` across a
+/// mended seam wrote 174 of the 175 pictures asked for.
+///
+/// The time a picture occupies is what the demuxer's parser says of it: half
+/// a frame for one field of a field-coded frame (a recorder's 1080i hands the
+/// two over as two packets, the second stamped half a frame on), a frame and
+/// a half or two for a picture whose repeat flags hold it. Where the parser
+/// said nothing, a frame -- and never more than three, which is the most any
+/// repeat flag holds a picture for.
+fn shown_until(p: &ff::Packet, video: &VideoInfo, start_time: f64) -> Option<f64> {
+    let pts = p.pts()? as f64 * video.time_base - start_time;
+    let fd = video.frame_duration();
+    let held = p.duration() as f64 * video.time_base;
+    let held = if held > 0.0 { held.min(3.0 * fd) } else { fd };
+    Some(pts + held)
 }
 
 /// The first key picture at or after `byte`, on the clock the points are on.
@@ -1278,21 +1407,22 @@ fn stretch_points(
     }
     let mut out = Vec::new();
     let mut last = f64::NEG_INFINITY;
-    let mut read_at = lo;
+    let mut place = StretchRead::new(lo, hi);
+    let mut broken = CutShort::default();
     let mut reading = ictx.read_packets();
     for (s, p) in reading.by_ref() {
-        if p.position() >= 0 {
-            read_at = p.position() as u64;
-        }
-        if read_at >= hi {
+        let video_packet = s.index() == video.stream_index;
+        let Some(read_at) = place.place(video_packet, p.position() as i64) else {
             break;
-        }
-        if s.index() != video.stream_index || read_at < lo {
+        };
+        if !video_packet || read_at < lo || broken.cut_short(&p, read_at) {
             continue;
         }
         let Some(pts) = p.pts() else { continue };
         let t = pts as f64 * video.time_base - start_time;
-        last = last.max(t);
+        if let Some(end) = shown_until(&p, video, start_time) {
+            last = last.max(end);
+        }
         if p.is_key() {
             out.push(AccessPoint {
                 time: t,
@@ -1313,12 +1443,8 @@ fn stretch_points(
         return (Vec::new(), None);
     }
     drop(reading);
-    // The last picture's own instant, not the end of the time it occupies.
-    // A range that ends at the latter asks for one more picture than the
-    // stretch has, and a re-encode of one picture that is not there is the
-    // same failure in miniature as the one this whole function exists to
-    // stop. Ending on it instead leaves that picture out of the cut, which
-    // at a seam that already gives up a third of a second is nothing.
+    // Where the last picture stops being shown, not its own instant: see
+    // [`shown_until`].
     let end = last.is_finite().then_some(last);
     (out, end)
 }
@@ -1344,14 +1470,30 @@ fn stretch_points(
 /// hundred megabytes rather than the whole clip, and only on a clip that
 /// carries seams at all.
 ///
-/// **The seam after a mended stretch is pulled back to where its pictures
-/// end.** The span the table gives a bad sequence is as wrong as its entries:
-/// on the clip measured here it claims 316 seconds for 289 seconds of
-/// pictures, and a range planned to that span ends 8.8 seconds past the last
-/// picture there is — which is a re-encode with nothing in it, and the cut
-/// stops on that instead. Only ever pulled back, never pushed out: a seam is
-/// where the recorder stopped, and the sequence after it begins where the
-/// table says.
+/// **Every seam is moved back to where the pictures in front of it end.** A
+/// recorder's sequence table gives nearly every stretch a span longer than
+/// the pictures in it: on the twenty-six recorder titles measured here (four
+/// discs of 1080i and one of 4K), 70 of 96 seams stood 0.1 to 2.2 s after
+/// the last picture in front of them, and on the clip whose map had to be
+/// mended, 8.8 s. A range run across such a seam was planned up to the seam
+/// and wrote the clock with no picture in it as a held picture and silence.
+/// So the tail of the stretch in front of each seam is read -- the first
+/// stretch's too, which nothing else here looks at -- and `ends` set to where
+/// its last picture stops being shown, wherever that is more than
+/// [`PICTURELESS`] of a frame in front of it. Only ever pulled back, never
+/// pushed out: a seam is where the recorder stopped, and the sequence after it
+/// begins where the table says. It costs a read of the last few megabytes of
+/// each stretch on every open: nothing keeps `ends` (the seek index holds
+/// points, not seams).
+///
+/// `walked` says the points were read off the stream itself -- a walk, held or
+/// fresh -- and then only the seams are looked at: a walk cannot disagree with
+/// what it read, and its points carry what the leading pictures are, which a
+/// stretch read for its entry points here would throw away. The seams it does
+/// need: the walk reads the pictures, not where the table says they stop, and
+/// a clip walked because its map could not be read (or asked to be walked)
+/// otherwise kept every span the table gives -- 8.8 s of nothing in a
+/// `--keep` across the stretch above.
 ///
 /// Returns where it mended, for the caller to say so.
 pub fn mend_stretches(
@@ -1360,13 +1502,20 @@ pub fn mend_stretches(
     start_time: f64,
     joins: &mut [crate::restamp::Seam],
     points: &mut Vec<AccessPoint>,
+    walked: bool,
 ) -> Result<Vec<f64>> {
     if joins.is_empty() {
         return Ok(Vec::new());
     }
     let mut ictx = crate::input::demux(url)?;
     let mut mended = Vec::new();
+    // Where the pictures of the stretch in front of seam `i` were found to
+    // end while it was read whole for its points.
+    let mut read_to: Vec<Option<f64>> = vec![None; joins.len()];
     for i in 0..joins.len() {
+        if walked {
+            break;
+        }
         let (at, time) = (joins[i].at, joins[i].time);
         let hi = joins.get(i + 1).map_or(u64::MAX, |j| j.at);
         let Some(first) = key_at_byte(&mut ictx, video, start_time, at) else {
@@ -1376,30 +1525,11 @@ pub fn mend_stretches(
             .iter()
             .find(|p| p.pos >= 0 && (p.pos as u64) >= at && (p.pos as u64) < hi)
             .map(|p| p.time);
+        // **A stretch mended once is kept mended**: the fresh points go into
+        // the seek index and agree with the stream from then on, so the next
+        // open passes over it here. Its seam is not kept -- nothing keeps a
+        // seam -- and is found again below, as every other one is.
         if claimed.is_some_and(|t| (t - first).abs() <= STRETCH_SLACK) {
-            // **A stretch mended once is kept mended, and its seam is not.**
-            // The fresh points go into the seek index and agree with the
-            // stream from then on, so the next open passes over the stretch
-            // above -- and the pulled-back seam below, which nothing keeps,
-            // went back to the span the table gives it: the whole-title cut
-            // of the recorder clip that needed mending planned the 8.8 s
-            // re-encode of nothing again on every open after the first. So a
-            // stretch whose last entry point stands well short of its seam
-            // has its last picture read off its tail, which is a few
-            // megabytes rather than the stretch.
-            if let Some(next) = joins.get(i + 1) {
-                let last = points
-                    .iter()
-                    .filter(|p| p.pos >= 0 && (p.pos as u64) >= at && (p.pos as u64) < hi)
-                    .map(|p| p.time)
-                    .fold(f64::NEG_INFINITY, f64::max);
-                if last.is_finite() && next.ends - last > TAIL_SLACK {
-                    if let Some(end) = stretch_end(&mut ictx, video, start_time, at, hi) {
-                        let next = &mut joins[i + 1];
-                        next.ends = next.ends.min(end);
-                    }
-                }
-            }
             continue;
         }
         let (fresh, end) = stretch_points(&mut ictx, video, start_time, at, hi);
@@ -1413,10 +1543,25 @@ pub fn mend_stretches(
                 .partial_cmp(&b.time)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        if let (Some(end), Some(next)) = (end, joins.get_mut(i + 1)) {
-            next.ends = next.ends.min(end);
+        if let Some(slot) = read_to.get_mut(i + 1) {
+            *slot = end;
         }
         mended.push(time);
+    }
+    let short = video.frame_duration() * PICTURELESS;
+    for i in 0..joins.len() {
+        let lo = i.checked_sub(1).map_or(0, |k| joins[k].at);
+        let hi = joins[i].at;
+        let end = match read_to[i] {
+            Some(end) => Some(end),
+            None => stretch_end(&mut ictx, video, start_time, lo, hi),
+        };
+        if let Some(end) = end {
+            let seam = &mut joins[i];
+            if seam.ends - end > short {
+                seam.ends = end;
+            }
+        }
     }
     Ok(mended)
 }
@@ -1749,5 +1894,50 @@ mod tests {
         let e = covers(&[0.0], Some(4.2)).unwrap_err().to_string();
         assert!(e.contains("one entry"), "{e}");
         assert!(covers(&[0.0], None).is_err());
+    }
+
+    /// A picture packet with no position goes with the picture packet before
+    /// it, not with a packet of sound read in between; and the read of the
+    /// picture track runs on past `hi` until a picture packet stands there.
+    #[test]
+    fn stretch_read_places_fields_with_their_frame() {
+        let mut r = StretchRead::new(100, 1000);
+        assert_eq!(r.place(true, 900), Some(900));
+        // sound from after the seam, handed over first
+        assert_eq!(r.place(false, 1010), Some(1010));
+        // the second field of the frame at 900
+        assert_eq!(r.place(true, -1), Some(900));
+        // the next stretch's first picture: the read is over
+        assert_eq!(r.place(true, 1020), None);
+        assert_eq!(r.place(true, -1), None);
+        // another track gives up a tail's length past the seam
+        let mut r = StretchRead::new(100, 1000);
+        assert!(r.place(false, 1000 + TAIL_BYTES as i64 - 1).is_some());
+        assert_eq!(r.place(false, 1000 + TAIL_BYTES as i64), None);
+    }
+
+    /// A corrupt picture and everything the parser hands over out of the same
+    /// stream packet are passed over, until a packet that begins elsewhere.
+    #[test]
+    fn cut_short_takes_the_whole_packet() {
+        let packet = |pos: isize, corrupt: bool| {
+            let mut p = ff::Packet::empty();
+            p.set_position(pos);
+            if corrupt {
+                p.set_flags(ff::packet::Flags::CORRUPT);
+            }
+            p
+        };
+        let mut c = CutShort::default();
+        assert!(!c.cut_short(&packet(500, false), 500));
+        // a whole first field, then its second field cut short
+        assert!(!c.cut_short(&packet(600, false), 600));
+        assert!(c.cut_short(&packet(-1, true), 600));
+        // what the parser makes of the rest: no position, or the same one
+        assert!(c.cut_short(&packet(-1, false), 600));
+        assert!(c.cut_short(&packet(600, false), 600));
+        // a packet that begins somewhere else is whole again
+        assert!(!c.cut_short(&packet(700, false), 700));
+        assert!(!c.cut_short(&packet(-1, false), 700));
     }
 }

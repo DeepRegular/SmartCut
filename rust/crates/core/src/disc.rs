@@ -1794,6 +1794,21 @@ fn info_name(raw: &[u8]) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// The name of the disc of recordings already in the folder `at` writes
+/// into (`crate::bdav::root`), or `None` where there is no disc there yet or
+/// it has been given no name.
+///
+/// For a run adding recordings to a disc with nobody naming it: the disc
+/// keeps the name it has -- typed into a recorder, or given to an earlier
+/// run -- and the series of what is added names only a disc of its own.
+pub fn bdav_title(at: &Path) -> Option<String> {
+    // Through `read_index`, not `std::fs::read`: the folder is one the GUI
+    // asks about as it is typed, and an `info.bdav` that is a pipe or a file
+    // of gigabytes was a read that never ended or an allocation of all of it.
+    let raw = read_index(&crate::bdav::root(at).join("info.bdav")).ok()?;
+    info_name(&raw)
+}
+
 /// The playlist names `info.bdav` lists.
 fn table_of_playlists(raw: &[u8]) -> Vec<String> {
     if raw.len() < 12 || &raw[..4] != b"BDAV" {

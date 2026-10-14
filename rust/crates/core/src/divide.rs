@@ -577,4 +577,38 @@ mod tests {
             }
         }
     }
+
+    /// With no holes, [`without`] changes no division: the keeps it drops --
+    /// one that is nothing, one that runs backwards -- were nothing to the
+    /// division before either, so a recording without seams divides as it
+    /// did. Holes on a keep's very ends, touching or overlapping each other,
+    /// leave no sliver; and a size divided around a hole is still a ceiling,
+    /// with no part beginning inside it.
+    #[test]
+    fn holes_at_their_edges() {
+        let pts = points(0.5, 300.0);
+        let keeps = [(0.0, 0.0), (0.0, 50.0), (50.0, 50.0), (60.0, 55.0), (70.0, 200.0)];
+        let line = without(&keeps, &[]);
+        assert_eq!(line, vec![(0.0, 50.0), (70.0, 200.0)]);
+        for rule in [Rule::Parts(3), Rule::Parts(7), Rule::Every(17.0), Rule::Size(30_000_000)] {
+            for on in [true, false] {
+                assert_eq!(
+                    divide(&keeps, &pts, rule, on, FD, 0.0, 1e6).unwrap(),
+                    divide(&line, &pts, rule, on, FD, 0.0, 1e6).unwrap(),
+                    "{rule:?} {on}"
+                );
+            }
+        }
+
+        let holes = [(10.0, 20.0), (20.0, 30.0), (25.0, 40.0), (90.0, 100.0)];
+        assert_eq!(without(&[(10.0, 100.0)], &holes), vec![(40.0, 90.0)]);
+
+        let line = without(&[(0.0, 300.0)], &[(100.0, 128.0)]);
+        for on in [true, false] {
+            let d = divide(&line, &pts, Rule::Size(20_000_000), on, FD, 0.0, 1e6).unwrap();
+            assert!(d.at.iter().all(|&t| !(t > 100.0 && t < 128.0)), "{on}: {:?}", d.at);
+            assert!(d.lengths.iter().all(|&l| l > 0.0 && l <= 20.0 + FD / 2.0 + 1e-9), "{on}: {:?}", d.lengths);
+            assert!((d.lengths.iter().sum::<f64>() - 272.0).abs() < 1e-6, "{on}: {:?}", d.lengths);
+        }
+    }
 }

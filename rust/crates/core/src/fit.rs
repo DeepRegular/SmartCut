@@ -363,10 +363,23 @@ fn clock_per_written(duration: f64, holes: &[(f64, f64)]) -> f64 {
     if duration.is_nan() || duration <= 0.0 {
         return 1.0;
     }
-    let held: f64 = holes
+    // Once each, where two stretches overlap: a seam whose next stretch has
+    // no entry point of its own runs its stretch on past the seam after it,
+    // and that clock was counted twice.
+    let mut spans: Vec<(f64, f64)> = holes
         .iter()
-        .map(|&(a, b)| (b.min(duration) - a.max(0.0)).max(0.0))
-        .sum();
+        .map(|&(a, b)| (a.max(0.0), b.min(duration)))
+        .filter(|&(a, b)| b > a)
+        .collect();
+    spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let (mut held, mut reach) = (0.0, 0.0f64);
+    for (a, b) in spans {
+        let a = a.max(reach);
+        if b > a {
+            held += b - a;
+        }
+        reach = reach.max(b);
+    }
     let written = duration - held;
     if held > 0.0 && written > 0.0 {
         duration / written
@@ -512,6 +525,9 @@ mod tests {
         assert_eq!(clock_per_written(100.0, &[(150.0, 160.0)]), 1.0);
         assert_eq!(clock_per_written(0.0, &holes), 1.0);
         assert_eq!(clock_per_written(10.0, &[(0.0, 10.0)]), 1.0);
+        // Two stretches over the same clock count it once.
+        let k = clock_per_written(100.0, &[(10.0, 30.0), (20.0, 40.0), (25.0, 26.0)]);
+        assert!((k - 100.0 / 70.0).abs() < 1e-12, "{k}");
     }
 
     fn clip(bytes: u64, video: u64) -> Estimate {
