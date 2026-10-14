@@ -143,14 +143,16 @@ plays and no more. They put no chapter where they are, and no mark. **Undo** in 
 editor brings them back, as one step. A row duplicated, put back with **Undo
 remove**, or left in the cut editor for another row before it had been read
 through keeps them too. A `.keyframe` and a `Trim` file beside the recording
-are read after they are made, so a mark or a cut end on the edge of one lands
-on it. A pressed disc, a DVD and a disc made
+are read as soon as the editor opens, before the recording has been read
+through, and when those cuts arrive a mark or a cut end within half a picture
+of one of their edges is put onto it. A pressed disc, a DVD and a disc made
 with an authoring tool play the whole clip, and arrive with nothing cut.
 
 Where the recorder stopped and started inside a clip, the time from the last
 picture before the seam to the first picture a copy can start from after it is
-not written — a few pictures on most discs, seconds where the disc's own table
-overstates a stretch. The
+not written. The disc's own table says nearly every stretch runs on a little
+past its last picture, so this is up to two seconds on most discs, and more
+where the table is wrong about a stretch. The
 chapters, the lengths and the frame counts in the list and the editor leave it
 out as well, so they match the file that is written. So do a file of the sound
 only, the check after writing, the disc gauge and **Divide clip**. A range that
@@ -475,7 +477,10 @@ in three stages.**
 
 **Only two things wait.** `Snap to lossless` has nothing to snap to yet, and
 `Play` has no exact place to start from yet. Everything else works from the
-first stage.
+first stage. Commercial detection started this early finds what it would find
+from the list: it listens to the sound first, and by the time it looks for the
+logo the reading has nearly always finished. Where it has not, the result is
+shown but not kept as the recording's.
 
 ![The cut editor before the recording has been read](../images/usage-stages.png)
 
@@ -1122,7 +1127,7 @@ What is set on either tab stays there when you switch.
 | **Audio codec** | `Same as the input`, or AAC, AC-3, DTS, linear PCM |
 | **Audio channels** | `Same as the input`, or 1ch, 2ch, 5.1ch, 7.1ch. One answer for the list; to set it per row, use the **Audio:** line in the quick properties. AC-3 and DTS go no further than 5.1ch, so for a 7.1 recording they are greyed out until 5.1ch or fewer is chosen |
 | **Sample rate** | `Same as the input`, or 96 / 48 / 44.1 / 32 kHz |
-| **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM, a recording's own plain PCM in a `.mkv` or `.mov` included) |
+| **Bit depth** | `Same as the input`, 16 or 24 bit (only meaningful for linear PCM, a recording's own plain PCM in a `.mkv` or `.mov` included, float and 8-bit samples too) |
 | **Audio bitrate** | For frames that are rebuilt. `Leave it to the engine` is the safe answer |
 | **A disc's subtitles** | Shown only for a recording off a disc. `Inside the cut (PGS)` by default — one file, with its subtitles in it — or beside the cut: `.idx / .sub`, the pair every player and subtitle tool reads, or `.sup`, the display sets themselves. **The line says which destination leaves them untouched**, and that is a different one for a DVD than for a Blu-ray. Written to a disc, they always go inside the cut, whatever this says |
 | **Write the keyframes to a separate .keyframe file** | Puts a `.keyframe` file next to the video, under the same name |
@@ -1446,7 +1451,7 @@ Writing a disc adds these fields:
 
 | Field | |
 |---|---|
-| **Disc title** | The name a recorder shows over the list of what is on the disc. Filled in with the series the recordings are episodes of — the programme name with the episode number, the episode's own title and the broadcast's marks taken off it. Where they are not all one series — several programmes, or two seasons of one — there is no such name, and the moment the disc is being made stands there instead: `2026-09-11 00:15`. Typed over from either |
+| **Disc title** | The name a recorder shows over the list of what is on the disc. Filled in with the series the recordings are episodes of — the programme name with the episode number, the episode's own title and the broadcast's marks taken off it. Where they are not all one series — several programmes, or two seasons of one — there is no such name, and the moment the disc is being made stands there instead: `2026-09-11 00:15`. Where the disc goes into a folder you chose (the output folder itself, or a subfolder you typed) and a disc with a name is already there, the field shows that disc's name instead, and a run adds to the disc under it. Typed over from any of these |
 | **Programme name** | **Per clip**, not per list: what this recording is called in the disc's index. Filled in from what the recording says about itself, and typed over from there. Emptied, it goes back to what the recording said |
 | **Channel** | Per clip. What the channel calls itself, and beside it the three digits a viewer knows it by — 0, or empty, where the recording does not say, which is what a terrestrial recording writes there |
 | **Recorded** | Per clip. When the programme went out, as `2026-08-17 01:00:00`. Slashes, a missing seconds field and single digits are understood and put back in that shape; anything that cannot be read as a moment stops the run rather than being written as no moment at all |
@@ -1504,7 +1509,8 @@ off in the cut editor.
 
 **A second run adds to the disc.** The numbering carries on from what is already
 there, and nothing already on the disc is removed or rewritten, so a disc can be
-filled over a week.
+filled over a week. The disc keeps its name unless you type another into
+**Disc title**.
 
 **SmartCut does not burn discs.** What it hands you is the image; the burner is
 whatever you already use.

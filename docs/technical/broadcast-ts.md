@@ -262,7 +262,9 @@ settle here.
 
 A downmixed track counts as not carried. A folded track no longer has the channel
 arrangement its audio component descriptor names, so it comes out of the programme
-description for the same reason it comes out of the map.
+description for the same reason it comes out of the map. So does a resampled one: the
+same descriptor states the sampling rate, and up to 0.8.24 a track asked for at 44.1 kHz
+was still announced at the broadcast's 48.
 
 **Only the description of the programme on now is trimmed.** Present and following
 arrive as two sections, and only the first is about this file. The second is a note

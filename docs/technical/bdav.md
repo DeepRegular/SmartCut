@@ -360,6 +360,18 @@ the only ones no disc here exercises; they are
 [`sorshi/bdav`](https://github.com/sorshi/bdav)'s, which arrived at the same
 table from the other direction, against a different tool's output.
 
+**A picture coded as two fields can be two packets of the stream.** A
+recorder's 1080i H.264 puts both fields of a picture in one PES packet, but
+the cut of it that goes onto a disc here is written through libavformat, which
+gives each field a packet of its own, half a frame apart. Taken as the next
+picture, the second field made every entry on such a disc say its picture
+ended where its first field did, and a fast forward fetched half of it. A PES that
+follows an entry by less than three quarters of a frame is now counted as the
+rest of the entry's picture (`read_clip`), since the next picture in decoding
+order is never shown sooner than a whole frame after a key one. Measured on a
+recorder title cut onto a disc: 231 of 231 entries end where the picture does,
+against 157 before. Every other disc this writes is byte for byte what it was.
+
 **The times here are not the playlist's tick.** An entry point map carries
 `PTS_EP_start`, which is the picture's own presentation time stamp —
 thirty-three bits at 90 kHz, the number the stream itself carries — and it is
@@ -535,6 +547,17 @@ not have reads, in a recorder's list, exactly like a disc of six episodes of
 that one. Either way it is a filled-in field like the others, and typing over
 it is what settles it.
 
+**A disc that already has a name keeps it.** The series names a new disc only.
+A run that adds to a disc with no title given, `--disc-title` on the command
+line or typed on the settings screen, writes the name `info.bdav` already
+holds, whether a recorder or an earlier run put it there
+(`disc::bdav_title`). Up to 0.8.24 every run named the disc again after what
+it added, so a name given once was gone at the next run that did not repeat
+it. The settings screen asks only where the disc goes into a folder you chose,
+the output folder itself or a subfolder named by hand; the subfolder the
+screen fills in follows the disc's name, so what is in it is a disc of that
+name or a new one.
+
 The third source has two shapes to read, because this program writes one of
 them. A broadcast recording carries an event information table and a service
 description on their own PIDs; a cut this program has already made carries a
@@ -614,8 +637,9 @@ Read and not reserved, as it was until 0.8.3, two runs into one folder at
 once — two command lines, or one beside the window's export — were given the
 same number and wrote over each other's recording.
 
-The disc's own name is the one exception: it is one name for the disc, so the
-one on the screen wins.
+The disc's own name is the one exception: it is one name for the disc, so a
+name given for the run, on the screen or with `--disc-title`, replaces it.
+Given none, the disc keeps the one it has.
 
 What a run adds it also takes back when it does not finish. A slot is reserved
 before the cut that fills it, and the index is written once at the end over

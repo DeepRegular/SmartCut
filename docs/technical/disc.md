@@ -377,6 +377,20 @@ begun before it and not yet ended (`cut::read_ttml_before`), with the pictures a
 clock, as the Blu-ray's and the DVD's look backs do; the segments carry only documents
 that begin inside the range, so nothing is written twice.
 
+**A document sent well ahead of its time is written by the part of the cut that reads
+its bytes.** It goes up at its own `begin`, seconds after it arrives, but a cut reads
+each part of a range from a little in front of that part and no further. Placed by its
+`begin`, a line sent four seconds early belonged to the part after the one its bytes are
+in, and that part's read began past them: a range opening up to 2.5 seconds before the
+line lost it whole, and so did a range where a copy took over from a re-encode between
+the bytes and the `begin`, while the preview showed it. Of the 10,900 documents on the
+twenty titles, ten were sent 1.3 to 14.3 seconds ahead, and a range opening just before
+the line lost seven of them. `ttml::decided_at` now gives a document sent more than a
+second ahead to the part its bytes are in — to the opening's look back, where they are
+in front of the range — and its time stays its own. One sent no further ahead than that
+is decided by its `begin` as before, so every other cut is what it was: two ranges cut
+from each of the twenty titles are byte for byte the same.
+
 ## What a row is
 
 **One clip, one row** — not one playlist, one row.
@@ -1009,8 +1023,8 @@ pictures from a seam:
 
 One more was found on 2026-10-13. **A range that ends in a seam's pictureless
 clock ends where the pictures do.** Where a stretch's pictures stop short of
-its seam, as they do where its map was mended
-([below](#a-stretch-whose-map-is-about-something-else)), the clock between its
+its seam, as they do at most seams a recorder writes
+([below](#where-a-stretchs-pictures-stop)), the clock between its
 last picture and the seam holds nothing. A range whose OUT fell there was
 planned on into that clock: one picture more than the sound cut from the same
 range, so `--verify` said MISMATCH, and with a second range after it one
@@ -1087,18 +1101,81 @@ Nothing in the map says which of its sequences can be believed, so each one is
 asked, at the cost of a seek and a short read: **is the first picture at your
 first byte the one your first entry names?** Where it is not, that stretch's
 entries are thrown away and the stream is read for its own — that stretch only,
-a few hundred megabytes rather than the whole clip — and the seam behind it is
-pulled back to the last picture the stretch really has. `index::mend_stretches`.
+a few hundred megabytes rather than the whole clip. `index::mend_stretches`.
+The seam after it is moved back to where the stretch's pictures stop, as every
+seam is ([below](#where-a-stretchs-pictures-stop)).
 
-Asked only of a clip that has seams, which is a clip a recorder wrote, and only
-of an index that did not come from the stream, because a walk cannot disagree
-with what it read. Over the twenty recordings it fires on one stretch of one
-clip; the other nineteen plan exactly as they did, to the copied second. The
-mended one is written at 99.8% copied, which is what its neighbours cost.
+The entries are checked only on a clip that has seams, which is a clip a
+recorder wrote, and only where the index did not come from the stream, because
+a walk cannot disagree with what it read. Over the twenty recordings it fires on
+one stretch of one clip; the other nineteen plan exactly as they did, to the
+copied second. The mended one is written at 99.8% copied, which is what its
+neighbours cost.
 
 Ordinary recordings are untouched by any of this, and measured to be: cuts of
 three broadcast transport streams, of two reference Blu-rays and of two DVD
 titles are **byte for byte** what they were before.
+
+### Where a stretch's pictures stop
+
+**A recorder's sequence table says nearly every stretch runs on past its last
+picture.** On twenty-six recorder titles measured here (four discs of 1080i and
+one of 4K), 70 of 96 seams stand 0.1 to 2.2 seconds after the last picture in
+front of them, and the mended stretch above 8.8 seconds. Until 2026-10-14 a
+seam was moved back only behind a mended stretch, or behind one whose last
+entry point stood more than five seconds short of it. Everywhere else a
+`--keep` or `--cut` that ran across a seam was planned up to the table's seam,
+and the clock with no picture in it came out as a held picture over silence:
+0.7 seconds at an ordinary seam, 1.7 at the most that was measured. A clip
+whose index came from a walk (`--index scan`, a map that could not be read, a
+walk kept from an earlier open) was not looked at at all, and a `--keep` across the mended
+stretch held a picture for 8.8 seconds. A cut with no ranges of its own was
+never affected: it plays what the playlist plays, and the playlist stops short
+of these clocks.
+
+So `index::mend_stretches` now reads the tail of the stretch in front of every
+seam — the first stretch's too — on every open and whatever the index came
+from, and moves the seam's `ends` to **where the last whole picture stops being
+shown**: its own time plus the time the parser says it occupies, which is half
+a frame for one field of a field-coded frame and more for a picture its repeat
+flags hold. The end and not the start, because a range stops in front of the
+instant it is given: ended on the last picture's start, a cut left that picture
+out, and on the 4K title whose playlist ends a stretch exactly where its last
+picture does, the default cut would have lost one at three seams. A seam is
+only ever moved back, never out, and only where the pictures stop more than a
+quarter of a frame in front of it.
+
+**A picture the recorder cut off is not where the stretch ends.** A recorder
+stops in the middle of a picture. The last picture packet in front of most of
+these seams is short of its own length, and is often a reference picture sent
+ahead of pictures that were to be shown before it and were never written: a P
+picture stamped three frames past the last whole one, or an I picture.
+libavformat marks it corrupt, and its parser hands what follows it over as one
+more picture with a time of its own invented, about a third of a second on.
+Neither decodes to more than a fragment, so both are passed over
+(`CutShort`), and at 19 of the 96 seams the end comes three frames before the
+last packet's time.
+
+**The read runs on past the seam's byte until a picture packet is there**
+(`StretchRead`). A demuxer hands a picture over when the next one on its track
+begins, and the sound after the seam comes out ahead of it; a read stopped at
+the first packet of any track past the seam lost the last pictures in front of
+it. A field with no position of its own is placed with the picture packet
+before it, not with the sound read in between.
+
+It costs a read of the last two megabytes of each stretch on every open, eight
+where two hold no picture, because nothing keeps a seam: the seek index holds
+entry points, not seams, and is byte for byte the file it was. Measured on a 4K
+title over a network share, an open takes about a tenth of a second longer.
+
+**Measured** on the twenty-six titles: the plan of a cut with no ranges is
+byte for byte what it was on every one of them, and so are the default cuts of
+an HD title and of the 4K one. Kept whole with `--keep`, the twenty titles that
+have seams write 43.7 seconds less between them, and every case that used to
+hold a picture now writes the pictures asked for and passes `--verify`, from a
+fresh open, from the cached index and from `--index scan` alike. What is left
+at those seams, 0.083 seconds on two titles, is the recording's own: B pictures
+missing before a stretch's last P.
 
 ### What the playlist plays, and what it steps over
 

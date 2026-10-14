@@ -702,7 +702,9 @@ width. In a transport stream it picks the sample format the Blu-ray LPCM encoder
 opened with: 16-bit, or 32-bit carrying 24. In an MKV or a MOV, a recording's own plain
 PCM is written at the width asked for, in its own byte order; up to 0.8.23 it was
 re-encoded, said to be at that width, and came out at its own again, because each of
-those encoders writes one width only. And it decides the file's size on its own:
+those encoders writes one width only. Float samples asked for as 16 bit, and 8-bit
+samples asked for as 24, went the same way up to 0.8.24; they are written as 16- and
+24-bit integers now. And it decides the file's size on its own:
 channels × width × rate, with nothing else in it.
 
 It also decides the *frame length*. The Blu-ray LPCM encoder frames 16-bit sound 240
