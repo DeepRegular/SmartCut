@@ -865,6 +865,9 @@ el("x-all").addEventListener("click", () => {
   const c = crossing();
   if (!c) return;
   for (const j of joins) j.after = { ...c };
+  // And on the joins held for a row taken out of the list: put back
+  // (削除を元に戻す), one came back with what it had before 一括適用.
+  for (const k of saidHere.keys()) saidHere.set(k, { ...c });
   // Changed here as much as a field is: see the `cross-open` handler, which
   // would otherwise take the list's joins back over these.
   changedHere = true;
@@ -876,6 +879,9 @@ el("x-all").addEventListener("click", () => {
 
 el("x-clear").addEventListener("click", () => {
   for (const j of joins) j.after = null;
+  // Held ones too (see `saidHere`): a join put back after 全解除 came back
+  // with the crossing set on it before, and OK wrote that onto the list.
+  for (const k of saidHere.keys()) saidHere.set(k, null);
   changedHere = true;
   stopPlay(false);
   drawPattern();

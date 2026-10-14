@@ -1182,6 +1182,70 @@ def seam_keeps_unsaved_undo(cfg, t):
                 f"after {afters}")
 
 
+def seam_clear_held_join(cfg, t):
+    """seam_keeps_unsaved_undo with 全解除 pressed while b is out of the list:
+    a dissolve set on a -> b and not yet OK'd, b removed (the window is told
+    a -> c), 全解除 in the window, b put back. 全解除 cleared every join in
+    the window, and the one held for a -> b came back with its dissolve; OK
+    wrote it onto a."""
+    rows = [{"path": cfg.a}, {"path": cfg.b}, {"path": cfg.c}]
+    with App(cfg, "seam_clear_held_join", rows, {"joinAll": True}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled"
+            " && document.querySelectorAll('#out-master option').length === 3;"), 90)
+        before = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+        app.s.switch(seam)
+        names = lambda: app.s.js(  # noqa: E731
+            "return [document.getElementById('name-before').textContent,"
+            " document.getElementById('name-after').textContent]")
+        first = wait_for("the join's names", lambda: (lambda n: n[0] not in ("", "—") and n)(names()), 60)
+        app.s.js(
+            "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+            "k.dispatchEvent(new Event('change', {bubbles: true}));")
+        time.sleep(0.5)
+        app.s.switch(app.main)
+        app.s.click('button.tab[data-screen="input"]')
+        app.s.click("#cliplist > li:nth-child(2) .nm")
+        wait_for("クリップ削除", lambda: not app.s.js(
+            "return document.getElementById('remove-clip').disabled"), 15)
+        app.s.click("#remove-clip")
+        wait_for("two rows", lambda: app.s.js(
+            "return document.querySelectorAll('#cliplist > li').length") == 2, 15)
+        app.s.switch(seam)
+        wait_for("the window on a -> c", lambda: (lambda n: n != first and n)(names()), 15)
+        app.s.js("document.getElementById('x-clear').click();")
+        time.sleep(0.5)
+        app.s.switch(app.main)
+        wait_for("削除を元に戻す", lambda: not app.s.js(
+            "return document.getElementById('undo-remove').disabled"), 15)
+        app.s.click("#undo-remove")
+        wait_for("three rows", lambda: app.s.js(
+            "return document.querySelectorAll('#cliplist > li').length") == 3, 15)
+        app.s.click('button.tab[data-screen="outset"]')
+        time.sleep(1.5)
+        app.s.switch(seam)
+        wait_for("the window back on a -> b", lambda: (lambda n: n == first and n)(names()), 15)
+        kind = app.s.js("return document.getElementById('x-kind').value")
+        t.check("31b 全解除 also clears a join held while its row was out of the list",
+                kind == "none", f"kind {kind!r}")
+        try:
+            app.s.click("#cross-ok")
+        except WebDriverError:
+            pass
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+        app.s.switch(app.main)
+        saved = app.save()["clips"]
+        afters = [(c.get("after") or {}).get("kind") for c in saved]
+        t.check("31b OK writes no crossing after 全解除 and the removal undone",
+                len(saved) == 3 and not any(afters), f"after {afters}")
+
 # -- 29 --------------------------------------------------------------------
 def disc_refuses_opus(cfg, t):
     """A BDAV run of three rows whose second has Opus sound (an H.264 + Opus
@@ -1219,6 +1283,119 @@ def disc_refuses_opus(cfg, t):
         t.check("29 the run names the row and the codec, and is over",
                 "op" in said and "opus" in said and button == label,
                 f"note {said!r}, button {button!r}")
+
+
+# -- 29b (rev29 p2gui) ------------------------------------------------------
+def _disc_name(at):
+    """The name `info.bdav` in `at`/BDAV gives the disc, as raw bytes."""
+    try:
+        with open(os.path.join(at, "BDAV", "info.bdav"), "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    n = raw[64] if len(raw) > 64 else 0
+    return raw[65:65 + n]
+
+
+def disc_keeps_its_name(cfg, t):
+    """A disc written with a title typed on the settings screen, then a
+    recording added to it with the field left empty: the disc keeps its name
+    (the series of what is added names only a new disc), and the field says
+    so before the run. A title typed for the addition is still the one
+    written. The command line's --bdav does the same."""
+    at = os.path.join(cfg.work, "disc_keeps_its_name")
+    shutil.rmtree(at, ignore_errors=True)
+    os.makedirs(at)
+    runs = (("typed", [{"path": cfg.a}], "KEEPNAME"),
+            ("left empty", [{"path": cfg.c}], ""),
+            ("typed again", [{"path": cfg.b}], "OTHERNAME"))
+    for what, rows, title in runs:
+        with App(cfg, "disc_keeps_its_name", rows,
+                 {"mode": "bdav", "dir": at, "subfolder": "", "discTitle": title}) as app:
+            app.to_list()
+            wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+            app.s.click('button.tab[data-screen="outset"]')
+            shown = wait_for("the disc's name on the settings screen", lambda: app.s.js(
+                "return document.getElementById('out-disc-title').value"), 30, 0.2)
+            time.sleep(1.0)
+            shown = app.s.js("return document.getElementById('out-disc-title').value")
+            app.export()
+            name = _disc_name(at) or b""
+            want = (title or "KEEPNAME").encode()
+            t.check(f"29b the disc's name, {what}", want in name,
+                    f"info.bdav {name!r} want {want!r}")
+            if not title:
+                t.check("29b the settings screen shows the name the disc keeps", shown == "KEEPNAME",
+                        f"field {shown!r}")
+    shutil.rmtree(at, ignore_errors=True)
+
+
+def disc_name_after_a_run(cfg, t):
+    """One window, one list, into a folder that keeps its disc's name: a run
+    with a title typed, then the field emptied and the same list run again.
+    The name the screen guessed before the first run (the folder had no disc
+    then) must not come back: the field shows, and the second run writes, the
+    name the disc was just given."""
+    at = os.path.join(cfg.work, "disc_name_after_a_run")
+    shutil.rmtree(at, ignore_errors=True)
+    os.makedirs(at)
+    with App(cfg, "disc_name_after_a_run", [{"path": cfg.a}],
+             {"mode": "bdav", "dir": at, "subfolder": "", "discTitle": "KEEPNAME"}) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        time.sleep(1.0)
+        app.export()
+        t.check("29c the first run writes the typed name", b"KEEPNAME" in (_disc_name(at) or b""),
+                f"info.bdav {_disc_name(at)!r}")
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        app.s.js("const b = document.getElementById('out-disc-title'); b.value = '';"
+                 " b.dispatchEvent(new Event('input', {bubbles: true})); b.blur();")
+        time.sleep(1.5)
+        shown = app.s.js("return document.getElementById('out-disc-title').value")
+        t.check("29c the emptied field shows the disc's name", shown == "KEEPNAME", f"field {shown!r}")
+        app.export()
+        name = _disc_name(at) or b""
+        t.check("29c the second run keeps the disc's name", b"KEEPNAME" in name, f"info.bdav {name!r}")
+    shutil.rmtree(at, ignore_errors=True)
+
+
+def disc_name_after_image_only(cfg, t):
+    """As disc_name_after_a_run, but the run makes an image and takes the
+    folder away (イメージのみ): the folder then holds no disc, so the emptied
+    field must not keep the name just typed -- the next run makes a new disc,
+    which its series names."""
+    at = os.path.join(cfg.work, "disc_name_after_image_only")
+    shutil.rmtree(at, ignore_errors=True)
+    os.makedirs(at)
+    night = os.path.join(at, "night")
+    with App(cfg, "disc_name_after_image_only", [{"path": cfg.a}],
+             {"mode": "bdav", "dir": at, "subfolder": "night", "discTitle": "KEEPNAME",
+              "image": "2.50", "imageOnly": True}) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        time.sleep(1.0)
+        app.export()
+        t.check("29d the image is written and the folder taken away",
+                os.path.exists(night + ".iso") and _disc_name(night) is None,
+                f"iso {os.path.exists(night + '.iso')} info.bdav {_disc_name(night)!r}")
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        app.s.js("const i = document.getElementById('out-image'); i.value = '';"
+                 " i.dispatchEvent(new Event('input', {bubbles: true}));"
+                 " const b = document.getElementById('out-disc-title'); b.value = '';"
+                 " b.dispatchEvent(new Event('input', {bubbles: true})); b.blur();")
+        time.sleep(1.5)
+        shown = app.s.js("return document.getElementById('out-disc-title').value")
+        t.check("29d the emptied field does not keep the dropped disc's name", shown != "KEEPNAME",
+                f"field {shown!r}")
+        app.export()
+        name = _disc_name(night) or b""
+        t.check("29d the new disc is not given the dropped one's name", name and b"KEEPNAME" not in name,
+                f"info.bdav {name!r}")
+    shutil.rmtree(at, ignore_errors=True)
 
 
 # -- 19 --------------------------------------------------------------------
@@ -2511,6 +2688,129 @@ def plays_owed_left_behind(cfg, t):
         app.gone()
 
 
+# -- 34b (rev29 appjs) -------------------------------------------------------
+def plays_owed_removed_undone(cfg, t):
+    """`plays_owed_left_behind`'s row (playlist's cuts still owed, read
+    through by the list, the editor's last report from before its walk
+    landed), taken out of the list while the editor is on it -- which closes
+    the editor -- and put back with 削除を元に戻す (`restoreRemoved`). And a
+    copy made of it first (`duplicate`), the source then taken out and put
+    back. Neither may come back with the playlist's cuts never taken."""
+    st = _start_time(cfg.a)
+    plays = [[st + 2.0, st + 8.0], [st + 12.0, st + 18.0]]
+    want = [(0.0, 2.0), (8.0, 12.0), (18.0, 20.0)]
+    rows = [{"path": cfg.a, "plays": plays, "playsOwed": True}, {"path": cfg.c}]
+
+    def covered(got):
+        return all(any(a <= x + 0.05 and y - 0.05 <= b for a, b in got) for x, y in want[:2])
+
+    def due(app):
+        app.s.js("window.__TAURI__.event.emit('editor-state', {id: 1, path: arguments[0],"
+                 " cuts: [], keyframes: [], activeKey: null,"
+                 " cmBlocks: [], cmNote: '', cmFinding: null, detectedWith: {}, flatRuns: [],"
+                 " markFileKind: null, chaptersDue: true, unplayed: [], playsDue: true, touched: false,"
+                 " dropStreams: [], poster: null, playhead: 0, selA: 0, selB: 0, selGone: true});",
+                 cfg.a)
+        time.sleep(1)
+
+    for copy_first in (False, True):
+        with App(cfg, "plays_owed_removed_undone", rows) as app:
+            app.to_list()
+            wait_for("row 1 read", lambda: _walked(app, 1), 120, 0.5)
+            time.sleep(1)
+            app.open_row(1, "a")
+            time.sleep(2)
+            app.to_list()
+            due(app)
+            app.s.click("#cliplist > li:nth-child(1) .nm")
+            time.sleep(0.3)
+            if copy_first:
+                app.s.click("#duplicate-clip")
+                wait_for("the copy", lambda: app.rows() == 3, 10)
+                app.s.click("#cliplist > li:nth-child(1) .nm")
+                time.sleep(0.3)
+            n = app.rows()
+            app.s.click("#remove-clip")
+            wait_for("the row out", lambda: app.rows() == n - 1, 10)
+            app.gone()
+            app.to_list()
+            app.s.click("#undo-remove")
+            wait_for("the row back", lambda: app.rows() == n, 10)
+            time.sleep(1.5)
+            p = app.save()
+            which = ((1, "the row put back"), (2, "its copy")) if copy_first else ((1, "the row put back"),)
+            for k, what in which:
+                got = cuts_of(p, k)
+                t.check(f"34b {what} takes the playlist's cuts ({'copy first' if copy_first else 'removed'})",
+                        covered(got), f"{fmt(got)} want {fmt(want)}; owed {p['clips'][k - 1].get('playsOwed')}")
+
+
+# -- 34c (rev29 p2gui) -------------------------------------------------------
+def plays_due_snapped(cfg, t):
+    """`plays_owed_left_behind`'s report (the editor's last word on a disc
+    row came before its walk landed, `playsDue`), now holding what that
+    visit read before its walk: a Trim line written with the playlist's cuts
+    in it, each end a little under half a frame off them, a cut of the
+    hand's, and a mark just inside the end of one of the playlist's cuts.
+    The editor moves on and the list takes the playlist's cuts (`takePlays`
+    with `due`). The line's ends must go onto the playlist's (merged raw, the
+    two together cut the more of either, a picture lost at each end), all of
+    the playlist's cuts must be the playlist's (`unplayed`; counted against
+    the line they were nobody's, and their joins became chapters), and the
+    mark must stay, on the cut's end. A twin row nobody opened gives the
+    playlist's cuts as the list takes them."""
+    st = _start_time(cfg.a)
+    plays = [[st + 2.0, st + 8.0], [st + 12.0, st + 18.0]]
+    rows = [{"path": cfg.a, "plays": plays, "playsOwed": True},
+            {"path": cfg.a, "plays": plays, "playsOwed": True}, {"path": cfg.c}]
+    off = 0.008  # under half a frame at up to 59.94p
+    hand = (4.0, 5.0)
+
+    with App(cfg, "plays_due_snapped", rows) as app:
+        app.to_list()
+        wait_for("rows read", lambda: _walked(app, 1) and _walked(app, 2), 120, 0.5)
+        time.sleep(1)
+        u = cuts_of(app.save(), 2)
+        if not t.check("34c the twin row takes the playlist's cuts", len(u) >= 2, fmt(u)):
+            return
+        app.open_row(1, "a")
+        time.sleep(2)
+        app.to_list()
+        line = [{"a": a + off, "b": b + off} for a, b in u] + [{"a": hand[0], "b": hand[1]}]
+        line.sort(key=lambda c: c["a"])
+        mark = u[1][1] - off
+        app.s.js("window.__TAURI__.event.emit('editor-state', {id: 1, path: arguments[0],"
+                 " cuts: arguments[1], keyframes: [arguments[2]], activeKey: null,"
+                 " cmBlocks: [], cmNote: '', cmFinding: null, detectedWith: {}, flatRuns: [],"
+                 " markFileKind: 'trim', chaptersDue: false, unplayed: [], playsDue: true, touched: false,"
+                 " dropStreams: [], poster: null, playhead: 0, selA: 0, selB: 0, selGone: true});",
+                 cfg.a, line, mark)
+        time.sleep(1)
+        app.open_row(3, "c")
+        time.sleep(1.5)
+        p = app.save()
+        got = cuts_of(p, 1)
+        want = sorted(u + [hand])
+        merged = []
+        for a, b in want:
+            if merged and a <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        t.check("34c a Trim line read before the walk is put onto the playlist's cuts",
+                _near_cuts(got, merged, 1e-5), f"{fmt(got)} want {fmt(merged)}")
+        e1 = p["clips"][0].get("edit") or {}
+        unplayed = [(c["a"], c["b"]) for c in e1.get("unplayed") or []]
+        t.check("34c all of the playlist's cuts are the playlist's",
+                _near_cuts(unplayed, u, 1e-5), f"{fmt(unplayed)} want {fmt(u)}")
+        keys = e1.get("keyframes") or []
+        t.check("34c a mark just inside a playlist cut's end stays, on the end",
+                any(abs(k - u[1][1]) < 1e-5 for k in keys), f"{keys} want {u[1][1]:.6f}")
+        app.to_editor()
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+
+
 # -- 35 (rev28 mainjs) -------------------------------------------------------
 def plays_cut_marks(cfg, t):
     """A row that came with a playlist's cuts (made-up play items on a.ts, as
@@ -2814,6 +3114,125 @@ def emptied_field_is_unsaved(cfg, t):
                 f"title {title!r}")
 
 
+def real_old_projects_ok_unchanged(cfg, t):
+    """Projects written by earlier versions, as they are on disk (named in
+    GUITEST_OLD_PROJECTS, separated by `:`): each opened, the first row with
+    an edit opened in the editor and left with OK unchanged, is not unsaved
+    work. The synthesised eras of `older_project_ok_unchanged`, on real
+    files. Not in the default list (needs the files)."""
+    names = [p for p in os.environ.get("GUITEST_OLD_PROJECTS", "").split(":") if p]
+    if not t.check("40 GUITEST_OLD_PROJECTS names projects", bool(names), repr(names)):
+        return
+    for name in names:
+        with open(name) as fh:
+            doc = json.load(fh)
+        rows = doc.get("clips") or []
+        at = next((k for k, r in enumerate(rows) if r.get("edit") and os.path.exists(r.get("path", ""))), None)
+        if at is None:
+            t.check(f"40 {os.path.basename(name)} has a row with an edit whose recording is there", False, "")
+            continue
+        stem = os.path.splitext(os.path.basename(rows[at].get("name") or rows[at]["path"]))[0]
+        with App(cfg, "real_old_projects_ok_unchanged", rows, doc.get("settings") or {}) as app:
+            app.to_list()
+            time.sleep(3)
+            first = _main_title(app)
+            app.open_row(at + 1, stem)
+            time.sleep(2)
+            app.ok()
+            app.gone()
+            time.sleep(1.5)
+            after = _main_title(app)
+            e0 = rows[at]["edit"]
+            e1 = app.save()["clips"][at].get("edit") or {}
+            moved = {k: (e0.get(k), e1.get(k)) for k in set(e0) | set(e1)
+                     if k not in ("playhead", "selA", "selB", "selGone", "touched", "id", "path")
+                     and e0.get(k) != e1.get(k)}
+            t.check(f"40 {os.path.basename(name)}: a row left with OK unchanged is not unsaved work",
+                    bool(first) and not first.startswith("*") and not after.startswith("*"),
+                    f"title {first!r} -> {after!r}; edit moved {moved}")
+
+
+# -- rev29 mainjs ------------------------------------------------------------
+def disc_plays_trim_left(cfg, t):
+    """A disc title's row with a Trim line beside it (written by an earlier
+    visit: a cut of the hand's and the playlist's cuts), opened in the editor
+    before the list's walk (lanes stopped) and left for the next row as soon
+    as its counter is up -- before the editor's walk of the title has landed.
+    Back on the row, the Trim line must be on it. Where the files beside a
+    disc title waited for the walk (`playsDue`), a visit left before it
+    landed never read them, and no later visit did either: the row came back
+    without the line's cuts. "After the walk" is the same visit left once the
+    walk is in, for comparison. Needs GUITEST_PLAYS_DISC / GUITEST_PLAYS_TITLE
+    / GUITEST_PLAYS_OUT as `disc_plays`. Not in the default list."""
+    disc = os.environ.get("GUITEST_PLAYS_DISC")
+    out = os.environ.get("GUITEST_PLAYS_OUT")
+    n = int(os.environ.get("GUITEST_PLAYS_TITLE", "1"))
+    if not disc or not os.path.exists(disc) or not out or not os.path.isdir(out):
+        t.check("m29 GUITEST_PLAYS_DISC/OUT name a disc and a folder", False, f"{disc!r} {out!r}")
+        return
+    r = _disc_row(cfg, disc, n, "disc_plays_trim_left")
+    rows = [{"path": r["path"], "name": nm, "stem": nm, "home": out, "chapters": r["chapters"],
+             "plays": r["plays"], "playsOwed": True} for nm in ("f", "g")]
+
+    def sides():
+        return sorted(f for f in os.listdir(out) if f.startswith("f.") and f.endswith((".keyframe", ".trim.avs")))
+
+    def walked(app):
+        wait_for("the walk", lambda: (lambda st: st["frames"] is not None and st["plan"]
+                 and "読み込んで" not in st["plan"] and "Reading" not in st["plan"])(app.state()), 300, 0.3)
+        time.sleep(2)
+
+    for f in sides():
+        os.remove(os.path.join(out, f))
+    # The line: the list's walk first, then a cut by hand, written out.
+    with App(cfg, "disc_plays_trim_left", rows, {"dir": out}) as app:
+        wait_for("the row's playlist cuts", lambda: cuts_of(app.save(), 1), 600, 2)
+        app.open_row(1, "f")
+        walked(app)
+        app.cut(300, 329)
+        app.s.keys("Control+Shift+h")
+        wait_for("the Trim line", lambda: sides(), 15)
+        app.ok()
+        app.gone()
+        written = cuts_of(app.save(), 1)
+    unplayed = {}
+    for leave in ("at once", "after the walk"):
+        with App(cfg, "disc_plays_trim_left", rows, {"dir": out}) as app:
+            app.to_list()
+            app.s.js("const b = document.getElementById('stop-batch'); if (b && !b.disabled) b.click();")
+            time.sleep(1)
+            app.open_row(1, "f")
+            if leave == "after the walk":
+                walked(app)
+            app.open_row(2, "g", wait=False)
+            app.editor_ready("g")
+            e0 = app.save()["clips"][0].get("edit") or {}
+            reached = bool(e0.get("playsDue"))
+            app.open_row(1, "f")
+            walked(app)
+            status = app.state()["status"]
+            app.ok()
+            app.gone()
+            p1 = app.save()
+            got = cuts_of(p1, 1)
+            unplayed[leave] = [(c["a"], c["b"]) for c in (p1["clips"][0].get("edit") or {}).get("unplayed") or []]
+        # Within a picture rather than to the millisecond: a visit left
+        # before its walk landed read the line on the outline's head, and on
+        # a recorder's clip whose map starts later (`disc_head_recount`) it
+        # is not read again on the walk's -- known, and not what this asks.
+        t.check(f"m29 a disc row left {leave} still has its Trim line on the next visit",
+                _near_cuts(got, written, 1.0 / 29.97 + 0.002),
+                f"{fmt(got)} want {fmt(written)}; status {status!r}; left with {fmt([(c['a'], c['b']) for c in e0.get('cuts') or []])}"
+                f"{'' if reached or leave != 'at once' else ' (NOT REACHED: the walk had landed before the row was left)'}")
+    # And which of them the playlist made (no chapters at their joins): the
+    # same either way.
+    t.check("m29 the playlist's cuts are the playlist's whenever the row was left",
+            _near_cuts(unplayed["at once"], unplayed["after the walk"], 1.0 / 29.97 + 0.002),
+            f"at once {fmt(unplayed['at once'])}; after the walk {fmt(unplayed['after the walk'])}")
+    for f in sides():
+        os.remove(os.path.join(out, f))
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -2845,8 +3264,14 @@ SCENARIOS = [
     seam_follows_list,
     seam_keeps_unsaved,
     seam_keeps_unsaved_undo,
+    seam_clear_held_join,
     disc_refuses_opus,
+    disc_keeps_its_name,
+    disc_name_after_a_run,
+    disc_name_after_image_only,
     plays_owed_left_behind,
+    plays_owed_removed_undone,
+    plays_due_snapped,
     plays_cut_marks,
     old_project_ok_unchanged,
     older_project_ok_unchanged,
@@ -2857,7 +3282,8 @@ SCENARIOS = [
 # Selectable by name, not run by default.
 EXTRA = [ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
          disc_seam_gap_chapters, disc_seam_join_chapters, disc_plays_rows, disc_plays_switch,
-         disc_plays_recount, disc_plays_due, disc_plays_trim_first]
+         disc_plays_recount, disc_plays_due, disc_plays_trim_first,
+         real_old_projects_ok_unchanged, disc_plays_trim_left]
 
 
 def main():

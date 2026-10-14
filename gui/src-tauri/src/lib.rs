@@ -4361,8 +4361,13 @@ type Say = std::sync::Arc<dyn Fn(&str, f64) + Send + Sync>;
 /// and how far through it back to whoever asked, because the same pass
 /// serves the editor's own button and the clip list's batch, and the two
 /// report to different places.
+///
+/// `walked` is the editor's alone, and asked only where `src` has no entry
+/// points -- the button pressed while the recording was still being walked,
+/// `src` worn from its outline -- just before the logo pass: see there.
 fn detect_now(
     src: &Source,
+    walked: Option<&dyn Fn() -> Option<Source>>,
     pictures: impl FnOnce() -> Option<Source>,
     threads: usize,
     inserts: bool,
@@ -4413,12 +4418,25 @@ fn detect_now(
 
     let cands = smartcut_core::cm_candidates(&silences, &opts);
 
+    // The logo's template is read from runs spread over the entry points
+    // where the recording has enough of them (`logo::template_reach`), and
+    // from the whole recording where it has none -- which a recording worn
+    // from its outline has. Pressed in the editor during the walk, that gave
+    // the recording another template than the list's and the command line's,
+    // another answer, kept under the same name as theirs. The walk is seconds
+    // and the sound pass above minutes, so it is nearly always in by now;
+    // where it is not, the answer is shown and not kept (`partial`).
+    let asked = walked.filter(|_| src.points.is_empty());
+    let walked = asked.and_then(|f| f()).filter(|w| !w.points.is_empty());
+    let unwalked = asked.is_some() && walked.is_none();
+    let late = walked.as_ref().unwrap_or(src);
+
     // The logo is the better read on how far a break runs, but not every
     // broadcaster shows one; when it is missing, the silences stand alone.
     let logo = if resets.is_none() {
         let reporter = say.clone();
         Some(smartcut_core::logo::detect_with(
-            src,
+            late,
             &smartcut_core::logo::LogoOptions {
                 // The logo half spreads its decoding over the cores it is
                 // allowed, which is the editor's share where the button was
@@ -4462,14 +4480,14 @@ fn detect_now(
     // callers below make that check themselves.
     let pictures = pictures();
     let mut blocks = match (&resets, &logo) {
-        (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, src.duration),
+        (Some(r), _) => smartcut_core::cm_blocks_from_resets(r, late.duration),
         (None, Some(l)) if !l.absent.is_empty() || (opts.find_inserts && !l.brief.is_empty()) => smartcut_core::cm_blocks_from_logo(
             &cands,
             &l.absent,
             &l.brief,
             &opts,
             3.0,
-            src.duration,
+            late.duration,
             pictures.as_ref(),
         ),
         (None, Some(_)) => Vec::new(),
@@ -4491,7 +4509,10 @@ fn detect_now(
         // hand yet -- the editor still walking the recording, or on another
         // one by the end of the pass. Kept, the list served those estimates
         // for as long as the file stayed the same.
-        partial: unsure || pictures.is_none(),
+        //
+        // And a logo read over a recording with no entry points to spread
+        // its template over: see `walked` above.
+        partial: unsure || pictures.is_none() || (unwalked && resets.is_none()),
         logo_found: logo.is_some(),
         resets: resets.as_ref().map_or(0, |r| r.len()),
         blocks: blocks
@@ -4728,8 +4749,10 @@ async fn detect_cm(path: String, inserts: bool, app: tauri::AppHandle) -> Result
         let reporter = app.clone();
         let watcher = app.clone();
         let owned = path.clone();
+        let early = || opened_clone(&app, &path);
         let res = detect_now(
             &src,
+            Some(&early),
             // Asked for at the end rather than at the start, because that is
             // when it is wanted and a great deal happens in between. A
             // detection begun while the recording was still being walked
@@ -4814,6 +4837,8 @@ async fn detect_cm_at(path: String, app: tauri::AppHandle) -> Result<CmResult, S
         let refine = src.clone();
         let res = detect_now(
             &src,
+            // Read through the index: it has its entry points already.
+            None,
             move || Some(refine),
             background_threads(&app),
             // The clip list has no screen of its own to ask on, and this is
@@ -6810,6 +6835,22 @@ async fn programme(path: String) -> Result<ProgrammeInfo, String> {
 #[tauri::command]
 fn series_title(names: Vec<String>) -> String {
     smartcut_core::series::shared(&names).unwrap_or_default()
+}
+
+/// What the disc already in `dir` is called, or empty where there is none
+/// yet or it has no name. A run adding to a disc nobody has named on the
+/// settings screen keeps that name; the series names only a new disc. The
+/// command line does the same (`--bdav` without `--disc-title`).
+#[tauri::command]
+async fn bdav_title(dir: String) -> String {
+    tauri::async_runtime::spawn_blocking(move || {
+        local_path(&dir)
+            .ok()
+            .and_then(|at| smartcut_core::disc::bdav_title(&at))
+            .unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Make the disc's directories and say what the next `n` recordings on it
@@ -9389,6 +9430,7 @@ pub fn run() {
             recovery::recovery_forget,
             programme,
             series_title,
+            bdav_title,
             bdav_prepare,
             bdav_discard,
             bdav_finish,

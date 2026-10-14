@@ -6854,19 +6854,27 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // is unknown for. Its marks would land the second or so early that the
     // clock's own zero puts them, so that one waits for the walk after all.
     //
-    // And so does a disc title whose playlist's cuts this visit still owes
-    // (`playsDue`): they go down after the walk (`applyPlays`), and read
-    // before them a Trim line's ends and the marks just after each of those
-    // cuts were not put onto the cuts' own ends, as they are when the files
-    // are read on top of them (`partCuts` in `readTrimFile`, `came` in
-    // `readKeyframeFile`) -- a mark half a frame inside one was lost, and a
-    // Trim end half a frame past one kept a picture fewer.
-    const early = first && !playsDue && src.points.length === 0 && src.head !== null;
+    // A disc title whose playlist's cuts this visit still owes (`playsDue`)
+    // reads them here too. Its cuts go down after the walk (`applyPlays`),
+    // which puts what was read onto their ends -- a Trim line's ends and the
+    // marks half a frame off them, as `readTrimFile` and `readKeyframeFile`
+    // do for files read on top of them. Left until after the walk instead,
+    // the files of a visit left before it landed -- the next row opened at
+    // once -- were never read, on that visit or any later one: the row came
+    // back without its Trim line, and the disc's chapters in its place. And
+    // a cut made during the walk was replaced by the line when it arrived.
+    const early = first && src.points.length === 0 && src.head !== null;
     let marks = false;
     // What the timeline held before the files were read, and the head they
     // were counted from, for the one case the walk answers differently: see
     // `recountEarly`.
     let readEarly = null;
+    // The row's cuts before the files and after them, where the playlist's
+    // cuts go down later: which of those the playlist made is counted
+    // against what the row arrived with and what the hand cut, not against
+    // a Trim line that has them in it already (`unplayedCuts`). See
+    // `applyPlays`.
+    let filed = null;
     if (early) {
       const before = {
         head: headTime(),
@@ -6881,10 +6889,13 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
       };
       marks = await settle(() => loadMarkFiles());
       if (marks && (markFileKind === "keyframe" || markFileKind === "trim")) readEarly = before;
+      if (playsDue) filed = { before, after: cuts.map((c) => ({ a: c.a, b: c.b })) };
     }
     recountHead = readEarly && !overtaken() ? readEarly.head : null;
     if (overtaken()) return;
-    if (early) marksDue = false;
+    // Still refused until the playlist's cuts are down: a line written in
+    // that wait is the row without them.
+    if (early && !playsDue) marksDue = false;
     // A file beside the recording has answered for the chapters: said now
     // rather than after the walk, or an OK during it left the row owing them,
     // and the next visit put them down on top of the file's marks.
@@ -6910,9 +6921,15 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     if (overtaken()) return;
     if (readEarly) await recountEarly(readEarly);
     if (overtaken()) return;
+    // Read again on the walk's head, with nothing done by hand since.
+    if (filed && !touched()) filed.after = cuts.map((c) => ({ a: c.a, b: c.b }));
     // What a disc title's playlist leaves out, where the list has not cut
-    // it yet: on the walk's clock and length, as the list would have.
-    if (playsDue) await settle(() => applyPlays(plays));
+    // it yet: on the walk's clock and length, as the list would have. On a
+    // visit after one left before its walk landed, all of it is the
+    // playlist's: what that visit sent holds the files it read before the
+    // walk, a Trim line with these cuts in it among them, and counted
+    // against that they were nobody's -- chapters at their joins.
+    if (playsDue) await settle(() => applyPlays(plays, filed ? arrivedCuts(filed) : first ? cuts : []));
     if (overtaken()) return;
     playsDue = false;
     if (first && !early) marks = await settle(() => loadMarkFiles());
@@ -7014,6 +7031,20 @@ async function pointsArrived(exact, picked) {
   }
   if (!src || src.path !== picked) return;
   const at = playhead;
+  // IN and OUT are places on the output, which starts at the first picture
+  // (`headTime`): where the walk puts that somewhere other than the outline
+  // did -- a recorder's clip whose map starts half a second after its first
+  // key picture -- a selection made during the walk stood that far along on
+  // other pictures once it landed, and so did the history's. Kept on their
+  // pictures, as `applyPlays` keeps them.
+  const head1 = full.points && full.points.length ? full.points[0] : (full.head ?? 0);
+  const pinned =
+    Math.abs(head1 - headTime()) >= 1e-6
+      ? {
+          live: selGone ? null : selEnds({ selA, selB }),
+          steps: past.concat(undone).map((step) => ({ step, e: onCuts(step.cuts, () => selEnds(step)) })),
+        }
+      : null;
   // A step of the history whose OUT stood on the end of its own timeline,
   // which is the end the walk found as much as the live OUT below is: put
   // back by 取消 at the old end, it was a frame short of the last picture
@@ -7093,6 +7124,20 @@ async function pointsArrived(exact, picked) {
   rebuildTimeline();
   selB = toEnd ? outDur : Math.min(selB, outDur);
   selA = Math.min(selA, selB);
+  if (pinned) {
+    for (const { step, e } of pinned.steps) {
+      const s = onCuts(step.cuts, () => selOnto(e));
+      step.selA = s.a;
+      step.selB = s.b;
+      if (s.gone) step.selGone = true;
+    }
+    if (pinned.live) {
+      const s = selOnto(pinned.live);
+      selA = s.gone ? 0 : s.a;
+      selB = s.gone ? outDur : s.b;
+      selGone = s.gone;
+    }
+  }
   renderKeyframes();
   stripCache = null;
   stripShots = [];
@@ -7837,13 +7882,40 @@ let playsDue = false;
 /// Where the engine has put them on the pictures the walk found
 /// (`disc::unplayed_in`, sent with the walk as `unplayed`), those; worked
 /// out here only from a backend that did not.
-function applyPlays(plays) {
+///
+/// `own` is what the playlist's cuts are counted against for which of them
+/// it made (`unplayedCuts`): the row's cuts, less a file read before the
+/// walk (`arrivedCuts`).
+function applyPlays(plays, own = cuts) {
   if (!src) return;
   const u = Array.isArray(src.unplayed)
     ? src.unplayed.filter((r) => Array.isArray(r) && r[1] > r[0]).map(([a, b]) => ({ a, b }))
     : unplayedOf(plays, src.start_time, headTime(), src.duration);
-  const beyond = cutsBeyond(u, cuts);
+  const beyond = cutsBeyond(u, own);
   if (!beyond.length) return;
+  // Playback can start the moment the walk is in (`walked`), and it plays
+  // the ranges it was given: left running, it went on through what these
+  // cut, as every cut does (`applyCuts`).
+  if (playing) stopPlay(false);
+  // What was read before the walk -- a Trim line, a `.keyframe` -- counts
+  // frames from the first picture, and past a recorder's seam these cuts'
+  // ends are not on that count: a line written with them in it came back up
+  // to half a frame off them. Merged as it stood, the two together cut the
+  // more of either, and a picture was lost where the line's end fell past
+  // the picture the cut ends on. Put onto their ends first, as
+  // `readTrimFile` puts a line read on top of them (`onBounds`); and a mark
+  // half a frame inside one onto its end, as `readKeyframeFile` does.
+  const snap = (list) => onBounds(list, u);
+  const ontoEnd = (list) => (t) => {
+    const c = list.find(
+      (r) => t >= r.a && t < r.b && r.b - t < frame() / 2 && u.some((o) => Math.abs(o.b - r.b) < 1e-6)
+    );
+    return c ? c.b : t;
+  };
+  const marksOn = (keys, list) => {
+    const all = keys.map(ontoEnd(list)).sort((x, y) => x - y);
+    return all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
+  };
   // IN and OUT are places on the output, and these cuts move the output
   // under them: set during the walk, they stood the length of every cut
   // before them further on once it landed, over other pictures, and the Del
@@ -7851,19 +7923,20 @@ function applyPlays(plays) {
   // the steps of the history made in that wait, which hold the cuts as they
   // were then: 取消 of a cut made during the walk put back a timeline with
   // none of the playlist's cuts in it, and they went out of the file
-  // without a word.
-  const ends = (s) => ({ a: outToSrc(s.selA), b: s.selB >= outDur - 1e-9 ? null : outToSrc(s.selB) });
-  const onto = (e) => {
-    const a = clamp(srcToOutSeam(e.a), 0, outDur);
-    return { a, b: e.b === null ? outDur : clamp(srcToOutSeam(e.b), a, outDur) };
-  };
+  // without a word. See `selEnds`.
+  const ends = selEnds;
+  const onto = selOnto;
   const live = ends({ selA, selB });
   const steps = past.concat(undone).map((step) => {
     const e = onCuts(step.cuts, () => ends(step));
-    step.cuts = normalise(step.cuts.concat(u));
+    step.cuts = normalise(snap(step.cuts).concat(u));
+    step.keyframes = marksOn(step.keyframes, step.cuts);
+    if (step.activeKey !== null) step.activeKey = ontoEnd(step.cuts)(step.activeKey);
     return { step, e };
   });
-  cuts = normalise(cuts.concat(u));
+  cuts = normalise(snap(cuts).concat(u));
+  keyframes = marksOn(keyframes, cuts);
+  if (activeKey !== null) activeKey = ontoEnd(cuts)(activeKey);
   partCuts = normalise(partCuts.concat(u));
   playsCut = normalise(playsCut.concat(beyond));
   unplayedCuts = normalise(unplayedCuts.concat(beyond));
@@ -7872,14 +7945,16 @@ function applyPlays(plays) {
     const s = onCuts(step.cuts, () => onto(e));
     step.selA = s.a;
     step.selB = s.b;
+    if (s.gone) step.selGone = true;
   }
   if (selGone) {
     selA = 0;
     selB = outDur;
   } else {
     const s = onto(live);
-    selA = s.a;
-    selB = s.b;
+    selA = s.gone ? 0 : s.a;
+    selB = s.gone ? outDur : s.b;
+    selGone = s.gone;
   }
   playhead = outToSrc(clamp(srcToOutSeam(playhead), 0, lastStop()));
   renderKeyframes();
@@ -7889,6 +7964,45 @@ function applyPlays(plays) {
   scheduleStrip();
   schedulePlan();
   showFrame(playhead);
+}
+
+/// IN and OUT as the pictures they stand on, for a timeline about to move
+/// under them (`selOnto` puts them back). IN on the start of the timeline is
+/// the start and OUT on its end the end, wherever those turn out to be.
+const selEnds = (s) => ({
+  a: s.selA <= 1e-9 ? null : outToSrc(s.selA),
+  b: s.selB >= outDur - 1e-9 ? null : outToSrc(s.selB),
+});
+
+/// `selEnds`'s pictures on the timeline as it is now. OUT is the last
+/// picture kept in the selection, so one a cut has taken goes back to the
+/// picture before the cut rather than on to the one after: put at the join,
+/// the selection reached over the cut to the first picture past it, and a
+/// Del took that picture too. IN and OUT both inside one cut is a selection
+/// of nothing that is left (`gone`) -- which a Del took as the picture at
+/// the join.
+function selOnto(e) {
+  const a = e.a === null ? 0 : clamp(srcToOutSeam(e.a), 0, outDur);
+  if (e.b === null) return { a, b: outDur, gone: false };
+  const b = clamp(srcToOutSeam(e.b + frame()) - frame(), 0, outDur);
+  return b < a - 1e-9 ? { a, b: a, gone: true } : { a, b, gone: false };
+}
+
+/// The cuts a disc title's row arrived with, for `applyPlays` to count the
+/// playlist's cuts against, where the files beside it were read before the
+/// walk (`filed` in `openPath`): what was there before them, and what the
+/// hand has cut since. Not the line's own cuts: it was written with the
+/// playlist's in it, and counted against them those were nobody's -- no
+/// step of 取消 took them back, and their joins became chapters.
+function arrivedCuts(filed) {
+  // On the walk's length, as `pointsArrived` moved the cuts that ran to the
+  // old end.
+  const end = (c) => ({
+    a: c.a,
+    b: c.b >= filed.before.duration - 1e-6 ? Math.max(c.b, src.duration) : c.b,
+  });
+  const hand = touched() ? cutsBeyond(cuts, filed.after.map(end)) : [];
+  return normalise(filed.before.cuts.map(end).concat(hand));
 }
 
 /// One step at the bottom of the history: the row as it arrived, less the

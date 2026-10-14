@@ -4572,11 +4572,43 @@ function takePlays(clip) {
   const u = Array.isArray(i.unplayed)
     ? i.unplayed.filter((r) => Array.isArray(r) && r[1] > r[0]).map(([a, b]) => ({ a, b }))
     : unplayedOf(clip.plays, i.start_time, i.first_point || 0, i.duration);
-  const had = clip.edit ? normalise(clip.edit.cuts) : [];
-  const fresh = cutsBeyond(u, had);
+  // An edit sent before its visit's walk landed holds what that visit read
+  // before it -- a Trim line, a `.keyframe` -- and a line written with these
+  // cuts in it comes back up to half a frame off their ends past a
+  // recorder's seam (it counts frames from the first picture). Merged as it
+  // stood, the two together cut the more of either and a picture was lost
+  // at the cut's end; and counted against it, these cuts were nobody's, so
+  // their joins became chapters. Put onto their ends first and all of them
+  // taken as the playlist's, as the editor does on a visit owing them
+  // (`applyPlays` in main.js).
+  const half = 0.5 / (i.fps > 0 ? i.fps : 30);
+  const near = (t) => {
+    const o = u.find((c) => Math.abs(c.a - t) < half) || u.find((c) => Math.abs(c.b - t) < half);
+    if (!o) return t;
+    return Math.abs(o.a - t) < half ? o.a : o.b;
+  };
+  const had = clip.edit
+    ? normalise(due ? clip.edit.cuts.map((c) => ({ a: near(c.a), b: near(c.b) })) : clip.edit.cuts)
+    : [];
+  const fresh = due ? u : cutsBeyond(u, had);
   if (!fresh.length) return;
   if (clip.edit) {
     clip.edit.cuts = normalise(had.concat(u));
+    if (due) {
+      // A mark up to half a frame inside one of them onto its end, as
+      // `readKeyframeFile` puts one read on top of them.
+      const ontoEnd = (t) => {
+        const c = clip.edit.cuts.find(
+          (r) => t >= r.a && t < r.b && r.b - t < half && u.some((o) => Math.abs(o.b - r.b) < 1e-6)
+        );
+        return c ? c.b : t;
+      };
+      if (Array.isArray(clip.edit.keyframes)) {
+        const all = clip.edit.keyframes.filter(Number.isFinite).map(ontoEnd).sort((x, y) => x - y);
+        clip.edit.keyframes = all.filter((t, k) => k === 0 || t - all[k - 1] > half);
+      }
+      if (Number.isFinite(clip.edit.activeKey)) clip.edit.activeKey = ontoEnd(clip.edit.activeKey);
+    }
     // A part of a division, not yet visited, keeps what makes it a part.
     if (clip.edit.fresh) clip.edit.partCuts = normalise((clip.edit.partCuts || []).concat(u));
     clip.edit.unplayed = normalise((clip.edit.unplayed || []).concat(fresh));
@@ -6809,7 +6841,17 @@ let discGuess = { of: null, title: "" };
 /// The names of the programmes in the list, as one string: what the guess
 /// above was made from, and what tells a stale guess from a good one.
 function discGuessKey(list) {
-  return list.map(programmeOf).join("\n");
+  return list.map(programmeOf).join("\n") + "\n\0" + (keptDiscDir() || "");
+}
+
+/// The folder whose disc keeps its own name, where the disc is written into
+/// a folder that is not named after the disc: `null` otherwise. A folder of
+/// its own that follows the disc's name (the default, `filledIn`) holds a
+/// disc of that name or a new one, and asking it would be asking a folder
+/// named by the answer.
+function keptDiscDir() {
+  if (settings.subfolder === null || settings.subfolder === filledIn || !outDir()) return null;
+  return discDir();
 }
 
 /// Ask the engine what a disc of these is called. Resolves to a name, and
@@ -6830,13 +6872,27 @@ async function guessDiscTitle(list) {
   const key = discGuessKey(list);
   if (discGuess.of === key) return discGuess.title;
   let title = "";
+  // A disc already there keeps its name -- typed here on an earlier run, or
+  // into the recorder -- as the command line keeps it: the series of what
+  // is added names only a new disc. Renamed after each run's recordings, a
+  // disc of one evening's mixture lost the name somebody gave it.
+  const kept = keptDiscDir();
+  if (kept) title = await invoke("bdav_title", { dir: kept }).catch(() => "");
   try {
-    title = await invoke("series_title", { names: list.map(programmeOf) });
+    if (!title) title = await invoke("series_title", { names: list.map(programmeOf) });
   } catch {
     title = "";
   }
   discGuess = { of: key, title: title || stamp() };
   return discGuess.title;
+}
+
+/// The guess put down and asked again of the folder, for a run that left
+/// the disc there under a name it cannot be sure of -- see `keptDiscDir` and
+/// the end of the disc run.
+function rereadDiscName(list) {
+  discGuess = { of: null, title: "" };
+  guessDiscTitle(list).then(() => renderOutset());
 }
 
 /// Today, by the clock in the room: `2026-09-11`.
@@ -9546,9 +9602,10 @@ async function startExport() {
       el("out-state").textContent = t("out.bdavIndexing", { clip: wrote[0].slot.clip });
       renderOutScreen();
       try {
+        const discName = discTitleFor(list);
         const wroteBytes = await invoke("bdav_finish", {
           dir: discDir(),
-          title: discTitleFor(list),
+          title: discName,
           entries: wrote.map(({ clip, slot }) => ({
             clip: slot.clip,
             name: programmeOf(clip),
@@ -9569,6 +9626,12 @@ async function startExport() {
           })),
         });
         finishStep("index", "done");
+        // The disc in a folder that keeps its name is now called this. The
+        // guess above was read before the run, off what the folder held then
+        // -- nothing, or a name since typed over -- and left standing, a
+        // field emptied for the next run of the same list showed, and wrote,
+        // that older name in place of the one just given. See `keptDiscDir`.
+        if (keptDiscDir()) discGuess = { of: discGuessKey(list), title: discName };
         note(
           t("out.bdavDone", {
             path: `${discDir()}/BDAV`,
@@ -9632,6 +9695,9 @@ async function startExport() {
             if (settings.imageOnly) {
               try {
                 note(t("out.folderGone", { path: await invoke("bdav_drop", { dir: discDir() }) }));
+                // The folder holds no disc now, and the next run's is a new
+                // one: named by its series, not by the name just set above.
+                if (keptDiscDir()) rereadDiscName(list);
               } catch (e) {
                 note(t("out.folderStays", { e: String(e) }));
               }
@@ -9644,6 +9710,10 @@ async function startExport() {
       } catch (e) {
         finishStep("index", "error");
         note(t("out.bdavFailed", { e: String(e) }));
+        // A recording that could not be indexed still leaves the table
+        // written, under the name given (`bdav::write`); a failure before it
+        // leaves the old one. Which, only the folder knows.
+        if (keptDiscDir()) rereadDiscName(list);
       }
     }
   }
@@ -10352,7 +10422,13 @@ async function putProject(path, settled = outputSettled, forRun = false) {
 }
 
 async function writeProject(path) {
+  // What is being written, taken in the same tick `putProject` captures it.
+  // A cut the editor reports while the file is on its way (a share can take
+  // seconds) is not in the file, and taking the shape only after the write
+  // put no `*` up over it: closing the window then lost it without asking.
+  const sent = shapeOf();
   if (!(await putProject(path))) return false;
+  const moved = shapeOf() !== sent;
   projectPath = path;
   // The folder of its own is named after the project, and the project has
   // just been given a name -- its first, or another one under 名前を付けて
@@ -10363,7 +10439,9 @@ async function writeProject(path) {
   // `settleSubfolder`.
   renderOutset();
   renderOutScreen();
-  savedShape = shapeOf();
+  // Where something moved during the write, the file is behind it, and the
+  // shape put down is the one written.
+  savedShape = moved ? sent : shapeOf();
   retitleMain();
   note(t("project.saved", { name: nameOf(path) }));
   // 保存 over the job this window was opened on is バッチを上書き by another
@@ -11616,6 +11694,8 @@ async function projectForQueue() {
       return "";
     }
   }
+  // What the copy holds, in the tick it is captured: see `writeProject`.
+  const sent = shapeOf();
   if (!(await putProject(path, true, true))) return "";
   // Written over a copy the queue may already hold: the tool keeps what its
   // card shows about a project until it hears the file has changed, and a
@@ -11632,7 +11712,7 @@ async function projectForQueue() {
   // copy is what it now has instead. Where there was a project, `writeProject`
   // has already said as much.
   if (!projectPath) {
-    savedShape = shapeOf();
+    savedShape = sent;
     retitleMain();
   }
   return path;
@@ -11701,11 +11781,13 @@ async function enlistList() {
 /// edited here does not go back to 待機 on its own: whether it is to be
 /// written again is もう一度出力する, on the row, where it was before.
 async function overwriteQueuedJob() {
+  // What the file holds, in the tick it is captured: see `writeProject`.
+  const sent = shapeOf();
   if (!(await putProject(queuedJob, true))) return;
   await touchQueuedJob(queuedJob);
   // This list is now what is on disc, wherever the title bar is pointed.
   if (projectPath === queuedJob) {
-    savedShape = shapeOf();
+    savedShape = sent;
     retitleMain();
   }
   sayHere(t("batch.overwritten", { name: stemOf(queuedJob) }));
