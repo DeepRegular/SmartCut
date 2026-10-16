@@ -56,6 +56,13 @@ let selB = 0;
 /// showing them and Del has nothing to take. Putting either end down again
 /// is a new selection.
 let selGone = false;
+/// IN and OUT as the open put them back from the row's edit, until the walk
+/// lands. A selection the row came back with was set on the timeline its
+/// last visit's walk had laid out -- that head, those seams -- and stands on
+/// the same output once this one's lands; only one set during this walk is
+/// on the outline's and has to be moved onto its pictures. See
+/// `pointsArrived`.
+let selArrived = null;
 /// Whether the marks in the picture's corners are drawn. Read at open, and
 /// told again by the list window when 環境設定 changes it. See `paintMarks`.
 let marksOn = prefs.get("pictureMarks") !== false;
@@ -6831,6 +6838,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     selA = !first ? Math.min(saved.selA, outDur) : 0;
     selB = !first ? Math.min(saved.selB, outDur) : outDur;
     selGone = first || !!saved.selGone || (selA <= 0 && selB >= outDur - 1e-9);
+    selArrived = { selA, selB, selGone };
     // And the playhead, which the picture below puts on its frame: until
     // then it was the last recording's instant, and a mark or a cover set in
     // the wait for the files beside the recording landed there.
@@ -7037,12 +7045,31 @@ async function pointsArrived(exact, picked) {
   // key picture -- a selection made during the walk stood that far along on
   // other pictures once it landed, and so did the history's. Kept on their
   // pictures, as `applyPlays` keeps them.
+  //
+  // And so where the walk brings a recorder's seams with clock nobody writes
+  // (`unwritten`, which the outline never has): the output closes over them
+  // (`rebuildTimeline`), and an IN or OUT past the first stood the length of
+  // every hole before it further on, over other pictures, with the head where
+  // it was.
   const head1 = full.points && full.points.length ? full.points[0] : (full.head ?? 0);
+  const holes = (s) => JSON.stringify(Array.isArray(s.unwritten) ? s.unwritten : []);
+  // Not the selection the row came back with (`selArrived`), which is on
+  // this walk's timeline already: moved too, it went the head's difference
+  // the other way at every visit after the first -- 15 frames earlier on a
+  // recorder's clip whose map starts late -- and a Del took other pictures.
+  const asArrived = (s) =>
+    selArrived !== null &&
+    s.selA === selArrived.selA &&
+    s.selB === selArrived.selB &&
+    !!s.selGone === selArrived.selGone;
   const pinned =
-    Math.abs(head1 - headTime()) >= 1e-6
+    Math.abs(head1 - headTime()) >= 1e-6 || holes(full) !== holes(src)
       ? {
-          live: selGone ? null : selEnds({ selA, selB }),
-          steps: past.concat(undone).map((step) => ({ step, e: onCuts(step.cuts, () => selEnds(step)) })),
+          live: selGone || asArrived({ selA, selB, selGone }) ? null : selEnds({ selA, selB }),
+          steps: past
+            .concat(undone)
+            .filter((step) => !asArrived(step))
+            .map((step) => ({ step, e: onCuts(step.cuts, () => selEnds(step)) })),
         }
       : null;
   // A step of the history whose OUT stood on the end of its own timeline,

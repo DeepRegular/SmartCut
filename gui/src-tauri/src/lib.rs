@@ -2286,6 +2286,11 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<bool, Strin
 /// building a webview on the main thread is what WebView2 will not do.
 #[tauri::command]
 async fn open_zoom(title: String, app: tauri::AppHandle) -> Result<(), String> {
+    // One at a time, as [`open_editor`] holds its own: Z pressed twice before
+    // the first window is up found none and built two (`zoom_double_press`,
+    // seen under load), and the one the editor's close did not find stayed.
+    static BUILDING: Mutex<()> = Mutex::new(());
+    let _one = locked(&BUILDING);
     if let Some(w) = app.get_webview_window(ZOOM) {
         // Already up: this is the menu being pressed twice, not a second one.
         let _ = w.set_title(&title);
@@ -2343,6 +2348,9 @@ fn close_zoom(app: tauri::AppHandle) {
 /// thread is the one thing WebView2 will not do.
 #[tauri::command]
 async fn open_cross(title: String, app: tauri::AppHandle) -> Result<(), String> {
+    // One at a time, for the reason [`open_zoom`] gives.
+    static BUILDING: Mutex<()> = Mutex::new(());
+    let _one = locked(&BUILDING);
     if let Some(w) = app.get_webview_window(CROSS) {
         let _ = w.set_title(&title);
         let _ = w.unminimize();

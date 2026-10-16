@@ -467,6 +467,27 @@ def zoom_double_press(cfg, t):
                 f"{len(left)} window(s) besides the list")
 
 
+
+def cross_double_press(cfg, t):
+    """open_cross asked twice in one tick from the list: one 継ぎ目の編集, and
+    nothing of it left once it is closed. The same shape as
+    zoom_double_press (Tauri checks for the label before it builds and
+    registers the window only once built); open_cross had no lock either
+    until the thirtieth review."""
+    with App(cfg, "cross_double_press", clips(cfg)) as app:
+        app.s.js("const i = window.__TAURI_INTERNALS__.invoke;"
+                 "i('open_cross', {title: 'c1'}); i('open_cross', {title: 'c2'});")
+        time.sleep(4.0)
+        crosses = [h for h in app.s.handles() if h != app.main]
+        t.check("cross: asked twice opens one 継ぎ目の編集", len(crosses) <= 1,
+                f"{len(crosses)} seam window(s)")
+        app.s.switch(app.main)
+        app.s.js("window.__TAURI_INTERNALS__.invoke('close_cross');")
+        time.sleep(2.0)
+        left = [h for h in app.s.handles() if h != app.main]
+        t.check("cross: closing it leaves no window behind", left == [],
+                f"{len(left)} window(s) besides the list")
+
 # -- 8 ---------------------------------------------------------------------
 def close_by_cross(app):
     """The editor's title-bar cross: the window manager's close, as a hand
@@ -1245,6 +1266,70 @@ def seam_clear_held_join(cfg, t):
         afters = [(c.get("after") or {}).get("kind") for c in saved]
         t.check("31b OK writes no crossing after 全解除 and the removal undone",
                 len(saved) == 3 and not any(afters), f"after {afters}")
+
+def seam_all_untouched_join(cfg, t):
+    """seam_clear_held_join with nothing changed before b is removed: b taken
+    out of the list while the window is open and untouched (the window is
+    told a -> c), a dissolve set and 一括適用 pressed, b put back. Nothing had
+    been changed when b went, so its two joins were not held, and they came
+    back with the list's crossing (none) rather than the one applied to all;
+    OK wrote none onto a and b."""
+    rows = [{"path": cfg.a}, {"path": cfg.b}, {"path": cfg.c}]
+    with App(cfg, "seam_all_untouched_join", rows, {"joinAll": True}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled"
+            " && document.querySelectorAll('#out-master option').length === 3;"), 90)
+        before = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+        app.s.switch(seam)
+        names = lambda: app.s.js(  # noqa: E731
+            "return [document.getElementById('name-before').textContent,"
+            " document.getElementById('name-after').textContent]")
+        first = wait_for("the join's names", lambda: (lambda n: n[0] not in ("", "—") and n)(names()), 60)
+        app.s.switch(app.main)
+        app.s.click('button.tab[data-screen="input"]')
+        app.s.click("#cliplist > li:nth-child(2) .nm")
+        wait_for("クリップ削除", lambda: not app.s.js(
+            "return document.getElementById('remove-clip').disabled"), 15)
+        app.s.click("#remove-clip")
+        wait_for("two rows", lambda: app.s.js(
+            "return document.querySelectorAll('#cliplist > li').length") == 2, 15)
+        app.s.switch(seam)
+        wait_for("the window on a -> c", lambda: (lambda n: n != first and n)(names()), 15)
+        app.s.js(
+            "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+            "k.dispatchEvent(new Event('change', {bubbles: true}));"
+            "document.getElementById('x-all').click();")
+        time.sleep(0.5)
+        app.s.switch(app.main)
+        wait_for("削除を元に戻す", lambda: not app.s.js(
+            "return document.getElementById('undo-remove').disabled"), 15)
+        app.s.click("#undo-remove")
+        wait_for("three rows", lambda: app.s.js(
+            "return document.querySelectorAll('#cliplist > li').length") == 3, 15)
+        app.s.click('button.tab[data-screen="outset"]')
+        time.sleep(1.5)
+        app.s.switch(seam)
+        wait_for("the window back on a -> b", lambda: (lambda n: n == first and n)(names()), 15)
+        kind = app.s.js("return document.getElementById('x-kind').value")
+        t.check("31c 一括適用 reaches a join whose row was out of the list before anything was changed",
+                kind == "dissolve", f"kind {kind!r}")
+        try:
+            app.s.click("#cross-ok")
+        except WebDriverError:
+            pass
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+        app.s.switch(app.main)
+        saved = app.save()["clips"]
+        afters = [(c.get("after") or {}).get("kind") for c in saved]
+        t.check("31c OK writes the crossing applied to all onto both joins put back",
+                len(saved) == 3 and afters[:2] == ["dissolve", "dissolve"], f"after {afters}")
 
 # -- 29 --------------------------------------------------------------------
 def disc_refuses_opus(cfg, t):
@@ -2811,6 +2896,49 @@ def plays_due_snapped(cfg, t):
         app.gone()
 
 
+
+# -- 34d (rev30 appjs) -------------------------------------------------------
+def plays_due_selection(cfg, t):
+    """`plays_due_snapped`'s report (the editor's last word on a disc row came
+    before its walk landed, `playsDue`), with IN and OUT set during the walk
+    at 5 s and 6 s of a timeline with no cuts yet. The editor moves on and the
+    list takes the playlist's cuts (`takePlays` with `due`), which take 2 s
+    off the head: IN and OUT are places on the output, and left at 5 and 6
+    they stood over other pictures (7 s and 8 s of the recording) when the
+    row came back to the editor, and a Del took those. They must stay on
+    their pictures, at 3 s and 4 s."""
+    st = _start_time(cfg.a)
+    plays = [[st + 2.0, st + 8.0], [st + 12.0, st + 18.0]]
+    rows = [{"path": cfg.a, "plays": plays, "playsOwed": True}, {"path": cfg.c}]
+    with App(cfg, "plays_due_selection", rows) as app:
+        app.to_list()
+        wait_for("row 1 read", lambda: _walked(app, 1), 120, 0.5)
+        time.sleep(1)
+        app.open_row(1, "a")
+        time.sleep(2)
+        app.to_list()
+        app.s.js("window.__TAURI__.event.emit('editor-state', {id: 1, path: arguments[0],"
+                 " cuts: [], keyframes: [], activeKey: null,"
+                 " cmBlocks: [], cmNote: '', cmFinding: null, detectedWith: {}, flatRuns: [],"
+                 " markFileKind: null, chaptersDue: false, unplayed: [], playsDue: true, touched: true,"
+                 " dropStreams: [], poster: null, playhead: 5.5, selA: 5.0, selB: 6.0, selGone: false});",
+                 cfg.a)
+        time.sleep(1)
+        app.open_row(2, "c")
+        time.sleep(1.5)
+        p = app.save()
+        e1 = p["clips"][0].get("edit") or {}
+        got = cuts_of(p, 1)
+        sel = (e1.get("selA"), e1.get("selB"), e1.get("selGone"))
+        ok = (isinstance(sel[0], (int, float)) and isinstance(sel[1], (int, float))
+              and abs(sel[0] - 3.0) < 0.15 and abs(sel[1] - 4.0) < 0.15 and not sel[2])
+        t.check("34d IN and OUT set during the walk stay on their pictures", ok,
+                f"selA/selB/selGone {sel} want ~3.0/~4.0/False; cuts {fmt(got)}")
+        app.to_editor()
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+
+
 # -- 35 (rev28 mainjs) -------------------------------------------------------
 def plays_cut_marks(cfg, t):
     """A row that came with a playlist's cuts (made-up play items on a.ts, as
@@ -3233,6 +3361,55 @@ def disc_plays_trim_left(cfg, t):
         os.remove(os.path.join(out, f))
 
 
+
+# -- 30 (rev30 p2gui) -------------------------------------------------------
+def reopen_keeps_selection_late_head(cfg, t):
+    """IN and OUT set once the walk is in, OK, and the row opened again: a
+    recording whose outline head is not its walk's first entry point (here the
+    outline finds no head at all, so its timeline starts at 0 and the walk's
+    20 s later; on a recorder's disc clip whose map starts late, half a
+    second). 082badc moved every selection on screen onto its pictures when
+    the walk landed -- the one the revisit put back too, which was measured
+    on the last visit's walked timeline already -- so it went the head's
+    difference the other way (`selArrived` in main.js). The second visit's
+    OK must hand back the IN and OUT the first one did."""
+    make_late_head(cfg)
+    def landed(app):
+        st = app.state()
+        return st["frames"] is not None and st["plan"] and "読み込んで" not in st["plan"] \
+            and "Reading" not in st["plan"]
+    with App(cfg, "reopen_keeps_selection_late_head", [{"path": cfg.d}]) as app:
+        app.open_row(1, "d.ts", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        app.goto(100)
+        app.s.keys("i")
+        app.goto(150)
+        app.s.keys("o")
+        time.sleep(0.5)
+        app.ok()
+        app.gone()
+        p = app.save()
+        e1 = p["clips"][0].get("edit") or {}
+        sel1 = (e1.get("selA"), e1.get("selB"), e1.get("selGone"))
+        app.open_row(1, "d.ts", wait=False)
+        app.to_editor()
+        wait_for("the walk again", lambda: landed(app), 180, 0.3)
+        time.sleep(1.5)
+        app.ok()
+        app.gone()
+        p = app.save()
+        e2 = p["clips"][0].get("edit") or {}
+        sel2 = (e2.get("selA"), e2.get("selB"), e2.get("selGone"))
+        set1 = (isinstance(sel1[0], (int, float)) and isinstance(sel1[1], (int, float))
+                and sel1[1] > sel1[0] and not sel1[2])
+        t.check("30 IN/OUT set on the first visit", set1, f"selA/selB/selGone {sel1}")
+        same = (set1 and isinstance(sel2[0], (int, float)) and isinstance(sel2[1], (int, float))
+                and abs(sel2[0] - sel1[0]) < 1e-6 and abs(sel2[1] - sel1[1]) < 1e-6 and not sel2[2])
+        t.check("30 a reopen hands back the same IN and OUT", same, f"first {sel1}, second {sel2}")
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -3245,6 +3422,7 @@ SCENARIOS = [
     ok_keeps_and_no_keeps,
     undo_after_detection,
     zoom_double_press,
+    cross_double_press,
     cross_then_reopen,
     switch_rows_then_escape,
     double_press_first_open,
@@ -3265,6 +3443,7 @@ SCENARIOS = [
     seam_keeps_unsaved,
     seam_keeps_unsaved_undo,
     seam_clear_held_join,
+    seam_all_untouched_join,
     disc_refuses_opus,
     disc_keeps_its_name,
     disc_name_after_a_run,
@@ -3272,10 +3451,12 @@ SCENARIOS = [
     plays_owed_left_behind,
     plays_owed_removed_undone,
     plays_due_snapped,
+    plays_due_selection,
     plays_cut_marks,
     old_project_ok_unchanged,
     older_project_ok_unchanged,
     emptied_field_is_unsaved,
+    reopen_keeps_selection_late_head,
 ]
 
 

@@ -4593,7 +4593,16 @@ function takePlays(clip) {
   const fresh = due ? u : cutsBeyond(u, had);
   if (!fresh.length) return;
   if (clip.edit) {
+    // IN and OUT, where that edit has them, as the pictures they stand on:
+    // they are places on the output, and these cuts move the output under
+    // them. Left as they were, the row came back to the editor with its
+    // selection the length of the playlist's head cut further on, over other
+    // pictures, and a Del there took those. See `selEnds` in main.js; read
+    // here on the timeline that edit was made on, before the walk (no seam
+    // holes yet), and put back on the one the cuts now leave.
+    const sel = due && clip.edit.selGone !== true ? selPictures(clip, clip.edit) : null;
     clip.edit.cuts = normalise(had.concat(u));
+    if (sel) Object.assign(clip.edit, selOnPictures(clip, sel, half * 2));
     if (due) {
       // A mark up to half a frame inside one of them onto its end, as
       // `readKeyframeFile` puts one read on top of them.
@@ -4625,6 +4634,51 @@ function takePlays(clip) {
   }
   paintRow(clip);
   paintTotals();
+}
+
+/// An edit's IN and OUT (`selA`, `selB`, places on its output) as instants
+/// of the recording, for its cuts about to move under them; `null` for the
+/// start and the end, wherever those turn out to be. Read on the timeline an
+/// edit sent before its visit's walk landed was made on: its cuts and the
+/// recording's head, no seam holes (the walk had not found them). See
+/// `selEnds` in main.js, and `selOnPictures` for the way back.
+function selPictures(clip, edit) {
+  if (!Number.isFinite(edit.selA) || !Number.isFinite(edit.selB)) return null;
+  let at = 0;
+  const keeps = keptRanges(clip).map((k) => {
+    const r = { ...k, at };
+    at += k.b - k.a;
+    return r;
+  });
+  if (!keeps.length) return null;
+  const toSrc = (o) => {
+    for (const k of keeps) if (o < k.at + (k.b - k.a) - 1e-9) return k.a + Math.max(0, o - k.at);
+    return keeps[keeps.length - 1].b;
+  };
+  return {
+    a: edit.selA <= 1e-9 ? null : toSrc(edit.selA),
+    b: edit.selB >= at - 1e-9 ? null : toSrc(edit.selB),
+  };
+}
+
+/// `selPictures`'s instants as IN and OUT on the output the row's cuts leave
+/// now (`keepsOf`), as `selOnto` in main.js puts them: OUT is the last
+/// picture kept in the selection, so one a cut has taken goes back to the
+/// picture before the cut; IN and OUT both inside one cut select nothing.
+function selOnPictures(clip, sel, frame) {
+  const keeps = keepsOf(clip);
+  const total = keeps.reduce((n, k) => n + (k.b - k.a), 0);
+  const toOut = (s) => {
+    for (const k of keeps) {
+      if (s < k.a + 1e-9) return k.at;
+      if (s < k.b - 1e-9) return k.at + (s - k.a);
+    }
+    return total;
+  };
+  const clampOut = (o) => Math.min(Math.max(o, 0), total);
+  const a = sel.a === null ? 0 : clampOut(toOut(sel.a));
+  const b = sel.b === null ? total : clampOut(toOut(sel.b + frame) - frame);
+  return b < a - 1e-9 ? { selA: a, selB: a, selGone: true } : { selA: a, selB: b };
 }
 
 /// How long the cut of a clip runs, or `null` where nothing has been cut out
@@ -9677,7 +9731,11 @@ async function startExport() {
             renderOutScreen();
             const path = await invoke("bdav_image", {
               dir: discDir(),
-              title: discTitleFor(list),
+              // The name the index was just written under, not the field as
+              // it stands now: the screen stays editable through the run,
+              // and a title typed while the index was being written labelled
+              // the image one thing and the disc inside it another.
+              title: discName,
               revision: settings.image,
               access: settings.imageAccess,
               // What the list was read from, which the image must not be

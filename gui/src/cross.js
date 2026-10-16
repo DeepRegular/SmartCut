@@ -84,6 +84,16 @@ let changedHere = false;
 /// telling, so the join came back with the list's.
 const saidHere = new Map();
 
+/// The key of a join: its two rows and their two recordings. See `cross-open`.
+const joinKey = (j) => `${j.id}\n${j.afterId}\n${j.beforePath}\n${j.afterPath}`;
+
+/// Every join the list has told this window of, by `joinKey`, whether or not
+/// anything was changed while it was in the list. 一括適用 and 全解除 are
+/// about all of them: a row taken out before anything had been changed here
+/// left its joins out of `saidHere`, and put back after 一括適用 they came
+/// back with the list's crossing rather than the one applied to all.
+const told = new Set();
+
 const wiring = [];
 const hear = (name, fn) => wiring.push(listen(name, fn));
 
@@ -866,8 +876,9 @@ el("x-all").addEventListener("click", () => {
   if (!c) return;
   for (const j of joins) j.after = { ...c };
   // And on the joins held for a row taken out of the list: put back
-  // (削除を元に戻す), one came back with what it had before 一括適用.
-  for (const k of saidHere.keys()) saidHere.set(k, { ...c });
+  // (削除を元に戻す), one came back with what it had before 一括適用. Every
+  // join told here, not only those held -- see `told`.
+  for (const k of told) saidHere.set(k, { ...c });
   // Changed here as much as a field is: see the `cross-open` handler, which
   // would otherwise take the list's joins back over these.
   changedHere = true;
@@ -881,7 +892,7 @@ el("x-clear").addEventListener("click", () => {
   for (const j of joins) j.after = null;
   // Held ones too (see `saidHere`): a join put back after 全解除 came back
   // with the crossing set on it before, and OK wrote that onto the list.
-  for (const k of saidHere.keys()) saidHere.set(k, null);
+  for (const k of told) saidHere.set(k, null);
   changedHere = true;
   stopPlay(false);
   drawPattern();
@@ -1102,7 +1113,7 @@ if (listen) {
     // are up -- is a new join behind the others. Taken as "not the same
     // joins", it threw away everything set in here and not yet OK'd on the
     // joins that were all still there.
-    const key = (j) => `${j.id}\n${j.afterId}\n${j.beforePath}\n${j.afterPath}`;
+    const key = joinKey;
     const was = join();
     // A list that has moved under an open menu of the joins: its rows are
     // the joins as they were, and a click on one picked by its place.
@@ -1112,6 +1123,7 @@ if (listen) {
     // list's, and a cut moved there since put the preview on the old bounds;
     // the id is the list's too, which `cross-done` answers by.
     joins = theirs.map((j) => (saidHere.has(key(j)) ? { ...j, after: saidHere.get(key(j)) } : j));
+    for (const j of theirs) told.add(key(j));
     changedHere = theirs.some((j) => saidHere.has(key(j)));
     // Said again by the list on its own, rather than by the button: the join
     // in hand stays in hand where it is still one of them.
