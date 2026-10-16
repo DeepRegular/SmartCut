@@ -1022,9 +1022,18 @@ fn seam_missing(p: &Piece, span: (f64, f64)) -> Vec<f64> {
         if !ranges.iter().any(|&(a, b)| a < until && b > j.ends - BACK) {
             continue;
         }
-        let Some(holes) = seam_holes(src, j, next, BACK, until) else { continue };
+        let Some((holes, pictures_stop)) = seam_holes(src, j, next, BACK, until) else { continue };
+        // Where the pictures in front of the seam stop, as read here: the
+        // clock between there and the seam holds no picture, and what the
+        // sound lacks there is not the recording's to excuse. Taken from
+        // the stream rather than from `ends` alone, which is the index's
+        // estimate of the same thing -- the estimate the cut was planned on.
+        // Where it stood seconds past the last picture, the cut held that
+        // picture and wrote silence for as long, and the silence was allowed
+        // for here as the recording's own: an 8.8 s frozen picture passed.
+        let stops = pictures_stop.map_or(j.ends, |p| p.min(j.ends));
         for (k, hole) in holes.into_iter().enumerate() {
-            out[k] += hole_in(&ranges, hole, (j.ends, j.time));
+            out[k] += hole_in(&ranges, hole, (stops, j.time));
         }
     }
     out
@@ -1036,6 +1045,12 @@ fn seam_missing(p: &Piece, span: (f64, f64)) -> Vec<f64> {
 /// measured is 3.2 s.
 const SEAM_BACK: f64 = 10.0;
 const SEAM_ON: f64 = 10.0;
+
+/// How far past a seam [`seam_holes`] reads on for the pictures in front of
+/// it, once the sound has been read, where no picture of the next stretch
+/// turns up to say they are all out: the most a recorder's tail is read for
+/// in [`crate::index`].
+const PICTURES_PAST: u64 = 8 << 20;
 
 /// How much of a piece's ranges each of its sound tracks has no sound for
 /// where the track itself begins or ends inside them, by the track's place in
@@ -1221,18 +1236,28 @@ fn hole_in(ranges: &[(f64, f64)], (h0, h1): (f64, f64), (ends, time): (f64, f64)
     over(h0, h1.min(ends)) + over(h0.max(time.max(ends)), h1)
 }
 
+/// What [`seam_holes`] finds at one seam: each sound track's hole, and where
+/// the pictures in front of the seam stop.
+type SeamHoles = (Vec<(f64, f64)>, Option<f64>);
+
 /// Each sound track's hole at one seam: from the end of its last packet
 /// before the seam to the start of its first after it. Read by byte, as the
 /// cut reads a stretch (see [`crate::restamp::Seam`]): over a seam the times
 /// need not climb with the bytes, so which side a packet is on is its
 /// position. `None` where the recording cannot be read.
+///
+/// With it, where the pictures in front of the seam stop being shown, where
+/// the read met any: the latest end of a picture packet placed before the
+/// seam. Packets the recorder cut short are counted too, so this is never
+/// earlier than the last whole picture -- it is held against `ends` only to
+/// pull it back.
 fn seam_holes(
     src: &Source,
     j: &crate::restamp::Seam,
     next: Option<&crate::restamp::Seam>,
     back: f64,
     until: f64,
-) -> Option<Vec<(f64, f64)>> {
+) -> Option<SeamHoles> {
     let tracks: Vec<(usize, f64)> =
         src.audios.iter().map(|a| (a.stream_index, a.time_base)).collect();
     let mut ictx = crate::input::demux(&src.input.url).ok()?;
@@ -1254,47 +1279,86 @@ fn seam_holes(
     }
     let wall = next.map(|x| x.at);
     let mut read_at: Option<u64> = None;
+    // Where the last picture packet with a position of its own stood. A
+    // picture packet without one -- the second field of a field-coded frame
+    // -- goes with the picture packet before it, not with the sound after
+    // the seam that may have been read in between (as `StretchRead` in
+    // [`crate::index`] places it).
+    let mut video_at: Option<u64> = None;
     // The earliest time read before the seam: where a track has nothing
     // before it, its hole is known to reach back at least that far.
     let mut opened: Option<f64> = None;
     let mut last: Vec<Option<f64>> = vec![None; tracks.len()];
     let mut first: Vec<Option<f64>> = vec![None; tracks.len()];
+    // Where the pictures before the seam stop, and whether a picture of the
+    // stretch after it has come out yet: a demuxer hands a picture over only
+    // when the next one on its track begins, so the last ones in front of
+    // the seam arrive after the sound behind it, and the read is not over
+    // until a picture past the seam has been read.
+    let fd = src.video.frame_duration();
+    let mut pictures_stop: Option<f64> = None;
+    let mut pictures_past = false;
+    // Whether the sound has been read as far as it ever was: from then on
+    // the read goes on for the pictures alone, a tail's length past the
+    // seam at most.
+    let mut heard = false;
     let mut reading = ictx.read_packets();
     for (stream, packet) in reading.by_ref() {
+        let picture = stream.index() == src.video.stream_index;
         if packet.position() >= 0 {
             read_at = Some(packet.position() as u64);
+            if picture {
+                video_at = read_at;
+            }
         }
-        let Some(at) = read_at else { continue };
+        let placed = if picture { video_at.or(read_at) } else { read_at };
+        let Some(at) = placed else { continue };
         if wall.is_some_and(|w| at >= w) {
+            break;
+        }
+        if heard && (pictures_past || at >= j.at.saturating_add(PICTURES_PAST)) {
             break;
         }
         let k = tracks.iter().position(|t| t.0 == stream.index());
         let tb = k.map_or_else(|| f64::from(stream.time_base()), |k| tracks[k].1);
         let Some(t) = packet.pts().map(|p| p as f64 * tb - src.start_time) else { continue };
         if at < j.at {
+            if picture {
+                let held = packet.duration() as f64 * tb;
+                let end = t + if held > 0.0 { held.min(3.0 * fd) } else { fd };
+                pictures_stop = Some(pictures_stop.map_or(end, |s: f64| s.max(end)));
+            }
+            if heard {
+                continue;
+            }
             opened = Some(opened.map_or(t, |o: f64| o.min(t)));
             if let Some(k) = k {
                 let end = t + packet.duration().max(0) as f64 * tb;
                 last[k] = Some(last[k].map_or(end, |l: f64| l.max(end)));
             }
         } else {
+            pictures_past |= picture;
+            if heard {
+                continue;
+            }
             if let Some(k) = k {
                 first[k] = Some(first[k].map_or(t, |f: f64| f.min(t)));
             }
             if t > until || first.iter().all(Option::is_some) {
-                break;
+                heard = true;
             }
         }
     }
     // A read that stopped on an error says nothing it can be held to.
     reading.finished().ok()?;
     let opened = opened.unwrap_or(j.ends).max(j.ends - back);
-    Some(
+    Some((
         last.iter()
             .zip(&first)
             .map(|(l, f)| (l.unwrap_or(opened), f.unwrap_or(until)))
             .collect(),
-    )
+        pictures_stop,
+    ))
 }
 
 /// Where a recording's sound begins and ends, as the latest first packet and

@@ -1103,13 +1103,29 @@ fn wide(c: char) -> Option<[u8; 2]> {
     .then_some([hi, lo])
 }
 
-/// The wide form of a half-width katakana. Anything else is itself.
+/// The wide form of a half-width katakana, and the form `encoding_rs` knows
+/// of a character JIS X 0208 holds under another code point. Anything else is
+/// itself.
 fn widen(c: char) -> char {
-    // The two ASCII cells JIS X 0201 spends on something else; see
-    // [`narrow`].
     match c {
+        // The two ASCII cells JIS X 0201 spends on something else; see
+        // [`narrow`].
         '\\' => return '＼',
         '~' => return '～',
+        // Six cells of JIS X 0208 that Unicode reaches twice: once as JIS
+        // names them and once as Windows does. EUC-JP's table, which is the
+        // one [`wide`] goes through, knows only the second, so the first --
+        // the wave dash `〜` an IME on Linux or a Mac types, a pasted em
+        // dash -- would go out as the geta mark. Written into the same
+        // cells (1-33, 1-34, 1-29, 1-81, 1-82, 2-44), they are read back
+        // as the form [`jis`] gives every broadcast name, which is the
+        // character a recorder draws there either way.
+        '\u{301C}' => return '～',
+        '\u{2016}' => return '∥',
+        '\u{2014}' => return '―',
+        '\u{00A2}' => return '￠',
+        '\u{00A3}' => return '￡',
+        '\u{00AC}' => return '￢',
         _ => {}
     }
     match c as u32 {
@@ -1452,6 +1468,25 @@ mod tests {
         // And a character neither set holds comes back as what a receiver
         // shows for one it cannot draw.
         assert_eq!(decode(&encode("A🙂")), "A〓");
+    }
+
+    /// The characters JIS X 0208 holds under two code points go into their
+    /// cell whichever one a name was typed with, and come back as the one a
+    /// broadcast name is read as.
+    #[test]
+    fn writes_the_jis_forms_into_their_cells() {
+        let jis = "A\u{301C}B\u{2016}C\u{2014}D\u{00A2}E\u{00A3}F\u{00AC}G";
+        let windows = "A～B∥C―D￠E￡F￢G";
+        assert_eq!(encode(jis), encode(windows));
+        assert_eq!(decode(&encode(jis)), windows);
+        assert!(!decode(&encode(jis)).contains(UNKNOWN));
+        // The cells themselves, as a recorder's own name carries them.
+        assert_eq!(encode("\u{301C}"), vec![0x0F, 0x8A, 0x21, 0x41]);
+        assert_eq!(encode("\u{2014}"), vec![0x0F, 0x8A, 0x21, 0x3D]);
+        assert_eq!(encode("\u{00AC}"), vec![0x0F, 0x8A, 0x22, 0x4C]);
+        // And the minus sign, which EUC-JP already sends to the same cell
+        // as the full-width hyphen-minus, stays where it was.
+        assert_eq!(encode("\u{2212}"), encode("－"));
     }
 
     #[test]

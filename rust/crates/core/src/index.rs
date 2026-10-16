@@ -1188,6 +1188,22 @@ const TAIL_BYTES: u64 = 8 << 20;
 /// picture at all the whole [`TAIL_BYTES`] is read after all.
 const TAIL_FIRST: u64 = 2 << 20;
 
+/// What the read of a stretch's tail found: where its pictures end, and where
+/// the pictures the recorder cut off begin.
+#[derive(Default)]
+struct Tail {
+    /// The end of the time the last whole picture is shown for, as
+    /// [`stretch_points`] gives it; `None` where the read failed or held no
+    /// picture.
+    end: Option<f64>,
+    /// Where the pictures the recorder cut short (see [`CutShort`]) begin,
+    /// where the stretch ends in them.
+    broken_from: Option<u64>,
+    /// The stretch's last whole key picture, where the read reached back to
+    /// one.
+    last_key: Option<LastKey>,
+}
+
 /// Where the pictures of the stretch `lo..hi` end -- the end of the time the
 /// last of them is shown for, as [`stretch_points`] gives it -- read off the
 /// stretch's tail.
@@ -1197,23 +1213,25 @@ fn stretch_end(
     start_time: f64,
     lo: u64,
     hi: u64,
-) -> Option<f64> {
+) -> Tail {
     let first = hi.saturating_sub(TAIL_FIRST).max(lo);
     match tail_read(ictx, video, start_time, first, hi) {
-        Some(None) if first > lo => tail_read(ictx, video, start_time, lo, hi).flatten(),
-        found => found.flatten(),
+        Some(Tail { end: None, .. }) if first > lo => {
+            tail_read(ictx, video, start_time, lo, hi).unwrap_or_default()
+        }
+        found => found.unwrap_or_default(),
     }
 }
 
 /// [`stretch_end`] over the last [`TAIL_BYTES`] at most, from `lo` on:
-/// `None` where the read failed, `Some(None)` where it held no picture.
+/// `None` where the read failed.
 fn tail_read(
     ictx: &mut ff::format::context::Input,
     video: &VideoInfo,
     start_time: f64,
     lo: u64,
     hi: u64,
-) -> Option<Option<f64>> {
+) -> Option<Tail> {
     let from = hi.saturating_sub(TAIL_BYTES).max(lo);
     unsafe {
         if ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, from as i64, ff::ffi::AVSEEK_FLAG_BYTE) < 0 {
@@ -1223,13 +1241,20 @@ fn tail_read(
     let mut last = f64::NEG_INFINITY;
     let mut place = StretchRead::new(from, hi);
     let mut broken = CutShort::default();
+    let mut fragments = Fragments::default();
     let mut reading = ictx.read_packets();
     for (s, p) in reading.by_ref() {
         let video_packet = s.index() == video.stream_index;
         let Some(at) = place.place(video_packet, p.position() as i64) else {
             break;
         };
-        if !video_packet || at < from || broken.cut_short(&p, at) {
+        if !video_packet || at < from {
+            continue;
+        }
+        let pts = p.pts().map(|pts| pts as f64 * video.time_base - start_time);
+        let short = broken.cut_short(&p, at);
+        fragments.feed(short, p.is_key(), at, pts);
+        if short {
             continue;
         }
         if let Some(end) = shown_until(&p, video, start_time) {
@@ -1240,7 +1265,67 @@ fn tail_read(
     if reading.finished().is_err() {
         return None;
     }
-    Some(last.is_finite().then_some(last))
+    Some(Tail {
+        end: last.is_finite().then_some(last),
+        broken_from: fragments.broken_from,
+        last_key: fragments.last_key,
+    })
+}
+
+/// What a read of a stretch's picture track, in decode order, says of the
+/// entry points at its end: [`Tail::broken_from`] and [`Tail::last_key`].
+#[derive(Default)]
+struct Fragments {
+    last_key: Option<LastKey>,
+    /// Whether the picture read last was cut short, so that a run of them is
+    /// placed by its first.
+    in_short: bool,
+    broken_from: Option<u64>,
+}
+
+/// The last whole key picture of a stretch, as its own pictures have it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LastKey {
+    /// Where its stream packet begins.
+    at: u64,
+    /// When it is shown.
+    time: f64,
+    /// When the first of its leading pictures in the stretch -- whole, and
+    /// in front of the seam -- is shown; `time` where it has none.
+    lead: f64,
+}
+
+impl Fragments {
+    /// The next picture packet: whether [`CutShort`] passed it over, whether
+    /// it is a key picture, where it stands and when it is shown.
+    fn feed(&mut self, short: bool, key: bool, at: u64, pts: Option<f64>) {
+        if short {
+            if !self.in_short {
+                self.broken_from = Some(at);
+            }
+            self.in_short = true;
+            return;
+        }
+        // A whole picture after them: what was cut short was damage inside
+        // the stretch, not where the recorder stopped.
+        self.in_short = false;
+        self.broken_from = None;
+        let Some(t) = pts else { return };
+        // The second field of a key picture comes out of its first's stream
+        // packet, and is not a key picture of its own.
+        let same = self.last_key.is_some_and(|k| k.at == at);
+        match &mut self.last_key {
+            Some(k) if !key || same => {
+                if t < k.time {
+                    k.lead = k.lead.min(t);
+                }
+            }
+            _ if key => {
+                self.last_key = Some(LastKey { at, time: t, lead: t });
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Where the packets of a read of the stretch that ends at byte `hi` stand.
@@ -1294,23 +1379,41 @@ impl StretchRead {
 /// The pictures a recorder cut off when it stopped, in a read of a stretch's
 /// picture track.
 ///
-/// **A recorder stops in the middle of a picture.** The last picture packet
-/// in front of most seams measured here is short of its own length -- the
-/// demuxer marks it corrupt -- and is often a reference picture sent ahead
-/// of the pictures shown before it, which were never written: a P picture
-/// stamped three frames past the last whole one, or an I picture. It decodes
+/// **A recorder stops in the middle of a picture.** The last stream packet in
+/// front of most seams measured here is short of its own length, and is often
+/// a reference picture sent ahead of the pictures shown before it, which were
+/// never written: a P picture stamped three frames past the last whole one, or
+/// an I picture, of which the first field or a part of it arrived. It decodes
 /// to a fragment, if at all, and the parser hands what follows it over as a
 /// further "picture" with a time of its own invented (a third of a second on).
-/// Neither is where the stretch's pictures end. So a packet marked corrupt is
-/// passed over, and with it everything else the parser hands over out of the
-/// same packet of the stream -- the packets after it with no position of
+/// Neither is where the stretch's pictures end.
+///
+/// **The demuxer marks the picture BEFORE it.** libavformat's parser hands a
+/// picture over only once it has seen where the next one begins -- that is,
+/// while it reads the next stream packet -- and stamps it with the flags of
+/// that packet. So a stream packet that is cut short shows up as a corrupt
+/// flag on the picture (or field) in front of it, which is whole, and the
+/// picture cut short itself comes out unflagged. Read the other way round,
+/// the flag left a whole second field out (half a frame early) at 13 of the
+/// 71 Sony seams measured against a decoder, and counted the cut-off field
+/// (two and a half to three frames late) at 20. So the picture AFTER a corrupt
+/// one is passed over, and with it everything else the parser hands over out
+/// of that same stream packet -- the packets after it with no position of
 /// their own, or with that same position again -- until one that begins
-/// somewhere else.
+/// somewhere else -- both fields of a picture whose second field comes out of
+/// that packet as well. That last shape is the one this gives up on: at 7 of
+/// those 71 seams the stream packet after the flag holds a key picture with
+/// both its fields (and is flagged itself), and it decodes when the stream
+/// stops at the seam's byte; nothing in the packets tells it from a picture
+/// that does not, so it is left out and the stretch ends one picture early.
 #[derive(Default)]
 struct CutShort {
-    /// Where the stream packet the last corrupt picture came out of begins,
+    /// Where the stream packet the picture cut short came out of begins,
     /// while what comes after it is still out of that packet.
     open: Option<u64>,
+    /// Whether the picture packet read last was marked corrupt: what it
+    /// says is that the stream packet read NEXT was cut short.
+    flagged: bool,
 }
 
 impl CutShort {
@@ -1320,7 +1423,7 @@ impl CutShort {
         if self.open.is_some_and(|o| p.position() >= 0 && p.position() as u64 != o) {
             self.open = None;
         }
-        if p.is_corrupt() {
+        if std::mem::replace(&mut self.flagged, p.is_corrupt()) {
             self.open = Some(at);
         }
         self.open.is_some()
@@ -1493,7 +1596,8 @@ fn stretch_points(
 /// need: the walk reads the pictures, not where the table says they stop, and
 /// a clip walked because its map could not be read (or asked to be walked)
 /// otherwise kept every span the table gives -- 8.8 s of nothing in a
-/// `--keep` across the stretch above.
+/// `--keep` across the stretch above. And of its points, those the recorder
+/// cut short go: see below.
 ///
 /// Returns where it mended, for the caller to say so.
 pub fn mend_stretches(
@@ -1552,15 +1656,60 @@ pub fn mend_stretches(
     for i in 0..joins.len() {
         let lo = i.checked_sub(1).map_or(0, |k| joins[k].at);
         let hi = joins[i].at;
-        let end = match read_to[i] {
-            Some(end) => Some(end),
+        let tail = match read_to[i] {
+            Some(end) => Tail {
+                end: Some(end),
+                ..Tail::default()
+            },
             None => stretch_end(&mut ictx, video, start_time, lo, hi),
         };
-        if let Some(end) = end {
-            let seam = &mut joins[i];
+        let seam = &mut joins[i];
+        if let Some(end) = tail.end {
             if seam.ends - end > short {
                 seam.ends = end;
             }
+        }
+        // **A walk takes the recorder's fragments for entry points.** What
+        // the recorder cut off as it stopped can be a key picture, or the
+        // first field of one, and the walk -- which reads packets, not
+        // pictures -- keeps it as a point: at one Sony seam a cut-short key
+        // field 0.07 s past `ends`, with its byte still in front of the
+        // seam. A copy across the seam ended on it, so the copy wrote every
+        // picture in front of its byte, and the re-encode from its leading
+        // pictures up to `ends` wrote three of them again (158 pictures
+        // written for 155, and every copied one after the seam a picture
+        // off). So a walked stretch keeps no point at or past `ends`, nor
+        // at or past where its fragments begin.
+        //
+        // **Nor a last key picture whose leading pictures are not its
+        // own.** The walk gives a point the pictures stamped before it up
+        // to the next key picture, and in front of a seam that is a
+        // fragment the recorder cut short (a B stamped before the stretch's
+        // last whole key picture), or the pictures the next stretch opens
+        // with before its first key picture, which belong to a GOP that was
+        // never written (a third of a second before the seam). A copy ended
+        // on the point, and the re-encode from that early instant to `ends`
+        // wrote them: one and two pictures too many at two seams, and every
+        // copied picture after them one or two off. Such a point goes too.
+        //
+        // Without them the cut ends on the point in front and re-encodes up
+        // to `ends`, as it does off the disc's own map. On every open, a
+        // walk held in a seek index too: nothing of this is kept but the
+        // points, and those agree once dropped.
+        if walked {
+            let stop = seam.ends - short;
+            let broken = tail.broken_from.unwrap_or(u64::MAX);
+            let foreign = tail.last_key.filter(|k| k.at >= lo && k.at < hi);
+            points.retain(|p| {
+                let Ok(pos) = u64::try_from(p.pos) else { return true };
+                if pos < lo || pos >= hi {
+                    return true;
+                }
+                if p.time >= stop || pos >= broken {
+                    return false;
+                }
+                !foreign.is_some_and(|k| pos == k.at && p.lead_start < k.lead - short)
+            });
         }
     }
     Ok(mended)
@@ -1916,28 +2065,120 @@ mod tests {
         assert_eq!(r.place(false, 1000 + TAIL_BYTES as i64), None);
     }
 
-    /// A corrupt picture and everything the parser hands over out of the same
-    /// stream packet are passed over, until a packet that begins elsewhere.
+    fn flagged_packet(pos: isize, corrupt: bool) -> ff::Packet {
+        let mut p = ff::Packet::empty();
+        p.set_position(pos);
+        if corrupt {
+            p.set_flags(ff::packet::Flags::CORRUPT);
+        }
+        p
+    }
+
+    /// The flag is on the picture in front of the stream packet that was cut
+    /// short (the parser stamps a picture with the flags of the packet it is
+    /// reading when it hands it over), so the picture AFTER a corrupt one is
+    /// passed over, with everything the parser makes of the same stream
+    /// packet, until a packet that begins elsewhere. The flagged picture
+    /// itself is whole and kept: left out, a stretch ended half a frame early.
     #[test]
     fn cut_short_takes_the_whole_packet() {
-        let packet = |pos: isize, corrupt: bool| {
-            let mut p = ff::Packet::empty();
-            p.set_position(pos);
-            if corrupt {
-                p.set_flags(ff::packet::Flags::CORRUPT);
-            }
-            p
-        };
+        let packet = flagged_packet;
         let mut c = CutShort::default();
         assert!(!c.cut_short(&packet(500, false), 500));
-        // a whole first field, then its second field cut short
+        // a whole frame: its first field, then its second, flagged because
+        // the stream packet after it is cut short
         assert!(!c.cut_short(&packet(600, false), 600));
-        assert!(c.cut_short(&packet(-1, true), 600));
-        // what the parser makes of the rest: no position, or the same one
-        assert!(c.cut_short(&packet(-1, false), 600));
-        assert!(c.cut_short(&packet(600, false), 600));
+        assert!(!c.cut_short(&packet(-1, true), 600));
+        // the stream packet cut short, and what the parser makes of the rest
+        // of it: no position, or the same one
+        assert!(c.cut_short(&packet(700, false), 700));
+        assert!(c.cut_short(&packet(-1, false), 700));
+        assert!(c.cut_short(&packet(700, false), 700));
         // a packet that begins somewhere else is whole again
-        assert!(!c.cut_short(&packet(700, false), 700));
-        assert!(!c.cut_short(&packet(-1, false), 700));
+        assert!(!c.cut_short(&packet(800, false), 800));
+        assert!(!c.cut_short(&packet(-1, false), 800));
+    }
+
+    /// A reference picture sent ahead of the pictures shown before it, of
+    /// which only the first field arrived before the seam: nothing marks it
+    /// (the flag is on the field before), and counted it put a stretch's end
+    /// two and a half to three frames past the last picture that decodes.
+    #[test]
+    fn a_lone_field_after_the_flag_is_cut_short() {
+        let packet = flagged_packet;
+        let mut c = CutShort::default();
+        // B, then P with its second field flagged
+        assert!(!c.cut_short(&packet(500, false), 500));
+        assert!(!c.cut_short(&packet(-1, false), 500));
+        assert!(!c.cut_short(&packet(600, false), 600));
+        assert!(!c.cut_short(&packet(-1, true), 600));
+        // the key picture's first field, and the read is over
+        assert!(c.cut_short(&packet(700, false), 700));
+    }
+
+    /// Where a walked stretch's points stop being usable: at the first
+    /// picture cut short; and what the last key picture's own leading
+    /// pictures are.
+    #[test]
+    fn fragments_begin_where_the_recorder_cut_off() {
+        // I, its two leading B, a P, then a key picture cut short
+        let mut f = Fragments::default();
+        f.feed(false, true, 100, Some(10.0));
+        f.feed(false, false, 100, Some(10.0167));
+        f.feed(false, false, 150, Some(9.9));
+        f.feed(false, false, 170, Some(9.95));
+        f.feed(false, false, 200, Some(10.2));
+        f.feed(true, true, 400, Some(10.4));
+        assert_eq!(f.broken_from, Some(400));
+        assert_eq!(f.last_key, Some(LastKey { at: 100, time: 10.0, lead: 9.9 }));
+        // what the parser makes of the rest of it changes nothing
+        f.feed(true, false, 400, Some(10.7));
+        assert_eq!(f.broken_from, Some(400));
+
+        // a whole key picture, then a fragment stamped before it: not one of
+        // its leading pictures
+        let mut f = Fragments::default();
+        f.feed(false, true, 300, Some(10.5));
+        f.feed(true, false, 400, Some(10.4));
+        assert_eq!(f.broken_from, Some(400));
+        assert_eq!(f.last_key, Some(LastKey { at: 300, time: 10.5, lead: 10.5 }));
+
+        // a key picture's second field is not a key picture of its own
+        let mut f = Fragments::default();
+        f.feed(false, true, 300, Some(10.5));
+        f.feed(false, true, 300, Some(10.5167));
+        f.feed(false, false, 350, Some(10.4));
+        assert_eq!(f.last_key, Some(LastKey { at: 300, time: 10.5, lead: 10.4 }));
+
+        // damage inside the stretch, with whole pictures after it, is not
+        // where the recorder stopped
+        let mut f = Fragments::default();
+        f.feed(false, true, 100, Some(10.0));
+        f.feed(true, false, 200, Some(10.1));
+        f.feed(false, false, 300, Some(10.2));
+        assert_eq!(f.broken_from, None);
+        // nothing cut short, and no key picture read
+        let mut f = Fragments::default();
+        f.feed(false, false, 100, Some(10.0));
+        assert_eq!(f.broken_from, None);
+        assert_eq!(f.last_key, None);
+    }
+
+    /// A picture whose own stream packet is flagged as well, with both
+    /// fields there (the second half a frame on, like a whole frame's): what
+    /// is cut short is still the picture after the first flag, both of its
+    /// fields. Header rules cannot tell it from a damaged one, so it stays
+    /// out -- a stretch ends one picture early rather than on a fragment.
+    #[test]
+    fn a_flagged_picture_with_both_fields_after_the_flag_is_cut_short() {
+        let packet = flagged_packet;
+        let mut c = CutShort::default();
+        assert!(!c.cut_short(&packet(600, false), 600));
+        assert!(!c.cut_short(&packet(-1, true), 600));
+        // key picture, first field flagged too, second field half a frame on
+        assert!(c.cut_short(&packet(700, true), 700));
+        assert!(c.cut_short(&packet(-1, false), 700));
+        // the next stretch's first picture would begin elsewhere and is whole
+        assert!(!c.cut_short(&packet(900, false), 900));
     }
 }

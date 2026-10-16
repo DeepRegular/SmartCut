@@ -611,4 +611,38 @@ mod tests {
             assert!((d.lengths.iter().sum::<f64>() - 272.0).abs() < 1e-6, "{on}: {:?}", d.lengths);
         }
     }
+
+    /// A recorder's seam as the index now gives it: the hole runs from the
+    /// end of the last whole picture before the seam to the first entry
+    /// point after it, and neither end is on the frame grid of the clip's
+    /// first stretch. Off the points, a division asked for on the far side
+    /// of the hole is put on that grid and can fall back into the hole --
+    /// by less than half a frame, which no part writes (the part before
+    /// stops at the hole, the part after starts where it ends). On the
+    /// points it lands on the hole's end. Either way every part has some
+    /// length, they add up to what is written, and the divisions run on.
+    #[test]
+    fn a_recorder_hole_off_the_grid() {
+        let hole = (1967.6059, 1987.5589);
+        let line = without(&[(1965.6059, 1991.6176)], &[hole]);
+        assert_eq!(line, vec![(1965.6059, hole.0), (hole.1, 1991.6176)]);
+        let total = 2.0 + (1991.6176 - hole.1);
+        let pts: Vec<f64> = points(0.5, 1968.0).into_iter().chain([hole.1, 1988.5589, 1989.5589]).collect();
+        for rule in [Rule::Every(1.0), Rule::Every(3.0), Rule::Parts(2), Rule::Size(1_500_000)] {
+            for on in [true, false] {
+                let d = divide(&line, &pts, rule, on, FD, 0.0, 1e6).unwrap();
+                let why = format!("{rule:?} {on}: {d:?}");
+                assert!(d.lengths.iter().all(|&l| l > 0.0), "{why}");
+                assert!((d.lengths.iter().sum::<f64>() - total).abs() < 1e-6, "{why}");
+                assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{why}");
+                for &t in &d.at {
+                    let inside = t > hole.0 + 1e-9 && t < hole.1 - 1e-9;
+                    assert!(!inside || hole.1 - t < FD / 2.0 + 1e-9, "{t} deep in the hole: {why}");
+                    if on && inside {
+                        panic!("{t} on the points but in the hole: {why}");
+                    }
+                }
+            }
+        }
+    }
 }

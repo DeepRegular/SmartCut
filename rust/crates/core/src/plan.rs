@@ -908,17 +908,42 @@ fn stretch_last_picture(src: &crate::Source, lo: u64, hi: u64) -> Option<f64> {
         }
         let tb = src.video.time_base;
         let mut last = f64::NEG_INFINITY;
-        let mut read_at = from;
+        // Placed by the picture track's own packets, as `crate::index`'s
+        // StretchRead places them: keep_only does not stop the demuxer
+        // handing over the other tracks, and the sound after the seam comes
+        // out ahead of the stretch's last pictures. Stopped at the first
+        // packet of any track past `hi`, the read lost them -- the second
+        // field of the last frame and the picture the recorder cut short.
+        let mut video_at = from;
+        // A picture after one marked corrupt is a picture the recorder cut
+        // short (the demuxer stamps the flag on the picture in front of it;
+        // see `crate::index`'s CutShort). Its time says nothing -- it can be
+        // stamped before the stretch's last whole picture -- but a copy to
+        // the seam's byte writes it, and a decoder breaks on it and on what
+        // follows. A stretch that holds one is answered as running past, so
+        // that the copy ends on its own last entry point and the re-encode
+        // stops at `ends` and leaves the fragment out.
+        let mut flagged = false;
+        let mut cut_short = false;
         let mut reading = ictx.read_packets();
         for (stream, packet) in reading.by_ref() {
-            if packet.position() >= 0 {
-                read_at = packet.position() as u64;
+            if stream.index() != idx {
+                if packet.position() >= 0 && packet.position() as u64 >= hi.saturating_add(TAIL_BYTES) {
+                    break;
+                }
+                continue;
             }
-            if read_at >= hi {
+            if packet.position() >= 0 {
+                video_at = packet.position() as u64;
+            }
+            if video_at >= hi {
                 break;
             }
-            if stream.index() != idx || read_at < from {
+            if video_at < from {
                 continue;
+            }
+            if std::mem::replace(&mut flagged, packet.is_corrupt()) {
+                cut_short = true;
             }
             if let Some(pts) = packet.pts() {
                 last = last.max(pts as f64 * tb - src.start_time);
@@ -926,6 +951,9 @@ fn stretch_last_picture(src: &crate::Source, lo: u64, hi: u64) -> Option<f64> {
         }
         if reading.finished().is_err() {
             return None;
+        }
+        if cut_short {
+            return Some(f64::INFINITY);
         }
         last.is_finite().then_some(last)
     })();

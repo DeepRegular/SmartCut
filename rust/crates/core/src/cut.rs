@@ -710,6 +710,9 @@ struct Writer {
     /// in two languages has two, and each is cut on its own -- one track's
     /// boundary frame is no business of another's.
     audio: Vec<AudioTrack>,
+    /// How long a sound frame really is, per recording and stream, where the
+    /// container's clock is too coarse to say. See [`Writer::frame_length`].
+    lengths: std::collections::HashMap<(String, usize), crate::sound::Lengths>,
     /// The output's caption tracks, likewise.
     captions: Vec<CaptionTrack>,
     /// And the graphics tracks: a disc's own subtitles, which carry the
@@ -1403,6 +1406,26 @@ impl Writer {
             self.emit_one()?;
         }
         Ok(())
+    }
+
+    /// A sound frame's length as the frame itself has it, where the
+    /// container rounds it (`said`). One reading per recording and stream,
+    /// built the first time it is asked from the stream's own parameters --
+    /// a reel joined on is another recording, and a Vorbis track's block
+    /// sizes are its own -- and fed that stream's frames in the order they
+    /// are read. See `dur` in [`take_audio`] and [`crate::sound::Lengths`].
+    fn frame_length(&mut self, url: &str, stream: usize, packet: &ff::Packet, tb: f64, said: f64) -> f64 {
+        let key = (url.to_string(), stream);
+        if !self.lengths.contains_key(&key) {
+            let par = crate::input::demux(url)
+                .ok()
+                .and_then(|probe| probe.stream(stream).map(|s| s.parameters()));
+            self.lengths.insert(key.clone(), crate::sound::Lengths::new(par));
+        }
+        match self.lengths.get_mut(&key) {
+            Some(lengths) => lengths.of(packet, tb, said),
+            None => said,
+        }
     }
 
     fn push_audio(
@@ -2357,7 +2380,23 @@ fn take_audio(
     // out from the timestamps; every frame of such a track was being left
     // out of the cut, which wrote a file declaring sound it did not contain.
     // See [`assumed_frame`].
+    //
+    // And the packet's own length as the frame has it, where the container
+    // keeps time more coarsely than that: Matroska's milliseconds hand a
+    // 1024-sample frame at 48 kHz over as 21 of its 21.33. Summed into where
+    // the sound reaches (`end`), a range came up a third of a millisecond
+    // short per frame, the next range took the shortfall for sound still
+    // owed and opened a frame early, on top of the last -- and a player lays
+    // sound end to end, so every cut of an ordinary AAC, PCM, DTS or Vorbis
+    // .mkv put the rest of its sound later, 95 ms after ten cuts, and said
+    // "frames ... lost" that were not. The same reading the sound-only
+    // writer lays its frames by, from the same frames. A clock as fine as a
+    // transport stream's or an MP4's already says it, and is left alone.
     let dur = match packet.duration() {
+        own if own > 0 && audio.in_tb >= 1e-4 => {
+            let said = own as f64 * audio.in_tb;
+            writer.frame_length(&src.input.url, audio.in_index, &packet, audio.in_tb, said)
+        }
         own if own > 0 => own as f64 * audio.in_tb,
         _ => writer.audio[audio.track].frame_secs,
     };
@@ -2463,14 +2502,11 @@ fn take_audio(
     // A frame the range opens on early, more of it before the range's start
     // than after: claimed only because the sound so far looked short of the
     // pictures (`pick_from`). Where it clashes with what is already written,
-    // the track was not short, and the frame is sound the cut took away. A
-    // Matroska track sums its frames' lengths in whole milliseconds (a
-    // 1024-sample frame at 48 kHz counts 21 ms of its 21.33), so every
-    // range after the first looked a third of a millisecond short per frame
-    // and opened half a second early on a half-minute range: an ordinary
-    // Vorbis .mkv cut in two places said 22 frames of its sound were lost,
-    // and none were. Only the count is spared; the frame is left out as
-    // before, so what is written is unchanged.
+    // the track was not short, and the frame is sound the cut took away:
+    // left out, it is what the cut asked for, so it is not counted as lost.
+    // (Where a Matroska track's lengths were summed in whole milliseconds,
+    // every range after the first looked short and opened early this way;
+    // the lengths are the frames' own now -- see `dur` above.)
     let cut_away = first_segment && t + dur / 2.0 <= audio.range_in;
     writer.push_audio(audio.track, packet, t + audio.offset, dur, cut_away)?;
     Ok(past_end)
@@ -6220,7 +6256,16 @@ pub(crate) fn plan_audio(
     } else {
         opts.audio_sample_rate.unwrap_or(info.sample_rate)
     };
-    let sample_rate = crate::audio::writable_rate(target, asked_rate);
+    // Not a lossless track's, which no encoder is opened for: its own rate
+    // is the one it is written at, whatever the encoder of its codec lists.
+    // Asked of libavcodec's DTS encoder, which goes no higher than 48 kHz, a
+    // Blu-ray's 96 kHz DTS-HD Master Audio came out "96000 Hz asked for as
+    // 48000 Hz" and was re-encoded whole into a 48 kHz DTS core.
+    let sample_rate = if lossless {
+        asked_rate
+    } else {
+        crate::audio::writable_rate(target, asked_rate)
+    };
     if sample_rate != asked_rate {
         crate::say!(
             "note: {asked_rate} Hz was asked for{named} and {target:?} is not written at that \
@@ -8213,10 +8258,17 @@ fn cut_into(
             } else {
                 "has no box for it"
             };
+            // Signed 8-bit PCM is the one sound a .mkv cannot hold either;
+            // asked for at 24 bit, it is written wide into any of the three.
+            let instead = if codec == "pcm_s8" {
+                "Into a .mkv, .mp4 or .mov, --audio-bits 24 writes it as 24 bit PCM, which \
+                 each of them holds"
+            } else {
+                "A .mkv holds everything this program writes"
+            };
             anyhow!(
-                "a .{ext} cannot carry {codec} {what}: it {how}. A .mkv holds everything this \
-                 program writes, and the output settings screen greys out the ones that cannot \
-                 hold a given recording"
+                "a .{ext} cannot carry {codec} {what}: it {how}. {instead}, and the output \
+                 settings screen greys out the ones that cannot hold a given recording"
             )
         };
         if !crate::carry::holds(family, &src.video.codec) {
@@ -8288,6 +8340,23 @@ fn cut_into(
     // Every stream the cut is going to carry, so the map that comes back is
     // one that describes them all rather than whichever arrived first. See
     // [`crate::si::read_service`].
+    //
+    // And the recording's own sound and captions that are being left out.
+    // The map read is also what says which programme descriptors belong to
+    // which stream, and one the dropped stream is not in yet -- a station
+    // that announces its second sound or its captions seconds after the
+    // recording begins -- leaves that stream's descriptors looking like
+    // the programme's own: the guide still promised a second language, or
+    // captions, the file does not have. Only what is asked of the map: the
+    // map the output is written from is built of what it carries.
+    //
+    // Asked second, and taken only where it describes everything the first
+    // answer did. The map that names the most is the one chosen, and a
+    // stream left out can tip that: where the programme before had captions
+    // and this one has a second sound in their place, the earlier map names
+    // as many once the captions are asked for, wins as the earlier, and the
+    // second sound -- carried, but not in that map -- was written into no
+    // map at all.
     let carried: Vec<u16> = std::iter::once(ours)
         .chain(audios.iter().map(|a| a.pid as u16))
         .chain(captions.iter().map(|c| c.pid as u16))
@@ -8295,7 +8364,35 @@ fn cut_into(
         .chain(maybe_data.iter().copied())
         .filter(|pid| *pid != 0)
         .collect();
-    let tables = match wants_tables.then(|| crate::si::read_service(&src.input, ours, &carried)) {
+    let mut left_out: Vec<u16> = Vec::new();
+    for pid in src
+        .audios
+        .iter()
+        .map(|a| a.pid as u16)
+        .chain(src.captions.iter().map(|c| c.pid as u16))
+    {
+        if pid != 0 && !carried.contains(&pid) && !left_out.contains(&pid) {
+            left_out.push(pid);
+        }
+    }
+    let read_tables = || -> Result<crate::si::Service> {
+        let first = crate::si::read_service(&src.input, ours, &carried)?;
+        if left_out.iter().all(|pid| first.stream(*pid).is_some()) {
+            return Ok(first);
+        }
+        let wider: Vec<u16> = carried.iter().chain(&left_out).copied().collect();
+        Ok(match crate::si::read_service(&src.input, ours, &wider) {
+            Ok(more)
+                if carried
+                    .iter()
+                    .all(|pid| first.stream(*pid).is_none() || more.stream(*pid).is_some()) =>
+            {
+                more
+            }
+            _ => first,
+        })
+    };
+    let tables = match wants_tables.then(read_tables) {
         Some(Ok(t)) => Some(t),
         Some(Err(e)) => {
             crate::say!("note: {e}. The streams are kept; the broadcast's own tables are not.");
@@ -8680,7 +8777,16 @@ fn cut_into(
         // two already agree and this does nothing.
         unsafe {
             let p = ost.parameters().as_mut_ptr();
-            if (*p).ch_layout.nb_channels != i32::from(setup.channels) {
+            // And linear PCM whose recording never named its channels -- a
+            // Matroska file does not -- is given the ordinary layout for the
+            // count: an MP4 states the layout of its PCM and has no way to
+            // say "unknown", so a copy of a .mkv's PCM into an .mp4 stopped
+            // on the first packet with a bare "Invalid argument" ("unsupported
+            // channel layout 2 channels"), where a re-encode, which the
+            // encoder hands a layout, went through.
+            let unnamed = (*p).ch_layout.order == ff::ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
+                && crate::audio::uncompressed(setup.target);
+            if (*p).ch_layout.nb_channels != i32::from(setup.channels) || unnamed {
                 ff::ffi::av_channel_layout_uninit(&mut (*p).ch_layout);
                 ff::ffi::av_channel_layout_default(&mut (*p).ch_layout, i32::from(setup.channels));
             }
@@ -9326,6 +9432,7 @@ fn cut_into(
         skipped: 0,
         halves: 0,
         audio: audio_tracks,
+        lengths: Default::default(),
         captions: caption_tracks,
         graphics: graphics_tracks,
         subpictures,

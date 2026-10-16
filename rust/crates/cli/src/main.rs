@@ -1867,6 +1867,16 @@ fn run() -> Result<()> {
     );
 
     if let Some(at) = cut_near {
+        // As `--still`: past the last picture there is no change to find,
+        // and the answer was the time asked for, "+0.000s" away -- a place
+        // to cut that is not in the recording.
+        if src.duration > 0.0 && at > src.duration {
+            bail!(
+                "--cut-near {} is past the end of the recording ({})",
+                fmt_hms(at),
+                fmt_hms(src.duration)
+            );
+        }
         for w in [0.5, 1.0, 2.0] {
             let t = smartcut_core::thumbs::cut_near(&src, at, w, 0.08)?;
             tell!("  ±{w:.1}s の窓: {}  ({:+.3}s)", fmt_hms(t), t - at);
@@ -2487,17 +2497,59 @@ fn run() -> Result<()> {
             bail!("{out} is the --transition-image; writing there would destroy it");
         }
     }
+    // A `.wav` of sound alone is linear PCM unless a codec was named (see
+    // the `--sound-only` writer below), and the line that says what the
+    // sound will be has to say so: it said "smart" over a whole-track
+    // re-encode of a broadcast's AAC.
+    let audio_codec = if sound_only
+        && out.to_ascii_lowercase().ends_with(".wav")
+        && audio_codec == smartcut_core::AudioCodec::Source
+    {
+        smartcut_core::AudioCodec::Lpcm
+    } else {
+        audio_codec
+    };
+    // The main track's codec, for what the engine makes of what was asked
+    // of its samples (`cut.rs`, where `lossless` and `requantised` are
+    // decided): DTS and TrueHD are carried through whole unless a codec is
+    // named, whatever is asked of them; and a width reaches only a codec
+    // that carries samples. Taken as asked, `--audio-bits 24` on a
+    // broadcast's AAC printed "reencode, 24 bit" over a cut whose sound was
+    // smart-rendered byte for byte as without it.
+    let main_codec = src.audio.as_ref().map_or("", |a| a.codec.as_str());
+    // A codec named that is the one the track is already in is not a
+    // re-encode either: the engine writes the same codec and goes on in the
+    // mode asked for (`recoded` in `cut.rs` is false), so `--audio-codec aac`
+    // on a broadcast's AAC smart-renders, as without it.
+    let own_codec = match audio_codec {
+        smartcut_core::AudioCodec::Aac => main_codec == "aac",
+        smartcut_core::AudioCodec::Ac3 => main_codec == "ac3",
+        smartcut_core::AudioCodec::Dts => main_codec == "dts",
+        _ => false,
+    };
+    let carried = (audio_codec == smartcut_core::AudioCodec::Source || own_codec)
+        && matches!(main_codec, "dts" | "truehd" | "mlp");
+    let as_samples = match audio_codec {
+        smartcut_core::AudioCodec::Lpcm => true,
+        smartcut_core::AudioCodec::Source => main_codec.starts_with("pcm_"),
+        _ => false,
+    };
     // What the audio will be, which is not always what was asked for: a
     // downmix has no copy path, and the engine says so and re-encodes.
-    let asked = audio_channels.filter(|&c| src.audio.as_ref().is_some_and(|a| a.channels != c));
+    let asked = audio_channels
+        .filter(|_| !carried)
+        .filter(|&c| src.audio.as_ref().is_some_and(|a| a.channels != c));
     // A rate the recording does not have is the same story told about the
     // other axis of a sample, and so is a width.
-    let resampled =
-        audio_sample_rate.filter(|&r| src.audio.as_ref().is_some_and(|a| a.sample_rate != r));
-    let requantised = audio_bits.filter(|&b| src.audio.as_ref().is_some_and(|a| a.bits != b));
+    let resampled = audio_sample_rate
+        .filter(|_| !carried)
+        .filter(|&r| src.audio.as_ref().is_some_and(|a| a.sample_rate != r));
+    let requantised = audio_bits
+        .filter(|_| as_samples && !carried)
+        .filter(|&b| src.audio.as_ref().is_some_and(|a| a.bits != b));
     // As is naming a codec: there is no copying a frame into one it is not
     // already in.
-    let recoded = audio_codec != smartcut_core::AudioCodec::Source;
+    let recoded = audio_codec != smartcut_core::AudioCodec::Source && !own_codec;
     // Whose encoder writes the partial GOPs. Worth saying for the one codec
     // libavcodec cannot encode, because the answer is "this program's own"
     // and because the step it writes at is the one setting that changes what

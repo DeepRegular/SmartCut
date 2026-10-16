@@ -384,7 +384,19 @@ impl Reader {
                 if packet.stream() == video {
                     if let Some(pts) = packet.pts() {
                         let t = pts as f64 * tb - start_time;
-                        if t > to {
+                        // A 4K recording's document arrives up to
+                        // `OWN_TIME_SLACK` after the time it goes up at
+                        // ([`crate::ttml::decided_at`]), so one going up
+                        // just before `to` has its bytes just after the
+                        // pictures there: stopped on those, the window's
+                        // last second showed the line late, where the cut
+                        // (which reads on as far) has it in place.
+                        let past = if kind == Kind::Ttml {
+                            to + crate::ttml::DECIDED_SPREAD
+                        } else {
+                            to
+                        };
+                        if t > past {
                             break;
                         }
                         clock = Some(t);
@@ -412,7 +424,14 @@ impl Reader {
                 let Some((begin, end, _)) = crate::ttml::placed(data, shown, base) else {
                     continue;
                 };
-                if begin > to {
+                // Stopped as the cut stops (`take_ttml` in `cut.rs`): by
+                // where it is decided, which is within
+                // [`crate::ttml::DECIDED_SPREAD`] of every document after
+                // it, not by `begin`. A document sent well ahead of its time
+                // and held to it begins past `to` while a line sent after it
+                // still goes up inside the window, and stopping on the first
+                // left the second out of the window's last seconds.
+                if crate::ttml::decided_at(begin, shown) > to + crate::ttml::DECIDED_SPREAD {
                     break;
                 }
                 if let Some(written) = crate::ttml::written(data) {

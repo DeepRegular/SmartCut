@@ -349,6 +349,11 @@ fn run(
             // .caf): named sixteen bits, they took a 24-bit track down to 16.
             (Id::PCM_S16BE, Id::PCM_S24BE | Id::PCM_S24LE) => Id::PCM_S24BE,
             (Id::PCM_S16BE, Id::PCM_S32BE | Id::PCM_S32LE) => Id::PCM_S32BE,
+            // And floats, which they hold as floats (AIFF-C's `fl32`):
+            // named sixteen bits, a float track came out 16 bit even with
+            // 24 asked for.
+            (Id::PCM_S16BE, Id::PCM_F32BE | Id::PCM_F32LE) => Id::PCM_F32BE,
+            (Id::PCM_S16BE, Id::PCM_F64BE | Id::PCM_F64LE) => Id::PCM_F64BE,
             (Id::PCM_F32LE | Id::PCM_S16LE, Id::PCM_F32BE | Id::PCM_F32LE) => Id::PCM_F32LE,
             (Id::PCM_F64LE | Id::PCM_S16LE, Id::PCM_F64BE | Id::PCM_F64LE) => Id::PCM_F64LE,
             _ => guess,
@@ -559,6 +564,12 @@ fn run(
     // that neither overlaps nor drifts. The picture writer lays its sound the
     // same way. See `Writer::push_audio`.
     let mut written = 0.0f64;
+    // Where the ranges written so far would have brought the sound had each
+    // been laid to the sample: their lengths, end to end. See `drift` below.
+    let mut laid = 0.0f64;
+    // Whether the track's first frame has been laid yet. Until it has,
+    // nothing is owed: see `head_owed`.
+    let mut opened = false;
     let mut ranges_done = 0usize;
     let say = |done: usize| {
         if let Some(report) = progress.as_ref() {
@@ -625,6 +636,29 @@ fn run(
         for (k, &range) in ranges.iter().enumerate() {
             let at = base + k;
             let win = windows[k];
+            // How far the sound laid so far runs ahead of (or behind) where
+            // this range belongs in the file, which is the ranges before it
+            // end to end. Every range keeps a whole number of frames, so each
+            // ends up to half a frame off; not carried, the errors added up
+            // -- eleven ranges of an AC-3 track ended 129 ms late, where the
+            // cut with pictures, which carries it (`pick_from` in
+            // [`crate::cut`]), stays within half a frame. Carried, a range
+            // opens a frame earlier or later to take it back. Nought for the
+            // first range, which is where nothing has been laid yet.
+            //
+            // And started over where the sound is well behind, as the picture
+            // writer starts over: a range whose track ran out before its end
+            // (a broadcast's sound stops before its pictures do) is not owed
+            // the next range's opening seconds, which is sound the cut took
+            // away.
+            //
+            // Counted from the track's first frame, as the picture writer
+            // counts where its sound has reached (`end`) from the first frame
+            // it lays: ranges before it that held no sound owe nothing.
+            if !opened {
+                laid = 0.0;
+            }
+            let drift = drift_from(written, &mut laid);
             let ramp = fades_for(
                 fades.get(at).copied().unwrap_or((0.0, 0.0)),
                 track.sample_rate,
@@ -632,7 +666,7 @@ fn run(
                 ranges_in_all,
                 win,
             );
-            written = take_range(
+            let (reached, first, holes) = take_range(
                 piece.src,
                 &track,
                 range,
@@ -644,8 +678,43 @@ fn run(
                 &mut octx,
                 Clock { tb: out_tb, rate: out_rate, frame_secs: setup.frame_secs },
                 written,
+                range.0 + drift,
                 joins_at_sync && at > 0,
             )?;
+            written = reached;
+            if std::env::var("SMARTCUT_DEBUG").is_ok() {
+                crate::say!(
+                    "  sound range {:.4}-{:.4} laid={:.4} written={:.4} drift={:+.4} holes={:.4}",
+                    range.0,
+                    range.1,
+                    laid,
+                    written,
+                    drift,
+                    holes
+                );
+            }
+            // Not only the first: a range whose own head has no sound (a hole
+            // in the track mid-recording, a reel or a recorder stretch whose
+            // sound starts after its pictures) is laid short by the hole as
+            // well. The picture writer puts that range's frames at their own
+            // instants and leaves out, as clashing, what the next range then
+            // opens early on; laid end to end here it would be written -- a
+            // fifth of a second of the sound the cut took away, in front of
+            // the next range.
+            if let Some((t, dur, before)) = first {
+                opened = true;
+                laid += head_owed(range.0 + drift, t, dur, before);
+            }
+            // And a hole further into the range, for the same reason: the
+            // picture writer leaves it as silence and the frames after it at
+            // their own instants, so the next range's early frames clash
+            // and are left out there. Counted as drift here, the next range
+            // opened that much early on the sound the cut took away -- and,
+            // where a recorder stretch's sound breaks off a moment before
+            // the seam and resumes, on the stretch at the seam that no cut
+            // writes (0.28 and 0.44 s on a BD-RE title kept across two).
+            laid -= holes;
+            laid += range.1 - range.0;
             ranges_done += 1;
             say(ranges_done);
         }
@@ -678,6 +747,47 @@ fn run(
     Ok(())
 }
 
+/// How far the sound written (`written`) has drifted from where the ranges
+/// before put the next one (`laid`), which is what the next range opens
+/// against. Where it is more than half a second behind, the track had a hole
+/// rather than a drift, and the count starts over from where the sound is.
+/// The rule `pick_from` has in [`crate::cut`].
+fn drift_from(written: f64, laid: &mut f64) -> f64 {
+    let drift = written - *laid;
+    if drift < -0.5 {
+        *laid = written;
+        return 0.0;
+    }
+    drift
+}
+
+/// What a range is owed before its own length is counted (added to `laid`):
+/// nothing, unless its sound starts later than the range does -- a file
+/// whose sound begins a few tenths of a second after its pictures, kept from
+/// the head, or a hole in the track at a range's head further on. The audio
+/// file has no silence to put there, so the first frame goes where the sound
+/// has reached; counted as owed, the next range read that lateness of the
+/// sound the cut took away and laid it in front of its own start. The picture
+/// writer places that frame at its own instant and leaves out what would
+/// land on it, so it writes none of that sound either.
+///
+/// A frame opening up to half its length late is the ordinary rounding of
+/// the opening rule and stays counted as such, and so is one the frame
+/// before it runs on into (`before`, where that frame ended): frames of
+/// Vorbis or Opus differ in length, and after a long one a short one can
+/// open more than half its own length after the start with nothing missing.
+///
+/// `start` is the instant the range's first frame was chosen against.
+fn head_owed(start: f64, opened_at: f64, dur: f64, before: Option<f64>) -> f64 {
+    let late = opened_at - start;
+    let runs_on = before.is_some_and(|end| end >= opened_at - 2e-3);
+    if late > dur / 2.0 + 1e-3 && !runs_on {
+        -late
+    } else {
+        0.0
+    }
+}
+
 /// How the output keeps time.
 #[derive(Clone, Copy)]
 struct Clock {
@@ -691,9 +801,21 @@ struct Clock {
     frame_secs: Option<f64>,
 }
 
+/// The first frame a range laid: its instant, its length, and where the
+/// track's frame before it ended, where the read passed one over.
+type Opening = (f64, f64, Option<f64>);
+
 /// Read one range's sound and write it.
 ///
-/// Returns where the output has reached, in seconds.
+/// `pick_from` is the instant the range's first frame is chosen against:
+/// its start, moved by however far the sound before it has drifted.
+///
+/// Returns where the output has reached, in seconds, and the instant and
+/// length of the first of the recording's frames the range laid (copied,
+/// or left out waiting for a sync), where it laid one, with where the
+/// track's frame before that one ended, where the read passed one over;
+/// and how much of the range after that first frame the track had no sound
+/// for (see `hole_before`).
 #[allow(clippy::too_many_arguments)]
 fn take_range(
     src: &Source,
@@ -707,8 +829,9 @@ fn take_range(
     octx: &mut ff::format::context::Output,
     clock: Clock,
     mut written: f64,
+    pick_from: f64,
     mut need_sync: bool,
-) -> Result<f64> {
+) -> Result<(f64, Option<Opening>, f64)> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Half a second before the range, so the frame it opens on has been
     // decoded up to rather than seeked into: a seek in a transport stream
@@ -732,6 +855,15 @@ fn take_range(
 
     let in_tb = track.time_base;
     let mut lengths = Lengths::new(ictx.stream(track.stream_index).map(|s| s.parameters()));
+    let mut first: Option<Opening> = None;
+    // Where the last of the track's frames passed over before the range
+    // opens ended. See `head_owed`.
+    let mut before: Option<f64> = None;
+    // Where the last frame the range laid ended, where the latest of them
+    // started, and the holes between its frames so far.
+    let mut reached: Option<f64> = None;
+    let mut latest: Option<f64> = None;
+    let mut holes = 0.0f64;
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
         if stream.index() != track.stream_index {
@@ -776,9 +908,14 @@ fn take_range(
         }
         // Open on whichever frame sits nearest the range's start, so the
         // error is at most half a frame either way rather than a whole frame
-        // late. The picture writer's own rule; see `take_audio` there, which
-        // records why being cleverer is not available.
-        if t + dur / 2.0 <= range.0 {
+        // late -- the start as the sound so far has drifted from it, so the
+        // errors do not add up. The picture writer's own rule; see
+        // `take_audio` there, which records why being cleverer is not
+        // available.
+        if t + dur / 2.0 <= pick_from {
+            if dur > 0.0 {
+                before = Some(t + dur);
+            }
             continue;
         }
         if dur <= 0.0 {
@@ -786,6 +923,29 @@ fn take_range(
             // what follows would land on top of it.
             continue;
         }
+        first.get_or_insert((t, dur, before));
+        // A frame that starts before one the range has laid already: the
+        // track's timestamps stepped back (a second or so before some
+        // recorder seams, by a fifth or a third of a second), and what
+        // follows is sound for instants already written. The picture writer
+        // leaves it out as clashing with the last frame it wrote. Laid end to
+        // end here, it put everything after it that much later -- and,
+        // carried as drift, the next range opened that much late, on the
+        // sound the cut kept. A millisecond's leeway for a clock that keeps
+        // whole ones.
+        if behind(latest, t) {
+            if std::env::var("SMARTCUT_DEBUG").is_ok() {
+                crate::say!("  sound behind {:.4}-{:.4} in range {:.4}-{:.4}", t, t + dur, range.0, range.1);
+            }
+            continue;
+        }
+        let hole = hole_before(reached, t, dur);
+        if hole > 0.0 && std::env::var("SMARTCUT_DEBUG").is_ok() {
+            crate::say!("  sound hole {:.4}-{:.4} in range {:.4}-{:.4}", t - hole, t, range.0, range.1);
+        }
+        holes += hole;
+        reached = Some(reached.map_or(t + dur, |r| r.max(t + dur)));
+        latest = Some(latest.map_or(t, |l| l.max(t)));
         if need_sync {
             if !opens_on_sync(packet.data()) {
                 // Left out, but its instant is still spent, so what follows
@@ -816,7 +976,29 @@ fn take_range(
         written += dur;
     }
     packets.finished()?;
-    Ok(written)
+    Ok((written, first, holes))
+}
+
+/// How much sound the track is missing just before a frame of a range,
+/// after the frame before it in the same range ended at `reached`: nothing
+/// where it runs on, within the rounding of a clock that keeps whole
+/// milliseconds and of timestamps that wander a little; the gap where it is
+/// more than half the frame (the bound `head_owed` keeps at a range's head).
+fn hole_before(reached: Option<f64>, t: f64, dur: f64) -> f64 {
+    match reached {
+        Some(end) if t - end > dur / 2.0 + 1e-3 => t - end,
+        _ => 0.0,
+    }
+}
+
+/// Whether a frame of a range starts before the latest one the range laid
+/// (`latest`) by more than a millisecond's rounding: a frame for instants
+/// already written, which the picture writer leaves out as clashing. One
+/// that starts after it is laid, as it is there, even where it overlaps.
+/// TrueHD in Matroska hands frames over sharing a millisecond, or one
+/// rounded a fraction of one before the frame ahead of it.
+fn behind(latest: Option<f64>, t: f64) -> bool {
+    latest.is_some_and(|l| t < l - 1e-3)
 }
 
 /// How long a frame really lasts, where the container's clock is too coarse
@@ -839,8 +1021,13 @@ fn take_range(
 /// packet's mode names one of the two block sizes in the stream's setup
 /// header, overlapped with the block before it. Without, an .mkv's FLAC came
 /// out 0.5 % short of its samples, Vorbis 0.9 % and Opus in 2.5 ms frames a
-/// fifth.
-struct Lengths {
+/// fifth. DTS is read the same way, from its core header's block count and
+/// rate: libavcodec answers nought for it too, and a DTS-HD Master Audio
+/// track it states at 96 kHz carries 48 kHz core frames.
+///
+/// The picture writer asks the same question of the same frames -- see
+/// `take_audio` in [`crate::cut`] -- and asks it here.
+pub(crate) struct Lengths {
     par: Option<ff::codec::Parameters>,
     /// libavcodec's Vorbis parser, which keeps the size of the block before:
     /// fed every packet in order from wherever the read began.
@@ -848,7 +1035,7 @@ struct Lengths {
 }
 
 impl Lengths {
-    fn new(par: Option<ff::codec::Parameters>) -> Self {
+    pub(crate) fn new(par: Option<ff::codec::Parameters>) -> Self {
         let vorbis = par
             .as_ref()
             .filter(|p| p.id() == ff::codec::Id::VORBIS)
@@ -863,7 +1050,7 @@ impl Lengths {
         Lengths { par, vorbis }
     }
 
-    fn of(&mut self, packet: &ff::Packet, tb: f64, said: f64) -> f64 {
+    pub(crate) fn of(&mut self, packet: &ff::Packet, tb: f64, said: f64) -> f64 {
         let Some(par) = self.par.as_ref() else { return said };
         let (rate, id, fixed) = unsafe {
             let p = par.as_ptr() as *mut ff::ffi::AVCodecParameters;
@@ -874,8 +1061,13 @@ impl Lengths {
             return said;
         }
         let data = packet.data().unwrap_or(&[]);
-        // Opus counts its frames at 48 kHz whatever rate the track states.
+        // A DTS frame by its core, before anything libavcodec may know of the
+        // track's frame size: that is counted at the rate the track states,
+        // and a Master Audio track states its extension's. Opus counts its
+        // frames at 48 kHz whatever rate the track states.
+        let core = if id == ff::codec::Id::DTS { dts_core(data) } else { None };
         let (samples, rate) = match id {
+            _ if core.is_some() => core.unwrap_or((0, rate)),
             _ if fixed > 0 => (i64::from(fixed), rate),
             ff::codec::Id::FLAC => (flac_block(data).unwrap_or(0), rate),
             ff::codec::Id::OPUS => (opus_samples(data).unwrap_or(0), 48_000),
@@ -943,6 +1135,24 @@ fn flac_block(data: &[u8]) -> Option<i64> {
         }
         _ => None,
     }
+}
+
+/// The samples in a DTS frame and the rate they are counted at, from its
+/// core header: a block count of 32 samples each, and the core's own rate,
+/// which is what the frame lasts by whatever an extension raises the rate
+/// to. Only the ordinary 16-bit big-endian sync.
+fn dts_core(data: &[u8]) -> Option<(i64, i32)> {
+    if data.len() < 9 || data[..4] != [0x7F, 0xFE, 0x80, 0x01] {
+        return None;
+    }
+    // FTYPE 1, SHORT 5, CPF 1, NBLKS 7, FSIZE 14, AMODE 6, SFREQ 4.
+    let bits = u64::from_be_bytes([data[4], data[5], data[6], data[7], data[8], 0, 0, 0]);
+    let nblks = (bits >> (64 - 14)) & 0x7F;
+    let sfreq = (bits >> (64 - 38)) & 0x0F;
+    let rate = [0, 8000, 16000, 32000, 0, 0, 11025, 22050, 44100, 0, 0, 12000, 24000, 48000, 0, 0]
+        [sfreq as usize];
+    // At least six blocks in a normal frame (5 is the least NBLKS allows).
+    (nblks >= 5 && rate > 0).then_some(((nblks as i64 + 1) * 32, rate))
 }
 
 /// The samples in an Opus packet at 48 kHz, from its table-of-contents byte
@@ -1027,7 +1237,7 @@ fn write_encoded(
 
 #[cfg(test)]
 mod tests {
-    use super::{flac_block, less, opus_samples};
+    use super::{behind, drift_from, dts_core, flac_block, head_owed, hole_before, less, opus_samples};
 
     #[test]
     fn ranges_lose_the_unwritten_stretches() {
@@ -1043,6 +1253,65 @@ mod tests {
         assert_eq!(less(&[(8.0, 12.01)], &holes, eps), vec![(8.0, 10.0)]);
         // Clear of them, however short.
         assert_eq!(less(&[(1.0, 1.01), (13.0, 19.0)], &holes, eps), vec![(1.0, 1.01), (13.0, 19.0)]);
+    }
+
+    #[test]
+    fn a_late_sound_owes_nothing_at_the_head() {
+        // Within half a frame of the start: the opening rule's own rounding.
+        assert_eq!(head_owed(0.0, 0.0107, 0.0213, None), 0.0);
+        assert_eq!(head_owed(5.0, 4.99, 0.032, Some(4.99)), 0.0);
+        // The track has nothing there: the lateness is not owed.
+        assert!((head_owed(0.0, 0.278, 0.0213, None) + 0.278).abs() < 1e-9);
+        assert!((head_owed(1.0, 1.0485, 0.0213, None) + 0.0485).abs() < 1e-9);
+        // A hole mid-track: the frame before ends well short of this one.
+        assert!((head_owed(10.1, 10.3253, 0.0213, Some(10.0267)) + 0.2253).abs() < 1e-9);
+        // A short Vorbis frame after a long one, on a millisecond clock:
+        // more than half its own length late, but nothing is missing.
+        assert_eq!(head_owed(3.0, 3.0105, 0.012, Some(3.0098)), 0.0);
+    }
+
+    #[test]
+    fn a_hole_inside_a_range_is_not_drift() {
+        // The range's first frame, and frames that run on: within a
+        // millisecond clock's rounding, either way.
+        assert_eq!(hole_before(None, 10.0, 0.0213), 0.0);
+        assert_eq!(hole_before(Some(10.0213), 10.0213, 0.0213), 0.0);
+        assert_eq!(hole_before(Some(10.0213), 10.022, 0.0213), 0.0);
+        assert_eq!(hole_before(Some(10.0213), 10.020, 0.0213), 0.0);
+        assert_eq!(hole_before(Some(3.0103), 3.012, 0.0027), 0.0);
+        // A frame missing, and a stretch of them.
+        assert!((hole_before(Some(10.0213), 10.0426, 0.0213) - 0.0213).abs() < 1e-9);
+        assert!((hole_before(Some(10.0267), 10.3253, 0.0213) - 0.2986).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_frame_behind_what_was_laid_is_left_out() {
+        // Running on, overlapping by a millisecond clock's rounding (TrueHD
+        // frames sharing a timestamp), or by part of a frame: laid.
+        assert!(!behind(None, 10.0));
+        assert!(!behind(Some(10.0), 10.0213));
+        assert!(!behind(Some(10.002), 10.002));
+        assert!(!behind(Some(10.002), 10.0018));
+        // Short frames starting inside a long one: laid, as the picture
+        // writer lays them.
+        assert!(!behind(Some(18.005), 18.012));
+        // Timestamps stepped back by a fifth of a second: left out until
+        // they pass the latest frame laid.
+        assert!(behind(Some(11.384), 11.2193));
+        assert!(behind(Some(11.384), 11.3687));
+        assert!(!behind(Some(11.384), 11.39));
+    }
+
+    #[test]
+    fn the_drift_is_carried_and_a_hole_starts_over() {
+        let mut laid = 0.0;
+        assert_eq!(drift_from(0.0, &mut laid), 0.0);
+        laid = 1.0;
+        assert!((drift_from(1.0107, &mut laid) - 0.0107).abs() < 1e-9);
+        assert!((drift_from(0.7, &mut laid) + 0.3).abs() < 1e-9);
+        assert_eq!(laid, 1.0);
+        assert_eq!(drift_from(0.4, &mut laid), 0.0);
+        assert_eq!(laid, 0.4);
     }
 
     #[test]
@@ -1063,6 +1332,25 @@ mod tests {
         assert_eq!(flac_block(&[0xFF, 0xF8, 0xC9]), None);
         assert_eq!(flac_block(&[0xFF, 0xF8, 0x69, 0x18, 0x80, 0x00]), None);
         assert_eq!(flac_block(&[0xFF, 0xF8, 0x79, 0x18, 0x00, 0x01]), None);
+    }
+
+    #[test]
+    fn dts_core_frames() {
+        // 512 samples (NBLKS 15) at 48 kHz (SFREQ 13): FTYPE 1, SHORT 31,
+        // CPF 0, NBLKS 15, FSIZE 1023, AMODE 9, SFREQ 13.
+        let head = |nblks: u64, sfreq: u64| {
+            let bits: u64 = (1 << 63) | (31 << 58) | (nblks << 50) | (1023 << 36) | (9 << 30) | (sfreq << 26);
+            let b = bits.to_be_bytes();
+            vec![0x7F, 0xFE, 0x80, 0x01, b[0], b[1], b[2], b[3], b[4], 0]
+        };
+        assert_eq!(dts_core(&head(15, 13)), Some((512, 48000)));
+        assert_eq!(dts_core(&head(15, 8)), Some((512, 44100)));
+        assert_eq!(dts_core(&head(7, 13)), Some((256, 48000)));
+        // A reserved rate, too few blocks, no sync, too short.
+        assert_eq!(dts_core(&head(15, 4)), None);
+        assert_eq!(dts_core(&head(4, 13)), None);
+        assert_eq!(dts_core(&[0x7F, 0xFE, 0x80, 0x00, 0xFC, 0x3C, 0, 0, 0, 0]), None);
+        assert_eq!(dts_core(&[0x7F, 0xFE, 0x80, 0x01, 0xFC]), None);
     }
 
     #[test]

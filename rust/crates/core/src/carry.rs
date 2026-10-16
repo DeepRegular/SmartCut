@@ -88,8 +88,16 @@ const TS_AUDIO: &[&str] = &[
 /// A 4K broadcast's LATM AAC is the one a recording of this program's own
 /// kind runs into: the muxer has no tag for it and the cut stopped with
 /// "Invalid argument" after planning. Bare MLP and 8-bit PCM are turned away
-/// the same way, "Could not find tag", whatever the compliance level.
-const MP4_REFUSES: &[&str] = &["vp8", "aac_latm", "mlp", "pcm_u8"];
+/// the same way, "Could not find tag", whatever the compliance level -- the
+/// unsigned kind a WAV holds and the signed kind (`twos`) an old QuickTime
+/// file does alike.
+const MP4_REFUSES: &[&str] = &["vp8", "aac_latm", "mlp", "pcm_u8", "pcm_s8"];
+
+/// What a Matroska file refuses, which is one thing: 8-bit PCM is stored the
+/// way a WAV stores it, unsigned, and the muxer has no tag for the signed
+/// kind an old QuickTime file carries. Asked for as 24 bit it is written
+/// wide, which every container here holds.
+const MKV_REFUSES: &[&str] = &["pcm_s8"];
 
 /// What a QuickTime file refuses. It takes the MP4 family's pictures except
 /// the three WebM carries, and its sound stops at the lossless ones: "vp9
@@ -135,8 +143,8 @@ pub fn holds(family: &str, codec: &str) -> bool {
         "mp4" => !MP4_REFUSES.contains(&codec),
         "mov" => !MOV_REFUSES.contains(&codec),
         "webm" => WEBM.contains(&codec),
-        // Matroska holds everything that reaches it, and an unknown name is
-        // not this module's to refuse.
+        "mkv" => !MKV_REFUSES.contains(&codec),
+        // An unknown name is not this module's to refuse.
         _ => true,
     }
 }
@@ -218,6 +226,10 @@ mod tests {
         assert!(holds("mov", "ac3"));
         // Matroska, and a container this program does not write.
         assert!(holds("mkv", "vp8") && holds("mkv", "truehd"));
+        // Signed 8-bit PCM has a tag only in QuickTime; unsigned is a WAV's
+        // and Matroska's.
+        assert!(!holds("mp4", "pcm_s8") && !holds("mkv", "pcm_s8") && holds("mov", "pcm_s8"));
+        assert!(!holds("mp4", "pcm_u8") && holds("mkv", "pcm_u8"));
         assert!(holds("", "vp8"));
     }
 
