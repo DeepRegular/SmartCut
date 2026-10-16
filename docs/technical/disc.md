@@ -1150,11 +1150,26 @@ stops in the middle of a picture. The last picture packet in front of most of
 these seams is short of its own length, and is often a reference picture sent
 ahead of pictures that were to be shown before it and were never written: a P
 picture stamped three frames past the last whole one, or an I picture.
-libavformat marks it corrupt, and its parser hands what follows it over as one
-more picture with a time of its own invented, about a third of a second on.
-Neither decodes to more than a fragment, so both are passed over
-(`CutShort`), and at 19 of the 96 seams the end comes three frames before the
-last packet's time.
+The parser hands what follows it over as one more picture with a time of its
+own invented, about a third of a second on. Neither decodes to more than a
+fragment, so both are passed over (`CutShort`).
+
+**The corrupt flag is on the picture in front of it.** libavformat's parser
+hands a picture over once it has seen where the next one begins, which is
+while it reads the next packet, and stamps it with that packet's flags. So the
+packet the recorder cut short shows up as a corrupt flag on the whole picture
+or field before it, and comes out unflagged itself. Until 2026-10-16 the
+flagged picture was the one passed over. Measured against a decoder at 71
+seams of one recorder's discs, that left a whole second field out at 13 (the
+end half a frame early) and counted the cut-off field at 20 (two and a half to
+three frames late, which a `--keep` across the seam wrote as a picture held
+for about a tenth of a second). The picture after the flag is passed over now,
+with whatever else the parser hands over out of the same packet, and the end
+falls where the decoder's pictures do at 64 of the 71. At the other seven the
+packet after the flag holds a whole key picture, flagged itself, that does
+decode when the stream stops at the seam's byte. Nothing in the packets tells
+it from one that does not, so it is left out and the stretch ends one picture
+early, as it did before.
 
 **The read runs on past the seam's byte until a picture packet is there**
 (`StretchRead`). A demuxer hands a picture over when the next one on its track
@@ -1176,6 +1191,37 @@ hold a picture now writes the pictures asked for and passes `--verify`, from a
 fresh open, from the cached index and from `--index scan` alike. What is left
 at those seams, 0.083 seconds on two titles, is the recording's own: B pictures
 missing before a stretch's last P.
+
+**A walk takes the recorder's fragments for entry points.** An index walked
+off the stream (`--index scan`, a map that could not be read, a walk kept from
+an earlier open) reads packets, not pictures, so what the recorder cut off can
+come out of it as an entry point: a cut-short key field 0.07 seconds past
+where the pictures stop with its byte still in front of the seam, or whole
+pictures stamped past the seam's time. And the stretch's last whole key
+picture can be handed leading pictures that are not its own: a cut-short B
+stamped before it, or the pictures the next stretch opens with before its
+first key picture, out of a GOP that was never written. A `--keep` across such
+a seam copied up to that point and then re-encoded from its leading pictures
+to the end, so pictures were written twice — 158 for 155 at one seam, with
+every copied picture after it one off and `--verify` saying MISMATCH — or the
+cut stopped with `the entry point at … was passed`.
+
+So since 2026-10-16 a walked stretch keeps no entry point at or past where its
+pictures stop, none at or past where the run of cut-short pictures at its end
+begins, and not its last key picture where the walk starts that picture's
+leading pictures earlier than its own whole ones in front of the seam. The cut
+ends on the point in front and re-encodes up to the end, as it does off the
+disc's own map. It is done on every open, so a walk an earlier version saved
+gives the same answer as a fresh one.
+
+**Measured** over the twenty titles of one recorder's discs: 58 points go at
+90 seams, and none on the 4K titles. A `--keep` across every seam of each
+title, from a walked index, passes `--verify` with no picture held on all
+twenty: fresh, from its own saved walk and from walks 0.8.24 and 0.8.25 saved,
+with the same bytes every way. Before, nine of the twenty failed and four more
+stopped on an entry point. The default cut of a title, the one that plays what
+the playlist plays, plans as it did, from the disc's map and from a walk alike,
+and a recording with no seams is not touched.
 
 ### What the playlist plays, and what it steps over
 
@@ -1241,7 +1287,7 @@ Everything else that counts a title's seconds leaves them out too since
 | | |
 |---|---|
 | Sound only (`crate::sound`) | Each range is split around them, as the pictures' is. Kept across the seam with 18.9 seconds of it, a `.wav` came out 35.0 seconds long, 18.9 of them silence, where the cut with pictures is 16.1 |
-| `--verify` | The sound is measured against the ranges less them. Held to the ranges as asked, a cut across that seam was allowed 27.4 seconds of missing sound in a 16.1-second file, and the sound-only file above would have been reported short |
+| `--verify` | The sound is measured against the ranges less them. Held to the ranges as asked, a cut across that seam was allowed 27.4 seconds of missing sound in a 16.1-second file, and the sound-only file above would have been reported short. And the sound missing at a seam is excused only from where the pictures in front of it really stop, read off the recording, not from the end the index estimated: up to 0.8.25, where that estimate stood seconds past the last picture, a cut that held the picture over silence for as long passed, 8.8 seconds of it in front of the mended stretch above |
 | `--fit` and the disc gauge | The rate is an average over the whole clock, so it is scaled by the clock over what is written: 0.7% on that title, most of the margin kept back |
 | Divide | The keeps are divided less them, so the parts are equal in what they write and none begins where there is no picture |
 
@@ -1484,8 +1530,10 @@ one-line question the output settings ask where a disc is being cut:
 
 Inside is the default because one file is one file: a cut with its subtitles in
 it is a cut everything opens. Beside is what a subtitle tool, an old set-top
-box, or an MP4 wants — and an MP4 can only have them beside, whatever is asked
-for.
+box, or an MP4 wants — and an MP4 or an MKV can only have them beside. Asked for
+inside one, a DVD's are written beside it all the same; a Blu-ray's are left
+out, with a note that names a transport stream, `beside` and `sup` as the ways
+to keep them.
 
 The pair is the **VobSub** one the rest of the world already reads —
 [`vobsub.rs`](../../rust/crates/core/src/vobsub.rs):
@@ -1777,8 +1825,8 @@ a `.ts` as the disc's own display sets, the two are **identical in colour and
 39.7 dB apart on luma** — which is the whole of what flattening a Blu-ray's
 antialiasing into a DVD's four colours costs. No pixel moved and no subtitle
 changed its moment. Asked for an `.mp4` instead, the same pair is written
-beside it, which is the only way a cut of a disc in that container keeps its
-subtitles at all.
+beside it, which with `sup` is the only way a cut of a Blu-ray in that
+container keeps its subtitles at all.
 
 **A Blu-ray's subtitles written as a `.sup`** — the same two ranges again with
 `--subtitles sup`. The 85 segments came out **byte for byte the same** as the

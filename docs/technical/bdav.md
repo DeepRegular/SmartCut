@@ -447,6 +447,19 @@ Unicode for the 4K and 8K services — `🆞` and its neighbours — have no cel
 all, and are spelled in brackets, `[4K]`, the way a listing spells the markers
 the code does have.
 
+**Six characters the code has cells for were written as 〓.** `〜` `‖` `—` `¢`
+`£` `¬` are JIS X 0208's own forms of six cells. The EUC-JP table a UTF-8 world
+has maps those cells to the Windows code page's twins instead — `～` `∥` `―`
+`￠` `￡` `￢` — and has no entry for the JIS forms, so up to 0.8.25 a name typed
+with the wave dash some input methods give went onto the disc with a geta mark
+in its place. Each goes into its cell now (`arib::widen`), in the disc's name,
+the programme's and the channel's alike, and in a `.ts`'s tables where
+SmartCut writes a name of its own. Read back they come out as the twins, which
+is what every name read off a broadcast decodes to already, so a disc appended
+to keeps its name byte for byte. A name without any of the six is written
+exactly as before. What only JIS X 0212 or a vendor's extension has — an
+accented letter, `∑` — has no cell in this code and is still 〓.
+
 The field is a length byte and 255 bytes at most, which a Japanese title
 reaches at about 85 characters. What does not fit is cut at a character, never
 inside one: half a JIS pair is a different character rather than a shorter

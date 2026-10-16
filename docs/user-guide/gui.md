@@ -1412,7 +1412,9 @@ cannot hold the recordings in the list: a `.ts` or a `.m2ts` cannot carry VP8,
 VP9 or AV1 pictures, and a `.mov` cannot carry those or lossless sound. `Same as
 the input` is never greyed — each recording goes back into the kind of container
 it came out of. A `.mkv` holds everything SmartCut writes, so it is the one to
-reach for when the container you wanted is grey.
+reach for when the container you wanted is grey. The one exception is the
+signed 8-bit PCM an old QuickTime `.mov` can carry: a `.mkv` and an `.mp4` are
+both grey for it, so such a recording stays a `.mov`.
 
 **Values larger than the material are greyed out too.** Channels, sample rate
 and bit depth can all be written larger than the recording once you are

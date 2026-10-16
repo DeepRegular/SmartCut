@@ -260,6 +260,18 @@ Both halves of that rule are required. A tag that appears in no map this program
 is left alone, because the broadcaster's own tables disagreeing is not something to
 settle here.
 
+**A stream the cut leaves out is looked for in the maps too.** The map is read for the
+streams the cut is going to carry, and the one that names the most of them is taken. A
+station that announces its second sound or its captions a few seconds into the recording
+has them missing from the first map, and when such a stream was dropped from the cut
+(`--drop-stream`, or the editor's **Tracks** menu) up to 0.8.25, its tag appeared in no
+map that was read. Its descriptor was left alone, and the guide still promised a second
+language or captions the file does not have. The streams being left out are asked about
+as well now, only to place the descriptors: the map the output is written from is built
+of what it carries, and a wider answer is taken only where it still names every stream
+the first did. Measured on twelve stations' recordings, cuts that drop nothing are byte
+for byte what they were, and a drop takes out only the dropped stream's entry.
+
 A downmixed track counts as not carried. A folded track no longer has the channel
 arrangement its audio component descriptor names, so it comes out of the programme
 description for the same reason it comes out of the map. So does a resampled one: the

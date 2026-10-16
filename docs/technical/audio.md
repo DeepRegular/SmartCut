@@ -269,6 +269,32 @@ is now the end of the cut. A track that holds nothing because the kept ranges
 hold none of it says so and names the way out, which is to leave the track
 out.
 
+### A frame whose length the container rounds
+
+Matroska and WebM keep time in milliseconds, and a frame that does have a
+length is handed over with it rounded down: 21 ms for an AAC frame of 21.33 at
+48 kHz, 10 for DTS's 10.67, 92 for a 4096-sample PCM packet at 44.1 kHz. The
+cut sums those lengths to know how far the sound has reached, so every range
+came up a fraction of a millisecond short per frame. The next range took the
+shortfall for sound still owed and opened a frame early, on top of the one
+before, and a player lays sound end to end: every cut of an ordinary AAC, PCM,
+DTS or Vorbis `.mkv` put the rest of its sound later. Over eleven ranges it
+grew from 41 ms to 137 on AAC and from 21 to 95 on DTS, and the run reported
+frames lost that were not.
+
+So where the container's clock is that coarse, each frame's length is read off
+the frame itself (`sound::Lengths`, the reading the sound-only writer lays its
+frames by): libavcodec's count of the samples in a frame where every frame is
+one length, FLAC's block header, Opus's first byte, Vorbis's block sizes, and
+for DTS the core header — its block count of 32 samples each at the core's own
+rate, since libavcodec answers nought for DTS and a DTS-HD Master Audio track
+stated at 96 kHz carries 48 kHz core frames. A reading is taken only within
+one tick of the length the container stored. The same eleven ranges now stay
+within a frame of the recording on all of these, and a joined reel is read by
+its own stream's parameters. A transport stream's or an MP4's clock already
+says the length exactly; those are left alone, and their cuts are byte for
+byte what they were.
+
 ## Fading at the seams (`--audio-fade`)
 
 A cut joins two instants that were never next to each other, and what the sound
@@ -687,7 +713,10 @@ or channel layout produces, and it is answered the same way: by asking the encod
 `audio::writable_rate` moves the rate asked for to the nearest one the codec has,
 preferring the higher of two equally near, and the cut reports which rate it settled on.
 The question is asked before anything is opened, so the stream is declared at the rate
-its packets will actually arrive at.
+its packets will actually arrive at. A lossless track carried through whole is not asked
+it, since no encoder is opened for it: up to 0.8.25 a 96 kHz DTS-HD Master Audio track
+was held to the list of libavcodec's DTS encoder, which stops at 48 kHz, and came out
+re-encoded whole as a 48 kHz DTS core.
 
 ### The width
 
@@ -704,7 +733,14 @@ PCM is written at the width asked for, in its own byte order; up to 0.8.23 it wa
 re-encoded, said to be at that width, and came out at its own again, because each of
 those encoders writes one width only. Float samples asked for as 16 bit, and 8-bit
 samples asked for as 24, went the same way up to 0.8.24; they are written as 16- and
-24-bit integers now. And it decides the file's size on its own:
+24-bit integers now. That is also the one way into an MP4 or a Matroska file for the
+signed 8-bit samples an old QuickTime file holds (`pcm_s8`): neither has a tag for
+them, and up to 0.8.25 a cut into either stopped with a bare "Invalid argument" after
+creating the file. It is refused before the cut now, and the message names
+`--audio-bits 24`. Matroska does not name the channel layout of its PCM either, and an
+MP4 has to state one, so a copy of a `.mkv`'s PCM into an `.mp4` stopped on its first
+packet with the same "Invalid argument"; it is given the ordinary layout for its
+channel count now. The width also decides the file's size on its own:
 channels × width × rate, with nothing else in it.
 
 It also decides the *frame length*. The Blu-ray LPCM encoder frames 16-bit sound 240
@@ -1041,6 +1077,32 @@ so a range's worth of them is a whole number of frames however the range was
 chosen, and end to end is the only arrangement that neither overlaps nor
 drifts.
 
+**Each range opens against where the sound so far has got to.** Whole frames
+leave every range up to half a frame off its own length, and until 2026-10-16
+the next range opened on the frame nearest its own start whatever the ranges
+before had come to. The errors added up: eleven ranges of an AC-3 track
+ended 129 ms later than the sound of the same keeps cut with pictures, and AAC,
+Vorbis, PCM and DTS went the same way. The cut with pictures carries
+the difference over (`pick_from` in `cut::take_audio`), and the sound alone
+now carries it by the same rule: before each range it measures how far the
+sound written runs from the ranges before laid end to end, and chooses the
+range's first frame against its start moved by that much. Every range lines up
+within a frame with the sound of the video cut. Where the sound is more than
+half a second behind, the track had a hole rather than a drift — a broadcast's
+sound stops before its pictures — and the count starts over, as the picture
+writer's does, so sound the cut took away is never pulled back in. A single
+range has nothing before it and is written exactly as it was.
+
+A hole in the track is never taken for drift. Where a range's own sound starts
+late (the recording's sound begins after its pictures, or the track breaks off
+at the range's head) or breaks off inside the range, the missing stretch is
+left out of the count, so the next range does not open early on sound the cut
+removed. Sound laid end to end cannot hold the hole, so the rest of the file
+sits that much earlier than the cut with pictures, which keeps it as silence.
+Where the sound's own times step back (seen about a second before some
+recorder seams), the frames that repeat earlier sound are skipped, as the cut
+with pictures drops them.
+
 **An overlapping crossing takes the same seconds out of the sound as it does
 in a video run.** A dissolve, a wipe or a slide shows the head of the next clip
 while the one before it is still sounding, so the video's writer starts that
@@ -1077,7 +1139,9 @@ big-endian PCM is what an MP4 has a box for, and a `.wav` wants its samples
 the other way round. Asked for the wrong one it says "Function not
 implemented" — after creating the file. So a PCM target is taken to whatever
 that container writes PCM as — keeping its width, since the muxer names its
-sixteen-bit default and a 24-bit track would otherwise be cut down to it. The
+sixteen-bit default and a 24-bit track would otherwise be cut down to it, and
+keeping float samples float: up to 0.8.25 an `.aiff`, `.au` or `.caf` was
+handed float sound as sixteen-bit integers, `--audio-bits 24` or not. The
 CLI writes a `.wav` as linear PCM whatever the recording's own sound is. And a
 container with no room for the codec at all — MP2 in an `.m4a` — says only
 "Invalid argument", once the header is being written; `avformat_query_codec` is

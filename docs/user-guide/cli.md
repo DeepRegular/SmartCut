@@ -112,19 +112,27 @@ falls inside** are rebuilt (smart rendering). Give any of the five settings
 below a value the recording does not already have and there is no frame left to
 copy, so **the whole track is re-encoded**.
 
+Before it starts, the run prints a `render:` line saying what is done with the
+sound (`audio smart`, or `audio reencode` and how). It says what the cut will
+really do, not what was asked: a width asked of AAC, or the track's own codec
+named with `--audio-codec`, leaves it smart; a DTS or TrueHD track, which is
+carried through whole unless another codec is named, is not shown as
+downmixed or resampled; and a `.wav` of sound alone says it is re-encoded as
+linear PCM.
+
 | Option | Meaning |
 |---|---|
 | `--audio-mode smart\|copy\|reencode` | `smart` is the default: it rebuilds only the frames a boundary falls inside, so nothing from the far side of a cut is heard — and nothing at all when the join falls in silence. `copy` is lossless to the byte but leaves a little of the far side audible; `reencode` cuts to the sample at the cost of rebuilding the whole track |
 | `--audio-codec source\|aac\|lpcm\|ac3\|dts` | What the audio is written as. `source`, the default, keeps the recording's own. AAC plays straight off a phone, AC-3 and DTS are what an AV receiver handles most reliably, and linear PCM is uncompressed |
 | `--audio-channels N` | Channel count, 1 to 8. Anything but the recording's own is a downmix — 5.1 folded to stereo, for instance |
 | `--audio-samplerate RATE` | Sample rate, as `48k` or `48000`. Codecs differ in what they support (AC-3 has three rates, Blu-ray LPCM three others); a rate a codec does not have is taken to the nearest one it does, with a note saying which |
-| `--audio-bits 16\|24` | How wide each sample is. **Only meaningful for linear PCM** — the other codecs write a description of the sound rather than the sound itself, so there is nowhere to put a width. A recording's own plain PCM written into a `.mkv` or `.mov` is written at the width asked for, float and 8-bit samples included |
+| `--audio-bits 16\|24` | How wide each sample is. **Only meaningful for linear PCM** — the other codecs write a description of the sound rather than the sound itself, so there is nowhere to put a width. A recording's own plain PCM written into a `.mkv` or `.mov` is written at the width asked for, float and 8-bit samples included. The signed 8-bit PCM an old `.mov` can carry goes into a `.mkv` or an `.mp4` only as 24 bit; otherwise the run is refused before anything is written, and the message says so |
 | `--audio-bitrate RATE` | Bits per second when re-encoding, as `192k` or `192000`. Left out, it follows the recording. A figure the encoder will not accept is raised to what that codec is ordinarily carried at, with a note saying so |
 | `--aac auto\|mpeg2\|mpeg4` | Which flavour of AAC the frames SmartCut writes announce themselves as. `auto`, the default, follows the recording — MPEG-2 AAC for a broadcast |
 | `--audio-es` | Also write the sound out as a bare stream beside the output. AAC only |
 | `--poster TIME` | Carry the picture at `TIME` into the recording as the file's cover (thumbnail): `covr` in `.mp4` and `.m4v`, an attachment named `cover.jpg` in `.mkv`. Other containers have no place for one (FFmpeg writes no `covr` into a `.mov`), and the run says it is ignored. A time past the end takes the last picture, with a note. An interlaced recording's cover is taken from one field. Not with `--sound-only` |
 | `--no-chapters` | Leave the chapter list out. Otherwise an `.mp4`, `.m4v`, `.mov`, `.mkv` or `.webm` gets one chapter where each kept range begins (and where each `--join` recording begins), plus the chapters the recording came with that survive the cut — the disc's own for a recording off one, otherwise the chapter list an `.mp4` or `.mkv` input already has — the same points `--bdav` writes into a playlist, which this does not change. A cut with only one range and nothing else gets no chapter list. Not with `--sound-only` |
-| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.eac3`, `.mp2`, `.mp3`, `.dts`, `.m4a`, `.mka`, or `.wav`, which is written as linear PCM unless `--audio-codec` names another codec. `.aiff` also takes linear PCM, and `.flac`, `.opus` and `.thd` take a recording's own FLAC, Opus or TrueHD. A sound the container has no room for stops the run before anything is written. A 4K broadcast's LATM-framed AAC asked for as `.aac` or `.m4a` is re-encoded as plain AAC, and the run says so; `.mka` keeps its own frames. One sound track, taken from the recording `--master` names, and not with `--bdav`, `--video-share` or `--audio-es`, nor with what only a file with pictures has: `--tables`, `--data-broadcast`, `--no-data-broadcast`, `--subtitles`, `--drop-subpicture`, `--vc1-quant`, `--clean-joins`, `--no-open-gop`, `--transition-image` or `--no-chapters`. A recording joined on with no sound is left out of the file, and the run says so. On a recorder's title, the time at a seam that no picture is written for is left out of the sound too, so the file is as long as the video would be |
+| `--sound-only` | Write the sound and no pictures: the ranges, the joins and the fades exactly as they would be inside the video, and nothing read or written for the frames. `-o` names the file and its extension picks the container — `.aac`, `.ac3`, `.eac3`, `.mp2`, `.mp3`, `.dts`, `.m4a`, `.mka`, or `.wav`, which is written as linear PCM unless `--audio-codec` names another codec. `.aiff` also takes linear PCM, and `.flac`, `.opus` and `.thd` take a recording's own FLAC, Opus or TrueHD. A sound the container has no room for stops the run before anything is written. A 4K broadcast's LATM-framed AAC asked for as `.aac` or `.m4a` is re-encoded as plain AAC, and the run says so; `.mka` keeps its own frames. One sound track, taken from the recording `--master` names, and not with `--bdav`, `--video-share` or `--audio-es`, nor with what only a file with pictures has: `--tables`, `--data-broadcast`, `--no-data-broadcast`, `--subtitles`, `--drop-subpicture`, `--vc1-quant`, `--clean-joins`, `--no-open-gop`, `--transition-image` or `--no-chapters`. A recording joined on with no sound is left out of the file, and the run says so. On a recorder's title, the time at a seam that no picture is written for is left out of the sound too, so the file is as long as the video would be. With several ranges, each one lines up within a frame with the sound of the video cut of the same ranges |
 | `--audio-fade SECONDS` | Take the level down into each seam and bring it back out over that many seconds. 0 to 10; 0, no fade, is the default |
 | `--join-fade-out SECONDS` | How long the sound takes to leave at the end of each clip, where `--join` writes several into one file. 0 to 10; 0 is the default |
 | `--join-fade-in SECONDS` | ...and how long it takes to come back at the start of the next one |
@@ -181,7 +189,7 @@ refused rather than quietly ignored.
 | `--scenes` | List the scene changes |
 | `--preview TIME` | Decode one picture at `TIME` and write it as a JPEG (`preview.jpg`, or `-o`). It prints the time actually decoded beside the time asked for |
 | `--still TIME` | Save the frame at `TIME` at the size the recording is shown at, as the PNG, JPEG or BMP that `-o` names (`still.png` without one). An interlaced recording is saved from one field. The same as **Save this frame as an image** in the cut editor |
-| `--cut-near TIME` | Print where the nearest picture-to-picture change is to `TIME`, in windows of ±0.5, ±1 and ±2 seconds |
+| `--cut-near TIME` | Print where the nearest picture-to-picture change is to `TIME`, in windows of ±0.5, ±1 and ±2 seconds. A time past the end of the recording is an error (exit code 1) |
 | `--verify` | Once the cut is written, decode it from end to end and line it up against the recording frame by frame: the frame count, that every copied frame is the recording's own bit for bit, the re-encoded frames' quality, decode errors and the length of the sound. Each finding is a line starting `verify:`. A file whose pictures do not match ends the run with exit code 1; sound that runs long or short is only reported. Not with anything that writes no cut, such as `--analyze`, and refused when there is neither `-o` nor `--bdav`. It is the same check as [the GUI's](gui.md#checking-what-was-written) |
 | `--log FILE` | Also write what the run prints into FILE, headed by a line giving the version and the command line. An existing file is added to. FFmpeg's lines go in as `SMARTCUT_FFMPEG_LOG` lets them. A file the run reads or writes — the recording, `-o` and so on — is refused |
 
@@ -201,9 +209,12 @@ refused rather than quietly ignored.
 | `--subtitles pgs\|beside\|sup` | Where the subtitles a disc draws go. `pgs`, the default, puts them **inside the cut** as the kind a transport stream carries — a Blu-ray's own untouched, a DVD's converted to it. `beside` writes them **next to the cut** as the `.idx` and `.sub` pair every player and subtitle tool reads — a DVD's own untouched, a Blu-ray's read back out of its display sets. `sup` writes those display sets themselves, into a **`.sup` next to the cut** — a Blu-ray's subtitles byte for byte, and what BDSup2Sub and Subtitle Edit read. `beside` and `sup` are refused with `--bdav`: a file next to the clip does not go onto the disc |
 | `--drop-subpicture ID` | Leave one of a DVD's subtitle streams out, by the id the disc knows it by: one byte in hex, `0x20` or `20`. Repeatable |
 
-Only a `.ts` or an `.m2ts` can hold subtitles inside it. Asked for an `.mp4`,
-SmartCut says so and writes the pair beside it instead — beside the cut is the
-one way a cut of a disc in that container keeps its subtitles. A `.sup` holds
+Only a `.ts` or an `.m2ts` can hold subtitles inside it. A DVD's subtitles
+cut to an `.mp4` or an `.mkv` are written as the pair beside it instead, and
+the run says so. A Blu-ray's are not: cut to anything but a transport stream with the
+default `pgs`, they are left out, and the run says so and names the two ways to
+keep them, a `.ts` or `.m2ts`, or `beside` or `sup`, which write them next to
+any output. A `.sup` holds
 one stream, so a recording with two of them is written as two files, named by
 language (`cut_title.eng.sup`). See
 [a disc's subtitles](../technical/disc.md#a-discs-subtitles-inside-the-cut-or-beside-it).
