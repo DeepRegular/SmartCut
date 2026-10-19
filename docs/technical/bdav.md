@@ -702,6 +702,19 @@ half-written file into place — and, with `--iso-only`, removed the folder on t
 strength of it. A `.part` somebody holds is now refused; one left by a killed run
 holds no lock and is cleared.
 
+**A run that is to take its folder away is checked once more before anything is
+cut** (`bdav::image_in_the_way`). With `--iso-only`, or *Remove the folder once
+the image is written* in the window, a disc lives on only in its image; and the
+next run under the same name -- a series written week by week, which is what the
+window names its folder after -- starts a disc afresh at 00001 and names its image
+as the last one was. `not_this_disc` refuses an image of another disc, but only
+once the cut and the index are written, and an image of the same list again it
+replaced without a word. So where `<disc>.iso` is there and the folder holds no
+numbered stream, clip index or playlist, the run is refused. Nothing is renamed
+around it: whether that image is still wanted is for its owner to say, by moving
+it or deleting it. A folder that holds a disc is added to as before, and its image
+made again.
+
 The image is a **UDF** filesystem, at revision 2.50 or 2.60 as the output
 settings screen asks. [`udfw.rs`](../../rust/crates/core/src/udfw.rs) writes
 it, and there is no specification in this project to write it from: every
@@ -820,6 +833,15 @@ which takes no room on Linux and macOS and is asked for on Windows (the file is
 marked sparse). The layout was read back against the recorder's with the same
 script that measured the recorder's, and agrees block for block in every place
 listed above.
+
+Laid out that way, a single-layer disc holds 11,776,736 blocks of files --
+24,118,755,328 bytes -- and a dual-layer one 48,338,763,776, each file taking
+whole 32-block (64 KB) units. A list past the single layer's room comes out at
+the dual layer's size, 23,652,352 sectors or 48.4 GB, which a burner will not put
+on a 25 GB disc; that used to happen without a word, and the run now says what
+the disc comes to against the 24.12 GB one layer holds and the size it became.
+The estimate made before writing weighs the list against the same room
+([Fitting a disc](transrate.md)).
 
 **A file a UDF volume cannot name is named rather than dropped.** The names
 written here are plain ASCII of 200 characters or fewer, which is what a disc

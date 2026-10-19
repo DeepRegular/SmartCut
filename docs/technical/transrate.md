@@ -259,6 +259,18 @@ weighed against the whole disc: three runs into one folder for a 30 MB disc
 were each told they fitted and came to 34,216,478 bytes, where they now come to
 28,711,454.
 
+**An overwritable image is weighed against what a recorder's layout holds**, not
+against the disc's size (`fit::holds`): 24.12 GB of files on a single layer and
+48.34 GB on a dual ([the image](bdav.md#the-image)), and the dual layer's room on
+an XL disc too, since no recorder lays one out larger and an image past the dual
+layer is refused when it is written. Priced at the "25GB" of 25,025,314,816 bytes
+less the hundredth kept back, a list of 24.12 to 24.78 GB was said to fit and came
+out a dual-layer image no 25 GB disc takes. In the window's **Disc used**, a single
+layer reads 22.5 GiB rather than 23.3; the check after writing counts each file in
+whole 64 KB units; and a size given in bytes takes the dual layer's room from
+48,440,016,896 bytes up, where the dual-layer image fits. A read-only image, and a
+disc written with no image, are weighed as before.
+
 The share that comes out is the same for every recording in the list. Each
 recording's own encoder decided how to spend its bits; giving the long one a
 harder time than the short one because it happens to be longer would undo that

@@ -261,6 +261,24 @@ samples already decoded and not yet framed. A second encoder started at the
 join would number its frames from nought and write the rest of the file on top
 of what is already there.
 
+**Not where the master's sound is TrueHD, MLP or DTS.** That sound is carried
+through frame for frame, never re-encoded (see [the sound](audio.md)), so the
+track is the master's own frames and a reel whose sound is another codec has
+nowhere to go. Up to 0.8.27 the cut went ahead
+regardless: an AAC recording joined onto a TrueHD one came out with its 100
+seconds silent and an exit code of 0, and AAC or E-AC-3 joined onto a DTS master
+went into the DTS track as bytes no decoder of it reads. That join is now refused
+before anything is written (`cut::lossless_master_refusal`), naming the reel,
+what differs, and what does work: taking that reel as the master (`--master N`,
+or the master clip in the window), or naming a codec for the whole track
+(`--audio-codec`). Where the reel's own sound is TrueHD, MLP or DTS the first is
+left out, since swapping them meets the same wall. `--sound-only` refuses the
+same join in the same words. A reel of the master's own codec in another shape
+-- 2.0 TrueHD joined onto 5.1 -- is carried as it always was: its frames say
+what they are, and a decoder follows them. `--sound-only` now carries it the
+same way; up to 0.8.27 it re-encoded such a DTS join whole and stopped on a
+TrueHD one.
+
 ## Transitions
 
 **A transition is the one thing in this program that cannot be smart

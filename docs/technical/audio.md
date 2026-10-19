@@ -296,6 +296,27 @@ measured off its own timestamps (the head of each reel in `cut_into`), and laid
 end to end as the master's would be. A join whose master had a length measured
 is written as before.
 
+Re-encoding the same track lost frames as well. A Matroska file's TrueHD is
+stamped to the millisecond and comes a frame every 0.83 ms, so about one packet
+in six shares its stamp with the one before -- 19,985 of 119,911 in the file
+measured. The re-encoder passed over any packet stamped no later than the last,
+which is how a packet handed over twice after a seek is told apart, and so one
+frame in six was never decoded and the rest were laid end to end: a 30 s range
+written with `--audio-codec aac` came to 26.35 s, and joined onto a master with
+AAC, 100 s of the recording came to 88.3 s and ended 11.8 s adrift. A packet
+with the same stamp is now passed over only where it was read from the same
+place in the file or before it (`audio::Reencoder::take`), and as before where
+either place is unknown.
+
+`--verify` now looks at where the sound is laid as well. It used to count the
+decoded samples and nothing else, so a track with every sample in it passed
+however far apart they were stamped: the 0.8.26 cut of a 60 s range of a `.mkv`'s
+TrueHD, whose last packet sat 21 seconds past the last picture, was called OK. A
+track that ends more than half a second after the last picture ends is now
+reported as off (`Sound::past` in
+[`verify.rs`](../../rust/crates/core/src/verify.rs)); on correct outputs the most
+measured was 0.051 s.
+
 **Nothing may finish having written a declared track and no frames of it.**
 Every other way of losing one ends in an error: a codec the container has no
 box for stops the header, an encoder that will not open stops the setup. That
@@ -961,12 +982,53 @@ asked — "did none arrive?" — because three quarters of the recordings that t
 have two tracks look exactly like the ones that have one until the deeper probe is
 spent. Measured at a fifth of a second on a file read cold off a network share, and
 nothing at all on one already in the page cache. Not on a disc: a clip's map is written
-once by an authoring tool, and everything it carries is in the first copy of it.
+once by an authoring tool, and everything it carries is in the first copy of it — a
+recorder's clip being the exception, below.
 
 The recording's own map is read further for the same reason. `si::stream_tags` is
 handed the PIDs the demuxer found, and a map that does not name them all is a map read
 before the broadcaster had finished announcing the programme — so the window opens from
 four megabytes to sixteen, once, exactly as `read_service` already did for the captions.
+
+### Sound only a later map names
+
+Unless told otherwise, libavformat follows the first map it reads and no other: a
+map replaced later by one naming another sound track does not make it a stream.
+`scan_all_pmts`, which reads every map, is set by `ffmpeg` and `ffprobe` and asked
+for in `input.rs` only where it is needed. A commentary track was lost two ways:
+
+| Recording | What happened |
+|---|---|
+| A programme with commentary that a recorder wrote to a BD-RE | The clip opens on a map naming the picture, the main sound and the captions, and half a second in that map is replaced by one adding the commentary. The disc's own listing named it; the cut wrote the recording as one with a single sound track, and every cut of those programmes left it out |
+| A broadcast recording whose map names its commentary late | The deeper probe lists the track but cannot describe it. Named 6 MB in, with its first frame past 7.6 MB, it was left out under a note saying the map names it but it never appears — which is not true |
+
+On a transport stream whose table names one service, every map is now read and
+the recording opened again (`input::sound_named_later`) where either holds:
+
+- a sound track the open came back with has no rate or no channel count. The
+  deeper probe goes with it, and the time libavformat spends looking at each
+  stream goes from its five seconds to twenty;
+- on a disc's clip, a copy of the map in the first 5 MB names as sound a PID the
+  open does not have. That is as far as libavformat's own probe reads, so the
+  bytes come back out of the page cache.
+
+Never where the table names more than one service: reading every map there also
+turns up the phone-sized copy of the programme the multiplex carries beside it
+(see [Reading a disc](disc.md#a-disc-that-does-not-say-how-often-pictures-arrive)).
+
+The second open keeps the first one's start and length (`keep_the_clock`). On one
+programme the commentary's first frame is stamped 127 seconds ahead of everything
+else; described now, it became the recording's start, the whole timeline slid two
+minutes and two minutes of nothing opened it.
+
+Of 68 heads of programmes whose map comes late, 7 gained their commentary and
+lost the false note, and nothing else changed; 61 heads picked at random and the
+heads of twelve stations' recordings open and cut exactly as before. On discs, the
+five recorder BD-RE titles with commentary gained it, and every other title lists
+and analyses as before. What it costs: every transport-stream title on a disc reads
+its first 5 MB once more per open, and a broadcast recording whose commentary is
+named late is opened three times per read — `--analyze` with a saved index on a
+network share went from 0.2 s to 0.4 s.
 
 ### Which is the main track, and what each one is
 
@@ -1168,6 +1230,18 @@ codec, rate or channel count cannot be copied into it. Before 0.8.5 the
 master was not asked, and the file always took the first recording's shape. The video's writer
 re-encodes only the reels that differ; with one track and no pictures,
 re-encoding all of it comes to the same file.
+
+Not where the master's sound is TrueHD, MLP or DTS and no codec was named
+(`--audio-codec`). That sound is carried through as it is, and nothing here
+re-encodes it (`audio::carried_whole`), so the rule is the cut with pictures':
+a recording whose sound is the same codec in another shape -- 2.0 TrueHD
+joined onto 5.1, 44.1 kHz DTS onto 48 kHz, a DTS core onto DTS-HD Master
+Audio -- is carried frame for frame, its frames saying what they are; one whose
+sound is another codec is refused before anything is written, in the cut's
+words (see [joining](joining.md)). Up to 0.8.27 both were re-encoded as any
+other shape is: a DTS track went whole through libavcodec's encoder, which
+writes the core alone, the master's own frames included, and a TrueHD one
+stopped on the encoder's "Experimental feature".
 
 The file's name picks the container, and the container picks the codec where
 it insists: `carriage` answers for the containers a *cut* goes into, where

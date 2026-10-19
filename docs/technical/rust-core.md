@@ -454,6 +454,42 @@ times libavformat derives for the first two packets move, by a millisecond.
 Read back, the outputs count the pictures that were written, and cut again
 fresh, from a saved seek index and again, they come out the same each time.
 
+**A `.mkv` or `.webm` that states no rate at all is measured.** Where there is
+neither an average nor a declared rate, libavformat declares the clock's tick
+turned over -- a thousand a second, on a Matroska -- and that is what a phone's
+variable-rate recording cut to `.mkv` here comes back with, having had nothing
+true to state. Up to 0.8.27 it was taken at its word: the cut was planned at a
+thousand frames a second and the encoder told the same, so each re-encoded
+picture had a thousandth of a second's bits, came out near 28.5 dB, and
+`--verify` failed it (24.3 dB at worst). A constant 90 fps `.mkv` with no
+default duration went the same way, and a two-range cut of it wrote 467 of its
+612 pictures. Now a declared rate that is a millisecond tick turned over, with
+no average beside it, is taken as no rate (`outline_of` in
+[`lib.rs`](../../rust/crates/core/src/lib.rs)); and where nothing is stated,
+the first 240 pictures are read on a demuxer of their own and counted over the
+time they span (`measured_rate`), less the last sixteen, which arrive in
+decode order and may still have holes among them. A whole rate, or a whole
+rate over 1.001, that the millisecond rounding cannot tell from the measured
+one is taken instead; thirty stands only where nothing can be measured. The
+phone's `.mkv` now reads at 56 a second, with pictures that vary, and the same
+range re-encodes at 34.0 dB, against 33.7 cut from the original `.mp4`; the
+90 and 144 fps files read as constant at those rates. A file with an average,
+and every transport stream and MP4, never reaches the measuring.
+
+**A range from the very start is read without a seek.** A demuxer just opened
+is already there, and the probe's packets come first, as they were read. A seek
+there makes libavformat forget what it knew of the timestamps, and an
+`ffmpeg -c copy` `.mkv` of a broadcast recording -- which opens on two leading
+pictures at negative times in front of its first key picture -- came back from
+it with those two at positive times among the key picture's own: the cut kept
+the two broken pictures and lost the real one (599 of 600). A Matroska file
+with subtitles in it is still sought as before. A WebVTT block libavformat
+cannot parse makes it drop the rest of the cluster, pictures and sound alike,
+and read from the open such a file lost about its first two seconds (527
+pictures of 584 on the material of `tests/run_demux_tests.sh`). Read without
+the seek, the first sound packet can arrive with no length, and is given its
+frame's own (`take_audio` in `cut.rs`).
+
 [`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
 [`Grid`]: ../../rust/crates/core/src/cut.rs
 

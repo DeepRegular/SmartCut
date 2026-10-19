@@ -507,6 +507,13 @@ exactly where you put them.** The only thing that changes is what they cost: a
 join that is not on a lossless point shows up in the plan as a few re-encoded
 frames, and `Snap to lossless` can take those to zero once it lights up.
 
+Some files do not state how long they are: a `.webm` a browser recorded, an
+`.mkv` cut short, a bare `.m2ts` taken off a recorder's BD-RE. Their length is
+known only once the reading finishes, so the `.keyframe`, Trim and commercial
+detection files under the recording's name are read then, and `Ctrl+H` waits for
+it too. Opened again, or with a project loaded, such a recording comes back with
+its cuts, its IN and OUT and its playhead where they were saved.
+
 ### What is where on the screen
 
 | Where | What |
@@ -1232,6 +1239,12 @@ sound are written afresh to fit it -- frame size: 1440x1080 vs 1920x1080;
 frame rate: 29.97 vs 25; channels: 2 vs 6.
 ```
 
+Where the master's sound is TrueHD or DTS, a row whose sound is another codec
+cannot be joined: that sound is carried through as it is, never rewritten, and
+there is nowhere in it for another codec's. Such a list is refused before
+anything is written. Make that row the master, or name a codec with
+`Audio codec`.
+
 Three things a joined run does differently, all for the same reason — the file
 has one of each of them:
 
@@ -1459,8 +1472,8 @@ Writing a disc adds these fields:
 | **Recorded** | Per clip. When the programme went out, as `2026-08-17 01:00:00`. Slashes, a missing seconds field and single digits are understood and put back in that shape; anything that cannot be read as a moment stops the run rather than being written as no moment at all |
 | **About** | Per clip, and several lines of it: the sentence a listing carries and the cast and staff under it. This is what a recorder shows when the programme is selected in its list |
 | **Image** | Whether to wrap the finished disc in a `.iso` (`None` / `UDF 2.50` / `UDF 2.60`). The folder is written either way, and the image goes beside it under the same name. The image holds the disc, `BDAV`, and nothing else that is in the folder |
-| **Disc kind** | Under the image, and only there when one is being made. What the image says may be done to the disc it is burned onto. *Nothing writes to it again* is the default and is the truth about a BD-R, or a BD-RE you only play. *The recorder may go on editing it* is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off — pick it if the disc is going back into the recorder. The image is then laid out as a recorder lays out a BD-RE, and is the size of the whole disc (25 or 50 GB); the part with nothing in it takes no room where the image is saved |
-| **Remove the folder once the image is written** | Under the image, and only there when one is being made: the same thirty gigabytes twice over is not what most runs want to be left with. The folder is still written and the image still made of it — this happens afterwards, and only where the image was written. `BDAV` goes, and the folder above it only where that leaves it empty, so a disc written into a folder of your own leaves the rest of it alone |
+| **Disc kind** | Under the image, and only there when one is being made. What the image says may be done to the disc it is burned onto. *Nothing writes to it again* is the default and is the truth about a BD-R, or a BD-RE you only play. *The recorder may go on editing it* is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off — pick it if the disc is going back into the recorder. The image is then laid out as a recorder lays out a BD-RE, and is the size of the whole disc (25 or 50 GB); the part with nothing in it takes no room where the image is saved. Laid out that way, a single-layer disc holds 24.12 GB of files and a dual-layer one 48.34 GB, and that is what **Disc used** and **Transcode** weigh the list against (a single layer reads 22.5 GiB); an XL disc holds what a dual layer does |
+| **Remove the folder once the image is written** | Under the image, and only there when one is being made: the same thirty gigabytes twice over is not what most runs want to be left with. The folder is still written and the image still made of it — this happens afterwards, and only where the image was written. `BDAV` goes, and the folder above it only where that leaves it empty, so a disc written into a folder of your own leaves the rest of it alone. Where a `.iso` of that name is already there and the subfolder holds no disc to add to, the run is refused before it starts, since the old image would be replaced by the new disc's: move it away or choose another subfolder to keep it, or delete it if it is no longer wanted |
 | **Disc** | The disc this is going to be burned onto (25GB / DL 50GB / XL 100GB / XL 128GB). The gauge below is drawn against it |
 | **Transcode** | Where the list does not fit the disc chosen above, the pictures are transcoded smaller until it does. **Where it fits, nothing is done to them.** The sound, the subtitles and the programme information are untouched; only the pictures give anything up. Turning it on adds a second row to the gauge -- "before" and "after" -- showing what the disc comes to afterwards and what share the pictures are written at. MPEG-2 recordings only; anything else takes its full room. What happens inside is in [Fitting a disc](../technical/transrate.md) |
 | **Disc used** | What the list comes to against the disc, a band per recording. The white line is the edge of the disc and the faint one before it is the hundredth held back; anything past the line is drawn in red. The figures are an estimate made before anything is written, and on whole recordings it lands within about one per cent. They are counted in GiB, the way the file manager beside the window counts, which is why a single-layer disc reads 23.3 GiB here and "25GB" on the control above -- that one is the name on the box. Where the disc folder already holds a disc, the list is added to it: what is already written there is measured rather than estimated, drawn first as a grey hatched band, and the list is weighed against the room left, by **Transcode** too |
@@ -1585,7 +1598,8 @@ Each sound track is also measured against the pictures, over the ranges as
 they are written: on a recorder's title, less the time at a seam that no cut
 writes. One that runs more
 than half a second long or short is mentioned — the row says
-`(see the sound)` — but it does not fail the check: a broadcast track that
+`(see the sound)` — and so is one laid out more than half a second past the last
+picture, whatever its length; but neither fails the check: a broadcast track that
 starts part way through a programme is common and not a fault.
 
 The row says `Done / checked` when all is well; hover over it for the

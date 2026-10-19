@@ -1306,6 +1306,7 @@ Everything else that counts a title's seconds leaves them out too since
 | `--fit` and the disc gauge | The rate is an average over the whole clock, so it is scaled by the clock over what is written: 0.7% on that title, most of the margin kept back |
 | Divide | The keeps are divided less them, so the parts are equal in what they write and none begins where there is no picture |
 | Scene changes, `--cut-near` and CM boundaries | The search for the nearest change drains the decoder at each seam and passes over the pictures outside a stretch, as the preview does (`thumbs::decode_on`). Up to 0.8.26 it read straight across, and the next stretch's leading pictures, decoded with no references, were often the largest change near the seam: on two recorder clips, 6 of 50 answers near 10 seams fell in the clock where no picture is written, and others went up to 1.8 seconds back into the stretch before. An answer at a seam is now the first picture after it, so `↑` `↓`, `--cut-near` and a CM boundary land on it. Nothing written was ever wrong, since the planner moves a bound that falls in a hole |
+| Chapters from the command line | A chapter is counted on the output's picture grid, and the grid's phase is taken from a nearby entry point. Up to 0.8.27 that could be a point in the stretch across the seam, and each stretch has a grid of its own: a range planned up to a seam was counted up to a frame long, and every chapter after it -- `.mkv` and `.mp4` chapters, and the marks `--bdav` writes -- came that much later for each seam crossed. Four titles kept to their ends were 72 ms (two frames) late past their sixth seam. The phase now comes only from points in the stretch the time is in (`shown_at` in `main.rs`). Written with no ranges, 17 of 20 titles give the same marks as before, and on the other three the range-start chapters moved onto their key pictures; a chapter from a disc mark can now land 1 to 3 ms before its picture |
 
 **A join's chapters split at every seam**, those with nothing unwritten
 included. The planner splits a range at each seam and holds a crossing to half
@@ -1501,6 +1502,14 @@ against the table's own spacing: gaps in a real table vary by more than a factor
 three, because an encoder puts an entry wherever the picture changes, and what is
 being caught here is not an uneven table but an empty one. A gap wider than a tenth
 of the recording is not a table a container kept.
+
+On a short recording the end's question is asked against a shorter floor as well.
+It was ten seconds, so anything shorter passed on whatever the probe had read, and
+libavformat reads a Matroska file's cues only on a seek: a six-second `.mkv` with a
+key picture every 0.8 s offered two entries, at 0 and 0.4 s, and a cut of 3.1 to
+5.5 s re-encoded the whole range where whole GOPs could have been copied. The floor
+is now ten seconds or half the recording, whichever is less (`index::covers`); a
+table declined is a walk, which at that length takes no time at all.
 
 The walk that answers instead read the whole four-gigabyte title in **3.2 seconds**,
 which is the other half of why this is the right way round: the table was never
@@ -1741,7 +1750,9 @@ transport stream carries — the phone-sized copy of the same material, on its o
 pids — which is a different recording from the one that was asked for. So
 `input::demux` asks the container first and reopens only where the answer came
 back missing (`states_frame_rate`), which is the same rule the `+genpts`
-reopening follows.
+reopening follows. A recorder's clip whose later map adds a sound track is opened
+again the same way, where it carries one service
+([Sound only a later map names](audio.md#sound-only-a-later-map-names)).
 
 ## What this does not do
 
