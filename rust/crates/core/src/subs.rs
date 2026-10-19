@@ -56,6 +56,22 @@ use crate::Source;
 /// silent shot, which is the case a shorter lookback loses.
 pub const LOOKBACK: f64 = 30.0;
 
+/// The lookback for a 4K recording's subtitles, which stand far longer.
+///
+/// A TTML document names its own end, and a 4K drama's music mark stands
+/// for the whole of the music: over its opening titles 40 to 54 s, and in
+/// the middle of an episode up to 157 s, on the recordings measured here
+/// (one to four documents over 40 s in each). Read with [`LOOKBACK`], a
+/// window filled 30 s or more into one of those had not read the document
+/// and showed nothing for the rest of it. Kept equal to the cut's own look
+/// back for these (`TTML_LOOKBACK` in `cut.rs`), so that the preview shows
+/// a line where a range opening there carries it.
+///
+/// Read this far back only where the playhead was put down; playback that
+/// runs off the end of a window carries what is still up across instead
+/// (see [`Reader::fill`]), and reads as little as any other kind.
+pub const TTML_LOOKBACK: f64 = 180.0;
+
 /// And how far past it the window is read on.
 ///
 /// Long enough that playback crosses a window edge once a minute rather than
@@ -282,7 +298,21 @@ impl Reader {
 
     /// Read the stretch around `t` into [`Reader::events`].
     fn fill(&mut self, t: f64) -> Result<()> {
-        let from = (t - LOOKBACK).max(0.0);
+        // Playback that ran off the end of the window before: what that
+        // window read covers everything up to its end, so a 4K recording's
+        // documents still up are carried over rather than read again from
+        // [`TTML_LOOKBACK`] back, once a minute, all through a recording.
+        // A document read by both is in twice, the same both times, which
+        // [`Reader::at`] answers for as it would for one.
+        let ran_on = self.kind == Kind::Ttml
+            && self
+                .window
+                .is_some_and(|(_, end)| t >= end && t < end + AHEAD);
+        let lookback = match self.kind {
+            Kind::Ttml if !ran_on => TTML_LOOKBACK,
+            _ => LOOKBACK,
+        };
+        let from = (t - lookback).max(0.0);
         let to = t + AHEAD;
         let (id, kind, screen, start_time) = (self.id, self.kind, self.screen, self.start_time);
         let base = self.base;
@@ -351,6 +381,19 @@ impl Reader {
                 screen,
                 self.palette.as_ref(),
             )?),
+        };
+        // Taken only once the read is sure to happen, so that a failure to
+        // open the file leaves what the last window read where it was.
+        let carried: Vec<Event> = if ran_on {
+            std::mem::take(&mut self.events)
+                .into_iter()
+                // Not only the ones up before `from`: one sent well ahead
+                // of its time ([`crate::ttml::placed`]) begins after its
+                // bytes, which can lie in front of where this read starts.
+                .filter(|e| e.until.is_some_and(|u| u > from))
+                .collect()
+        } else {
+            Vec::new()
         };
         let mut units: Vec<u8> = Vec::new();
         // The last picture's time, for a packet that carries none: see the
@@ -547,13 +590,14 @@ impl Reader {
         // Put back in order, because that is what [`Reader::at`] searches;
         // stable, so two things said at the same instant stay in the order
         // the recording said them.
+        events.extend(carried);
         events.sort_by(|a, b| a.at.partial_cmp(&b.at).unwrap_or(std::cmp::Ordering::Equal));
         self.events = events;
         // Answered from here only where some of the lookback is still behind
         // the instant: an instant a second after `from` has a second of it,
         // and a subtitle that went up before `from` and is still standing
         // was answered as nothing. Stepping back past this reads again.
-        let near = if from > 0.0 { from + LOOKBACK / 3.0 } else { from };
+        let near = if from > 0.0 { from + lookback / 3.0 } else { from };
         self.window = Some((near, to));
         Ok(())
     }

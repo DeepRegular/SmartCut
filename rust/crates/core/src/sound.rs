@@ -472,9 +472,16 @@ fn run(
         ));
     }
     if holds == 0 {
+        // Signed eight bit samples are the one PCM a Matroska file turns
+        // away, and the same samples at 24 bit are not.
+        let wide = if declared == ff::codec::Id::PCM_S8 && octx.format().name() == "matroska" {
+            ". --audio-bits 24 writes it as 24 bit PCM, which it holds"
+        } else {
+            ""
+        };
         return Err(anyhow!(
             "{output} cannot hold {:?} sound. Name the file for that codec (.mp2, .ac3, \
-             .aac and so on), or ask for another with --audio-codec",
+             .aac and so on), or ask for another with --audio-codec{wide}",
             setup.target
         ));
     }

@@ -1527,7 +1527,20 @@ impl Writer {
         let t = &mut self.audio[track];
         t.written += 1;
         t.last_out = Some(pts);
-        t.end = Some(t.end.unwrap_or(out_start.max(0.0)) + out_dur);
+        // On a track laid end to end, from where this frame was laid: the
+        // later of its own instant and where the sound had reached. Summed
+        // from where the sound had reached instead, a frame that went down
+        // at its own, later instant -- a reel joined on, whose sound opens
+        // after a wait -- left `end` behind it for good once the frames were
+        // counted at their own 1/1200 s and no longer at an average a little
+        // longer than that: every frame after went at its own millisecond,
+        // and the sixth of them that share one were left out of a transport
+        // stream, or stopped an MP4 with "Invalid argument". Every other
+        // track sums as it always did.
+        t.end = Some(match t.end {
+            Some(_) if t.frame_secs > 0.0 => out_start.max(0.0) + out_dur,
+            reached => reached.unwrap_or(out_start.max(0.0)) + out_dur,
+        });
         Ok(())
     }
 
@@ -2398,6 +2411,16 @@ fn take_audio(
             writer.frame_length(&src.input.url, audio.in_index, &packet, audio.in_tb, said)
         }
         own if own > 0 => own as f64 * audio.in_tb,
+        // The measured length is an average of millisecond stamps, and a
+        // TrueHD .mkv that ffmpeg remuxed starts on gaps of 13 or 75 ms
+        // where 0.83 is due: laid end to end at it, one 60 s range of sound
+        // ran out over 63.5 s and the next range opened 1.8 s late. The
+        // frame's own length, as for a frame with a rounded one above and
+        // as the sound-only writer reads it.
+        _ if audio.in_tb >= 1e-4 && writer.audio[audio.track].frame_secs > 0.0 => {
+            let said = writer.audio[audio.track].frame_secs;
+            writer.frame_length(&src.input.url, audio.in_index, &packet, audio.in_tb, said)
+        }
         _ => writer.audio[audio.track].frame_secs,
     };
     let past_end = t >= seg.end;
@@ -2665,9 +2688,27 @@ fn write_ttml(
 }
 
 /// How far in front of a range to look for a TTML document still on screen
-/// when it opens. The longest measured on the 4K recordings here stood for
-/// 38 seconds.
-const TTML_LOOKBACK: f64 = 40.0;
+/// when it opens: the preview's look back ([`crate::subs::TTML_LOOKBACK`]),
+/// so that a line the editor shows where a range opens is the line the cut
+/// carries. A 4K drama's music mark stands for the whole of the music --
+/// 38 to 54 s over the opening titles and up to 157 s in the middle of an
+/// episode on the recordings measured here -- and with 40 s here a range
+/// opening 40 s or more into one went without it.
+const TTML_LOOKBACK: f64 = crate::subs::TTML_LOOKBACK;
+
+/// How much of [`TTML_LOOKBACK`] is read at a time, nearest the range
+/// first. See [`read_ttml_before`].
+const TTML_STEP: f64 = 40.0;
+
+/// One TTML document read in front of a range: placed and decided as
+/// [`take_ttml`] places and decides it.
+struct TtmlRead {
+    begin: f64,
+    end: f64,
+    shift: f64,
+    decided: f64,
+    data: Vec<u8>,
+}
 
 /// The TTML documents on screen at `until`: begun before it, and not yet
 /// ended.
@@ -2677,24 +2718,77 @@ const TTML_LOOKBACK: f64 = 40.0;
 /// the first segment reads from, as often as not. Read here, as the DVD's
 /// and the Blu-ray's are (see [`read_subpictures_before`]); until 0.8.4 a
 /// line already up when a range began was left out of the cut.
+///
+/// **Read back a step at a time, and only as far as the last document.** A
+/// document is the whole of what is on screen until the next one goes up --
+/// the preview shows the last one begun and no other ([`crate::subs`]) -- so
+/// once a document begun before `until` has been read, nothing older can be
+/// on screen there, and the read stops. Most openings find one in the first
+/// [`TTML_STEP`] and read no more than they always did; only an opening in a
+/// long music mark, or with no line at all for a minute, reads further, and
+/// no further than [`TTML_LOOKBACK`].
 fn read_ttml_before(
     src: &Source,
     caption: &CaptionCtx,
     until: f64,
 ) -> Result<Vec<(f64, f64, Vec<u8>)>> {
+    let mut read: Vec<TtmlRead> = Vec::new();
+    let mut back = 0.0;
+    loop {
+        let reach = (back + TTML_STEP).min(TTML_LOOKBACK);
+        // The nearest step reads on past `until`, for the documents sent
+        // ahead of their time ([`crate::ttml::decided_at`]). Each one
+        // further back reads on past where the step after it began --
+        // which is in front of `until - back` by up to the seek margin --
+        // so that a document between the two is read by one of them.
+        let stop = if back > 0.0 {
+            until - back + PAST_UNTIL
+        } else {
+            until
+        };
+        let whole = until - reach - src.seek_margin <= 0.0;
+        if !read_ttml_span(src, caption, until - reach, stop, back > 0.0, &mut read)? {
+            break;
+        }
+        if whole || reach >= TTML_LOOKBACK || read.iter().any(|d| d.begin < until) {
+            break;
+        }
+        back = reach;
+    }
+    Ok(read
+        .into_iter()
+        .filter(|d| d.decided < until && d.end > until && d.begin < caption.range.1)
+        .map(|d| (d.begin, d.shift, d.data))
+        .collect())
+}
+
+/// Read the TTML documents from `from` (less the seek margin) to `stop`
+/// into the front of `read`, leaving out any it holds already. Whether the
+/// read happened: a step further back that cannot seek is not read from the
+/// front of the file instead.
+fn read_ttml_span(
+    src: &Source,
+    caption: &CaptionCtx,
+    from: f64,
+    stop: f64,
+    further: bool,
+    read: &mut Vec<TtmlRead>,
+) -> Result<bool> {
     let mut ictx = crate::input::demux(&src.input.url)?;
-    let from = until - TTML_LOOKBACK - src.seek_margin;
-    if from > 0.0 {
-        let _ = seek_to(&mut ictx, src, until - TTML_LOOKBACK);
+    if from - src.seek_margin > 0.0 {
+        let sought = seek_to(&mut ictx, src, from);
+        if further && sought.is_err() {
+            return Ok(false);
+        }
     }
     // The pictures as the clock, for the reason [`read_subpictures_before`]
     // gives: a track with nothing after the range's start never says so.
     crate::input::keep_with_pictures(&mut ictx, &[caption.in_index]);
-    let mut up: Vec<(f64, f64, Vec<u8>)> = Vec::new();
+    let mut span: Vec<TtmlRead> = Vec::new();
     for (stream, packet) in ictx.read_packets() {
         if stream.index() != caption.in_index {
             if crate::input::packet_time(&stream, &packet, src.start_time)
-                .is_some_and(|t| t >= until + PAST_UNTIL)
+                .is_some_and(|t| t >= stop + PAST_UNTIL)
             {
                 break;
             }
@@ -2712,14 +2806,25 @@ fn read_ttml_before(
         // read starts a second or so in front of the range and may well be
         // past its bytes. Its time stays its own (see [`write_ttml`]).
         let decided = crate::ttml::decided_at(begin, shown);
-        if decided >= until + crate::ttml::DECIDED_SPREAD {
+        if decided >= stop + crate::ttml::DECIDED_SPREAD {
             break;
         }
-        if decided < until && end > until && begin < caption.range.1 {
-            up.push((begin, shift, data.to_vec()));
+        // Two steps overlap, and what both read is the same document.
+        if read.iter().any(|d| d.begin == begin && d.data == data) {
+            continue;
         }
+        span.push(TtmlRead {
+            begin,
+            end,
+            shift,
+            decided,
+            data: data.to_vec(),
+        });
     }
-    Ok(up)
+    // In the order they were sent: a step further back read older ones.
+    span.append(read);
+    *read = span;
+    Ok(true)
 }
 
 /// How far in front of a range to look for an ARIB caption still on screen
@@ -4892,6 +4997,49 @@ impl Grid {
     fn fields(self, fields: i64) -> i64 {
         fields * self.sub
     }
+}
+
+/// The frame rate a Matroska or WebM output states for its pictures, where it
+/// has one to state.
+///
+/// **Matroska keeps milliseconds, and a file that states no rate is averaged
+/// from them.** libavformat's muxer writes a track's `DefaultDuration` from
+/// the stream's average rate and from nothing else, and the cut never set
+/// one: read back, a 23.976 disc title cut to .mkv averaged 293/12, which is
+/// 24.417 a second, above the rate it declared, and so was called variable
+/// -- "the pictures vary", a frame count ten out in a 20 s range, and an
+/// editor that planned it on the variable-rate path and showed no frame
+/// numbers. Stated, it reads back at the rate it was cut at.
+///
+/// Only where every recording going into the file comes at one rate that the
+/// container's two figures agree on: the average and the declared rate, or
+/// the declared rate being the fields of an interlaced one; MPEG-1 and
+/// MPEG-2 state theirs outright (see `frame_rate` in `lib.rs`). A
+/// phone's recording that holds a picture whenever the light drops averages
+/// a rate nothing in it was coded at, and stated, that would have read back
+/// as a constant rate it never had.
+fn rate_to_state(reels: &[Reel], grid: Grid) -> Option<(i32, i32)> {
+    let steady = |v: &crate::VideoInfo| {
+        let (f, b) = (v.frame_rate, v.base_rate);
+        let near = |a: f64, b: f64| b > 0.0 && (a / b - 1.0).abs() <= 1e-4;
+        !v.variable_rate
+            && f.is_finite()
+            && f > 0.0
+            && (matches!(v.codec.as_str(), "mpeg1video" | "mpeg2video")
+                || near(f, b)
+                || near(2.0 * f, b))
+    };
+    let first = &reels.first()?.src.video;
+    let rate = grid.num as f64 / grid.den as f64;
+    let all = reels.iter().all(|r| {
+        let v = &r.src.video;
+        steady(v) && (v.frame_rate / first.frame_rate - 1.0).abs() <= 1e-4
+    });
+    // The grid of a constant rate counts one unit a field, and its rate is
+    // the recording's own.
+    (all && grid.sub == 1 && (rate / first.frame_rate - 1.0).abs() <= 1e-4)
+        .then(|| (i32::try_from(grid.num).ok(), i32::try_from(grid.den).ok()))
+        .and_then(|(n, d)| Some((n?, d?)))
 }
 
 /// Recover the exact rational frame rate, so 29.97 comes back as 30000/1001
@@ -7931,12 +8079,20 @@ fn cut_into(
     // the recording -- so it is answered here rather than in each of them.
     // And ranges shorter than a picture, which plan to no segments at all: a
     // `--cut` that leaves a sliver at the end wrote a file of headers and
-    // called it done.
+    // called it done. And a `--keep` wholly inside a recorder's seam, where
+    // the clock runs on with no picture on it: the planner has dropped that
+    // range by now, so which of the three it was cannot be told here, and
+    // the sentence names all three rather than say "cut away" of a range
+    // nobody cut.
     if reels
         .iter()
         .all(|r| r.plans.iter().all(|p| p.segments.is_empty()))
     {
-        anyhow::bail!("nothing is kept: every part of this recording has been cut away");
+        anyhow::bail!(
+            "nothing is kept: the ranges left hold no picture to write -- everything was cut \
+             away, or what is left is shorter than a picture or lies where the recording has \
+             none"
+        );
     }
     // The reel whose shape the file takes, and its own ranges. Everything
     // below that describes the *output* reads these two and nothing else:
@@ -8260,7 +8416,11 @@ fn cut_into(
             };
             // Signed 8-bit PCM is the one sound a .mkv cannot hold either;
             // asked for at 24 bit, it is written wide into any of the three.
-            let instead = if codec == "pcm_s8" {
+            // Into a transport stream, eight bit samples of either kind go as
+            // Blu-ray LPCM when that is asked for.
+            let instead = if family == "ts" && matches!(codec, "pcm_s8" | "pcm_u8") {
+                "--audio-codec lpcm writes it as Blu-ray LPCM, which a transport stream holds"
+            } else if codec == "pcm_s8" {
                 "Into a .mkv, .mp4 or .mov, --audio-bits 24 writes it as 24 bit PCM, which \
                  each of them holds"
             } else {
@@ -8639,10 +8799,18 @@ fn cut_into(
     } else {
         Signalling::default()
     };
+    // The rate a Matroska file states for its pictures. See
+    // [`rate_to_state`].
+    let stated_rate = matches!(octx.format().name(), "matroska" | "webm")
+        .then(|| rate_to_state(reels, grid))
+        .flatten();
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params.clone());
         ost.set_time_base(grid.time_base());
+        if let Some((num, den)) = stated_rate {
+            ost.set_avg_frame_rate(ff::Rational::new(num, den));
+        }
         unsafe {
             // A stream that says Dolby Vision and hands a player no RPU to
             // drive it is worse off than one that never said so -- where
@@ -9467,10 +9635,35 @@ fn cut_into(
     // everything that asks "is there something on the other side of this
     // edge" counts across the reels rather than within one.
     let mut nth = 0usize;
+    // The master's measured frame lengths, for the reels that need their own.
+    let master_frames: Vec<f64> = writer.audio.iter().map(|t| t.frame_secs).collect();
     for (reel_no, reel) in reels.iter().enumerate() {
         let rsrc = reel.src;
         let thread = &threads[reel_no];
         writer.opening = reel_no > 0;
+        // A frame length measured off this reel's own timestamps, where the
+        // master's packets carry theirs and so had none measured. A Blu-ray
+        // title's TrueHD has a length on every frame and a Matroska file's
+        // has none: joined after the title, every frame of the .mkv's sound
+        // was a frame of no length, and the file had no sound for the whole
+        // of it. Taken only where the master had nothing to go by, so a
+        // join that wrote its sound before writes it as it did.
+        if !std::ptr::eq(rsrc, src) {
+            for (k, track) in writer.audio.iter_mut().enumerate() {
+                track.frame_secs = master_frames[k];
+                let Some(info) = thread.audio[k].as_ref().filter(|_| master_frames[k] <= 0.0)
+                else {
+                    continue;
+                };
+                if let Ok(mut probe) = crate::input::demux(&rsrc.input.url) {
+                    track.frame_secs = assumed_frame(&mut probe, info).unwrap_or(0.0);
+                }
+            }
+        } else {
+            for (k, track) in writer.audio.iter_mut().enumerate() {
+                track.frame_secs = master_frames[k];
+            }
+        }
         // The segment of this reel written last, for a copy that follows a
         // copy without carrying on from it. See [`after_a_copy`].
         let mut written_last: Option<(SegmentKind, Option<f64>)> = None;

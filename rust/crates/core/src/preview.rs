@@ -388,7 +388,13 @@ fn entry_packets(
         if stream.index() != idx {
             continue;
         }
-        stretches.reach(packet.position());
+        // A half held from the stretch before has no partner after the seam:
+        // dropped, as [`walk`] drops it there. See `thumbs::build_with_sound`.
+        if stretches.reach(packet.position()) {
+            pending.clear();
+            at = None;
+            entries.broke();
+        }
         let step = entries.step(&packet);
         if step == crate::Step::Skip {
             continue;
@@ -1814,6 +1820,7 @@ fn off_stretch(t: f64, since: Option<f64>, stop: Option<f64>, quarter: f64, tol:
 /// showed the end of the previous recording inside the next one, and the
 /// thumbnail track held it in place of the next stretch's first entry
 /// picture. Nothing changes on a recording without seams.
+#[derive(Clone)]
 pub(crate) struct Stretches<'a> {
     joins: &'a [crate::restamp::Seam],
     next: usize,
@@ -1839,15 +1846,19 @@ impl<'a> Stretches<'a> {
     }
 
     /// A packet of the pictures at byte `pos` has been read; a negative one
-    /// says nowhere and leaves the read where the last one put it.
-    pub(crate) fn reach(&mut self, pos: isize) {
+    /// says nowhere and leaves the read where the last one put it. True
+    /// where that took the read across a seam -- never on a recording
+    /// without one.
+    pub(crate) fn reach(&mut self, pos: isize) -> bool {
         if pos < 0 {
-            return;
+            return false;
         }
+        let was = self.next;
         while let Some(j) = self.joins.get(self.next).filter(|j| pos as u64 >= j.at) {
             self.since = Some(j.time);
             self.next += 1;
         }
+        self.next != was
     }
 
     /// Whether a picture at `t`, read where the read now is, is outside the
@@ -2120,6 +2131,16 @@ mod tests {
         // And past it, the last stretch runs on to the end.
         s.reach(300);
         assert!(!s.outside(30.0) && !s.outside(1e6) && s.outside(29.0));
+        // Whether a read crossed a seam, which is when a reader that decodes
+        // drains what it holds of the stretch before: only on the packet
+        // that takes it over one, never on one with no position, and never
+        // on a recording without seams.
+        let mut s = Stretches::of(&joins, fd);
+        assert!(!s.reach(50) && !s.reach(99) && !s.reach(-1));
+        assert!(s.reach(100) && !s.reach(100) && !s.reach(150));
+        assert!(s.reach(5000) && !s.reach(-1) && !s.reach(6000));
+        let mut s = Stretches::of(&[], fd);
+        assert!(!s.reach(0) && !s.reach(1 << 40));
         // Two seams on one byte: the read is in the later one's stretch.
         let twins = [
             Seam { at: 100, time: 10.0, ends: 10.0 },

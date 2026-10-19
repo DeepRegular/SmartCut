@@ -539,7 +539,16 @@ fn help() -> String {
 }
 
 fn main() -> Result<()> {
-    let run = run();
+    // A panic is a failure too, and the exit code a script reads is 0 or 1
+    // (docs/technical/compatibility.md): left to the runtime it was 101. The
+    // runtime's own hook has said what it was by then; the log is told here.
+    let run = match std::panic::catch_unwind(run) {
+        Ok(run) => run,
+        Err(_) => {
+            smartcut_core::log::write_only("Error: the run stopped on an internal error (a panic)");
+            std::process::exit(1);
+        }
+    };
     // What ended the run goes where everything else it said went: printed
     // on its way out by the runtime, it reached the terminal and not the
     // log, and a log of a run that failed did not say why.
@@ -1870,7 +1879,7 @@ fn run() -> Result<()> {
         // As `--still`: past the last picture there is no change to find,
         // and the answer was the time asked for, "+0.000s" away -- a place
         // to cut that is not in the recording.
-        if src.duration > 0.0 && at > src.duration {
+        if src.duration > 0.0 && past_the_end(at, src.duration) {
             bail!(
                 "--cut-near {} is past the end of the recording ({})",
                 fmt_hms(at),
@@ -2147,7 +2156,7 @@ fn run() -> Result<()> {
         // Its extension was checked with the rest of the command line.
         let path = output.clone().unwrap_or_else(|| "still.png".into());
         src.input.refuse_as_output(&path)?;
-        if at > src.duration {
+        if past_the_end(at, src.duration) {
             bail!("--still {} is past the end of the recording ({})", fmt_hms(at), fmt_hms(src.duration));
         }
         let (w, h) = smartcut_core::save_still(&src, at.max(0.0), std::path::Path::new(&path))?;
@@ -2393,7 +2402,40 @@ fn run() -> Result<()> {
                 let share = if src.duration > 0.0 { kept / src.duration } else { 1.0 };
                 estimate.bytes = estimate.bytes.max((whole.bytes as f64 * share) as u64);
             }
-            let f = smartcut_core::fit::fit(&[estimate], capacity, smartcut_core::fit::MARGIN);
+            // A disc already in the --bdav folder is added to, so what this
+            // recording has is the room left on it -- see `fit::already_on`.
+            // Priced against the whole disc, a run onto a disc that was
+            // nearly full said "it fits as it is" and wrote it larger than
+            // the disc.
+            let disc_at = bdav.as_deref().map(std::path::Path::new);
+            let had = disc_at.map(smartcut_core::fit::already_on).unwrap_or(0);
+            if let Some(at) = disc_at.filter(|_| had > 0) {
+                // Full already: no share of the pictures is the answer, and
+                // "written at 0.0% of their own size" or "only MPEG-2 can be
+                // written smaller" would send somebody after the recording.
+                if had >= capacity {
+                    bail!(
+                        "this will not fit: the disc in {} already holds {} MB of the {} MB, so \
+                         there is no room left on it. Another --bdav folder, or a larger disc.",
+                        smartcut_core::bdav::root(at).display(),
+                        had / 1_000_000,
+                        capacity / 1_000_000
+                    );
+                }
+                tell!(
+                    "fit   : {} MB of the {} MB disc is already written in {}: fitting into the \
+                     {} MB left",
+                    had / 1_000_000,
+                    capacity / 1_000_000,
+                    smartcut_core::bdav::root(at).display(),
+                    capacity.saturating_sub(had) / 1_000_000
+                );
+            }
+            let f = smartcut_core::fit::fit(
+                &[estimate],
+                capacity.saturating_sub(had),
+                smartcut_core::fit::MARGIN,
+            );
             tell!(
                 "fit   : {} MB onto {} MB usable of {} MB",
                 f.bytes / 1_000_000,
@@ -2510,30 +2552,32 @@ fn run() -> Result<()> {
         audio_codec
     };
     // The main track's codec, for what the engine makes of what was asked
-    // of its samples (`cut.rs`, where `lossless` and `requantised` are
-    // decided): DTS and TrueHD are carried through whole unless a codec is
-    // named, whatever is asked of them; and a width reaches only a codec
-    // that carries samples. Taken as asked, `--audio-bits 24` on a
-    // broadcast's AAC printed "reencode, 24 bit" over a cut whose sound was
-    // smart-rendered byte for byte as without it.
+    // of its samples (`cut.rs` `plan_audio`, where `recoded`, `lossless` and
+    // `requantised` are decided): DTS and TrueHD are carried through whole
+    // unless another codec is named, whatever is asked of them; a width
+    // reaches only a codec that carries samples; and a track the container
+    // has no box for -- a DVD's LPCM anywhere, a Blu-ray's anywhere but a
+    // transport stream -- is written afresh as plain PCM whatever mode was
+    // asked for. Each of those is decided by what the track is *written as*
+    // (`carriage`), which is what `written_as` answers here: taken from what
+    // was asked instead, a Blu-ray's LPCM cut into an .mkv printed "smart"
+    // over a whole-track re-encode, and `--audio-codec lpcm` on it into a
+    // .m2ts printed "reencode, as lpcm" over a smart-rendered cut.
     let main_codec = src.audio.as_ref().map_or("", |a| a.codec.as_str());
-    // A codec named that is the one the track is already in is not a
-    // re-encode either: the engine writes the same codec and goes on in the
-    // mode asked for (`recoded` in `cut.rs` is false), so `--audio-codec aac`
-    // on a broadcast's AAC smart-renders, as without it.
-    let own_codec = match audio_codec {
-        smartcut_core::AudioCodec::Aac => main_codec == "aac",
-        smartcut_core::AudioCodec::Ac3 => main_codec == "ac3",
-        smartcut_core::AudioCodec::Dts => main_codec == "dts",
-        _ => false,
+    let source_bits = src.audio.as_ref().map_or(16, |a| a.bits);
+    // A sound-only file is planned as one that is not a transport stream
+    // (`sound::write`), and a disc's stream is one.
+    let to_ts_out = !sound_only && {
+        let o = out.to_ascii_lowercase();
+        [".ts", ".m2ts", ".mts", ".m2t"].iter().any(|e| o.ends_with(e))
     };
-    let carried = (audio_codec == smartcut_core::AudioCodec::Source || own_codec)
-        && matches!(main_codec, "dts" | "truehd" | "mlp");
-    let as_samples = match audio_codec {
-        smartcut_core::AudioCodec::Lpcm => true,
-        smartcut_core::AudioCodec::Source => main_codec.starts_with("pcm_"),
-        _ => false,
-    };
+    let target = written_as(main_codec, to_ts_out, audio_bits.unwrap_or(source_bits), audio_codec);
+    // Whether what goes out is another codec than what came in, and whether
+    // that is because one was named.
+    let changes = !main_codec.is_empty()
+        && written_as(main_codec, to_ts_out, source_bits, audio_codec) != main_codec;
+    let named = changes && audio_codec != smartcut_core::AudioCodec::Source;
+    let carried = matches!(main_codec, "dts" | "truehd" | "mlp") && !named;
     // What the audio will be, which is not always what was asked for: a
     // downmix has no copy path, and the engine says so and re-encodes.
     let asked = audio_channels
@@ -2545,11 +2589,17 @@ fn run() -> Result<()> {
         .filter(|_| !carried)
         .filter(|&r| src.audio.as_ref().is_some_and(|a| a.sample_rate != r));
     let requantised = audio_bits
-        .filter(|_| as_samples && !carried)
-        .filter(|&b| src.audio.as_ref().is_some_and(|a| a.bits != b));
-    // As is naming a codec: there is no copying a frame into one it is not
-    // already in.
-    let recoded = audio_codec != smartcut_core::AudioCodec::Source && !own_codec;
+        .filter(|_| uncompressed(&target) && !carried)
+        .filter(|&b| src.audio.as_ref().is_some_and(|_| source_bits != b));
+    // As is writing another codec: there is no copying a frame into one it
+    // is not already in. And a lossless track asked to be re-encoded is
+    // copied (`plan_audio`: "the one mode a lossless track cannot be given").
+    let recoded = changes;
+    let reencoded = asked.is_some()
+        || resampled.is_some()
+        || requantised.is_some()
+        || recoded
+        || (audio_mode == smartcut_core::AudioMode::Reencode && !carried);
     // Whose encoder writes the partial GOPs. Worth saying for the one codec
     // libavcodec cannot encode, because the answer is "this program's own"
     // and because the step it writes at is the one setting that changes what
@@ -2563,13 +2613,17 @@ fn run() -> Result<()> {
     }
     tell!(
         "\nrender:  audio {}{}{}{}{}{}",
-        if asked.is_some() || resampled.is_some() || requantised.is_some() || recoded {
+        if reencoded {
             "reencode"
+        } else if carried && audio_mode == smartcut_core::AudioMode::Reencode {
+            smartcut_core::AudioMode::Copy.as_str()
         } else {
             audio_mode.as_str()
         },
-        if recoded {
+        if named {
             format!(", as {}", audio_codec.as_str())
+        } else if recoded {
+            format!(", as {target}")
         } else {
             String::new()
         },
@@ -3342,6 +3396,59 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+/// What a sound track is written as, by libav's name for the codec (as
+/// `AudioInfo::codec` has it): the CLI's copy of `carriage` in
+/// `smartcut_core::cut`, which is private there and answers in codec ids.
+/// `bits` is the width the samples are written at. Kept to the same arms:
+/// the render line says from this what the engine will do with the sound.
+fn written_as(source: &str, to_ts: bool, bits: u8, want: smartcut_core::AudioCodec) -> String {
+    use smartcut_core::AudioCodec;
+    let pcm = || {
+        if to_ts {
+            "pcm_bluray"
+        } else if bits > 16 {
+            "pcm_s24be"
+        } else {
+            "pcm_s16be"
+        }
+    };
+    match want {
+        AudioCodec::Aac => "aac",
+        AudioCodec::Ac3 => "ac3",
+        AudioCodec::Dts => "dts",
+        AudioCodec::Lpcm => pcm(),
+        AudioCodec::Source => match source {
+            "pcm_bluray" | "pcm_dvd" => pcm(),
+            "pcm_s16le" | "pcm_u8" | "pcm_s8" if !to_ts && bits > 16 => "pcm_s24le",
+            "pcm_s16be" if !to_ts && bits > 16 => "pcm_s24be",
+            "pcm_s24le" | "pcm_s32le" | "pcm_f32le" if !to_ts && bits <= 16 => "pcm_s16le",
+            "pcm_s24be" | "pcm_s32be" | "pcm_f32be" if !to_ts && bits <= 16 => "pcm_s16be",
+            other => other,
+        },
+    }
+    .to_string()
+}
+
+/// Whether a codec (libav's name) carries samples rather than a description
+/// of them: `smartcut_core::audio::uncompressed`, by name.
+fn uncompressed(codec: &str) -> bool {
+    matches!(
+        codec,
+        "pcm_bluray"
+            | "pcm_dvd"
+            | "pcm_s16be"
+            | "pcm_s16le"
+            | "pcm_s24be"
+            | "pcm_s24le"
+            | "pcm_s32be"
+            | "pcm_s32le"
+            | "pcm_f32be"
+            | "pcm_f32le"
+            | "pcm_u8"
+            | "pcm_s8"
+    )
+}
+
 /// Refuse a recording whose pictures or kept sound a disc of recordings has
 /// no coding type for, as each will be written (see
 /// `smartcut_core::carry::on_a_disc_as`). A transport stream takes Opus, so
@@ -3507,6 +3614,15 @@ fn shown_at(src: &smartcut_core::Source, t: f64) -> f64 {
         .min_by(|x, y| (x - t).abs().total_cmp(&(y - t).abs()))
         .unwrap_or(0.0);
     phase + ((t - phase - tick) / frame - 1e-6).ceil() * frame
+}
+
+/// Whether a time asked for lies past the recording's end, as the two are
+/// printed: to the millisecond. The length printed on the `input` line
+/// (`dur=19.997s`) is a rounding of one a fraction shorter, and that length
+/// typed back was refused as "00:00:19.997 is past the end of the
+/// recording (00:00:19.997)".
+fn past_the_end(at: f64, duration: f64) -> bool {
+    (at * 1000.0).round() > (duration * 1000.0).round()
 }
 
 /// How long a kept range runs in the output: from the picture it opens on to

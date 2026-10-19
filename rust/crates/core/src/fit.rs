@@ -416,6 +416,37 @@ pub struct Fit {
 /// writing four hours of mush.
 pub const FLOOR: f64 = 0.35;
 
+/// What the disc in a folder already holds, in bytes: everything under its
+/// `BDAV` ([`crate::bdav::root`]), counted as it stands. Nothing where there
+/// is no disc there yet or it cannot be read.
+///
+/// **A disc written into a folder that already holds one is added to** (see
+/// [`crate::bdav::prepare`]), so the room a run has is the disc less this --
+/// the list alone priced against the whole disc said "fits" on the fourth
+/// night of a week's disc, and the disc came out larger than the one it was
+/// meant for. It is what the window's after-run check measures as well, so
+/// the two say the same thing about the same disc. Passed to [`fit`] as
+/// `capacity - already_on`: the margin is kept back from what the estimate
+/// is made for, which is the new recordings; what is already written is a
+/// measured size, not an estimate.
+pub fn already_on(at: &std::path::Path) -> u64 {
+    fn under(at: &std::path::Path) -> u64 {
+        let Ok(entries) = std::fs::read_dir(at) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .map(|e| match e.file_type() {
+                // Not through a link: the same rule the window's after-run
+                // count keeps, and a link to a folder of its own is a loop.
+                Ok(t) if t.is_dir() => under(&e.path()),
+                _ => e.metadata().map(|m| m.len()).unwrap_or(0),
+            })
+            .fold(0u64, u64::saturating_add)
+    }
+    under(&crate::bdav::root(at))
+}
+
 /// Work out what has to come off.
 pub fn fit(estimates: &[Estimate], capacity: u64, margin: f64) -> Fit {
     let bytes: u64 = estimates

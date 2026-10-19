@@ -1390,6 +1390,39 @@ pub fn carried_whole(id: ff::codec::Id) -> bool {
     )
 }
 
+/// How many bits a track's samples really have, as the stream says it:
+/// FLAC and ALAC decode 24 and 32 bit sound alike into 32 bit samples.
+fn depth_of(params: &ff::codec::Parameters) -> i32 {
+    let raw = unsafe { &*params.as_ptr() };
+    raw.bits_per_raw_sample.max(raw.bits_per_coded_sample)
+}
+
+/// A FLAC or ALAC track whose width is not the one its encoder here writes,
+/// so that a frame rewritten at a boundary would not be one of the track's
+/// own kind. See [`boundary_patches`].
+///
+/// The encoders are handed the decoder's own samples and write sixteen bit
+/// frames of sixteen bit samples and 24 bit frames of 32 bit ones, whatever
+/// the track was: 32 bit FLAC is the wider case, and 20 bit FLAC -- what
+/// 20 bit LPCM from a disc comes to -- was the other, 24 bit frames among 20
+/// bit ones, refused by the decoder alike and 0.76 s of sound gone over three
+/// ranges. A width the stream does not state is left as it always was.
+fn width_not_written(params: &ff::codec::Parameters) -> bool {
+    use ff::format::Sample::{I16, I32};
+    if !matches!(params.id(), ff::codec::Id::FLAC | ff::codec::Id::ALAC) {
+        return false;
+    }
+    let written = match sample_format(params) {
+        I16(_) => 16,
+        I32(_) => 24,
+        // Samples of a kind libavformat did not settle: wider than either
+        // width is still wider than what is written.
+        _ => return depth_of(params) > 24,
+    };
+    let depth = depth_of(params);
+    depth > 0 && depth != written
+}
+
 /// How wide a track's samples are once they are written as linear PCM.
 ///
 /// 24 bits only where the recording has more than 16 bits in it, which is
@@ -1717,6 +1750,28 @@ pub fn boundary_patches(
             // A fade is a rewrite of the frames it runs over, so it cannot
             // happen on a track nothing rewrites. Said here rather than left
             // to be noticed in the output.
+            if fades.iter().any(|(a, b)| *a > 0.0 || *b > 0.0) {
+                " The fade asked for at the seams is not on it either."
+            } else {
+                ""
+            },
+        );
+        return Ok(out);
+    }
+    // FLAC or ALAC of a width the encoders here do not write: 16 and 24 bit
+    // are what they write, and a frame of one width among frames of another
+    // is one the decoder will not read ("switching bps mid-stream"): two
+    // frames, a fifth of a second of sound, went missing at every boundary
+    // of a 32 bit or a 20 bit FLAC track. ALAC's frames do not state their
+    // width at all, so there it would decode as noise. Carried whole
+    // instead, as DTS and TrueHD are.
+    if width_not_written(&params) {
+        crate::say!(
+            "note: {:?} at {} bit is carried through byte for byte -- the encoder here writes \
+             it at 16 or 24 bit only, and a frame of another width does not decode among the \
+             track's own. The cut's boundaries land on whole frames of it.{}",
+            params.id(),
+            depth_of(&params),
             if fades.iter().any(|(a, b)| *a > 0.0 || *b > 0.0) {
                 " The fade asked for at the seams is not on it either."
             } else {

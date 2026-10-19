@@ -742,7 +742,14 @@ pub fn build_with_sound(
         // Which packets those are is [`crate::EntryPictures`]: a key packet
         // is the whole of an entry picture until the material is PAFF, where
         // it is the first field of one and the packet behind it is the rest.
-        stretches.reach(packet.position());
+        // A half held from the stretch before is a field whose partner the
+        // recorder never wrote: what follows is the next stretch, whose first
+        // packet is no picture's second half. Dropped, as [`crate::preview`]'s
+        // walk drops it there.
+        if stretches.reach(packet.position()) {
+            pending.clear();
+            entries.broke();
+        }
         match entries.step(&packet) {
             crate::Step::Skip => continue,
             // Half a picture: nothing can come out until its partner goes in,
@@ -896,30 +903,107 @@ pub fn differences_near(src: &Source, at: f64, window: f64) -> Result<Vec<(f64, 
         .video()?;
 
     let mut seen: Vec<(f64, [u8; SIG])> = Vec::new();
-    let mut frame = ff::frame::Video::empty();
-    'outer: for (stream, packet) in ictx.read_packets() {
-        if stream.index() != idx {
-            continue;
+    // The last picture before the window, on a recording with seams: where a
+    // seam lies between it and the window's first picture, that pair is the
+    // junction the cut writes, and it is measured. The recorder left no
+    // pictures in the clock between the two stretches -- half a second and
+    // more -- so a window opening in that hole held only the next stretch's
+    // pictures, and the change at the seam, the one a CM boundary or a
+    // silence there is asking about, was not in it: `cut_near` answered a
+    // change half a second into the programme and `cut_within` none at all.
+    // Read straight on (0.8.26) the seam's broken leading pictures stood in
+    // for it. Nothing changes on a recording without seams.
+    let mut before: Option<(f64, [u8; SIG])> = None;
+    decode_on(src, &mut ictx, &mut decoder, |t, frame| {
+        if t > until + fd {
+            return false;
         }
-        if decoder.send_packet(&packet).is_err() {
-            continue;
-        }
-        while decoder.receive_frame(&mut frame).is_ok() {
-            let Some(pts) = frame.pts() else { continue };
-            let t = pts as f64 * src.video.time_base - src.start_time;
-            if t > until + fd {
-                break 'outer;
+        if t >= from - fd {
+            if seen.is_empty() {
+                if let Some((b, sig)) = before.take() {
+                    if src.joins.iter().any(|j| j.time > b && j.time <= t + fd / 4.0) {
+                        seen.push((b, sig));
+                    }
+                }
             }
-            if t >= from - fd {
-                seen.push((t, signature(&frame)));
-            }
+            seen.push((t, signature(frame)));
+        } else if !src.joins.is_empty() {
+            before = Some((t, signature(frame)));
         }
-    }
+        true
+    });
     seen.sort_by(|a, b| a.0.total_cmp(&b.0));
     Ok(seen
         .windows(2)
         .map(|w| (w[1].0, distance(&w[0].1, &w[1].1)))
         .collect())
+}
+
+/// Decode the pictures from wherever `ictx` stands, handing each one and its
+/// instant to `visit` in the order the decoder gives them, until it answers
+/// false or the read ends.
+///
+/// **A recorder's seam is read across as [`crate::preview`]'s walk reads
+/// it**: the decoder is drained of the stretch before it, and a picture
+/// outside the stretch it was read in is passed over -- one of the stretch
+/// before that runs past where the plan ends it, or a leading picture of the
+/// stretch after that is stamped before it begins, whose references were
+/// never recorded. See [`crate::preview::Stretches`]. Read straight on, the
+/// two stretches' pictures met on the joined clock, sorted in among each
+/// other, and the wreckage of those leading pictures was the largest change
+/// in the window: the scene search (↑↓) and a CM boundary put on a picture
+/// stood in the clock no cut writes (a SONY title, 1755.049 between a
+/// stretch that ends at 1754.619 and the next one's first picture at
+/// 1755.111). Nothing changes on a recording without seams.
+fn decode_on(
+    src: &Source,
+    ictx: &mut crate::input::Demux,
+    decoder: &mut ff::decoder::Video,
+    mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
+) {
+    let idx = src.video.stream_index;
+    let time = |frame: &ff::frame::Video| {
+        frame
+            .pts()
+            .map(|pts| pts as f64 * src.video.time_base - src.start_time)
+    };
+    let mut frame = ff::frame::Video::empty();
+    let mut stretches = crate::preview::Stretches::new(src);
+    // Whether the decoder holds anything a drain would hand back.
+    let mut fed = false;
+    for (stream, packet) in ictx.read_packets() {
+        if stream.index() != idx {
+            continue;
+        }
+        let was = stretches.clone();
+        if stretches.reach(packet.position()) && fed {
+            fed = false;
+            let _ = decoder.send_eof();
+            while decoder.receive_frame(&mut frame).is_ok() {
+                let Some(t) = time(&frame) else { continue };
+                if was.outside(t) {
+                    continue;
+                }
+                if !visit(t, &frame) {
+                    return;
+                }
+            }
+            decoder.flush();
+        }
+        if decoder.send_packet(&packet).is_err() {
+            continue;
+        }
+        fed = true;
+        while decoder.receive_frame(&mut frame).is_ok() {
+            let Some(t) = time(&frame) else { continue };
+            if stretches.outside(t) {
+                continue;
+            }
+            if !visit(t, &frame) {
+                return;
+            }
+        }
+    }
 }
 
 /// The timestamp a seek aims at to land at or before `landing`, in rebased
@@ -1007,25 +1091,15 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
         .video()?;
 
     let mut seen: Vec<(f64, [u8; SIG])> = Vec::new();
-    let mut frame = ff::frame::Video::empty();
-    'outer: for (stream, packet) in ictx.read_packets() {
-        if stream.index() != idx {
-            continue;
+    decode_on(src, &mut ictx, &mut decoder, |t, frame| {
+        if t > at + fd / 2.0 {
+            return false;
         }
-        if decoder.send_packet(&packet).is_err() {
-            continue;
+        if t >= from - fd / 2.0 {
+            seen.push((t, signature(frame)));
         }
-        while decoder.receive_frame(&mut frame).is_ok() {
-            let Some(pts) = frame.pts() else { continue };
-            let t = pts as f64 * src.video.time_base - src.start_time;
-            if t > at + fd / 2.0 {
-                break 'outer;
-            }
-            if t >= from - fd / 2.0 {
-                seen.push((t, signature(&frame)));
-            }
-        }
-    }
+        true
+    });
     seen.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut best = (at, -1.0);
     for w in seen.windows(2) {
