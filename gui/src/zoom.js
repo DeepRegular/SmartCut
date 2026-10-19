@@ -193,7 +193,7 @@ let drag = null;
 
 face.addEventListener("mousedown", (ev) => {
   if (ev.button !== 0 || !pic) return;
-  drag = { x: ev.clientX, y: ev.clientY, spot };
+  drag = { x: ev.clientX, y: ev.clientY, spot, nowX: ev.clientX, nowY: ev.clientY };
   face.classList.add("dragging");
   // A canvas is not draggable, but the press still starts a selection that
   // paints the window grey wherever the pointer goes.
@@ -204,6 +204,8 @@ face.addEventListener("mousedown", (ev) => {
 // mid-drag goes on dragging and lets go where it lets go.
 window.addEventListener("mousemove", (ev) => {
   if (!drag || !pic) return;
+  drag.nowX = ev.clientX;
+  drag.nowY = ev.clientY;
   // CSS pixels to the recording's own: the magnification is screen pixels per
   // source pixel, so the display's ratio is not in this arithmetic -- it is in
   // `paint`, where device pixels are.
@@ -236,6 +238,11 @@ window.addEventListener("mouseup", () => {
 el("scale").addEventListener("change", (ev) => {
   scale = stepOf(ev.target.value);
   prefs.set("zoomScale", scale);
+  // A drag under way goes on from where the view stands now. Its distance
+  // was counted at the old magnification, and taken again at the new one
+  // (the menu still has the keyboard while the hand drags) the view jumped
+  // by the difference at the next move.
+  if (drag) drag = { ...drag, x: drag.nowX, y: drag.nowY, spot };
   draw();
 });
 

@@ -1655,6 +1655,140 @@ def disc_name_after_image_only(cfg, t):
     shutil.rmtree(at, ignore_errors=True)
 
 
+
+def disc_gauge_overwritable(cfg, t):
+    """An overwritable image is laid out as a recorder formats a BD-RE, which
+    holds 24,118,755,328 bytes of files on a single layer -- not the
+    25,025,314,816 of the "25GB" disc. The gauge prices the list against that
+    while イメージ 書き換え可 is chosen, and against the disc's own size with a
+    read-only image or none, exactly as before; the check after an
+    overwritable run says the same size."""
+    at = os.path.join(cfg.work, "disc_gauge_overwritable")
+    shutil.rmtree(at, ignore_errors=True)
+    os.makedirs(at)
+    pct = lambda g: float((re.search(r"[（(]([\d.]+)%[）)]", g["note"]) or [0, "nan"])[1])
+
+    def pick(app, id, value):
+        app.s.js("const s = document.getElementById(arguments[0]); s.value = arguments[1];"
+                 " s.dispatchEvent(new Event('input', {bubbles: true}));", id, value)
+
+    def gauge_with(app, why, part):
+        wait_for(why, lambda: part in _gauge(app)["note"], 30, 0.2)
+        time.sleep(0.5)
+        return _gauge(app)
+
+    holds = lambda app, access: app.s.js(
+        "return window.__TAURI__.core.invoke('disc_holds', {disc: 25025314816, access: arguments[0]})", access)
+    with App(cfg, "disc_gauge_overwritable", [{"path": cfg.a}],
+             {"mode": "bdav", "dir": at, "subfolder": "night", "discTitle": "OW",
+              "image": "2.50", "imageAccess": "read-only"}) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        t.check("32b disc_holds: the disc's own size unless overwritable",
+                holds(app, "") == 25025314816 and holds(app, "read-only") == 25025314816
+                and holds(app, "overwritable") == 24118755328,
+                f"{holds(app, '')} {holds(app, 'read-only')} {holds(app, 'overwritable')}")
+        ro = gauge_with(app, "the gauge, read-only", "/ 23.3 GiB")
+        pick(app, "out-image-access", "overwritable")
+        ow = gauge_with(app, "the gauge, overwritable", "/ 22.5 GiB")
+        t.check("32b overwritable: priced against what the BD-RE holds",
+                abs(pct(ow) / pct(ro) - 25025314816 / 24118755328) < 0.05 and ow["sizes"] == ro["sizes"],
+                f"{ro['note']!r} -> {ow['note']!r}")
+        pick(app, "out-image", "")
+        none = gauge_with(app, "the gauge, no image", "/ 23.3 GiB")
+        t.check("32b no image: drawn as with a read-only one", none == ro, f"{none} vs {ro}")
+        pick(app, "out-image", "2.50")
+        gauge_with(app, "the gauge, overwritable again", "/ 22.5 GiB")
+        app.export()
+        said = ""
+        for root, _, files in os.walk(app.dir):
+            for f in files:
+                if f.endswith(".log") or f.endswith(".txt"):
+                    with open(os.path.join(root, f), "rb") as fh:
+                        said += fh.read().decode("utf-8", "replace")
+        t.check("32b the check after the run says the same disc",
+                "22.5 GiB のディスクに収まります" in said and os.path.exists(os.path.join(at, "night.iso")),
+                f"{[l for l in said.splitlines() if 'ディスクに収' in l][:2]}")
+    shutil.rmtree(at, ignore_errors=True)
+
+
+def _export_or_refused(app, timeout=300):
+    """出力開始, until the run is over -- or until it was refused before it
+    started, which can be quicker than the button ever changing. Returns the
+    note the output screen shows afterwards."""
+    app.to_list()
+    app.s.click('button.tab[data-screen="out"]')
+    label = wait_for("the start button", lambda: app.s.js(
+        "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 30)
+    note = lambda: app.s.js("return document.getElementById('out-note').textContent") or ""
+    before = note()
+    app.s.click("#run-export")
+    seen = {"running": False}
+
+    def over():
+        running = app.s.js("return document.getElementById('run-export').innerText") != label
+        seen["running"] = seen["running"] or running
+        return not running and (seen["running"] or note() != before)
+    wait_for("the run to end or be refused", over, timeout, 0.05)
+    return note()
+
+
+def _image_only_twice(cfg, t, name, second):
+    """Two runs of イメージのみ into the same folder, as a series written week
+    after week under its own name. The first run's folder is taken away once
+    its image is made, so the second run would make a new disc of its own list
+    -- and its image is named as the first one is. The second run is refused
+    before anything is cut, whether it is the same list again or another one:
+    the first image is still there as it was, no disc was started in the
+    folder, and the screen says why."""
+    at = os.path.join(cfg.work, name)
+    shutil.rmtree(at, ignore_errors=True)
+    os.makedirs(at)
+    night = os.path.join(at, "night")
+    settings = {"mode": "bdav", "dir": at, "subfolder": "night", "discTitle": "WEEK",
+                "image": "2.50", "imageOnly": True}
+    with App(cfg, name, [{"path": cfg.a}], settings) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        time.sleep(1.0)
+        app.export()
+        first = os.stat(night + ".iso") if os.path.exists(night + ".iso") else None
+        t.check("32a the first image is written and the folder taken away",
+                first is not None and not os.path.exists(os.path.join(night, "BDAV")),
+                f"iso {first} BDAV {os.path.exists(os.path.join(night, 'BDAV'))}")
+    time.sleep(1.1)
+    with App(cfg, name + "_2", [{"path": second}], settings) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        time.sleep(1.0)
+        said = _export_or_refused(app)
+        now = os.stat(night + ".iso") if os.path.exists(night + ".iso") else None
+        isos = sorted(f for f in os.listdir(at) if f.endswith(".iso") or f.endswith(".part"))
+        stream = os.path.join(night, "BDAV", "STREAM")
+        cut = sorted(os.listdir(stream)) if os.path.isdir(stream) else []
+        t.check("32a the second run leaves the first image as it was",
+                first is not None and now is not None and now.st_mtime_ns == first.st_mtime_ns
+                and now.st_ino == first.st_ino and isos == ["night.iso"],
+                f"first {first and (first.st_ino, first.st_mtime_ns)} now "
+                f"{now and (now.st_ino, now.st_mtime_ns)}; images {isos}")
+        t.check("32a and is refused before anything is cut, saying why",
+                not cut and "night.iso" in said and "すでに" in said,
+                f"streams {cut}; note {said!r}")
+    shutil.rmtree(at, ignore_errors=True)
+
+
+def image_only_twice(cfg, t):
+    """The same list written image-only twice under one name."""
+    _image_only_twice(cfg, t, "image_only_twice", cfg.a)
+
+
+def image_only_twice_other(cfg, t):
+    """Image-only under one name, the second time with another recording."""
+    _image_only_twice(cfg, t, "image_only_twice_other", cfg.c)
+
 # -- 19 --------------------------------------------------------------------
 def make_late_head(cfg):
     """A recording with no key picture in its first 32 MB, which is as far as
@@ -3727,6 +3861,275 @@ def reopen_walk_orders_late_head(cfg, t):
             app.gone()
 
 
+def make_no_length(cfg):
+    """A .mkv written down a pipe: libavformat cannot seek back to fill in its
+    Duration, so the container states no length (ffprobe says N/A), as a
+    browser's MediaRecorder .webm, an .mkv cut short by a crash, or a
+    recorder's clip whose clock restarts (libav declines to measure those).
+    The outline's length is then 0 and only the walk finds it."""
+    at = os.path.join(cfg.work, "nolength")
+    os.makedirs(at, exist_ok=True)
+    path = os.path.join(at, "e.mkv")
+    if not os.path.exists(path):
+        with open(path + ".part", "wb") as out:
+            subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                            "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30000/1001:duration=20",
+                            "-f", "lavfi", "-i", "sine=frequency=660:duration=20:sample_rate=48000",
+                            "-c:v", "libx264", "-g", "30", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-b:a", "128k", "-f", "matroska", "-"],
+                           stdout=out, check=True)
+        os.replace(path + ".part", path)
+    return path
+
+
+def reopen_no_container_length(cfg, t):
+    """A cut in the middle of a recording whose container states no length,
+    OK, and the row opened again: the second visit's outline says 0 s, and
+    `pointsArrived` took every cut ending at or past the outline's end for a
+    cut to the end -- so the cut 150-300 ran to the last picture once the
+    walk landed, and the output lost everything after picture 150. The row
+    must come back with the cut it left with."""
+    path = make_no_length(cfg)
+    def landed(app):
+        st = app.state()
+        return st["frames"] is not None and st["frames"] > 0 and st["plan"] \
+            and "読み込んで" not in st["plan"] and "Reading" not in st["plan"]
+    with App(cfg, "reopen_no_container_length", [{"path": path}]) as app:
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        left = app.cut(150, 300)
+        app.ok()
+        app.gone()
+        c1 = cuts_of(app.save(), 1)
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk again", lambda: landed(app), 180, 0.3)
+        time.sleep(1.5)
+        st = app.state()
+        app.ok()
+        app.gone()
+        c2 = cuts_of(app.save(), 1)
+        same = len(c1) == 1 and len(c2) == 1 and all(abs(x - y) < 1e-6 for x, y in zip(c1[0], c2[0]))
+        t.check("33 a reopen keeps a mid-recording cut (no container length)",
+                same and st["frames"] == left,
+                f"first {fmt(c1)}, second {fmt(c2)}; reopened with {st['frames']} pictures (want {left})")
+
+
+def first_visit_marks_no_container_length(cfg, t):
+    """A .keyframe beside a recording whose container states no length, read
+    on a first visit: the outline's timeline is 0 s long, so read before the
+    walk every mark was past its end and dropped, and the files were not
+    read again once the walk landed. The row must come up with the marks."""
+    path = make_no_length(cfg)
+    side = os.path.splitext(path)[0] + ".keyframe"
+    if os.path.exists(side):
+        os.remove(side)
+    def landed(app):
+        st = app.state()
+        return st["frames"] is not None and st["frames"] > 0 and st["plan"] \
+            and "読み込んで" not in st["plan"] and "Reading" not in st["plan"]
+    with App(cfg, "first_visit_marks_no_container_length_1", [{"path": path}]) as app:
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        for at in (100, 300, 450):
+            app.goto(at)
+            app.s.keys("k")
+        time.sleep(0.3)
+        app.s.keys("Control+h")
+        wait_for("the .keyframe beside the recording", lambda: os.path.exists(side), 10)
+        time.sleep(0.3)
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+    with App(cfg, "first_visit_marks_no_container_length_2", [{"path": path}]) as app:
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1.5)
+        st = app.state()
+        t.check("34 a first visit reads the .keyframe (no container length)",
+                st["keys"].startswith("3"), f"marks shown: {st['keys']!r}; status {st['status']!r}")
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+    os.remove(side)
+
+
+def reopen_selection_no_container_length(cfg, t):
+    """IN, OUT and the playhead set once the walk is in, OK, and the row
+    opened again, on a recording whose container states no length: the
+    second visit's outline is 0 s, the saved IN/OUT and playhead were clamped
+    onto it, and nothing put them back once the walk landed."""
+    path = make_no_length(cfg)
+    def landed(app):
+        st = app.state()
+        return st["frames"] is not None and st["frames"] > 0 and st["plan"] \
+            and "読み込んで" not in st["plan"] and "Reading" not in st["plan"]
+    def sel(app):
+        return app.s.js("return document.getElementById('selection').innerText")
+    with App(cfg, "reopen_selection_no_container_length", [{"path": path}]) as app:
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        app.goto(100)
+        app.s.keys("i")
+        app.goto(200)
+        app.s.keys("o")
+        app.goto(250)
+        time.sleep(0.5)
+        s1 = sel(app)
+        app.ok()
+        app.gone()
+        e1 = app.save()["clips"][0].get("edit") or {}
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk again", lambda: landed(app), 180, 0.3)
+        time.sleep(1.5)
+        s2 = sel(app)
+        at2 = app.state()["at"]
+        app.ok()
+        app.gone()
+        e2 = app.save()["clips"][0].get("edit") or {}
+        k = ("selA", "selB", "selGone", "playhead")
+        v1 = tuple(e1.get(x) for x in k)
+        v2 = tuple(e2.get(x) for x in k)
+        t.check("p2gui-1 IN/OUT set on the first visit",
+                isinstance(v1[0], (int, float)) and isinstance(v1[1], (int, float)) and v1[1] > v1[0] and not v1[2],
+                f"{v1}")
+        same = all(isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(a - b) < 1e-6
+                   for a, b in zip(v1[:2] + v1[3:], v2[:2] + v2[3:])) and not v2[2]
+        t.check("p2gui-1 a reopen keeps IN/OUT and the playhead (no container length)", same and s1 == s2 and at2 == 250,
+                f"first {v1} '{s1}', second {v2} '{s2}' at {at2}")
+
+
+def ok_during_walk_selection_no_container_length(cfg, t):
+    """The same, with OK pressed on the second visit as soon as the title is
+    up (during the walk where the machine is slow enough): what the list gets
+    must still be the IN/OUT the row came with. Says NOT REACHED if the walk
+    landed first."""
+    path = make_no_length(cfg)
+    def landed(app):
+        st = app.state()
+        return st["frames"] is not None and st["frames"] > 0 and st["plan"] \
+            and "読み込んで" not in st["plan"] and "Reading" not in st["plan"]
+    with App(cfg, "ok_during_walk_selection_no_container_length", [{"path": path}]) as app:
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        app.goto(100)
+        app.s.keys("i")
+        app.goto(200)
+        app.s.keys("o")
+        time.sleep(0.5)
+        app.ok()
+        app.gone()
+        e1 = app.save()["clips"][0].get("edit") or {}
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the title", lambda: "e.mkv" in (app.state()["title"] or ""), 60, 0.05)
+        early = not landed(app)
+        time.sleep(0.3)
+        app.ok()
+        app.gone()
+        e2 = app.save()["clips"][0].get("edit") or {}
+        t.check("p2gui-2 OK pressed during the walk", early, "" if early else "NOT REACHED: the walk landed first")
+        v1 = (e1.get("selA"), e1.get("selB"), e1.get("selGone"))
+        v2 = (e2.get("selA"), e2.get("selB"), e2.get("selGone"))
+        t.check("p2gui-2 OK during the walk keeps IN/OUT (no container length)",
+                all(isinstance(x, (int, float)) for x in v1[:2] + v2[:2])
+                and abs(v1[0] - v2[0]) < 1e-6 and abs(v1[1] - v2[1]) < 1e-6 and not v2[2],
+                f"first {v1}, second {v2}")
+
+
+def held_selection_no_container_length(cfg, t):
+    """The IN/OUT and playhead a row whose container states no length comes
+    back with (`heldSel` in main.js), through what else can happen to it:
+    another row opened during the second walk (the edit the list takes on
+    the way out must be the one the row came with), a project reloaded (a
+    new process, so the walk is read again), a Del once the walk is in (it
+    takes the IN-OUT the row came with), and 取消 (the cut goes, the
+    selection comes back)."""
+    path = make_no_length(cfg)
+    def landed(app):
+        st = app.state()
+        return st["frames"] is not None and st["frames"] > 0 and st["plan"] \
+            and "読み込んで" not in st["plan"] and "Reading" not in st["plan"]
+    def sel(app):
+        return app.s.js("return document.getElementById('selection').innerText")
+    k = ("selA", "selB", "selGone", "playhead")
+    def same(e1, e2):
+        v1 = tuple(e1.get(x) for x in k)
+        v2 = tuple(e2.get(x) for x in k)
+        nums = all(isinstance(v1[i], (int, float)) and isinstance(v2[i], (int, float))
+                   and abs(v1[i] - v2[i]) < 1e-6 for i in (0, 1, 3))
+        return nums and v1[2] is False and v2[2] is False, f"{v1} vs {v2}"
+    with App(cfg, "held_selection_no_container_length", [{"path": path}, {"path": cfg.a}]) as app:
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        app.goto(100)
+        app.s.keys("i")
+        app.goto(200)
+        app.s.keys("o")
+        app.goto(250)
+        time.sleep(0.5)
+        s1 = sel(app)
+        frames = app.state()["frames"]
+        app.ok()
+        app.gone()
+        e1 = app.save()["clips"][0].get("edit") or {}
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the title", lambda: "e.mkv" in (app.state()["title"] or ""), 60, 0.05)
+        early = not landed(app)
+        app.open_row(2, "a.ts", wait=False)
+        app.editor_ready("a.ts")
+        time.sleep(1.0)
+        app.ok()
+        app.gone()
+        saved = app.save()
+        e2 = saved["clips"][0].get("edit") or {}
+        t.check("p3gui-1 another row opened during the walk", early, "" if early else "NOT REACHED: the walk landed first")
+        ok, said = same(e1, e2)
+        t.check("p3gui-1 a row left during the walk keeps IN/OUT and the playhead (no container length)", ok, said)
+    with App(cfg, "held_selection_no_container_length_2", saved["clips"]) as app:
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1.5)
+        s2 = sel(app)
+        at2 = app.state()["at"]
+        t.check("p3gui-1 a reloaded project's row comes back with IN/OUT and the playhead",
+                s2 == s1 and at2 == 250, f"'{s1}' -> '{s2}' at {at2}")
+        app.s.keys("Delete")
+        want = frames - 101
+        try:
+            wait_for("the Del", lambda: app.state()["frames"] == want, 10)
+        except Exception:  # noqa: BLE001 -- said below
+            pass
+        after_del = app.state()["frames"]
+        app.s.keys("Control+z")
+        try:
+            wait_for("the 取消", lambda: app.state()["frames"] == frames, 10)
+        except Exception:  # noqa: BLE001 -- said below
+            pass
+        time.sleep(0.5)
+        s3 = sel(app)
+        undone = app.state()["frames"]
+        app.ok()
+        app.gone()
+        e3 = app.save()["clips"][0].get("edit") or {}
+        t.check("p3gui-1 Del takes the IN-OUT the row came with, 取消 gives it back",
+                after_del == want and undone == frames and s3 == s1 and not e3.get("cuts"),
+                f"pictures {frames} -> {after_del} (want {want}) -> {undone}; selection '{s3}' (want '{s1}'); "
+                f"cuts {e3.get('cuts')}")
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -3767,6 +4170,9 @@ SCENARIOS = [
     disc_gauge_appends,
     disc_name_after_a_run,
     disc_name_after_image_only,
+    image_only_twice,
+    image_only_twice_other,
+    disc_gauge_overwritable,
     plays_owed_left_behind,
     plays_owed_removed_undone,
     plays_due_snapped,
@@ -3778,6 +4184,11 @@ SCENARIOS = [
     reopen_keeps_selection_late_head,
     reopen_out_during_walk_late_head,
     reopen_walk_orders_late_head,
+    reopen_no_container_length,
+    first_visit_marks_no_container_length,
+    reopen_selection_no_container_length,
+    ok_during_walk_selection_no_container_length,
+    held_selection_no_container_length,
 ]
 
 

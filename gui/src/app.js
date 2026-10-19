@@ -7261,6 +7261,18 @@ async function discUsed() {
   return Number(used) > 0 ? Number(used) : 0;
 }
 
+/// What the disc chosen (`named`, in bytes) holds of a disc of recordings,
+/// as the image this run makes lays it out: an overwritable image is a BD-RE
+/// as a recorder formats it, which holds less than the disc is named by
+/// (`disc_holds`). The gauge, 収める and the check after the run all price
+/// against this, so that the three say the same thing about the same disc.
+async function discHolds(named) {
+  if (!named) return 0;
+  const access = settings.image ? settings.imageAccess : "";
+  const held = await invoke("disc_holds", { disc: named, access }).catch(() => named);
+  return Number(held) > 0 ? Number(held) : named;
+}
+
 /// Ask the engine, unless it has already been asked this exact question.
 ///
 /// Priced against the room the disc has left (`discUsed`), not the whole
@@ -7271,7 +7283,7 @@ async function discUsed() {
 async function askRoom() {
   const used = await discUsed();
   const costs = discCosts();
-  const disc = Number(settings.disc) || 25025314816;
+  const disc = await discHolds(Number(settings.disc) || 25025314816);
   const capacity = Math.max(disc - used, 0);
   const key = JSON.stringify([disc, used, costs.map((c) => [c.seconds, c.video_rate, c.audio_rate, c.can_shrink])]);
   // The stored answer has to be about this list and not the one before it:
@@ -9385,6 +9397,25 @@ async function startExport() {
   // what programme it holds is a read of it that should not happen between
   // two cuts.
   let slots = null;
+  // A run that takes the folder away once its image is made, into a folder
+  // that holds no disc to add to, beside an image of that name already: that
+  // image is a disc an earlier run left only as its image, and this run's
+  // would replace it -- the same list again, or the next week's of a series
+  // written under its own name. Refused before anything is cut; whether the
+  // old image is still wanted is for whoever made it to say, by moving or
+  // deleting it. See `bdav_image_in_way`.
+  if (disc && settings.image && settings.imageOnly) {
+    const image = await invoke("bdav_image_in_way", { dir: discDir() }).catch(() => null);
+    if (image) {
+      note(t("out.imageInTheWay", { image, dir: discDir() }));
+      runDir = null;
+      runDisc = null;
+      runFolder = null;
+      paused = heldBeforeRun && !resumeAfterRun;
+      pump();
+      return;
+    }
+  }
   if (disc) {
     try {
       slots = await invoke("bdav_prepare", { dir: discDir(), n: list.length });
@@ -9707,9 +9738,13 @@ async function startExport() {
       renderOutScreen();
       try {
         const discName = discTitleFor(list);
+        // Measured as the image will hold it, and against what that image
+        // holds: see `discHolds`.
+        const overwritable = !!settings.image && settings.imageAccess === "overwritable";
         const wroteBytes = await invoke("bdav_finish", {
           dir: discDir(),
           title: discName,
+          overwritable,
           entries: wrote.map(({ clip, slot }) => ({
             clip: slot.clip,
             name: programmeOf(clip),
@@ -9748,7 +9783,7 @@ async function startExport() {
         // far as they were asked to -- which is a thing this program can only
         // find out by trying, and which is worth knowing before a disc is
         // burned rather than after.
-        const capacity = Number(settings.disc) || 0;
+        const capacity = await discHolds(Number(settings.disc) || 0);
         if (wroteBytes > 0 && capacity > 0) {
           // A disc that came out too large says so either way, but only a
           // run that was asked to make the pictures smaller can say they

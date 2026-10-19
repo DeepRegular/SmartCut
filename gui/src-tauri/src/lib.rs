@@ -7076,6 +7076,7 @@ async fn bdav_finish(
     dir: String,
     title: String,
     entries: Vec<BdavEntry>,
+    overwritable: Option<bool>,
 ) -> Result<u64, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
@@ -7134,7 +7135,16 @@ async fn bdav_finish(
         // written straight into a folder of recordings, the folder's own
         // gigabytes were counted, and a disc that fit was said to be tens of
         // gigabytes over. The image holds `BDAV` alone too (`udfw::write`).
-        Ok(folder_bytes(&smartcut_core::bdav::root(&at)))
+        //
+        // Counted as an overwritable image will hold it where that is what
+        // is being made -- every file in whole 64 KB clusters -- since that
+        // is what the room it is checked against is in (`disc_holds`).
+        let root = smartcut_core::bdav::root(&at);
+        Ok(if overwritable.unwrap_or(false) {
+            folder_cost(&root, &smartcut_core::udfw::overwritable_cost)
+        } else {
+            folder_bytes(&root)
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -7167,13 +7177,59 @@ async fn bdav_used(dir: String) -> u64 {
         let mine: u64 = locked(&HANDED_OUT)
             .iter()
             .filter(|p| p.starts_with(&root))
-            .flat_map(|p| [p.clone(), p.with_extension("m2ts.ats")])
+            // And the copies of it made beside it while it is finished: the
+            // arrival times (`bdav::stamp`) and the tables (`si` graft).
+            .flat_map(|p| [p.clone(), p.with_extension("m2ts.ats"), p.with_extension("m2ts.si")])
             .map(|p| std::fs::symlink_metadata(p).map(|m| m.len()).unwrap_or(0))
             .fold(0u64, u64::saturating_add);
         smartcut_core::fit::already_on(&at).saturating_sub(mine)
     })
     .await
     .unwrap_or(0)
+}
+
+/// The image an image-only run onto `dir` would write over, where the
+/// folder holds no disc to add to: asked before the run cuts anything. See
+/// `smartcut_core::bdav::image_in_the_way`. Nothing where there is none, or
+/// the folder cannot be read as a local path (the run fails there anyway).
+#[tauri::command]
+async fn bdav_image_in_way(dir: String) -> Option<String> {
+    if dir.trim().is_empty() {
+        return None;
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let at = local_path(&dir).ok()?;
+        smartcut_core::bdav::image_in_the_way(&at).map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// What the disc chosen holds of a disc of recordings, with the image
+/// access the run asks for: an overwritable image is a BD-RE as a recorder
+/// formats it, which holds less than the disc's name says. `access` is
+/// empty where no image is made. See `smartcut_core::fit::holds`; the
+/// gauge, 収める and the check after the run all price against this.
+#[tauri::command]
+fn disc_holds(disc: u64, access: String) -> u64 {
+    let overwritable =
+        smartcut_core::udfw::Access::parse(&access) == Some(smartcut_core::udfw::Access::Overwritable);
+    smartcut_core::fit::holds(disc, overwritable)
+}
+
+/// What the files under a folder cost, each by `cost` of its size.
+fn folder_cost(at: &std::path::Path, cost: &dyn Fn(u64) -> u64) -> u64 {
+    let Ok(entries) = std::fs::read_dir(at) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => folder_cost(&e.path(), cost),
+            _ => cost(e.metadata().map(|m| m.len()).unwrap_or(0)),
+        })
+        .fold(0u64, u64::saturating_add)
 }
 
 /// How much a folder holds, everything under it counted.
@@ -9494,6 +9550,8 @@ pub fn run() {
             bdav_discard,
             bdav_finish,
             bdav_used,
+            bdav_image_in_way,
+            disc_holds,
             disc_room,
             bdav_image,
             bdav_drop,

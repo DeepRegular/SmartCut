@@ -63,6 +63,13 @@ let selGone = false;
 /// on the outline's and has to be moved onto its pictures. See
 /// `pointsArrived`.
 let selArrived = null;
+/// What a row came back with -- IN, OUT, the playhead -- where the outline
+/// had no timeline to put it on: a recording whose container states no
+/// length comes up 0 s long, and clamped onto that the selection was gone
+/// and the playhead at the head, on screen once the walk landed and in what
+/// an OK during the walk handed back. Held until the walk lands, and only
+/// while nothing has moved them. See `pointsArrived` and `captureEdit`.
+let heldSel = null;
 /// Whether the marks in the picture's corners are drawn. Read at open, and
 /// told again by the list window when 環境設定 changes it. See `paintMarks`.
 let marksOn = prefs.get("pictureMarks") !== false;
@@ -6632,6 +6639,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
   const overtaken = () => gen !== openGen;
   walkFailed = null;
   recountHead = null;
+  heldSel = null;
   // Whatever is moving the playhead is moving it through the row being left.
   // Playback went on sounding the last recording and putting its pictures
   // and instants into this one's timeline until the first picture below
@@ -6843,6 +6851,18 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // then it was the last recording's instant, and a mark or a cover set in
     // the wait for the files beside the recording landed there.
     playhead = outToSrc(clamp(srcToOutSeam(!first ? saved.playhead : 0), 0, lastStop()));
+    const num = (v) => (Number.isFinite(v) ? v : null);
+    heldSel =
+      !first && !(src.duration > 0) && num(saved.selA) !== null && num(saved.selB) !== null
+        ? {
+            selA: saved.selA,
+            selB: saved.selB,
+            selGone: !!saved.selGone,
+            playhead: num(saved.playhead),
+            sel: { selA, selB, selGone },
+            at: playhead,
+          }
+        : null;
     el("status").textContent = "";
     // What the row arrived with, said now as well as once the open is over.
     // The timeline is reported to the list while the walk is still reading
@@ -6871,7 +6891,12 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // once -- were never read, on that visit or any later one: the row came
     // back without its Trim line, and the disc's chapters in its place. And
     // a cut made during the walk was replaced by the line when it arrived.
-    const early = first && src.points.length === 0 && src.head !== null;
+    //
+    // And one whose container states no length (an outline of 0 s): there
+    // is no timeline to read them onto before the walk -- every mark was
+    // past the end and dropped, a Trim line cut nothing -- and as `early`
+    // they were not read again after it, so the row came up without them.
+    const early = first && src.points.length === 0 && src.head !== null && src.duration > 0;
     let marks = false;
     // What the timeline held before the files were read, and the head they
     // were counted from, for the one case the walk answers differently: see
@@ -7038,7 +7063,16 @@ async function pointsArrived(exact, picked) {
     throw e;
   }
   if (!src || src.path !== picked) return;
-  const at = playhead;
+  // What the row came back with, where the outline could not hold it
+  // (`heldSel`): put back now there is a timeline, unless the wait moved it.
+  const held = heldSel;
+  heldSel = null;
+  const heldKept =
+    held !== null &&
+    selA === held.sel.selA &&
+    selB === held.sel.selB &&
+    selGone === held.sel.selGone;
+  const at = held !== null && held.playhead !== null && playhead === held.at ? held.playhead : playhead;
   // IN and OUT are places on the output, which starts at the first picture
   // (`headTime`): where the walk puts that somewhere other than the outline
   // did -- a recorder's clip whose map starts half a second after its first
@@ -7110,18 +7144,27 @@ async function pointsArrived(exact, picked) {
   // found. The walk can find the recording longer -- the last packets past
   // what the header said -- and a Trim line read before it had cut the tail
   // to the old end, which left the frames beyond it in the cut.
-  if (full.duration > src.duration + 1e-6) {
+  //
+  // Only a cut that ends there, and only where the container gave an end.
+  // A container that states no length -- a .webm a browser recorded, an
+  // .mkv written down a pipe or cut short, a recorder's clip whose clock
+  // restarts -- has an outline of 0 s, and every cut a row came back with
+  // ends past that: each one ran to the end once the walk landed, and the
+  // output lost everything after the first cut's start. A cut that ends
+  // past the old end was made on a walked timeline, where it is right.
+  const atOldEnd = (c) => Math.abs(c.b - src.duration) < 1e-6;
+  if (src.duration > 0 && full.duration > src.duration + 1e-6) {
     stepsAtEnd = past.concat(undone).filter((step) => step.selB >= keptLength(step.cuts) - 1e-9);
-    for (const c of cuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
+    for (const c of cuts) if (atOldEnd(c)) c.b = full.duration;
     // And what a part of a divided row cuts away, which a Trim line read
     // below is merged with: left at the old end, it gave the tail back.
-    for (const c of partCuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
+    for (const c of partCuts) if (atOldEnd(c)) c.b = full.duration;
     // And in the history, whose steps are copies: a cut to the end made
     // during the walk and stepped back to afterwards (a second cut made
     // during the walk, then 取消) came back ending at the old end, and the
     // pictures past it were written.
     for (const step of past.concat(undone)) {
-      for (const c of step.cuts) if (c.b >= src.duration - 1e-6) c.b = full.duration;
+      for (const c of step.cuts) if (atOldEnd(c)) c.b = full.duration;
     }
     // The same cut, not an edit -- for the reason `openPath` gives above.
     settleMark();
@@ -7182,6 +7225,12 @@ async function pointsArrived(exact, picked) {
       selB = s.gone ? outDur : s.b;
       selGone = s.gone;
     }
+  }
+  if (heldKept) {
+    selA = Math.min(held.selA, outDur);
+    selB = Math.min(held.selB, outDur);
+    selA = Math.min(selA, selB);
+    selGone = held.selGone || (selA <= 0 && selB >= outDur - 1e-9);
   }
   renderKeyframes();
   stripCache = null;
@@ -8825,6 +8874,16 @@ function captureEdit() {
   // they are replaced -- sent in between, the old row's edit landed on the
   // new row.
   if (!src || swapping) return null;
+  // Before the walk of a recording with no length has landed, what the row
+  // came back with rather than its clamped image (`heldSel`).
+  const held =
+    heldSel !== null &&
+    selA === heldSel.sel.selA &&
+    selB === heldSel.sel.selB &&
+    selGone === heldSel.sel.selGone
+      ? heldSel
+      : null;
+  const heldAt = heldSel !== null && heldSel.playhead !== null && playhead === heldSel.at;
   return {
     id: editId,
     path: src.path,
@@ -8870,10 +8929,10 @@ function captureEdit() {
     dropStreams: dropStreams.slice(),
     // The cover's instant, or null. See `poster`.
     poster,
-    playhead,
-    selA,
-    selB,
-    selGone,
+    playhead: heldAt ? heldSel.playhead : playhead,
+    selA: held ? held.selA : selA,
+    selB: held ? held.selB : selB,
+    selGone: held ? held.selGone : selGone,
   };
 }
 
