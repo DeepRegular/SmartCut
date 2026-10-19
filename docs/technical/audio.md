@@ -206,6 +206,23 @@ Two codecs are not asked at all: DTS and TrueHD are lossless while libavformat's
 encoders for them are not, so their frames are carried through untouched — see
 [Reading a disc](disc.md#the-sound-a-disc-carries).
 
+**Nor is FLAC or ALAC of any width but 16 or 24 bits.** Both encoders here are
+lossless, and both write those two widths only: 16-bit frames where the decoder hands
+over 16-bit samples, 24-bit frames where it hands over 32-bit ones. A frame of one width among frames of another is not one
+libavcodec will decode ("switching bps mid-stream"): a 32-bit FLAC track, and a 20-bit
+one -- which is what 20-bit LPCM converted to FLAC comes to -- lost two frames, about a fifth
+of a second, in every range, and `--verify` called the sound short (0.76 s over
+three ranges). An ALAC frame does not state its width at all, so there the patch would
+have decoded as noise. Such a track is carried through whole, as DTS and TrueHD are --
+`width_not_written` in [`audio.rs`](../../rust/crates/core/src/audio.rs) -- and the
+cut says so; its boundaries land on whole frames, and a fade asked for is not on it.
+16 and 24-bit FLAC and ALAC are patched as before. The width is read from the stream,
+which states it the same way in `.mkv`, `.mka`, `.mp4`, `.m4a` and `.flac`.
+
+One case still loses the low bits: `--sound-only` into a `.flac` re-encodes the whole
+track (the file opens on a header that states its length and checksum), and a 32-bit
+track is written at 24 bits there.
+
 So smart rendering reaches **AAC**, **AC-3**, **E-AC-3**, **MP2** and **Blu-ray LPCM** —
 everything lossy a broadcast or a disc carries that there is an encoder for. DTS and
 TrueHD are copied on purpose, and anything with no encoder at all is copied with a note
@@ -260,6 +277,24 @@ where the output is a transport stream, which is the one that will not take
 them. Measured on a three-second `.mkv` cut to two: 70,072 bytes of TrueHD
 out of 105,064, into a `.ts`, a `.mp4` and a `.mkv` alike -- and nought before
 this.
+
+The average is the container's arithmetic too. A TrueHD `.mkv` that ffmpeg or
+SmartCut wrote starts on gaps of 13 or 75 ms where 0.83 is due, so the average
+of its first frames is a third or more long; laid end to end at it, one 60 s
+range of sound ran out over 63.5 s and the next range opened 1.8 s late. So each
+frame is laid by its own length, read off the frame as the next section reads a
+rounded one (`sound::Lengths`) and taken where it lies within a tick of the
+average, which stands only where no length can be read.
+
+**A recording joined on is measured on its own.** The length measured is the
+master's, and a master whose frames carry their lengths has none measured. A
+Blu-ray title's TrueHD has a length on every frame and a Matroska file's has
+none, so an `.mkv` joined after a title was written with no sound for the whole
+of it -- 150 s of it on the pair measured, with a note and `--verify` calling it
+off. Where the master had nothing to measure, each recording joined on is
+measured off its own timestamps (the head of each reel in `cut_into`), and laid
+end to end as the master's would be. A join whose master had a length measured
+is written as before.
 
 **Nothing may finish having written a declared track and no frames of it.**
 Every other way of losing one ends in an error: a codec the container has no
@@ -331,8 +366,9 @@ level with no corner at either end.
 runs over is rewritten; under a whole re-encode every frame is rewritten anyway.
 A copied track is copied — not one byte is rewritten — so nothing fades, and the
 same goes for sound carried through whole because re-encoding it would lose what
-makes it lossless (TrueHD, DTS-HD MA). **Where it cannot be applied the cut says
-so** rather than quietly doing nothing.
+makes it lossless (TrueHD, DTS-HD MA, FLAC or ALAC of another width than 16 or 24
+bits). **Where it cannot be applied the cut says so** rather than quietly doing
+nothing.
 
 ### What changes under smart rendering
 

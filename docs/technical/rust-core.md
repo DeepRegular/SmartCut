@@ -437,6 +437,23 @@ still held -- with no picture more than 11 ms from where the recording had it,
 and sound and pictures ending within a frame of each other over a
 fifteen-minute range.
 
+**A Matroska file states its rate only where it is told one.** Its clock is in
+milliseconds, and where a file states no rate a reader works one out from those
+rounded stamps. The `.mkv` and `.webm` SmartCut wrote stated none, so the next
+open of one -- a second cut, or the editor -- read a 23.976 title at 24.417 with
+pictures that vary, a 59.94 one at 62.5, a 30 fps one at 30.303 and a recorder's
+1080i at 31. The rate is now written (`rate_to_state` in
+[`cut.rs`](../../rust/crates/core/src/cut.rs)) where every recording in the cut
+runs at the master's rate and is not variable, and where the container's own
+figures agree on that rate: the average at the declared rate, or at half of it
+for an interlaced one, or an MPEG-1 or MPEG-2 stream, which states its own. A
+phone recording that holds pictures in the dark, a slice the walk calls
+variable and a join of recordings at two rates are left unstated, as they were.
+The packets, their times and what they decode to are unchanged; only the decode
+times libavformat derives for the first two packets move, by a millisecond.
+Read back, the outputs count the pictures that were written, and cut again
+fresh, from a saved seek index and again, they come out the same each time.
+
 [`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
 [`Grid`]: ../../rust/crates/core/src/cut.rs
 

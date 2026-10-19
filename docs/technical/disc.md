@@ -369,13 +369,28 @@ those twenty titles, 34 are byte for byte what they were, and the six that
 changed are all on those three clips.
 
 **A caption already up when a range opens is read back for.** A document is sent once,
-when it goes up, and one stood for 38 seconds on the recordings here — so the one a
+when it goes up, and on the recordings here one stood for as long as 157 seconds (a
+music mark under a long cue; 38 to 54 seconds over the opening titles) — so the one a
 range opens in the middle of was sent well before the range, and usually before the
 seek margin its first segment reads from. Until 0.8.4 that caption was left out of the
-cut. The opening of each range now reads the 40 seconds in front of it for documents
-begun before it and not yet ended (`cut::read_ttml_before`), with the pictures as the
-clock, as the Blu-ray's and the DVD's look backs do; the segments carry only documents
-that begin inside the range, so nothing is written twice.
+cut. The opening of each range now reads back for documents begun before it and not
+yet ended (`cut::read_ttml_before`), with the pictures as the clock, as the Blu-ray's
+and the DVD's look backs do; the segments carry only documents that begin inside the
+range, so nothing is written twice.
+
+The look back reaches 180 seconds. It is read 40 seconds at a time, nearest first, and
+stops at the first stretch that holds a document begun before the opening: the preview
+shows the last document begun, so nothing older can be what is on screen. Up to 0.8.26
+it read 40 seconds and no more, and a line up for longer was left out: a range opening
+at 88 seconds, inside a line up from 44.85 to 95.85, began with 7.9 seconds without it.
+The first 40 seconds are read exactly as before, so an opening with a document in them
+reads nothing more, and each further stretch is about 45 seconds of stream. Over an
+opening at every second of one disc's clips, that came to 1.9 seconds more read per
+opening on average; reading the whole 180 seconds every time would have read about
+2.8 GB more over a cut of twenty ranges. An opening after a long stretch with no line
+reads back through all of it. The preview reads the same 180 seconds where the playhead
+is put down, and carries the documents still up into each window playback runs on into
+(`subs.rs`), so it shows what the cut writes.
 
 **A document sent well ahead of its time is written by the part of the cut that reads
 its bytes.** It goes up at its own `begin`, seconds after it arrives, but a cut reads
@@ -1290,6 +1305,7 @@ Everything else that counts a title's seconds leaves them out too since
 | `--verify` | The sound is measured against the ranges less them. Held to the ranges as asked, a cut across that seam was allowed 27.4 seconds of missing sound in a 16.1-second file, and the sound-only file above would have been reported short. And the sound missing at a seam is excused only from where the pictures in front of it really stop, read off the recording, not from the end the index estimated: up to 0.8.25, where that estimate stood seconds past the last picture, a cut that held the picture over silence for as long passed, 8.8 seconds of it in front of the mended stretch above |
 | `--fit` and the disc gauge | The rate is an average over the whole clock, so it is scaled by the clock over what is written: 0.7% on that title, most of the margin kept back |
 | Divide | The keeps are divided less them, so the parts are equal in what they write and none begins where there is no picture |
+| Scene changes, `--cut-near` and CM boundaries | The search for the nearest change drains the decoder at each seam and passes over the pictures outside a stretch, as the preview does (`thumbs::decode_on`). Up to 0.8.26 it read straight across, and the next stretch's leading pictures, decoded with no references, were often the largest change near the seam: on two recorder clips, 6 of 50 answers near 10 seams fell in the clock where no picture is written, and others went up to 1.8 seconds back into the stretch before. An answer at a seam is now the first picture after it, so `↑` `↓`, `--cut-near` and a CM boundary land on it. Nothing written was ever wrong, since the planner moves a bound that falls in a hole |
 
 **A join's chapters split at every seam**, those with nothing unwritten
 included. The planner splits a range at each seam and holds a crossing to half

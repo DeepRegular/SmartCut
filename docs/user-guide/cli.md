@@ -117,8 +117,12 @@ sound (`audio smart`, or `audio reencode` and how). It says what the cut will
 really do, not what was asked: a width asked of AAC, or the track's own codec
 named with `--audio-codec`, leaves it smart; a DTS or TrueHD track, which is
 carried through whole unless another codec is named, is not shown as
-downmixed or resampled; and a `.wav` of sound alone says it is re-encoded as
-linear PCM.
+downmixed or resampled, and asked to be re-encoded with no other codec named it
+says `copy`, which is what it gets; a Blu-ray's or a DVD's LPCM going into a
+`.mkv` or an `.mp4`, which hold it only as plain PCM, says `reencode` and what it
+is written as (`as pcm_s16be`, for one); `--audio-codec lpcm` on a Blu-ray's own
+LPCM into a `.ts` or `.m2ts` stays smart; and a `.wav` of sound alone says it is
+re-encoded as linear PCM.
 
 | Option | Meaning |
 |---|---|
@@ -167,7 +171,7 @@ refused rather than quietly ignored.
 | Option | Meaning |
 |---|---|
 | `--bdav FOLDER` | Write a BDAV disc into this folder (one recording becomes `BDAV/STREAM/00001.m2ts`). The index is built afterwards. Pictures or a kept sound track that a disc's index has no coding type for (Opus, for one) stop the run before anything is cut or a place on the disc is taken; `--audio-codec` or `--drop-stream` gets past the sound |
-| `--fit bd25\|bd50\|bd100\|bd128\|BYTES` | Write the pictures back smaller, by as much as it takes for the output to fit that much room. Where it already fits, nothing is done. The sound, the subtitles and the programme information are untouched; only the pictures give anything up. The sound is counted as it will be written, so `--audio-codec lpcm` or a track left out with `--drop-stream` is in the sum. MPEG-2 only -- anything else is written at its full size and says so, and where that does not fit the run stops. What share they will be written at is printed before the writing starts. Not with `--join` or `--sound-only`. See [Fitting a disc](../technical/transrate.md) |
+| `--fit bd25\|bd50\|bd100\|bd128\|BYTES` | Write the pictures back smaller, by as much as it takes for the output to fit that much room. Where it already fits, nothing is done. The sound, the subtitles and the programme information are untouched; only the pictures give anything up. The sound is counted as it will be written, so `--audio-codec lpcm` or a track left out with `--drop-stream` is in the sum. MPEG-2 only -- anything else is written at its full size and says so, and where that does not fit the run stops. What share they will be written at is printed before the writing starts. With `--bdav` naming a folder that already holds a disc, what is already written there is measured and the output is fitted into the room left; the `fit` line says how much that is. Not with `--join` or `--sound-only`. See [Fitting a disc](../technical/transrate.md) |
 | `--video-share 0.35..1` | The share itself, where you would rather name it than have a size worked out into one. Not with `--fit`, which works one out |
 | `--iso 2.50\|2.60` | Wrap the finished disc in an `.iso` beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The image holds the disc, `BDAV`, and nothing else in the folder. The folder stays. Refused before anything is written where that `.iso` is the image the recording is being read out of |
 | `--iso-access read-only\|overwritable` | What the image says may be done to the disc it is burned onto. `read-only`, the default, is the truth about a disc nothing will write to again — a BD-R, or a BD-RE you only play. `overwritable` is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off; the image is then laid out the way a recorder lays out a BD-RE, and is the size of the whole disc (25 GB, or 50 GB where one layer will not hold it — the part with nothing in it takes no room on the disk it is written to). Needs `--iso` |
@@ -188,8 +192,8 @@ refused rather than quietly ignored.
 | `--inserts` | ...and report the few seconds a subscription channel drops into a programme — its own animated ident. Off by default: the same test catches a programme's own caption card. Given with `--detect-cm`. See the [commercial detection guide](cm-detection.md) |
 | `--scenes` | List the scene changes |
 | `--preview TIME` | Decode one picture at `TIME` and write it as a JPEG (`preview.jpg`, or `-o`). It prints the time actually decoded beside the time asked for |
-| `--still TIME` | Save the frame at `TIME` at the size the recording is shown at, as the PNG, JPEG or BMP that `-o` names (`still.png` without one). An interlaced recording is saved from one field. The same as **Save this frame as an image** in the cut editor |
-| `--cut-near TIME` | Print where the nearest picture-to-picture change is to `TIME`, in windows of ±0.5, ±1 and ±2 seconds. A time past the end of the recording is an error (exit code 1) |
+| `--still TIME` | Save the frame at `TIME` at the size the recording is shown at, as the PNG, JPEG or BMP that `-o` names (`still.png` without one). An interlaced recording is saved from one field. A time past the end is an error, as for `--cut-near`. The same as **Save this frame as an image** in the cut editor |
+| `--cut-near TIME` | Print where the nearest picture-to-picture change is to `TIME`, in windows of ±0.5, ±1 and ±2 seconds. A time past the end of the recording is an error (exit code 1); the length the `input` line prints is the end, and typed back it is answered. On a recorder's title, a change found at a seam is the first picture after it |
 | `--verify` | Once the cut is written, decode it from end to end and line it up against the recording frame by frame: the frame count, that every copied frame is the recording's own bit for bit, the re-encoded frames' quality, decode errors and the length of the sound. Each finding is a line starting `verify:`. A file whose pictures do not match ends the run with exit code 1; sound that runs long or short is only reported. Not with anything that writes no cut, such as `--analyze`, and refused when there is neither `-o` nor `--bdav`. It is the same check as [the GUI's](gui.md#checking-what-was-written) |
 | `--log FILE` | Also write what the run prints into FILE, headed by a line giving the version and the command line. An existing file is added to. FFmpeg's lines go in as `SMARTCUT_FFMPEG_LOG` lets them. A file the run reads or writes — the recording, `-o` and so on — is refused |
 

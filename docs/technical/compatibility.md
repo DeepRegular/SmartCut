@@ -108,7 +108,8 @@ read as it always was.
   written for a newer version fails rather than doing something else.
 - **The exit code is 0 on success and 1 on failure.** `--verify` finding
   pictures that differ is a failure. A sound length that differs is reported and
-  is not. Any other code (101 is Rust's for a panic) is a bug.
+  is not. An internal error (a Rust panic) is a failure too and exits with 1; up to
+  0.8.26 it exited with Rust's 101. Any other code is a bug.
 - **`--version` prints one line, `smartcut X.Y.Z`**, and nothing else.
 - **The window takes recordings and projects as its arguments**, and `--batch`
   for the batch tool. `--queued` is how the batch tool talks to the window it

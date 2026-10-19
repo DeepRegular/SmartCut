@@ -248,6 +248,17 @@ is not known, are now scaled by the clock over what is written
 (`fit::written_scale`), which is 1 for every recording without seams.
 Dividing a row by size uses the same scale.
 
+**A disc already in the folder is measured, not estimated.** Writing into a
+folder that holds a disc adds to it, and what the list has is the room the disc
+has left. Every file under `BDAV` is counted, by the rule the check after
+writing counts the finished disc by (`fit::already_on`), and taken off the
+capacity before the share is worked out, so the hundredth kept back is a
+hundredth of what is left. The window leaves out the streams its own run is
+writing, since those are the list it is pricing. Until this, every run was
+weighed against the whole disc: three runs into one folder for a 30 MB disc
+were each told they fitted and came to 34,216,478 bytes, where they now come to
+28,711,454.
+
 The share that comes out is the same for every recording in the list. Each
 recording's own encoder decided how to spend its bits; giving the long one a
 harder time than the short one because it happens to be longer would undo that
