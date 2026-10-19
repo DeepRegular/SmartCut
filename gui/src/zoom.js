@@ -212,12 +212,17 @@ window.addEventListener("mousemove", (ev) => {
   // Held to the centres `paint` can show. Dragged past an edge, a spot that
   // went on moving would have to be dragged all the way back before the
   // picture moved again.
+  // From where the view stood, too: a press on the editor near an edge of
+  // the picture says a spot `paint` cannot centre on, and a drag measured
+  // from that spot did nothing until the hand had covered the difference.
   const box = face.parentElement.getBoundingClientRect();
   const hw = Math.min(0.5, box.width / scale / 2 / pic.naturalWidth);
   const hh = Math.min(0.5, box.height / scale / 2 / pic.naturalHeight);
+  const fromX = clamp(drag.spot.x, hw, 1 - hw);
+  const fromY = clamp(drag.spot.y, hh, 1 - hh);
   spot = {
-    x: clamp(drag.spot.x - dx / pic.naturalWidth, hw, 1 - hw),
-    y: clamp(drag.spot.y - dy / pic.naturalHeight, hh, 1 - hh),
+    x: clamp(fromX - dx / pic.naturalWidth, hw, 1 - hw),
+    y: clamp(fromY - dy / pic.naturalHeight, hh, 1 - hh),
   };
   draw();
 });

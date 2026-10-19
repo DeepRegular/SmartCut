@@ -7246,15 +7246,38 @@ function plainRate(codec, channels) {
   return channels <= 1 ? 96000 : channels === 2 ? 192000 : 64000 * channels;
 }
 
+/// What the disc in the folder being written into already holds, in bytes:
+/// 0 for a folder with no disc in it (`bdav_used`).
+///
+/// A run onto a disc adds to it, so the room the list has is the disc less
+/// this. Read afresh at every ask, since the folder can be changed on this
+/// screen and another run can be adding to the disc meanwhile; a disc folder
+/// is a few hundred files at most.
+async function discUsed() {
+  if (!writesDisc() || !outDir()) return 0;
+  const dir = discDir();
+  if (!dir) return 0;
+  const used = await invoke("bdav_used", { dir }).catch(() => 0);
+  return Number(used) > 0 ? Number(used) : 0;
+}
+
 /// Ask the engine, unless it has already been asked this exact question.
+///
+/// Priced against the room the disc has left (`discUsed`), not the whole
+/// disc: the run's check afterwards measures the whole disc, the recordings
+/// already on it included, and a list priced against all of it was said to
+/// fit, had nothing taken off by 収める, and came out over the disc. The
+/// answer is about the room left; `disc` and `used` say what it was left of.
 async function askRoom() {
+  const used = await discUsed();
   const costs = discCosts();
-  const capacity = Number(settings.disc) || 25025314816;
-  const key = JSON.stringify([capacity, costs.map((c) => [c.seconds, c.video_rate, c.audio_rate, c.can_shrink])]);
+  const disc = Number(settings.disc) || 25025314816;
+  const capacity = Math.max(disc - used, 0);
+  const key = JSON.stringify([disc, used, costs.map((c) => [c.seconds, c.video_rate, c.audio_rate, c.can_shrink])]);
   // The stored answer has to be about this list and not the one before it:
   // the key says so, and the count is checked as well because everything
   // drawn from it is drawn per clip.
-  if (key === roomOf && room && room.clips.length === costs.length) return { costs, room };
+  if (key === roomOf && room && room.clips.length === costs.length) return { costs, room, used, disc };
   const answer = await invoke("disc_room", {
     clips: costs.map(({ clip, ...rest }) => rest),
     capacity,
@@ -7262,7 +7285,7 @@ async function askRoom() {
   });
   roomOf = key;
   room = answer;
-  return { costs, room: answer };
+  return { costs, room: answer, used, disc };
 }
 
 /// What share the pictures are to be written at for this list to fit, or
@@ -7281,20 +7304,36 @@ async function fitShare() {
   return Math.max(r.share, r.floor);
 }
 
+/// Which drawing of the gauge is the latest: an older one whose answers come
+/// in after a newer one's would draw the folder or the list as it was.
+let gaugeDrawn = 0;
+
 /// Draw it.
+///
+/// Against the whole disc, with what is already on it (`used`) as a first
+/// segment that does not move: the answer `askRoom` gives is about the room
+/// left, so every position on the bar is that answer's plus `used`, and with
+/// nothing on the disc the bar is drawn exactly as it was before there was a
+/// `used` at all.
 async function renderGauge() {
   const box = el("disc-gauge");
   if (!box || el("row-gauge").hidden) return;
-  const { costs, room: r } = await askRoom();
+  const mine = ++gaugeDrawn;
+  const { costs, room: r, used, disc } = await askRoom();
   // The screen may have moved on while that was in the air.
-  if (el("row-gauge").hidden) return;
+  if (el("row-gauge").hidden || mine !== gaugeDrawn) return;
   if (!costs.length || !r) {
     box.textContent = t("gauge.empty");
     return;
   }
+  // Where the margin starts and where the disc ends, on the whole disc. A
+  // disc already past its own margin has no room left, and the margin is
+  // then where the disc's own would be.
+  const usable = Math.min(used + r.usable, disc);
+  const bytes = used + r.bytes;
   // The bar is as long as the larger of the two, so that a list which
   // overflows shows how far past the edge it goes.
-  const scale = Math.max(r.bytes, r.capacity, 1);
+  const scale = Math.max(bytes, disc, 1);
   const seconds = costs.reduce((n, c) => n + c.seconds, 0);
   const shrinking = settings.fit && !r.fits;
 
@@ -7319,12 +7358,21 @@ async function renderGauge() {
   const bar = (share) => {
     const box = span("gauge-bar");
     let at = 0;
+    // The disc as it is, before this run adds to it: drawn the way a
+    // recording that cannot be made smaller is, since 収める leaves it alone.
+    if (used > 0) {
+      const cls = used > disc ? "gauge-seg fixed over" : "gauge-seg fixed";
+      const seg = span(cls, { flexGrow: grow(used) });
+      seg.title = t("gauge.onDiscSeg", { size: discGiB(used) });
+      box.appendChild(seg);
+      at = used;
+    }
     costs.forEach((c, i) => {
       const clipRoom = r.clips[i] || { bytes: 0, video_bytes: 0, can_shrink: false };
       const bytes = clipRoom.can_shrink
         ? clipRoom.bytes - clipRoom.video_bytes * (1 - share)
         : clipRoom.bytes;
-      const over = at + bytes > r.capacity;
+      const over = at + bytes > disc;
       at += bytes;
       const cls = ["gauge-seg", clipRoom.can_shrink ? "" : "fixed", over ? "over" : ""];
       const seg = span(cls.filter(Boolean).join(" "), { flexGrow: grow(bytes) });
@@ -7337,11 +7385,11 @@ async function renderGauge() {
     // The disc's edge, and the margin kept back in front of it, laid over
     // whatever they land on.
     const mark = span("gauge-mark");
-    mark.appendChild(span("", { flexGrow: grow(r.usable) }));
+    mark.appendChild(span("", { flexGrow: grow(usable) }));
     mark.appendChild(span("gauge-edge soft"));
-    mark.appendChild(span("", { flexGrow: grow(r.capacity - r.usable) }));
+    mark.appendChild(span("", { flexGrow: grow(disc - usable) }));
     mark.appendChild(span("gauge-edge"));
-    mark.appendChild(span("", { flexGrow: grow(scale - r.capacity) }));
+    mark.appendChild(span("", { flexGrow: grow(scale - disc) }));
     box.appendChild(mark);
     return box;
   };
@@ -7356,19 +7404,19 @@ async function renderGauge() {
     return row;
   };
 
-  const after = r.bytes - r.video_bytes * (1 - Math.max(r.share, r.floor));
+  const after = bytes - r.video_bytes * (1 - Math.max(r.share, r.floor));
   // The first bar is labelled as the "before" of a pair only while there is
   // an "after" beside it; on its own it is simply what the list comes to.
-  const shown = [line(t(shrinking ? "gauge.asIs" : "gauge.total"), 1, r.bytes)];
+  const shown = [line(t(shrinking ? "gauge.asIs" : "gauge.total"), 1, bytes)];
   if (shrinking) shown.push(line(t("gauge.fitted"), Math.max(r.share, r.floor), after));
 
   const words = {
-    used: discGiB(r.bytes),
-    disc: discGiB(r.capacity),
-    pct: ((r.bytes / r.capacity) * 100).toFixed(1),
+    used: discGiB(bytes),
+    disc: discGiB(disc),
+    pct: ((bytes / disc) * 100).toFixed(1),
     n: costs.length,
     dur: coarse(seconds),
-    over: discGiB(Math.max(0, r.bytes - r.usable)),
+    over: discGiB(Math.max(0, bytes - usable)),
     share: (Math.max(r.share, r.floor) * 100).toFixed(1),
     floor: (r.floor * 100).toFixed(0),
   };
@@ -7386,6 +7434,8 @@ async function renderGauge() {
   // And the one thing the bar cannot say: that some of what is on it will not
   // move whatever is asked of it.
   if (shrinking && costs.some((c) => !c.can_shrink)) note += t("gauge.notMpeg2");
+  // And that the bar starts with a disc that is already there.
+  if (used > 0) note += t("gauge.onDisc", { had: discGiB(used) });
   const say = document.createElement("div");
   say.className = `gauge-note ${tone}`;
   say.textContent = note;

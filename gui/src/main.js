@@ -7057,19 +7057,37 @@ async function pointsArrived(exact, picked) {
   // this walk's timeline already: moved too, it went the head's difference
   // the other way at every visit after the first -- 15 frames earlier on a
   // recorder's clip whose map starts late -- and a Del took other pictures.
-  const asArrived = (s) =>
-    selArrived !== null &&
-    s.selA === selArrived.selA &&
-    s.selB === selArrived.selB &&
-    !!s.selGone === selArrived.selGone;
+  //
+  // Each end on its own: I pressed during the walk of a row that came back
+  // with its OUT moves IN and leaves that OUT where it was (`setIn`), and
+  // moved with the IN, the OUT went the head's difference the wrong way.
+  const kept = (s, k) =>
+    selArrived !== null && !selArrived.selGone && !s.selGone && s[k] === selArrived[k];
+  // Not one on the start or the end, which is the start or the end the walk
+  // finds (`selEnds`), as below for OUT and in `stepsAtEnd`.
+  const endsOf = (s) => {
+    const e = selEnds(s);
+    const a = kept(s, "selA") && e.a !== null;
+    const b = kept(s, "selB") && e.b !== null;
+    return a && b ? null : { e, a: a ? s.selA : null, b: b ? s.selB : null };
+  };
+  // An end it came back with stays as it is, the other goes onto its picture;
+  // on the timeline as it is now, which for a step is that step's own.
+  const placed = (p) => {
+    const s = selOnto(p.e);
+    if (p.a === null && p.b === null) return s;
+    const a = p.a !== null ? Math.min(p.a, outDur) : s.a;
+    const b = p.b !== null ? Math.min(p.b, outDur) : s.b;
+    return b < a - 1e-9 ? { a, b: a, gone: true } : { a, b, gone: false };
+  };
   const pinned =
     Math.abs(head1 - headTime()) >= 1e-6 || holes(full) !== holes(src)
       ? {
-          live: selGone || asArrived({ selA, selB, selGone }) ? null : selEnds({ selA, selB }),
+          live: selGone ? null : endsOf({ selA, selB, selGone }),
           steps: past
             .concat(undone)
-            .filter((step) => !asArrived(step))
-            .map((step) => ({ step, e: onCuts(step.cuts, () => selEnds(step)) })),
+            .map((step) => ({ step, p: onCuts(step.cuts, () => endsOf(step)) }))
+            .filter(({ p }) => p !== null),
         }
       : null;
   // A step of the history whose OUT stood on the end of its own timeline,
@@ -7152,14 +7170,14 @@ async function pointsArrived(exact, picked) {
   selB = toEnd ? outDur : Math.min(selB, outDur);
   selA = Math.min(selA, selB);
   if (pinned) {
-    for (const { step, e } of pinned.steps) {
-      const s = onCuts(step.cuts, () => selOnto(e));
+    for (const { step, p } of pinned.steps) {
+      const s = onCuts(step.cuts, () => placed(p));
       step.selA = s.a;
       step.selB = s.b;
       if (s.gone) step.selGone = true;
     }
     if (pinned.live) {
-      const s = selOnto(pinned.live);
+      const s = placed(pinned.live);
       selA = s.gone ? 0 : s.a;
       selB = s.gone ? outDur : s.b;
       selGone = s.gone;

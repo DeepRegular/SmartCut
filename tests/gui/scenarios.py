@@ -20,6 +20,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -486,6 +487,25 @@ def cross_double_press(cfg, t):
         time.sleep(2.0)
         left = [h for h in app.s.handles() if h != app.main]
         t.check("cross: closing it leaves no window behind", left == [],
+                f"{len(left)} window(s) besides the list")
+
+
+def zoom_then_close(cfg, t):
+    """open_zoom and close_editor asked in one tick from the editor, as Z
+    pressed in the moment between OK and the list's close_editor asks them:
+    no 拡大表示 may be left with no editor behind it. The editor's Destroyed
+    handler closes the zoom window by its label, which Tauri registers only
+    once the build is done, so a zoom still being built then stayed up over
+    nothing (2 of 3 rounds before lib.rs open_zoom asked EditorUp after the
+    build)."""
+    with App(cfg, "zoom_then_close", clips(cfg)) as app:
+        app.open_row(1, "a.ts")
+        app.editor()
+        app.s.js("const i = window.__TAURI_INTERNALS__.invoke;"
+                 "i('open_zoom', {title: 'z1'}); i('close_editor');")
+        time.sleep(4.0)
+        left = [h for h in app.s.handles() if h != app.main]
+        t.check("zoom: asked as the editor closes leaves no window", left == [],
                 f"{len(left)} window(s) besides the list")
 
 # -- 8 ---------------------------------------------------------------------
@@ -1413,6 +1433,158 @@ def disc_keeps_its_name(cfg, t):
                 t.check("29b the settings screen shows the name the disc keeps", shown == "KEEPNAME",
                         f"field {shown!r}")
     shutil.rmtree(at, ignore_errors=True)
+
+
+def _bdav_bytes(at):
+    """What `at`/BDAV holds, every file counted (the after-run check's count)."""
+    total = 0
+    for root, _, names in os.walk(os.path.join(at, "BDAV")):
+        total += sum(os.lstat(os.path.join(root, n)).st_size for n in names)
+    return total
+
+
+def _gauge(app):
+    """The disc gauge on 出力設定 as drawn: its sentence, its segments (class,
+    share, tooltip) and the sizes beside its bars."""
+    return app.s.js(
+        "const b = document.getElementById('disc-gauge');"
+        "const n = b.querySelector('.gauge-note');"
+        "const bar = b.querySelector('.gauge-bar');"
+        "return {note: n ? n.textContent : b.textContent, tone: n ? n.className : '',"
+        " segs: bar ? [...bar.children].filter((e) => e.classList.contains('gauge-seg'))"
+        "   .map((e) => [e.className, e.style.flexGrow, e.title]) : [],"
+        " sizes: [...b.querySelectorAll('.gauge-size')].map((e) => e.textContent)};")
+
+
+def disc_gauge_appends(cfg, t):
+    """The disc gauge and 収める on a folder that already holds a disc. A run
+    there adds to the disc and the after-run check measures the whole disc,
+    so the gauge has to price the list against the room left: the list alone
+    against the whole disc said "fits", 収める took nothing off, and the disc
+    came out larger than the disc. Fresh folder: drawn exactly as before.
+    The folder changed on the screen while the gauge is up: the gauge follows
+    it, both ways. The disc's capacity is set small (30 MB) so that a.ts
+    (about 12 MB) fills it in three runs."""
+    at = os.path.join(cfg.work, "disc_gauge_appends")
+    empty = os.path.join(cfg.work, "disc_gauge_appends_fresh")
+    for d in (at, empty):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+    disc = 30_000_000
+    pct = lambda g: float((re.search(r"[（(]([\d.]+)%[）)]", g["note"]) or [0, "nan"])[1])
+
+    def gauge_now(app, why, cond=lambda g: True):
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        g = wait_for(why, lambda: (lambda g: g if "%" in g["note"] and cond(g) else None)(_gauge(app)),
+                     60, 0.25)
+        time.sleep(0.5)
+        return _gauge(app)
+
+    def set_dir(app, d):
+        app.s.js("const i = document.getElementById('out-dir'); i.value = arguments[0];"
+                 " i.dispatchEvent(new Event('input', {bubbles: true}));", d)
+
+    used = lambda app, d: app.s.js("return window.__TAURI__.core.invoke('bdav_used', {dir: arguments[0]})", d)
+
+    with App(cfg, "disc_gauge_appends", [{"path": cfg.a}],
+             {"mode": "bdav", "dir": at, "subfolder": "", "discTitle": "G"}) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        # A disc of 30 MB, as one more choice of the disc control: a size
+        # the list does not offer is put back to one it does when the screen
+        # is drawn from a project.
+        app.s.click('button.tab[data-screen="outset"]')
+        app.s.js("const s = document.getElementById('out-disc'); const o = document.createElement('option');"
+                 " o.value = String(arguments[0]); o.textContent = 'test'; s.appendChild(o); s.value = o.value;"
+                 " s.dispatchEvent(new Event('input', {bubbles: true}));", disc)
+        fresh = gauge_now(app, "the gauge on a fresh folder")
+        t.check("40 fresh folder: no disc segment, no note about one",
+                all("fixed" not in c for c, _, _ in fresh["segs"]) and "※" not in fresh["note"]
+                and used(app, at) == 0, f"{fresh}")
+        app.export()
+        had = _bdav_bytes(at)
+        t.check("40 bdav_used is what the disc holds", had > 0 and used(app, at) == had,
+                f"bdav_used {used(app, at)} disc {had}")
+        once = gauge_now(app, "the gauge with the disc in the folder",
+                         lambda g: g["segs"] and "fixed" in g["segs"][0][0])
+        want = pct(fresh) + had / disc * 100
+        t.check("40 existing disc: drawn first, counted in",
+                once["segs"][0][0] == "gauge-seg fixed" and "出力先のフォルダーにあるディスク" in once["note"]
+                and abs(pct(once) - want) < 0.15,
+                f"{pct(once)}% want {want:.2f}%; {once}")
+        # The folder changed under the gauge: to one with no disc in it and
+        # back. The empty one is drawn exactly as the fresh folder was.
+        set_dir(app, empty)
+        away = wait_for("the gauge to follow the folder", lambda: (lambda g: g if not any(
+            "fixed" in c for c, _, _ in g["segs"]) else None)(_gauge(app)), 30, 0.2)
+        time.sleep(0.5)
+        away = _gauge(app)
+        t.check("40 folder changed to an empty one: as on a fresh folder", away == fresh,
+                f"{away} vs {fresh}")
+        set_dir(app, at)
+        back = wait_for("the gauge to follow the folder back", lambda: (lambda g: g if g["segs"] and
+            "fixed" in g["segs"][0][0] else None)(_gauge(app)), 30, 0.2)
+        time.sleep(0.5)
+        back = _gauge(app)
+        t.check("40 folder changed back: the disc is counted again", back == once, f"{back} vs {once}")
+        # A second run: the third would not fit as it is.
+        app.export()
+        twice = gauge_now(app, "the gauge with two recordings on the disc",
+                          lambda g: abs(pct(g) - (pct(fresh) + _bdav_bytes(at) / disc * 100)) < 0.15)
+        t.check("40 the third would not fit: said so", "over" in twice["tone"] and "超過" in twice["note"],
+                f"{twice}")
+        app.s.click("#out-fit")
+        fitted = wait_for("収める's answer", lambda: (lambda g: g if "トランスコード" in g["note"]
+                                                     else None)(_gauge(app)), 30, 0.2)
+        t.check("40 収める on: the pictures will be made smaller", "収めます" in fitted["note"]
+                and len(fitted["sizes"]) == 2, f"{fitted}")
+        before = _bdav_bytes(at)
+        app.export()
+        after = _bdav_bytes(at)
+        streams = sorted(os.listdir(os.path.join(at, "BDAV", "STREAM")))
+        t.check("40 収める onto a disc already two-thirds full: the disc fits",
+                len(streams) == 3 and before < after <= disc,
+                f"disc {after} bytes of {disc} (was {before}); streams {streams}")
+        # What the count leaves in and out. A stream some other program is
+        # writing into the disc is on it; the streams this window's own run has
+        # been handed are the list on the gauge itself and are not.
+        now = _bdav_bytes(at)
+        other = os.path.join(at, "BDAV", "STREAM", "99998.m2ts")
+        with open(other, "wb") as f:
+            f.write(b"\0" * 1_000_000)
+        t.check("40 another program's stream is counted", used(app, at) == now + 1_000_000,
+                f"{used(app, at)} vs {now} + 1000000")
+        os.remove(other)
+        slot = app.s.js("return window.__TAURI__.core.invoke('bdav_prepare', {dir: arguments[0], n: 1})", at)[0]
+        with open(slot["path"], "wb") as f:
+            f.write(b"\0" * 1_000_000)
+        mine = used(app, at)
+        app.s.js("return window.__TAURI__.core.invoke('bdav_discard', {dir: arguments[0], clips: [arguments[1]]})",
+                 at, slot["clip"])
+        t.check("40 this window's own stream is not counted twice", mine == now, f"{mine} vs {now}")
+        # A run whose index fails part way: the recording before the failure
+        # is indexed and stays on the disc, the failed one is taken off. Both
+        # are given back, so what is left on the disc is counted again.
+        slots = app.s.js("return window.__TAURI__.core.invoke('bdav_prepare', {dir: arguments[0], n: 2})", at)
+        shutil.copyfile(os.path.join(at, "BDAV", "STREAM", streams[0]), slots[0]["path"])
+        with open(slots[1]["path"], "wb") as f:
+            f.write(b"\0" * 1_000_000)
+        entry = lambda s: {"clip": s["clip"], "name": "x", "made": None, "ran": None, "description": None,
+                           "channel": None, "channel_number": None, "marks": []}
+        failed = app.s.js(
+            "return window.__TAURI__.core.invoke('bdav_finish', {dir: arguments[0], title: 'G',"
+            " entries: arguments[1]}).then(() => 'wrote', (e) => String(e));",
+            at, [entry(s) for s in slots])
+        left = _bdav_bytes(at)
+        t.check("40 an index that failed part way: what it left is counted",
+                failed != "wrote" and os.path.exists(slots[0]["path"])
+                and not os.path.exists(slots[1]["path"]) and used(app, at) == left,
+                f"finish {failed!r}; bdav_used {used(app, at)} disc {left}")
+        t.check("40 no folder, no name: nothing", used(app, os.path.join(empty, "none")) == 0
+                and used(app, "") == 0, "")
+    for d in (at, empty):
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def disc_name_after_a_run(cfg, t):
@@ -3410,6 +3582,151 @@ def reopen_keeps_selection_late_head(cfg, t):
         t.check("30 a reopen hands back the same IN and OUT", same, f"first {sel1}, second {sel2}")
 
 
+def reopen_out_during_walk_late_head(cfg, t):
+    """`reopen_keeps_selection_late_head` with O pressed while the second
+    visit's walk is still reading: the IN the row came back with is on the
+    walked timeline already and must stay where it was; only the OUT set in
+    that wait is on the outline's and is moved onto its picture. Pinned as
+    one, the IN went the head's difference the wrong way (here to 0). Says
+    NOT REACHED if the walk landed before any press."""
+    make_late_head(cfg)
+    def reading(st):
+        return not (st["frames"] is not None and st["plan"] and "読み込んで" not in st["plan"]
+                    and "Reading" not in st["plan"])
+    with App(cfg, "reopen_out_during_walk_late_head", [{"path": cfg.d}]) as app:
+        app.open_row(1, "d.ts", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: not reading(app.state()), 180, 0.3)
+        time.sleep(1)
+        app.goto(100)
+        app.s.keys("i")
+        app.goto(150)
+        app.s.keys("o")
+        time.sleep(0.5)
+        app.ok()
+        app.gone()
+        p = app.save()
+        e1 = p["clips"][0].get("edit") or {}
+        app.open_row(1, "d.ts", wait=False)
+        app.to_editor()
+        early = 0
+        until = time.time() + 120
+        while time.time() < until:
+            try:
+                st = app.state()
+                if st["title"] and "d.ts" in st["title"]:
+                    if not reading(st):
+                        break
+                    app.s.keys("o")
+                    early += 1
+            except WebDriverError:
+                continue
+        time.sleep(1.5)
+        app.ok()
+        app.gone()
+        p = app.save()
+        e2 = p["clips"][0].get("edit") or {}
+        t.check("30b O pressed during the second walk", early > 0,
+                f"{early} presses" if early else "NOT REACHED: the walk landed first")
+        a1, a2 = e1.get("selA"), e2.get("selA")
+        t.check("30b IN/OUT set on the first visit",
+                isinstance(a1, (int, float)) and a1 > 0 and not e1.get("selGone"),
+                f"selA/selB/selGone {(a1, e1.get('selB'), e1.get('selGone'))}")
+        t.check("30b the IN the row came back with stays",
+                isinstance(a1, (int, float)) and isinstance(a2, (int, float)) and a1 > 0 and abs(a1 - a2) < 1e-6
+                and not e2.get("selGone"),
+                f"first {(a1, e1.get('selB'))}, second {(a2, e2.get('selB'), e2.get('selGone'))}")
+
+
+
+def reopen_walk_orders_late_head(cfg, t):
+    """The orders `reopen_out_during_walk_late_head` does not try, on the same
+    late-head recording: the row comes back with IN 100 and OUT 150 (on the
+    walked timeline), and during the second walk only IN, only OUT or both
+    are moved (30 pictures from the playhead the row came back with), a Del
+    is made, or nothing is done; after the landing the selection must stand
+    on the pictures it was set on, and 取消/やり直し must step between the
+    arrived selection and the one set in the wait. Each visit is left with
+    Escape, so every case starts from 100-150. Says NOT REACHED where the walk
+    landed before the presses were in."""
+    make_late_head(cfg)
+    def reading(st):
+        return not (st["frames"] is not None and st["plan"] and "読み込んで" not in st["plan"]
+                    and "Reading" not in st["plan"])
+    def sel(app):
+        txt = app.s.js("return document.getElementById('selection').innerText")
+        m = re.match(r"\D*(\d+)\s*-\s*(\d+)", txt or "")
+        return (int(m.group(1)), int(m.group(2))) if m else txt
+    def walking(app):
+        def up():
+            st = app.state()
+            return st["title"] and "d.ts" in st["title"] and st["at"] is not None and reading(st)
+        wait_for("the second walk", up, 60, 0.05)
+    with App(cfg, "reopen_walk_orders_late_head", [{"path": cfg.d}]) as app:
+        app.open_row(1, "d.ts", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: not reading(app.state()), 180, 0.3)
+        time.sleep(1)
+        app.goto(100)
+        app.s.keys("i")
+        app.goto(150)
+        app.s.keys("o")
+        time.sleep(0.5)
+        app.ok()
+        app.gone()
+        # On this recording the row's IN and OUT are shown 20 s early during
+        # the walk (on the outline's timeline, which starts at 0), and the
+        # playhead it came back with is past them: I there crosses the OUT
+        # shown, and `setIn` puts that OUT on the end. An I before the OUT
+        # shown is on pictures before the walk's head, so it lands on 0.
+        L, R = ["ArrowLeft"] * 30, ["ArrowRight"] * 30
+        early = ["Home"] + R + R
+        cases = [
+            ("nothing", [], (100, 150), []),
+            ("IN only", early + ["i"], (0, 150), [("Control+z", (100, 150)), ("Control+y", (0, 150))]),
+            ("OUT only", R + ["o"], (100, 180), [("Control+z", (100, 150)), ("Control+y", (100, 180))]),
+            ("IN across OUT, then OUT", L + ["i"] + R + R + ["o"], (120, 180),
+             [("Control+z", (120, 299)), ("Control+z", (100, 150)), ("Control+y", (120, 299))]),
+            ("OUT then IN", R + ["o"] + L + L + ["i"], (120, 180),
+             [("Control+z", (100, 180)), ("Control+z", (100, 150))]),
+            ("IN across OUT, then Del", L + ["i", "Delete"], None,
+             [("Control+z", (120, 299)), ("Control+z", (100, 150))]),
+        ]
+        for name, during, want, steps in cases:
+            app.open_row(1, "d.ts", wait=False)
+            app.to_editor()
+            walking(app)
+            # In one tick, so the walk cannot land halfway through: each key
+            # its own press (not a held repeat), as a hand gives them.
+            app.s.js("for (const k of arguments[0]) for (const ty of ['keydown', 'keyup'])"
+                     " document.body.dispatchEvent(new KeyboardEvent(ty, {key: k, bubbles: true}));",
+                     during)
+            still = reading(app.state())
+            wait_for("the walk", lambda: not reading(app.state()), 180, 0.3)
+            time.sleep(1.5)
+            got = sel(app)
+            t.check(f"31 {name}: pressed during the walk", still,
+                    "" if still else "NOT REACHED: the walk landed first")
+            if not still:
+                app.escape(discard=True, expect_dialog=False)
+                app.gone()
+                continue
+            if want is not None:
+                t.check(f"31 {name}: selection after the landing", got == want, f"{got} (want {want})")
+            framed = [app.state()["frames"]]
+            for key, w in steps:
+                app.s.keys(key)
+                time.sleep(0.7)
+                g = sel(app)
+                framed.append(app.state()["frames"])
+                t.check(f"31 {name}: {key} gives {w}", g == w, f"{g}")
+            if want is None:
+                t.check(f"31 {name}: the Del took pictures 120 to the end and 取消 gives them back",
+                        framed[:2] == [120, 300], f"frames {framed}, selection after {got}")
+            app.escape(discard=True, expect_dialog=False)
+            app.gone()
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -3423,6 +3740,7 @@ SCENARIOS = [
     undo_after_detection,
     zoom_double_press,
     cross_double_press,
+    zoom_then_close,
     cross_then_reopen,
     switch_rows_then_escape,
     double_press_first_open,
@@ -3446,6 +3764,7 @@ SCENARIOS = [
     seam_all_untouched_join,
     disc_refuses_opus,
     disc_keeps_its_name,
+    disc_gauge_appends,
     disc_name_after_a_run,
     disc_name_after_image_only,
     plays_owed_left_behind,
@@ -3457,6 +3776,8 @@ SCENARIOS = [
     older_project_ok_unchanged,
     emptied_field_is_unsaved,
     reopen_keeps_selection_late_head,
+    reopen_out_during_walk_late_head,
+    reopen_walk_orders_late_head,
 ]
 
 

@@ -2322,6 +2322,14 @@ async fn open_zoom(title: String, app: tauri::AppHandle) -> Result<(), String> {
             let _ = teller.emit("zoom-closed", ());
         }
     });
+    // Asked for by an editor that has gone since: Z pressed as it closed (OK
+    // hands the cuts over and the list closes it a moment later). Its close
+    // closes the window of this label, and this one was not built yet then,
+    // so it stayed up over nothing. Asked after the build, as the window is
+    // now findable: a close landing from here on finds it itself.
+    if !app.state::<EditorUp>().0.load(Ordering::SeqCst) {
+        let _ = window.close();
+    }
     Ok(())
 }
 
@@ -7099,16 +7107,23 @@ async fn bdav_finish(
             })
             .collect();
         let reporter = app.clone();
-        smartcut_core::bdav::write(
+        let wrote = smartcut_core::bdav::write(
             &at,
             &title,
             &recordings,
             Some(&move |clip: &str, done: f64| {
                 let _ = reporter.emit("bdav-progress", (clip.to_string(), done));
             }),
-        )
-        .map_err(|e| e.to_string())?;
+        );
+        // Given back whether or not the index was written: a write that fails
+        // has indexed the recordings before the one that failed and taken
+        // that one and the rest off the disc (`bdav::write`), so none of them
+        // is this run's any more. Kept, they were taken out of what
+        // `bdav_used` says the disc holds for as long as the window was open,
+        // and the next run onto the same disc was priced against room that
+        // was not there.
         locked(&HANDED_OUT).retain(|p| !streams.contains(p));
+        wrote.map_err(|e| e.to_string())?;
         // What the disc actually came to, now that everything on it is
         // written. The screen said what it expected before the run; this is
         // the answer, and the two are not always the same -- a recording whose
@@ -7123,6 +7138,42 @@ async fn bdav_finish(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// What the disc in `dir` already holds, for the gauge and 収める to leave
+/// out of the room they price the list against: `fit::already_on`, 0 where
+/// there is no disc there yet or the folder cannot be read.
+///
+/// A run onto a folder that holds a disc adds to it, and the after-run check
+/// ([`bdav_finish`]) measures the whole disc, so the room before the run has
+/// to be the disc less what is on it -- or the gauge says "fits", 収める
+/// shrinks nothing, and only the check after the run says the disc is over.
+///
+/// **Less the streams this window's own run is writing** ([`HANDED_OUT`],
+/// and the arrival-time copy `bdav::stamp` makes of each): those are the
+/// list on the gauge itself, half written, and counted here as well they
+/// were priced twice while the run went on. A stream another program is
+/// writing into the same disc is counted as far as it has got.
+#[tauri::command]
+async fn bdav_used(dir: String) -> u64 {
+    if dir.trim().is_empty() {
+        return 0;
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let Ok(at) = local_path(&dir) else {
+            return 0;
+        };
+        let root = smartcut_core::bdav::root(&at);
+        let mine: u64 = locked(&HANDED_OUT)
+            .iter()
+            .filter(|p| p.starts_with(&root))
+            .flat_map(|p| [p.clone(), p.with_extension("m2ts.ats")])
+            .map(|p| std::fs::symlink_metadata(p).map(|m| m.len()).unwrap_or(0))
+            .fold(0u64, u64::saturating_add);
+        smartcut_core::fit::already_on(&at).saturating_sub(mine)
+    })
+    .await
+    .unwrap_or(0)
 }
 
 /// How much a folder holds, everything under it counted.
@@ -9442,6 +9493,7 @@ pub fn run() {
             bdav_prepare,
             bdav_discard,
             bdav_finish,
+            bdav_used,
             disc_room,
             bdav_image,
             bdav_drop,
