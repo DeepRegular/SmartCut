@@ -940,6 +940,45 @@ fn lay_out(tree: &mut [Node], access: Access) -> Result<Plan> {
     })
 }
 
+/// How many blocks of files a BD-RE of `sectors` holds as a recorder lays
+/// it out ([`recorder_layout`]): the partition, less the recorder's fixed
+/// structures in front of the files and the mirror behind them.
+fn room_blocks(sectors: u64, meta_blocks: u64) -> u64 {
+    let partition_blocks = sectors - 2 * ANCHOR - 2 * ALIGN;
+    let bitmap_at = ALIGN + meta_blocks;
+    let files_at = align(bitmap_at + blocks(24 + partition_blocks.div_ceil(8))).max(RECORDER_FILES_AT);
+    partition_blocks - (RECORDER_MIRROR_GAP + meta_blocks + ALIGN) - files_at
+}
+
+/// What an overwritable image holds of files, in bytes, on a single-layer
+/// and on a dual-layer BD-RE: 24,118,755,328 and 48,338,763,776. Each file
+/// takes whole 64 KB clusters of it.
+///
+/// **Not the disc's own size.** "BD-R / BD-RE 25GB" is 25,025,314,816 bytes,
+/// which is a BD-R; a BD-RE as a recorder formats it keeps 11,826,176 sectors
+/// and its own structures out of that. A list priced against the BD-R said
+/// "fits" between the two, and its overwritable image came out a dual-layer
+/// BD-RE the burner refuses for the disc. See [`crate::fit::holds`].
+pub fn overwritable_room() -> [u64; 2] {
+    BD_RE_SECTORS.map(|sectors| room_blocks(sectors, RECORDER_META_BLOCKS) * SECTOR as u64)
+}
+
+/// How large an overwritable image is, single and dual layer: the whole
+/// BD-RE as a recorder formats it, 24,220,008,448 and 48,440,016,896 bytes.
+/// A medium smaller than the dual-layer one cannot take its image, whatever
+/// the files on it come to.
+pub fn overwritable_size() -> [u64; 2] {
+    BD_RE_SECTORS.map(|sectors| sectors * SECTOR as u64)
+}
+
+/// What a file takes of an overwritable image: whole 64 KB clusters
+/// ([`ALIGN`] blocks), as [`recorder_layout`] places it. Nothing for an
+/// empty one.
+pub fn overwritable_cost(size: u64) -> u64 {
+    let cluster = ALIGN * SECTOR as u64;
+    size.div_ceil(cluster) * cluster
+}
+
 /// The layout a recorder writes on a BD-RE, for an image to be burned to
 /// one and then written to by a recorder. See [`Room`].
 ///
@@ -955,7 +994,8 @@ fn recorder_layout(tree: &mut [Node], meta_used: u64) -> Result<Plan> {
         let partition_blocks = sectors - 2 * ANCHOR - 2 * ALIGN;
         let bitmap_bytes = 24 + partition_blocks.div_ceil(8);
         let bitmap_blocks = blocks(bitmap_bytes);
-        let mut at = align(bitmap_at + bitmap_blocks).max(RECORDER_FILES_AT);
+        let files_at = align(bitmap_at + bitmap_blocks).max(RECORDER_FILES_AT);
+        let mut at = files_at;
         for node in tree.iter_mut().filter(|n| !n.is_dir()) {
             node.data = at as u32;
             node.blocks = blocks(node.size);
@@ -970,6 +1010,24 @@ fn recorder_layout(tree: &mut [Node], meta_used: u64) -> Result<Plan> {
             continue;
         }
         let mirror_at = mirror_entry + ALIGN;
+        // **Said where it is not the single layer.** The disc a list is
+        // priced against is "BD-R/RE 25GB", 25,025,314,816 bytes, which is a
+        // BD-R; a BD-RE as a recorder formats it is 11,826,176 sectors, and
+        // past the recorder's fixed structures it holds 24.1 GB of files.
+        // A disc between the two was said to fit, and its image came out as
+        // a dual-layer BD-RE -- twice the size, refused by the burner -- with
+        // nothing to say why.
+        if sectors != BD_RE_SECTORS[0] {
+            let room = room_blocks(BD_RE_SECTORS[0], meta_blocks);
+            crate::say!(
+                "note: the disc comes to {:.2} GB, more than the {:.2} GB of files a \
+                 single-layer BD-RE holds as a recorder formats it, so the overwritable image \
+                 is of a dual-layer BD-RE ({:.1} GB)",
+                (at - files_at) as f64 * SECTOR as f64 / 1e9,
+                room as f64 * SECTOR as f64 / 1e9,
+                sectors as f64 * SECTOR as f64 / 1e9
+            );
+        }
         let mut used = vec![
             (0, ALIGN),
             (meta_at, meta_blocks),
@@ -1854,6 +1912,31 @@ mod tests {
         // A read-only image is only as long as what is in it.
         let plan = lay_out(&mut tree, Access::ReadOnly).unwrap();
         assert!(plan.room.is_none() && plan.sectors < 20_000);
+    }
+
+    /// What a single-layer BD-RE holds as a recorder formats it, and what is
+    /// laid out on the dual layer once that is passed: 11,776,736 blocks of
+    /// files between the recorder's fixed structures, not the 25 GB of a
+    /// BD-R the disc setting names.
+    #[test]
+    fn an_overwritable_image_past_the_single_layer_is_a_dual_layer() {
+        let file = |size: u64| {
+            vec![
+                Node { name: String::new(), source: None, size: 0, children: vec![1], entry: 0, data: 0, blocks: 0, unique: 0 },
+                Node { name: "a".into(), source: Some("a".into()), size, children: vec![], entry: 0, data: 0, blocks: 0, unique: 0 },
+            ]
+        };
+        let most = 11_776_736 * SECTOR as u64;
+        assert_eq!(lay_out(&mut file(most), Access::Overwritable).unwrap().sectors, 11_826_176);
+        assert_eq!(lay_out(&mut file(most + 1), Access::Overwritable).unwrap().sectors, 23_652_352);
+        assert_eq!(overwritable_room(), [24_118_755_328, 48_338_763_776]);
+        assert_eq!(overwritable_room()[0], most);
+        assert_eq!(overwritable_size(), [24_220_008_448, 48_440_016_896]);
+        assert_eq!(overwritable_cost(0), 0);
+        assert_eq!(overwritable_cost(1), 65_536);
+        assert_eq!(overwritable_cost(196_608), 196_608);
+        // A read-only image of the same is still a single-layer disc's.
+        assert!(lay_out(&mut file(most + 1), Access::ReadOnly).unwrap().sectors < 12_219_392);
     }
 
     /// An image is never written into the folder it is an image of: a

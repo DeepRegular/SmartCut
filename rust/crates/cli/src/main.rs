@@ -2355,7 +2355,21 @@ fn run() -> Result<()> {
     // said out loud: a run that is about to rewrite every picture of a
     // four-hour recording should say so before it starts.
     let video_share = match fit {
-        Some(capacity) => {
+        Some(named) => {
+            // What the disc holds of a disc of recordings, which an
+            // overwritable image lays out as a recorder formats a BD-RE: less
+            // than the "25GB" the disc is named by. See `fit::holds`.
+            let overwritable =
+                iso.is_some() && iso_access == smartcut_core::udfw::Access::Overwritable;
+            let capacity = smartcut_core::fit::holds(named, overwritable);
+            if capacity != named {
+                tell!(
+                    "fit   : an overwritable image is a BD-RE as a recorder formats it, which \
+                     holds {} MB of files of the {} MB disc",
+                    capacity / 1_000_000,
+                    named / 1_000_000
+                );
+            }
             // How much of the recording is really being kept. A range asked
             // for past the end of it is planned as it was asked for -- the
             // copy simply stops when the packets do -- so the recording's own
@@ -2488,6 +2502,24 @@ fn run() -> Result<()> {
     // The image goes beside the folder under the folder's name, and that can
     // be the very image the recording is being read out of. It would be
     // replaced by one of the new disc once the cut was done.
+    // And a run that is to take the folder away writes its image beside it:
+    // where an image is already there and the folder holds no disc to add
+    // to, that image is of a disc this run would not hold -- or the same
+    // list again -- and it would be replaced. Refused here, before the cut,
+    // rather than after it by `udfw::write` (or not at all). See
+    // `bdav::image_in_the_way`.
+    if let (Some(at), true) = (&bdav, iso_only) {
+        let at = std::path::Path::new(at);
+        if let Some(image) = smartcut_core::bdav::image_in_the_way(at) {
+            bail!(
+                "{} is already there, and {} holds no disc to add to: --iso-only would write a \
+                 new disc's image over it. Move the image away to keep it (or delete it if it is \
+                 no longer wanted), or give --bdav another folder",
+                image.display(),
+                at.display()
+            );
+        }
+    }
     if let (Some(at), Some(_)) = (&bdav, iso) {
         let image = image_beside(std::path::Path::new(at))?.to_string_lossy().into_owned();
         let reads = std::iter::once(src.input.file.clone()).chain(
@@ -2563,8 +2595,19 @@ fn run() -> Result<()> {
     // was asked instead, a Blu-ray's LPCM cut into an .mkv printed "smart"
     // over a whole-track re-encode, and `--audio-codec lpcm` on it into a
     // .m2ts printed "reencode, as lpcm" over a smart-rendered cut.
-    let main_codec = src.audio.as_ref().map_or("", |a| a.codec.as_str());
-    let source_bits = src.audio.as_ref().map_or(16, |a| a.bits);
+    // The track the line is about: the main one, unless `--drop-stream`
+    // takes it away -- and for a file of sound alone, the one track it
+    // writes, which is the first kept (`sound::track_of`). Read off the main
+    // track whatever was dropped, `--drop-stream 1 --audio-channels 1` on a
+    // file of mono AAC beside 5.1 AC-3 printed "smart" over the AC-3 folded
+    // to mono and re-encoded whole.
+    let main_track = src
+        .audio
+        .as_ref()
+        .filter(|m| !sound_only && !drop_streams.contains(&m.stream_index))
+        .or_else(|| src.audios.iter().find(|a| !drop_streams.contains(&a.stream_index)));
+    let main_codec = main_track.map_or("", |a| a.codec.as_str());
+    let source_bits = main_track.map_or(16, |a| a.bits);
     // A sound-only file is planned as one that is not a transport stream
     // (`sound::write`), and a disc's stream is one.
     let to_ts_out = !sound_only && {
@@ -2582,15 +2625,15 @@ fn run() -> Result<()> {
     // downmix has no copy path, and the engine says so and re-encodes.
     let asked = audio_channels
         .filter(|_| !carried)
-        .filter(|&c| src.audio.as_ref().is_some_and(|a| a.channels != c));
+        .filter(|&c| main_track.is_some_and(|a| a.channels != c));
     // A rate the recording does not have is the same story told about the
     // other axis of a sample, and so is a width.
     let resampled = audio_sample_rate
         .filter(|_| !carried)
-        .filter(|&r| src.audio.as_ref().is_some_and(|a| a.sample_rate != r));
+        .filter(|&r| main_track.is_some_and(|a| a.sample_rate != r));
     let requantised = audio_bits
         .filter(|_| uncompressed(&target) && !carried)
-        .filter(|&b| src.audio.as_ref().is_some_and(|_| source_bits != b));
+        .filter(|&b| main_track.is_some() && source_bits != b);
     // As is writing another codec: there is no copying a frame into one it
     // is not already in. And a lossless track asked to be re-encoded is
     // copied (`plan_audio`: "the one mode a lossless track cannot be given").
@@ -3606,11 +3649,26 @@ fn shown_at(src: &smartcut_core::Source, t: f64) -> f64 {
     // every chapter after it was on the last picture of the range before.
     let tick = src.video.time_base.max(0.0).min(frame / 12.0).max(frame * 1e-3);
     let at = src.points.partition_point(|p| p.time < t);
-    let phase = [at.checked_sub(1), Some(at)]
+    // A recorder's clip is stretches recorded apart, each on a grid of its
+    // own (`Source::joins`), and a time is on the grid of the stretch it
+    // lies in. The end of a range planned to a seam -- the end of the last
+    // picture in front of it -- has the stretch after it nearer than its own
+    // last entry point as often as not: taken from that one, the range was
+    // measured up to a frame long, and every chapter after it in the output
+    // (`--keep 1385-1392` across a seam of a recorder's title: the disc's
+    // mark 27 ms after its picture) was that much late, a frame more at
+    // every seam the ranges cross.
+    let stretch_of = |x: f64| src.joins.iter().filter(|j| j.time <= x).count();
+    let own = stretch_of(t);
+    let near: Vec<f64> = [at.checked_sub(1), Some(at)]
         .into_iter()
         .flatten()
         .filter_map(|i| src.points.get(i))
         .map(|p| p.time)
+        .collect();
+    let same: Vec<f64> = near.iter().copied().filter(|&p| stretch_of(p) == own).collect();
+    let phase = if same.is_empty() { near } else { same }
+        .into_iter()
         .min_by(|x, y| (x - t).abs().total_cmp(&(y - t).abs()))
         .unwrap_or(0.0);
     phase + ((t - phase - tick) / frame - 1e-6).ceil() * frame

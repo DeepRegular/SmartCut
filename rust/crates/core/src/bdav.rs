@@ -326,6 +326,46 @@ pub fn prepare(at: &Path, n: usize) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// The image a run that is to take its folder away afterwards would write
+/// over, if there is one: `<folder>.iso` beside `at` (as both callers name
+/// it) where `at` holds no disc to add to.
+///
+/// **Asked before anything is cut.** A disc whose folder `--iso-only` (the
+/// window's イメージのみ) took away lives on only in its image, and the next
+/// run under the same name -- a series written week by week, which is what
+/// the window names the folder after -- starts a disc afresh at 00001 and
+/// names its image as the last one was. [`crate::udfw::write`] refuses an
+/// image of another disc, but only once the cut and the index were written,
+/// and it replaced one of the same list without a word. Neither is renamed
+/// around: the image is somebody's disc, and whether it is still wanted is
+/// theirs to say, by moving it or deleting it.
+///
+/// A folder that already holds a disc is added to, and its image made again
+/// of the grown disc, which `udfw::write` checks holds the old one. A folder
+/// at the image's name, or a link to nothing, is no image anything would be
+/// lost from (the same as `udfw::write`).
+pub fn image_in_the_way(at: &Path) -> Option<PathBuf> {
+    let name = at.file_name()?;
+    let mut file = name.to_os_string();
+    file.push(".iso");
+    let image = at.with_file_name(file);
+    if !std::fs::metadata(&image).is_ok_and(|m| !m.is_dir()) {
+        return None;
+    }
+    // What `prepare` numbers past: nothing here means its next recording is
+    // 00001 on a disc of its own.
+    let root = root(at);
+    let holds = [
+        ("STREAM", "m2ts"),
+        ("CLIPINF", "clpi"),
+        ("PLAYLIST", "rpls"),
+        ("PLAYLIST", "vpls"),
+    ]
+    .iter()
+    .any(|(dir, ext)| numbered(&root.join(dir), ext).is_ok_and(|n| !n.is_empty()));
+    (!holds).then_some(image)
+}
+
 /// Take the written disc away, for a run that wanted the image of it.
 ///
 /// The image is made *of* the folder, so the folder is always written first
@@ -2406,5 +2446,28 @@ mod tests {
         let left: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().collect();
         assert_eq!(left.len(), 2, "PLAYLIST and info.bdav, and nothing aside");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An image beside a folder that holds no disc is in the way of the next
+    /// image-only run; beside one that holds a disc, or where nothing is at
+    /// the image's name, it is not.
+    #[test]
+    fn an_image_with_no_disc_beside_it_is_in_the_way() {
+        let base = std::env::temp_dir().join(format!("bdav-inway-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let at = base.join("night");
+        assert_eq!(image_in_the_way(&at), None, "no image");
+        std::fs::write(base.join("night.iso"), b"x").unwrap();
+        assert_eq!(image_in_the_way(&at), Some(base.join("night.iso")), "no folder");
+        std::fs::create_dir_all(root(&at).join("STREAM")).unwrap();
+        assert_eq!(image_in_the_way(&at), Some(base.join("night.iso")), "an empty disc");
+        let clip = prepare(&at, 1).unwrap().remove(0);
+        assert_eq!(image_in_the_way(&at), None, "a disc to add to ({clip})");
+        std::fs::remove_file(base.join("night.iso")).unwrap();
+        std::fs::create_dir_all(base.join("night.iso")).unwrap();
+        std::fs::remove_dir_all(&at).unwrap();
+        assert_eq!(image_in_the_way(&at), None, "a folder at the image's name");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

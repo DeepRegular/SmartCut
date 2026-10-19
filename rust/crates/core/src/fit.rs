@@ -47,6 +47,33 @@ pub const DISCS: &[Disc] = &[
     },
 ];
 
+/// What a disc of `capacity` bytes holds of a disc of recordings, where
+/// the image is `overwritable` -- laid out as a recorder formats a BD-RE
+/// ([`crate::udfw::overwritable_room`]) -- or not.
+///
+/// A read-only image, and a folder with no image at all, are priced at the
+/// disc's own size as they always were. An overwritable one is a BD-RE as a
+/// recorder formats it, whatever the disc was named: 24.12 GB of files on a
+/// single layer, 48.34 GB on a dual -- and no more on a BDXL, which no
+/// recorder writes that way, so an image past the dual layer is refused
+/// (`udfw`). Priced at "25GB", a list between 24.12 and 24.78 GB was said to
+/// fit and came out a dual-layer image the burner refuses for the disc.
+///
+/// A size given in bytes is a dual layer's where the dual-layer image fits
+/// in it (48,440,016,896 bytes or more), not only from the "50GB" disc up:
+/// a medium of 49 GB takes that image, and was priced as a single layer.
+pub fn holds(capacity: u64, overwritable: bool) -> u64 {
+    if !overwritable {
+        return capacity;
+    }
+    let [single, dual] = crate::udfw::overwritable_room();
+    if capacity >= crate::udfw::overwritable_size()[1] {
+        dual
+    } else {
+        capacity.min(single)
+    }
+}
+
 /// How much of a disc to leave alone.
 ///
 /// The estimate below is an estimate: it is built from rates measured over a
@@ -588,6 +615,18 @@ mod tests {
         let fixed = 30_000_000_000.0 - 27_000_000_000.0 + DISC_FLOOR as f64;
         let want = (25_000_000_000.0 - fixed) / 27_000_000_000.0;
         assert!((f.share - want).abs() < 1e-6, "{} vs {want}", f.share);
+    }
+
+    #[test]
+    fn an_overwritable_image_holds_what_a_recorder_lays_out() {
+        assert_eq!(holds(DISCS[0].bytes, false), DISCS[0].bytes);
+        assert_eq!(holds(DISCS[0].bytes, true), 24_118_755_328);
+        assert_eq!(holds(DISCS[1].bytes, true), 48_338_763_776);
+        assert_eq!(holds(DISCS[2].bytes, true), 48_338_763_776);
+        assert_eq!(holds(30_000_000_000, true), 24_118_755_328);
+        assert_eq!(holds(4_700_000_000, true), 4_700_000_000);
+        assert_eq!(holds(48_440_016_896, true), 48_338_763_776);
+        assert_eq!(holds(48_440_016_895, true), 24_118_755_328);
     }
 
     #[test]

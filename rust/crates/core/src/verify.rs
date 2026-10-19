@@ -98,6 +98,18 @@ pub struct Sound {
     /// recording joined with a single-track one has a second track that
     /// stops where the first recording does, which is what was asked for.
     pub short: f64,
+    /// How far past the end of the last picture the track's last frame is
+    /// placed, by its timestamps, where that is more than nothing.
+    ///
+    /// **How long a track runs is not where it is laid.** A track whose
+    /// frames are stamped a little too far apart holds every sample it
+    /// should and still drifts away from the pictures: the TrueHD of a
+    /// Matroska file, laid at an average frame length 35 % too long, ran on
+    /// 21 s past the last picture of a 60 s range with its length checked
+    /// as right. Counted from the timestamps rather than from the samples,
+    /// so a track that drifts late is said even where nothing of it was
+    /// lost.
+    pub past: f64,
 }
 
 /// What reading the output back found.
@@ -200,9 +212,17 @@ impl Report {
         self.sounds
             .iter()
             .filter(|s| s.measured)
-            .map(|s| (s.index, s.seconds - self.seconds, s.short))
-            .filter(|&(_, d, short)| d > SOUND_SLACK || d < -(short + SOUND_SLACK))
-            .map(|(index, d, _)| (index, d))
+            .filter_map(|s| {
+                let d = s.seconds - self.seconds;
+                if d > SOUND_SLACK || d < -(s.short + SOUND_SLACK) {
+                    Some((s.index, d))
+                } else if s.past > SOUND_SLACK {
+                    // Long by where it is laid: see [`Sound::past`].
+                    Some((s.index, s.past))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -277,15 +297,21 @@ impl Report {
                 continue;
             }
             let d = s.seconds - self.seconds;
-            let off = d > SOUND_SLACK || d < -(s.short + SOUND_SLACK);
+            let late = s.past > SOUND_SLACK;
+            let off = d > SOUND_SLACK || d < -(s.short + SOUND_SLACK) || late;
             out.push(format!(
-                "sound #{}: {:.3}s against {:.3}s{}  {}",
+                "sound #{}: {:.3}s against {:.3}s{}{}  {}",
                 s.index,
                 s.seconds,
                 self.seconds,
                 // Not for a sliver that prints as nought.
                 if s.short >= 0.0005 {
                     format!(" (the recording's own sound {:.3}s less)", s.short)
+                } else {
+                    String::new()
+                },
+                if late {
+                    format!(" (laid {:.3}s past the last picture)", s.past)
                 } else {
                     String::new()
                 },
@@ -551,7 +577,8 @@ pub fn check_placed(
         }
         None => None,
     };
-    // Stream, decoder, packets read, seconds decoded.
+    // Stream, decoder, packets read, seconds decoded, and where the last of
+    // its frames is placed to (see [`Sound::past`]).
     //
     // A track no decoder here can read is one that cannot be measured, which
     // is not the same as one that is wrong: it is kept with no decoder and
@@ -559,13 +586,14 @@ pub fn check_placed(
     // than left out, because its packets still make it one of the master's
     // tracks -- left out, every track after it was taken for the one before
     // it among the master's, and held to that one's allowance.
-    let mut sounds: Vec<(usize, Option<ff::decoder::Audio>, u64, f64)> = Vec::new();
+    type Track = (usize, Option<ff::decoder::Audio>, u64, f64, Option<f64>);
+    let mut sounds: Vec<Track> = Vec::new();
     for &i in &audio {
         let Some(stream) = ictx.stream(i) else { continue };
         let dec = ff::codec::context::Context::from_parameters(stream.parameters())
             .ok()
             .and_then(|ctx| ctx.decoder().audio().ok());
-        sounds.push((i, dec, 0, 0.0));
+        sounds.push((i, dec, 0, 0.0, None));
     }
     let v_tb = video.and_then(|i| ictx.stream(i)).map(|s| f64::from(s.time_base())).unwrap_or(0.0);
     // Where the output's clock starts, which is where a player counts from:
@@ -777,6 +805,11 @@ pub fn check_placed(
                 }
             } else if let Some(s) = sounds.iter_mut().find(|s| s.0 == i) {
                 s.2 += 1;
+                if let Some(p) = packet.pts() {
+                    let tb = f64::from(stream.time_base());
+                    let end = (p + packet.duration().max(0)) as f64 * tb - origin;
+                    s.4 = Some(s.4.map_or(end, |e: f64| e.max(end)));
+                }
                 let Some(dec) = s.1.as_mut() else { continue };
                 if dec.send_packet(&packet).is_ok() {
                     while dec.receive_frame(&mut sound).is_ok() {
@@ -832,6 +865,11 @@ pub fn check_placed(
             kept
         };
         report.sound_short = sound_short;
+        // Where the last picture stops being shown, on the clock the sound's
+        // ends are taken on above.
+        let pictures_end = last_pts.filter(|_| report.pictures).map(|l| {
+            l as f64 * v_tb - origin + 1.0 / frame_rate(&ictx, video, fps)
+        });
         // Each track's place among the master's, for [`Sound::short`]:
         // counted over the tracks that had packets of their own, since the
         // AC-3 a TrueHD track is wrapped around is declared as a stream of
@@ -889,6 +927,12 @@ pub fn check_placed(
                     seconds: s.3,
                     measured: s.3 > 0.0,
                     short: sound_short + gap + seams + own,
+                    // Only against pictures there are: a file of sound alone
+                    // has its length and nothing to be laid against.
+                    past: match (s.4, pictures_end) {
+                        (Some(e), Some(p)) => (e - p).max(0.0),
+                        _ => 0.0,
+                    },
                 }
             })
             .collect();
@@ -1432,7 +1476,25 @@ fn frame_rate(ictx: &crate::input::Demux, video: Option<usize>, fallback: f64) -
 
 #[cfg(test)]
 mod tests {
-    use super::hole_in;
+    use super::{hole_in, Report, Sound};
+
+    /// A track that holds as much sound as the pictures and is laid well
+    /// past them -- frames stamped too far apart -- is off; one that ends
+    /// within a frame or two of the last picture is not.
+    #[test]
+    fn sound_laid_past_the_pictures_is_off() {
+        let sound = |past: f64| Sound { index: 1, seconds: 59.902, measured: true, short: 0.0, past };
+        let report = |past: f64| Report {
+            pictures: true,
+            produced: 1798,
+            seconds: 59.993,
+            sounds: vec![sound(past)],
+            ..Default::default()
+        };
+        assert_eq!(report(21.032).sound_off(), vec![(1, 21.032)]);
+        assert!(report(0.051).sound_off().is_empty());
+        assert!(report(0.0).passed());
+    }
 
     /// A track that stops 3.2 s before a seam the pictures run straight
     /// through: the hole is allowed for where a range covers it, and only

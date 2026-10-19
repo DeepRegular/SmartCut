@@ -1415,17 +1415,23 @@ impl Writer {
     /// sizes are its own -- and fed that stream's frames in the order they
     /// are read. See `dur` in [`take_audio`] and [`crate::sound::Lengths`].
     fn frame_length(&mut self, url: &str, stream: usize, packet: &ff::Packet, tb: f64, said: f64) -> f64 {
-        let key = (url.to_string(), stream);
-        if !self.lengths.contains_key(&key) {
+        self.lengths_of(url, stream).of(packet, tb, said)
+    }
+
+    /// A sound frame's length as the frame itself has it, for a packet the
+    /// container hands over with none: nought where the frame does not say
+    /// either. Fed from the same reading as [`Self::frame_length`].
+    fn own_length(&mut self, url: &str, stream: usize, packet: &ff::Packet) -> f64 {
+        self.lengths_of(url, stream).own(packet).unwrap_or(0.0)
+    }
+
+    fn lengths_of(&mut self, url: &str, stream: usize) -> &mut crate::sound::Lengths {
+        self.lengths.entry((url.to_string(), stream)).or_insert_with(|| {
             let par = crate::input::demux(url)
                 .ok()
                 .and_then(|probe| probe.stream(stream).map(|s| s.parameters()));
-            self.lengths.insert(key.clone(), crate::sound::Lengths::new(par));
-        }
-        match self.lengths.get_mut(&key) {
-            Some(lengths) => lengths.of(packet, tb, said),
-            None => said,
-        }
+            crate::sound::Lengths::new(par)
+        })
     }
 
     fn push_audio(
@@ -2420,6 +2426,16 @@ fn take_audio(
         _ if audio.in_tb >= 1e-4 && writer.audio[audio.track].frame_secs > 0.0 => {
             let said = writer.audio[audio.track].frame_secs;
             writer.frame_length(&src.input.url, audio.in_index, &packet, audio.in_tb, said)
+        }
+        // A frame of a track whose packets carry their lengths that comes
+        // with none: the first sound block of an `ffmpeg -c copy` .mkv of a
+        // broadcast says nothing, and read as the open read it -- a range
+        // from the head, every recording joined on -- it is handed over so.
+        // Of no length, it is nowhere: the frame the range opens on was
+        // left out, 21 ms of sound the sound-only writer keeps. Its own
+        // length, as a seek back to it used to have libavformat fill in.
+        _ if writer.audio[audio.track].frame_secs <= 0.0 => {
+            writer.own_length(&src.input.url, audio.in_index, &packet)
         }
         _ => writer.audio[audio.track].frame_secs,
     };
@@ -3505,6 +3521,40 @@ fn seek_to(ictx: &mut ff::format::context::Input, src: &Source, time: f64) -> Re
     // finds can carry a stamp later than the one the header advertises --
     // which lands the read *after* the file's first entry point, the one
     // place there is nothing earlier to fall back to.
+    //
+    // **And the beginning is where a demuxer just opened already is, so it
+    // is not sought at all.** Every caller that can land there has opened
+    // the recording a moment before, and reading on from the open is how
+    // `ffmpeg` itself reads a file from its head: the probe's packets come
+    // first, as they were read. A seek there is not that. libavformat
+    // flushes what it knows of the timestamps, and a Matroska file whose
+    // first key picture has open-GOP leading pictures in front of it --
+    // `ffmpeg -i broadcast.ts -c copy x.mkv` writes exactly that, at
+    // -0.066 and -0.033 -- came back from the seek with those two at
+    // +0.033 and +0.066, among the key picture's own: the copy kept the
+    // two broken pictures, left out the real one at 0.033, and a re-encode
+    // from the head decoded them as pictures of the range.
+    //
+    // **Except a Matroska file with subtitles in it, which is sought as it
+    // always was.** What the open read is read with every stream switched
+    // on, and the open's packets are handed over first. A subtitle block
+    // libavformat cannot parse -- a video site's WebVTT, see
+    // [`crate::input::keep_only`] -- makes it drop the rest of the cluster
+    // the block is in, pictures and sound alike: read from the open, a cut
+    // of such a file from its head lost its first two seconds (527 pictures
+    // of 584 in `tests/run_demux_tests.sh`). Sought, the read starts again
+    // with the subtitles switched off (the callers switch them off after
+    // the seek), and nothing is lost.
+    let sought_anyway = landing <= 0.0 && {
+        let matroska = ictx.format().name().split(',').any(|n| n.trim() == "matroska");
+        matroska
+            && ictx
+                .streams()
+                .any(|s| s.parameters().medium() == ff::media::Type::Subtitle)
+    };
+    if landing <= 0.0 && !sought_anyway {
+        return Ok(());
+    }
     let target = if landing <= 0.0 {
         i64::MIN / 2
     } else {
@@ -6271,6 +6321,43 @@ fn assumed_frame(probe: &mut ff::format::context::Input, info: &crate::AudioInfo
     (each > 0.0).then_some(each)
 }
 
+/// Why a join is refused whose master carries lossless sound through as it
+/// is and one of whose other recordings has sound of another shape: that
+/// recording's sound can neither be copied into the master's track nor
+/// written afresh as it (an AAC one was silence). `reel` is the recording and
+/// `nth` its place among the joined ones (from 0), `reel_codec` its sound's
+/// codec as libav names it, `codec` the master track's and `why` what
+/// differs. One sentence for the cut with pictures and for [`crate::sound`].
+pub(crate) fn lossless_master_refusal(
+    reel: &str,
+    nth: usize,
+    reel_codec: &str,
+    master_path: &str,
+    codec: ff::codec::Id,
+    why: &str,
+) -> anyhow::Error {
+    // The reel as the master works only where its own sound is not carried
+    // whole as well: two lossless tracks of two shapes are the same refusal
+    // the other way round.
+    let swap = if matches!(reel_codec, "truehd" | "mlp" | "dts") {
+        String::new()
+    } else {
+        format!(
+            "Take {reel} as the master instead (--master {}, or the master clip in the window), \
+             and the {codec:?} is written afresh to fit it; or name",
+            nth + 1
+        )
+    };
+    let name = if swap.is_empty() { "Name" } else { "" };
+    anyhow!(
+        "{reel} cannot be joined onto {master_path} as it stands: its sound is not the shape of \
+         the master's ({why}), and the master's {codec:?} is lossless sound that is carried \
+         through as it is -- no encoder here writes it -- so {reel}'s sound could be neither \
+         copied into that track nor written afresh to fit it. {swap}{name} a codec for the \
+         whole track (--audio-codec)"
+    )
+}
+
 /// Decide what will be done to one sound track.
 ///
 /// Every question here used to be asked once, of the one track there was.
@@ -8392,6 +8479,47 @@ fn cut_into(
             )
         })
         .collect::<Result<Vec<_>>>()?;
+    // A track some reel cannot match, which the master's own codec then
+    // cannot be written as either: lossless sound carried through as it is
+    // (see `carried_whole` in [`crate::audio`]). Its own frames go out and
+    // the reel's have nowhere to go -- a TrueHD recording joined to one with
+    // AAC wrote the AAC recording's whole length silent, said nothing of it
+    // and ended well. Refused before anything is written, naming what does
+    // work. [`crate::sound`] refuses the same join in the same words.
+    for (setup, a) in setups.iter().zip(&audios) {
+        let Some(k) = src.audios.iter().position(|x| x.stream_index == a.stream_index) else {
+            continue;
+        };
+        if !recast[k] || setup.mode == AudioMode::Reencode {
+            continue;
+        }
+        // A reel whose sound is the master's codec in another shape -- a
+        // TrueHD 2.0 recording joined onto a TrueHD 5.1 one -- is carried
+        // as it is, frame for frame, as it always was: those frames say
+        // what they are, and a decoder follows them. What is refused is a
+        // reel whose frames are another codec's, which went into the
+        // master's track as bytes no decoder of it reads.
+        let master_codec = src.audios[k].codec.as_str();
+        let Some(n) = (0..reels.len()).find(|&n| {
+            fits[n].audio.get(k) == Some(&true)
+                && reels[n].src.audios.get(k).is_some_and(|a| a.codec != master_codec)
+        }) else {
+            continue;
+        };
+        let why: Vec<String> = crate::conform::compare(src, reels[n].src)
+            .iter()
+            .filter(|m| matches!(m.what, crate::conform::What::Sound(nth, _) if nth == k))
+            .map(crate::conform::Mismatch::describe)
+            .collect();
+        return Err(lossless_master_refusal(
+            &reels[n].src.path,
+            n,
+            reels[n].src.audios.get(k).map_or("", |a| a.codec.as_str()),
+            &src.path,
+            setup.target,
+            &why.join("; "),
+        ));
+    }
 
     // Whether the container this is going into can hold what is going into
     // it. Answered before the output is created rather than at the end of
@@ -8416,9 +8544,10 @@ fn cut_into(
             };
             // Signed 8-bit PCM is the one sound a .mkv cannot hold either;
             // asked for at 24 bit, it is written wide into any of the three.
-            // Into a transport stream, eight bit samples of either kind go as
-            // Blu-ray LPCM when that is asked for.
-            let instead = if family == "ts" && matches!(codec, "pcm_s8" | "pcm_u8") {
+            // Into a transport stream, linear PCM of any kind -- eight bit
+            // samples, or the 16, 24 or 32 bit or float ones a .mkv or a
+            // .mov holds -- goes as Blu-ray LPCM when that is asked for.
+            let instead = if family == "ts" && codec.starts_with("pcm_") {
                 "--audio-codec lpcm writes it as Blu-ray LPCM, which a transport stream holds"
             } else if codec == "pcm_s8" {
                 "Into a .mkv, .mp4 or .mov, --audio-bits 24 writes it as 24 bit PCM, which \

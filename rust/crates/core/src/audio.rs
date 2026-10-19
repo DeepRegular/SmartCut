@@ -699,8 +699,10 @@ pub struct Reencoder {
     ready: Pcm,
     /// Samples handed to the encoder so far -- the output timeline.
     fed: i64,
-    /// Last source packet consumed, so a frame offered twice is ignored.
+    /// Last source packet consumed, so a frame offered twice is ignored:
+    /// its time stamp, and where in the file it was read from.
     last_pts: Option<i64>,
+    last_pos: i64,
     /// What that packet decoded to, held for a window that opens inside it.
     /// See `take`.
     last_frames: Vec<ff::frame::Audio>,
@@ -833,6 +835,7 @@ impl Reencoder {
             ready: vec![vec![0.0; lead as usize]; channels as usize],
             fed: 0,
             last_pts: None,
+            last_pos: -1,
             last_frames: Vec::new(),
             window: None,
             next: 0,
@@ -876,6 +879,7 @@ impl Reencoder {
             .decoder()
             .audio()?;
         self.last_pts = None;
+        self.last_pos = -1;
         self.last_frames.clear();
         // The next recording's windows are counted on its own clock, and can
         // be the same numbers as the last one's.
@@ -971,8 +975,23 @@ impl Reencoder {
                 self.align(at);
             }
         }
+        // **The same stamp is not always the same packet.** A Matroska
+        // file keeps milliseconds and a TrueHD access unit lasts 0.83 of
+        // one, so one in six of them shares its stamp with the one before
+        // (and a TrueHD track stored without durations is read that way).
+        // Taken for the one before offered again, each was never decoded:
+        // re-encoded -- joined onto an AAC recording, or asked for as AAC
+        // -- 100 s of such a track came out as 88 s of sound laid end to
+        // end, drifting 12 s ahead of its pictures. A packet offered again
+        // is read again from the same place in the file, or from before it
+        // (the one ahead of it with the same stamp); one read from further
+        // on is a packet of its own.
+        let pos = packet.position() as i64;
+        let again = |pts: i64, last: i64| {
+            pts < last || (pts == last && (pos < 0 || self.last_pos < 0 || pos <= self.last_pos))
+        };
         if let (Some(pts), Some(last)) = (packet.pts(), self.last_pts) {
-            if pts <= last {
+            if again(pts, last) {
                 // Decoded already, for the window before this one -- but a
                 // window that opens inside the last frame decoded, less than
                 // a frame after the one before closed, has its opening in
@@ -989,6 +1008,9 @@ impl Reencoder {
                 }
                 return Ok(());
             }
+        }
+        if packet.pts().is_some() {
+            self.last_pos = pos;
         }
         self.last_pts = packet.pts().or(self.last_pts);
         self.last_frames.clear();

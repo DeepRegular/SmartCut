@@ -296,14 +296,57 @@ fn run(
             .then(|| crate::aac::of_track(src, track.stream_index).map(|f| f.as_str()))
     };
     let shape_framing = framing(shape.src, &info);
+    // Lossless sound carried through as it is takes a recording of its own
+    // codec in another shape -- a TrueHD 2.0 one joined onto a TrueHD 5.1
+    // one, a DTS core onto DTS-HD Master Audio -- as the picture writer
+    // takes it: frame for frame, those frames saying what they are. Counted
+    // unlike, it was refused here while the cut with pictures wrote it, or
+    // (before the refusal) DTS went through the encoder whole, the master's
+    // own sound included, and TrueHD failed on an experimental encoder.
+    let carried = setup.mode != AudioMode::Reencode && crate::audio::carried_whole(setup.target);
     let unlike = pieces.iter().enumerate().filter(|&(n, _)| n != master).any(|(n, p)| {
         track_for(pieces, master, n, opts).is_ok_and(|t| {
             t.codec != info.codec
-                || t.sample_rate != info.sample_rate
-                || t.channels != info.channels
-                || framing(p.src, t) != shape_framing
+                || (!carried
+                    && (t.sample_rate != info.sample_rate
+                        || t.channels != info.channels
+                        || framing(p.src, t) != shape_framing))
         })
     });
+    // Unless the master's is lossless sound carried through as it is, which
+    // nothing here re-encodes: the recording whose sound is another codec
+    // would be silence. Refused as the picture writer refuses it, in its
+    // words.
+    if unlike && carried {
+        let found = pieces.iter().enumerate().filter(|&(n, _)| n != master).find_map(|(n, p)| {
+            let t = track_for(pieces, master, n, opts).ok()?;
+            if t.codec == info.codec {
+                return None;
+            }
+            let why: Vec<String> = [
+                (t.codec != info.codec).then(|| format!("audio codec: {} vs {}", info.codec, t.codec)),
+                (t.sample_rate != info.sample_rate).then(|| {
+                    format!("sample rate: {} Hz vs {} Hz", info.sample_rate, t.sample_rate)
+                }),
+                (t.channels != info.channels)
+                    .then(|| format!("channels: {} vs {}", info.channels, t.channels)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            (!why.is_empty()).then(|| (n, p.src, t.codec.clone(), why.join("; ")))
+        });
+        if let Some((n, reel, codec, why)) = found {
+            return Err(crate::cut::lossless_master_refusal(
+                &reel.path,
+                n,
+                &codec,
+                &shape.src.path,
+                setup.target,
+                &why,
+            ));
+        }
+    }
     if unlike && setup.mode != AudioMode::Reencode {
         setup.mode = AudioMode::Reencode;
         // Smart mode frames what it encodes so it can sit among the copied
@@ -884,11 +927,21 @@ fn take_range(
         }
         let Some(pts) = packet.pts() else { continue };
         let t = pts as f64 * in_tb - src.start_time;
-        let dur = match packet.duration() {
-            own if own > 0 => own as f64 * in_tb,
-            _ => clock.frame_secs.unwrap_or(0.0),
+        // A frame that comes with no length at all, on a track whose
+        // packets otherwise carry theirs: the first sound block of an
+        // `ffmpeg -c copy` .mkv of a broadcast, read as the open read it.
+        // Of no length it was passed over as sound before the range, the
+        // range opened a frame late and every frame after went down 21 ms
+        // early -- where the picture writer, which gives such a frame its
+        // own length (`take_audio` in [`crate::cut`]), keeps it. Read once,
+        // as there: Vorbis's parser keeps the block before, and asked twice
+        // of one packet it answered the second time as if the packet had
+        // followed itself.
+        let dur = match (packet.duration(), clock.frame_secs) {
+            (own, _) if own > 0 => lengths.of(&packet, in_tb, own as f64 * in_tb),
+            (_, Some(frame)) if frame > 0.0 => lengths.of(&packet, in_tb, frame),
+            _ => lengths.own(&packet).unwrap_or(0.0),
         };
-        let dur = lengths.of(&packet, in_tb, dur);
         if t >= range.1 {
             break;
         }
@@ -1059,13 +1112,32 @@ impl Lengths {
 
     pub(crate) fn of(&mut self, packet: &ff::Packet, tb: f64, said: f64) -> f64 {
         let Some(par) = self.par.as_ref() else { return said };
+        let rate = unsafe { (*par.as_ptr()).sample_rate };
+        if rate <= 0 || tb * f64::from(rate) <= 1.0 {
+            return said;
+        }
+        let Some(exact) = self.own(packet) else { return said };
+        if (exact - said).abs() < tb {
+            exact
+        } else {
+            said
+        }
+    }
+
+    /// The frame's length as the frame itself has it, whatever the
+    /// container says -- or does not: a packet that arrives with no length
+    /// at all (the first sound block of an `ffmpeg -c copy` .mkv, handed
+    /// over as the open read it) has one all the same. `None` where the
+    /// frame does not say.
+    pub(crate) fn own(&mut self, packet: &ff::Packet) -> Option<f64> {
+        let par = self.par.as_ref()?;
         let (rate, id, fixed) = unsafe {
             let p = par.as_ptr() as *mut ff::ffi::AVCodecParameters;
             let size = i32::try_from(packet.size()).unwrap_or(0);
             ((*p).sample_rate, par.id(), ff::ffi::av_get_audio_frame_duration2(p, size))
         };
-        if rate <= 0 || tb * f64::from(rate) <= 1.0 {
-            return said;
+        if rate <= 0 {
+            return None;
         }
         let data = packet.data().unwrap_or(&[]);
         // A DTS frame by its core, before anything libavcodec may know of the
@@ -1092,15 +1164,7 @@ impl Lengths {
             }
             _ => (0, rate),
         };
-        if samples <= 0 {
-            return said;
-        }
-        let exact = samples as f64 / f64::from(rate);
-        if (exact - said).abs() < tb {
-            exact
-        } else {
-            said
-        }
+        (samples > 0).then(|| samples as f64 / f64::from(rate))
     }
 }
 

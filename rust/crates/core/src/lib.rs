@@ -1673,7 +1673,31 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     // And what the container says its pictures are *meant* to come at, which
     // is a different question and on a variable-rate recording a different
     // number. See [`VideoInfo::base_rate`].
-    let base_rate = f64::from(stream.rate());
+    //
+    // **Not where it is the clock turned over.** Where libavformat finds no
+    // rate at all it answers with the stream's tick inverted -- a thousand a
+    // second on a Matroska -- and that is what a .mkv written from a phone's
+    // variable-rate recording states, having nothing true to state. Taken
+    // for the rate, a cut of it was planned at 1000 frames a second and the
+    // encoder told so: each re-encoded picture got a thousandth of the
+    // bit rate's second, 28 dB against 39, and verify failed it. A tick of a
+    // millisecond only: an MP4 counting thirtieths of a second can mean
+    // thirty a second by it, and a finer tick turned over is past the
+    // ceiling below already. And only where there is no average either,
+    // which is the one case it decided anything: beside an average it is
+    // kept as it was.
+    let base_rate = {
+        let (rate, tick, avg) = (stream.rate(), stream.time_base(), stream.avg_frame_rate());
+        let turned_over = tick.numerator() == 1
+            && tick.denominator() == 1000
+            && rate.numerator() == tick.denominator()
+            && rate.denominator() == 1;
+        if turned_over && !(avg.numerator() > 0 && avg.denominator() > 0) {
+            0.0
+        } else {
+            f64::from(rate)
+        }
+    };
     // The average, where libavformat worked one out. Where it did not -- 0/0
     // or 0/1 -- the stated rate stands in: left as it was, the cut was
     // planned on a grid of one picture a second and all but one picture in
@@ -1701,9 +1725,13 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         // duration of a nanosecond comes out at a billion a second.
         (None, r) if r.is_finite() && r > 0.0 && r <= 1000.0 => r,
         _ if base_rate.is_finite() && base_rate > 0.0 && base_rate <= 1000.0 => base_rate,
-        // Neither: the thirty a second `VideoInfo::frame_duration` already
-        // assumes, rather than a nought the grid would round to one.
-        _ => 30.0,
+        // Neither: what the first pictures come at, measured; and only where
+        // even that cannot be had, the thirty a second
+        // `VideoInfo::frame_duration` already assumes, rather than a nought
+        // the grid would round to one. Not thirty first: a constant sixty
+        // read at thirty is gridded at half its pictures, and the walk,
+        // holding each gap to half of a thirtieth, calls it variable.
+        _ => measured_rate(&input.url, stream_index).unwrap_or(30.0),
     };
 
     // Read before the sound is described rather than with the rest of the
@@ -2246,6 +2274,79 @@ pub(crate) fn container_start(ictx: &input::Demux) -> f64 {
         .unwrap_or(rounded)
 }
 
+/// How fast the first pictures of a recording come, for one that states no
+/// rate at all: their count over the time they span, presentation order.
+///
+/// Asked only where neither the average nor the declared rate could be had
+/// (see `frame_rate` in [`outline_of`]): a Matroska or WebM written with no
+/// default duration whose clock is too coarse for libavformat to settle on a
+/// rate -- a phone's variable-rate recording cut to .mkv here, or a constant
+/// 90 or 144 a second. Read on a demuxer of its own, so the one the index is
+/// handed starts where it did. `None` where too little arrives to divide.
+fn measured_rate(url: &str, stream_index: usize) -> Option<f64> {
+    /// A few seconds of anything: enough that a held picture or two moves
+    /// the answer by a percent, not by half.
+    const PICTURES: usize = 240;
+    /// And no further in than this, whatever arrives: a stream whose
+    /// pictures are few and far between is not to be read to its end.
+    const PACKETS: usize = 20_000;
+    let mut ictx = crate::input::demux(url).ok()?;
+    crate::input::keep_only(&mut ictx, &[stream_index]);
+    let mut shown: Vec<i64> = Vec::with_capacity(PICTURES);
+    let mut tick = 0.0;
+    for (n, (s, p)) in ictx.read_packets().enumerate() {
+        if n >= PACKETS || shown.len() >= PICTURES {
+            break;
+        }
+        if s.index() != stream_index {
+            continue;
+        }
+        tick = f64::from(s.time_base());
+        if let Some(at) = p.pts() {
+            shown.push(at);
+        }
+    }
+    shown.sort_unstable();
+    shown.dedup();
+    let rate = rate_of(&shown, tick)?;
+    (rate.is_finite() && rate > 0.0 && rate <= 1000.0).then_some(rate)
+}
+
+/// The rate of pictures shown at `shown` (sorted, in ticks of `tick`
+/// seconds), as [`measured_rate`] reads it.
+///
+/// **The last few read are not the last few shown.** Packets arrive in the
+/// order they are decoded, so where the reading stopped a picture shown
+/// before the last one read may not have arrived yet, and the span counted
+/// over them has a hole in it: a constant 90 a second came to 87. The
+/// pictures within reordering distance of the end are left out.
+///
+/// **And a rate a clock this coarse cannot tell from a round one is the
+/// round one.** Each end is rounded to the tick, so the span is good to a
+/// tick and a half and no better; 144 a second measured over a millisecond
+/// clock came to 144.07, and a timeline on that slid a picture's width in
+/// a few seconds. Where a whole rate, or a whole one over 1.001, is inside
+/// what the rounding allows, that is the rate.
+fn rate_of(shown: &[i64], tick: f64) -> Option<f64> {
+    /// Further than any decoder reorders.
+    const REORDER: usize = 16;
+    let shown = &shown[..shown.len().saturating_sub(REORDER)];
+    if shown.len() < 3 || !tick.is_finite() || tick <= 0.0 {
+        return None;
+    }
+    let span = (shown[shown.len() - 1] - shown[0]) as f64 * tick;
+    let rate = (shown.len() - 1) as f64 / span;
+    if !rate.is_finite() || rate <= 0.0 {
+        return None;
+    }
+    let slack = 1.5 * tick / span;
+    [rate.round(), (rate * 1.001).round() / 1.001]
+        .into_iter()
+        .filter(|r| *r > 0.0 && ((rate - r) / r).abs() <= slack)
+        .min_by(|a, b| (rate - a).abs().total_cmp(&(rate - b).abs()))
+        .or(Some(rate))
+}
+
 /// One of libav's colour enums read as the int it is. The three colour fields
 /// come from the stream as it was written -- an MPEG-2 sequence display
 /// extension's 8-bit values are stored unchecked -- and a Rust enum holding a
@@ -2286,6 +2387,25 @@ pub(crate) unsafe fn set_raw_enum<T>(field: *mut T, value: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A constant rate on a millisecond clock is read as that rate: 90, 144
+    /// and 59.94 a second, each timestamp rounded to the millisecond as a
+    /// Matroska writes it.
+    #[test]
+    fn a_rate_measured_on_a_millisecond_clock_is_the_round_one() {
+        let ms = |rate: f64, n: usize| -> Vec<i64> {
+            (0..n).map(|i| (i as f64 * 1000.0 / rate).round() as i64).collect()
+        };
+        assert_eq!(rate_of(&ms(90.0, 240), 0.001), Some(90.0));
+        assert_eq!(rate_of(&ms(144.0, 240), 0.001), Some(144.0));
+        let r = rate_of(&ms(60000.0 / 1001.0, 240), 0.001).unwrap();
+        assert!((r - 60000.0 / 1001.0).abs() < 1e-9, "{r}");
+        // A rate that is nothing round is left as it was measured.
+        let r = rate_of(&ms(56.29, 240), 0.001).unwrap();
+        assert!((r - 56.29).abs() < 0.05 && r != 56.0, "{r}");
+        // Too few to divide.
+        assert_eq!(rate_of(&ms(30.0, 18), 0.001), None);
+    }
 
     /// The three text streams, told apart by what a recording's own map says
     /// about them -- the tags and descriptors here are the ones read off a

@@ -416,16 +416,284 @@ pub fn demux(url: &str) -> Result<Demux> {
     // The second reopening is for a recording whose frame rate the container
     // could not work out, and reads every program map to get it. Same
     // reasoning: it is asked for where it is needed rather than always. See
-    // [`states_frame_rate`].
+    // [`states_frame_rate`]. Only a transport stream has maps to read:
+    // asked of everything, it opened every Matroska that states no picture
+    // rate twice -- every one SmartCut wrote before 0.8.27, and every
+    // variable-rate one since -- on each of the many opens a cut makes, for
+    // an option only the transport stream demuxer reads.
     //
     // The third is for a recording that began before the broadcaster
     // finished announcing what it was sending; see [`announced_late`].
-    let (genpts, all_maps) = (is_program_stream(&ictx), !states_frame_rate(&ictx));
+    let (genpts, all_maps) = (
+        is_program_stream(&ictx),
+        is_transport_stream(&ictx) && !states_frame_rate(&ictx),
+    );
     let deeper = announced_late(url, &ictx);
-    if genpts || all_maps || deeper {
-        return open_with(url, genpts, all_maps, deeper);
+    let ictx = if genpts || all_maps || deeper {
+        open_with(url, genpts, all_maps, deeper, false)?
+    } else {
+        ictx
+    };
+    // And the fourth is for sound the service's map named only after its
+    // first copy -- asked of what the open above came back with, so that
+    // every recording that already lost nothing opens as it did. See
+    // [`sound_named_later`].
+    if !all_maps && sound_named_later(url, &ictx) {
+        let mut again = open_with(url, genpts, true, deeper, deeper)?;
+        keep_the_clock(&ictx, &mut again);
+        return Ok(again);
     }
     Ok(ictx)
+}
+
+/// Put back where a recording starts and how long it runs, as the open
+/// before the second reading of its maps had them.
+///
+/// **That reading is for one more sound track, and is to move nothing
+/// else.** A commentary named late can open on a frame stamped from another
+/// time altogether: on one programme measured here its first frame is 127
+/// seconds ahead of its second and of everything else in the file. Described
+/// now where it was not before, that frame became the recording's start, and
+/// the whole timeline slid two minutes, with two minutes of nothing at its
+/// head. The clock the first open read is the recording's, and a stream that
+/// says it begins before it is held to it.
+fn keep_the_clock(was: &ff::format::context::Input, now: &mut ff::format::context::Input) {
+    unsafe {
+        let (was, now) = (was.as_ptr(), now.as_mut_ptr());
+        let start = (*was).start_time;
+        if start == ff::ffi::AV_NOPTS_VALUE || (*now).start_time == start {
+            return;
+        }
+        (*now).start_time = start;
+        (*now).duration = (*was).duration;
+        for i in 0..(*now).nb_streams as usize {
+            let st = *(*now).streams.add(i);
+            if st.is_null() || (*st).start_time == ff::ffi::AV_NOPTS_VALUE {
+                continue;
+            }
+            let micro = ff::ffi::AVRational { num: 1, den: ff::ffi::AV_TIME_BASE };
+            let floor = ff::ffi::av_rescale_q(start, micro, (*st).time_base);
+            if (*st).start_time < floor {
+                (*st).start_time = floor;
+            }
+        }
+    }
+}
+
+/// Whether a transport stream of one service names a sound track in a later
+/// copy of its map that the open did not describe.
+///
+/// **libavformat follows the first map it reads and no other**, unless it is
+/// told to read every map (`scan_all_pmts`, which `ffmpeg` and `ffprobe` set
+/// and this module does not). A recorder's disc of a programme sent with
+/// commentary was written that way: its clips open on a map naming the
+/// picture, the main sound and the captions, and half a second in the map is
+/// replaced by one that adds the commentary on its own PID. Opened as it
+/// was, the commentary was not there at all -- the disc's own listing named
+/// it, the cut said "1 of 1 sound track(s)", and every cut of those
+/// programmes left it out. A broadcast recording read past its first map
+/// (see [`announced_late`]) gets such a track listed but never described,
+/// and it was left out under a note that called it absent: a commentary
+/// named six megabytes in and first sent past seven, five of 36 programmes
+/// with commentary sampled. That one is read again for longer as well; see
+/// [`LONGER_ANALYSIS`].
+///
+/// So the map is read every time for these, and only these: where the sound
+/// the open came back with has a track with no rate or no channels, or, on a
+/// disc -- whose clips are never read past the first map, see
+/// [`announced_late`] -- where a copy of the map inside the window the probe
+/// reads names sound the open does not have. Never where the stream's table
+/// lists more than one service: reading every map there also turns up the
+/// phone-sized copy a broadcast multiplex carries beside the programme, which
+/// is a different recording. See [`states_frame_rate`].
+fn sound_named_later(url: &str, ictx: &ff::format::context::Input) -> bool {
+    if !is_transport_stream(ictx) || services(ictx) != 1 {
+        return false;
+    }
+    let sound: Vec<(i32, bool)> = ictx
+        .streams()
+        .filter(|s| s.parameters().medium() == ff::media::Type::Audio)
+        .map(|s| {
+            let p = s.parameters();
+            let described = unsafe {
+                let raw = p.as_ptr();
+                (*raw).sample_rate > 0 && (*raw).ch_layout.nb_channels > 0
+            };
+            (s.id(), described)
+        })
+        .collect();
+    if sound.iter().any(|(_, described)| !described) {
+        return true;
+    }
+    if !off_a_disc(url) {
+        return false;
+    }
+    let url = split_restamp(url).map_or(url, |(_, under)| under);
+    let Some(head) = head_of(url, MAP_WINDOW) else {
+        return false;
+    };
+    // Asked of every stream the open has, not only its sound: a PID it
+    // already holds is not one reading every map adds. A 4K recorder's clip
+    // whose map names a second sound it never sends opens with that PID as a
+    // stream of no kind at all, and asked of the sound alone it was opened a
+    // second time on every open, for nothing.
+    let have: Vec<i32> = ictx.streams().map(|s| s.id()).collect();
+    sound_in_maps(&head)
+        .iter()
+        .any(|pid| !have.contains(&i32::from(*pid)))
+}
+
+/// How many services the stream's table names, as libavformat read it: the
+/// programs it was given a map's PID for.
+///
+/// Not every program it lists: it makes one as well for each service the
+/// multiplex's service description names -- eight on a terrestrial channel
+/// whose table names one -- and those have no map and are not in the file.
+fn services(ictx: &ff::format::context::Input) -> usize {
+    unsafe {
+        let ctx = ictx.as_ptr();
+        (0..(*ctx).nb_programs as usize)
+            .filter(|&i| {
+                let program = *(*ctx).programs.add(i);
+                !program.is_null() && (*program).pmt_pid > 0
+            })
+            .count()
+    }
+}
+
+/// How far into a clip a copy of the map is looked for: as far as
+/// libavformat's own probe reads, which is as far as reading every map can
+/// find one.
+const MAP_WINDOW: usize = 5_000_000;
+
+/// The first `n` bytes behind a URL this module wrote, or fewer where it is
+/// shorter.
+fn head_of(url: &str, n: usize) -> Option<Vec<u8>> {
+    no_nul(url).ok()?;
+    let name = CString::new(&*as_local(url)).ok()?;
+    unsafe {
+        let mut io: *mut ff::ffi::AVIOContext = ptr::null_mut();
+        let mut opts: *mut ff::ffi::AVDictionary = ptr::null_mut();
+        set(&mut opts, "protocol_whitelist", LOCAL_PROTOCOLS);
+        let err = ff::ffi::avio_open2(
+            &mut io,
+            name.as_ptr(),
+            ff::ffi::AVIO_FLAG_READ as c_int,
+            ptr::null(),
+            &mut opts,
+        );
+        ff::ffi::av_dict_free(&mut opts);
+        if err < 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; n];
+        let mut have = 0usize;
+        while have < n {
+            let want = (n - have).min(1 << 20) as c_int;
+            let got = ff::ffi::avio_read(io, buf.as_mut_ptr().add(have), want);
+            if got <= 0 {
+                break;
+            }
+            have += got as usize;
+        }
+        ff::ffi::avio_closep(&mut io);
+        buf.truncate(have);
+        Some(buf)
+    }
+}
+
+/// Every PID a copy of the single service's map names as sound, over all
+/// the copies in `head`, which is the start of a transport stream of 188- or
+/// 192-byte packets.
+///
+/// Only a map that fits in one packet is read -- every one this was written
+/// for does, and one that does not is left unread rather than pieced
+/// together: the answer it would give is only ever "open it again".
+fn sound_in_maps(head: &[u8]) -> Vec<u16> {
+    const SYNC: u8 = 0x47;
+    let Some((base, stride)) = (0..192usize).find_map(|at| {
+        [188usize, 192].into_iter().find_map(|stride| {
+            let lead = stride - 188;
+            (0..4)
+                .all(|k| head.get(at + lead + k * stride) == Some(&SYNC))
+                .then_some((at + lead, stride))
+        })
+    }) else {
+        return Vec::new();
+    };
+    let packets = || {
+        head.get(base..)
+            .unwrap_or(&[])
+            .chunks(stride)
+            .filter(|p| p.len() >= 188 && p[0] == SYNC)
+    };
+    let pid_of = |p: &[u8]| (u16::from(p[1] & 0x1F) << 8) | u16::from(p[2]);
+    // The section a packet starts, where it starts one and holds it whole.
+    let section = |p: &[u8]| -> Option<Vec<u8>> {
+        if p[1] & 0x40 == 0 {
+            return None;
+        }
+        let mut at = 4;
+        if p[3] & 0x20 != 0 {
+            at += 1 + usize::from(*p.get(4)?);
+        }
+        if p[3] & 0x10 == 0 {
+            return None;
+        }
+        at += 1 + usize::from(*p.get(at)?);
+        let sec = p.get(at..188)?;
+        let len = 3 + ((usize::from(*sec.get(1)? & 0x0F) << 8) | usize::from(*sec.get(2)?));
+        sec.get(..len).map(<[u8]>::to_vec)
+    };
+    // The service's map is on the PID the table names for it.
+    let mut maps: Vec<u16> = Vec::new();
+    for p in packets().filter(|p| pid_of(p) == 0) {
+        let Some(sec) = section(p) else { continue };
+        if sec[0] != 0x00 || sec.len() < 12 {
+            continue;
+        }
+        let mut i = 8;
+        while i + 4 <= sec.len() - 4 {
+            let number = (u16::from(sec[i]) << 8) | u16::from(sec[i + 1]);
+            let pid = (u16::from(sec[i + 2] & 0x1F) << 8) | u16::from(sec[i + 3]);
+            if number != 0 && !maps.contains(&pid) {
+                maps.push(pid);
+            }
+            i += 4;
+        }
+        break;
+    }
+    let [map] = maps[..] else {
+        return Vec::new();
+    };
+    let mut sound: Vec<u16> = Vec::new();
+    for p in packets().filter(|p| pid_of(p) == map) {
+        let Some(sec) = section(p) else { continue };
+        if sec[0] != 0x02 || sec.len() < 16 {
+            continue;
+        }
+        let end = sec.len() - 4;
+        let info = (usize::from(sec[10] & 0x0F) << 8) | usize::from(sec[11]);
+        let mut i = 12 + info;
+        while i + 5 <= end {
+            let kind = sec[i];
+            let pid = (u16::from(sec[i + 1] & 0x1F) << 8) | u16::from(sec[i + 2]);
+            let len = (usize::from(sec[i + 3] & 0x0F) << 8) | usize::from(sec[i + 4]);
+            if is_sound(kind) && !sound.contains(&pid) {
+                sound.push(pid);
+            }
+            i += 5 + len;
+        }
+    }
+    sound
+}
+
+/// Whether a stream type in a map is sound by its number alone: MPEG audio,
+/// AAC in ADTS or LATM, and what a Blu-ray numbers its own (LPCM, AC-3, DTS,
+/// TrueHD, E-AC-3, DTS-HD and the secondary tracks). Not 0x06, whose meaning
+/// is in its descriptors.
+fn is_sound(kind: u8) -> bool {
+    matches!(kind, 0x03 | 0x04 | 0x0F | 0x11 | 0x80..=0x87 | 0xA1 | 0xA2)
 }
 
 /// Leave the demuxer only the streams the caller is going to read.
@@ -719,6 +987,14 @@ pub fn keep_everything(ictx: &mut Demux) {
 /// that took a quarter.
 const DEEP_PROBE: &str = "32000000";
 
+/// How long into a broadcast recording the reading of every map goes on
+/// looking for what a sound track is, in microseconds, against libavformat's
+/// five seconds. See [`sound_named_later`]: a programme with commentary that
+/// names it in the map six megabytes in may not send a frame of it until
+/// past seven, and five seconds of analysis ends before then. Still held to
+/// [`DEEP_PROBE`]'s bytes, so it reads no further than the deeper probe may.
+const LONGER_ANALYSIS: &str = "20000000";
+
 /// Whether this recording may be carrying streams libavformat has not listed.
 ///
 /// **A recorder starts before the programme does, and a broadcast announces
@@ -895,12 +1171,18 @@ pub fn refuse_url_output(output: &str) -> Result<()> {
 }
 
 fn open(url: &str, generate_pts: bool) -> Result<Demux> {
-    open_with(url, generate_pts, false, false)
+    open_with(url, generate_pts, false, false, false)
 }
 
-fn open_with(url: &str, generate_pts: bool, all_maps: bool, deep_probe: bool) -> Result<Demux> {
+fn open_with(
+    url: &str,
+    generate_pts: bool,
+    all_maps: bool,
+    deep_probe: bool,
+    longer: bool,
+) -> Result<Demux> {
     if let Some((table, under)) = split_restamp(url) {
-        return restamped(under, table, generate_pts, all_maps, deep_probe);
+        return restamped(under, table, generate_pts, all_maps, deep_probe, longer);
     }
     no_nul(url)?;
     let mut opts = ff::Dictionary::new();
@@ -915,6 +1197,9 @@ fn open_with(url: &str, generate_pts: bool, all_maps: bool, deep_probe: bool) ->
     }
     if deep_probe {
         opts.set("probesize", DEEP_PROBE);
+    }
+    if longer {
+        opts.set("analyzeduration", LONGER_ANALYSIS);
     }
     if generate_pts {
         opts.set("fflags", "+genpts");
@@ -1133,6 +1418,7 @@ fn restamped(
     generate_pts: bool,
     all_maps: bool,
     deep_probe: bool,
+    longer: bool,
 ) -> Result<Demux> {
     unsafe {
         let mut below: *mut ff::ffi::AVIOContext = ptr::null_mut();
@@ -1177,6 +1463,9 @@ fn restamped(
         }
         if deep_probe {
             set(&mut opts, "probesize", DEEP_PROBE);
+        }
+        if longer {
+            set(&mut opts, "analyzeduration", LONGER_ANALYSIS);
         }
         if generate_pts {
             set(&mut opts, "fflags", "+genpts");
@@ -1483,6 +1772,61 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// One 192-byte packet carrying a whole section on `pid`.
+    fn section_packet(pid: u16, sec: &[u8]) -> Vec<u8> {
+        let mut p = vec![0u8; 4];
+        p.extend_from_slice(&[0x47, 0x40 | (pid >> 8) as u8, pid as u8, 0x10, 0x00]);
+        p.extend_from_slice(sec);
+        p.resize(192, 0xFF);
+        p
+    }
+
+    /// A section with its length filled in and a CRC's four bytes (unchecked).
+    fn section(table: u8, id: u16, body: &[u8]) -> Vec<u8> {
+        let len = 5 + body.len() + 4;
+        let mut s = vec![table, 0xB0 | (len >> 8) as u8, len as u8, (id >> 8) as u8, id as u8, 0xC1, 0, 0];
+        s.extend_from_slice(body);
+        s.extend_from_slice(&[0, 0, 0, 0]);
+        s
+    }
+
+    fn pmt(streams: &[(u8, u16)]) -> Vec<u8> {
+        let mut body = vec![0xE1, 0x00, 0xF0, 0x00];
+        for (kind, pid) in streams {
+            body.extend_from_slice(&[*kind, 0xE0 | (pid >> 8) as u8, *pid as u8, 0xF0, 0x00]);
+        }
+        section(0x02, 0x1820, &body)
+    }
+
+    /// The recorder's disc this was written against: the first map names
+    /// the picture, the main sound and the captions; a later one adds the
+    /// commentary. Both copies are read.
+    #[test]
+    fn a_later_map_names_its_sound() {
+        let pat = section(0x00, 1, &[0x00, 0x00, 0xE0, 0x1F, 0x18, 0x20, 0xE1, 0x00]);
+        let first = pmt(&[(0x1B, 0x1011), (0x0F, 0x1100), (0x06, 0x1110)]);
+        let later = pmt(&[(0x1B, 0x1011), (0x0F, 0x1100), (0x0F, 0x1101), (0x06, 0x1110)]);
+        let mut ts = Vec::new();
+        for _ in 0..3 {
+            ts.extend(section_packet(0, &pat));
+            ts.extend(section_packet(0x100, &first));
+        }
+        ts.extend(section_packet(0x100, &later));
+        assert_eq!(sound_in_maps(&ts), vec![0x1100, 0x1101]);
+        // A table naming two services is not read at all.
+        let two = section(
+            0x00,
+            1,
+            &[0x18, 0x20, 0xE1, 0x00, 0x18, 0x21, 0xE1, 0x01],
+        );
+        let mut ts = Vec::new();
+        for _ in 0..4 {
+            ts.extend(section_packet(0, &two));
+            ts.extend(section_packet(0x100, &later));
+        }
+        assert!(sound_in_maps(&ts).is_empty());
+    }
 
     #[test]
     fn an_output_is_written_under_the_name_it_is_given() {

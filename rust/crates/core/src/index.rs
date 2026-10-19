@@ -826,9 +826,17 @@ fn covers(times: &[f64], duration: Option<f64>) -> Result<()> {
              recording -- it is what the probe read, not a table the container kept"
         );
     }
+    // **The end's floor is ten seconds, or half the recording where that is
+    // less.** Ten alone let every recording shorter than about that through
+    // on whatever the probe read: a six-second Matroska whose cues are not
+    // read at open (libavformat reads them only on a seek) offered the two
+    // entries the probe passed, at 0 and 0.4 s, and every cut of it after
+    // the first half second was re-encoded to its end where four GOPs could
+    // have been copied. Declining costs the walk, which on anything this
+    // short is nothing.
     if let Some(duration) = duration {
         let spacing = crate::thumbs::median_gap(&gaps).unwrap_or(0.0);
-        if duration - last > (spacing * 3.0).max(10.0) {
+        if duration - last > (spacing * 3.0).max(10.0_f64.min(duration / 2.0)) {
             bail!(
                 "the container's seek table stops at {last:.1}s of {duration:.1}s -- it is \
                  what the probe read, not a table the container kept"
@@ -2030,6 +2038,17 @@ mod tests {
     #[test]
     fn a_short_recording_is_not_measured_against_a_long_one() {
         assert!(covers(&every(0.0, 4.0, 0.5), Some(4.2)).is_ok());
+    }
+
+    /// But a short recording is measured against itself: a six-second
+    /// Matroska whose probe passed two entry points in its first half second
+    /// is not covered by them, however short of the ten-second floor it is.
+    #[test]
+    fn a_short_recordings_probe_is_not_its_table() {
+        let e = covers(&[0.0, 0.4], Some(6.011)).unwrap_err().to_string();
+        assert!(e.contains("stops at"), "{e}");
+        // A short recording whose table does reach it is still taken.
+        assert!(covers(&[0.0, 2.0, 4.0], Some(6.011)).is_ok());
     }
 
     /// One entry and nothing else is the probe's table however short the

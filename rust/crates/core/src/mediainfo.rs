@@ -191,7 +191,24 @@ pub fn media_info(path: &str) -> Result<MediaInfo> {
                 } else {
                     s.avg_frame_rate()
                 };
+                // libavformat's answer where it found no rate at all is the
+                // stream's clock turned over -- `r_frame_rate` = 1/time_base
+                // -- which on a Matroska is a thousand a second: a variable-
+                // rate recording SmartCut wrote to .mkv was listed as
+                // "1000 fps". That is the tick, not a picture rate. Only a
+                // clock that fine: an MP4 counting in thirtieths of a second
+                // can mean thirty a second by it.
                 let base = s.rate();
+                let tick = s.time_base();
+                let base = if tick.numerator() == 1
+                    && tick.denominator() >= 1000
+                    && base.numerator() == tick.denominator()
+                    && base.denominator() == 1
+                {
+                    ff::Rational::new(0, 1)
+                } else {
+                    base
+                };
                 if let Some(r) = fps(avg).or_else(|| fps(base)) {
                     push(&mut facts, "fps", r);
                 }
