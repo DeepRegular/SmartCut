@@ -6995,10 +6995,15 @@ async fn bdav_image(
             if smartcut_core::input::same_file(&input.file, &image_at)
                 || smartcut_core::input::same_file(&input.file, &part)
             {
-                return Err(format!(
-                    "{} is the image the list was read from; making the new one there would \
+                // In the window's language, as the same refusal made before
+                // the cut is (`out.imageIsRead`): this one is reached only
+                // by a row under another spelling of the image's name.
+                let image = image_at.display();
+                return Err(trf!(
+                    "{image} は一覧の録画の読み込み元です。ここに新しいイメージを作ると、\
+                     読み込み元のイメージが置き換わります。別のフォルダーを選んでください",
+                    "{image} is the image the list was read from; making the new one there would \
                      replace it. Choose another folder",
-                    image_at.display()
                 ));
             }
         }

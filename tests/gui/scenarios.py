@@ -1789,6 +1789,88 @@ def image_only_twice_other(cfg, t):
     """Image-only under one name, the second time with another recording."""
     _image_only_twice(cfg, t, "image_only_twice_other", cfg.c)
 
+def image_from_its_own_image(cfg, t):
+    """A row read out of F/night.iso, written to F with the subfolder night:
+    the run's image is the row's own source. Image-only, it was refused before
+    the cut as an earlier run's image to move or delete; not image-only, it
+    was refused only after the cut. Both must be refused before anything is
+    cut, saying that it is the image the list is read from, with the image
+    as it was."""
+    at = os.path.join(cfg.work, "image_from_its_own_image")
+    shutil.rmtree(at, ignore_errors=True)
+    os.makedirs(at)
+    night = os.path.join(at, "night")
+    image = night + ".iso"
+    settings = {"mode": "bdav", "dir": at, "subfolder": "night", "discTitle": "WEEK",
+                "image": "2.50", "imageOnly": True}
+    with App(cfg, "image_from_its_own_image", [{"path": cfg.a}], settings) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        time.sleep(1.0)
+        app.export()
+    first = os.stat(image) if os.path.exists(image) else None
+    t.check("33i the image to read from is written", first is not None, f"iso {first}")
+    if first is None:
+        shutil.rmtree(at, ignore_errors=True)
+        return
+    inside = image + "/BDAV/STREAM/00001.m2ts"
+    for only in (True, False):
+        time.sleep(1.1)
+        # The second time behind a row that is not from the image: every
+        # row is looked at, not the first.
+        rows = [{"path": inside}] if only else [{"path": cfg.c}, {"path": inside}]
+        with App(cfg, f"image_from_its_own_image_{int(only)}", rows,
+                 dict(settings, imageOnly=only)) as app:
+            app.to_list()
+            wait_for("the rows read", lambda: _walked(app, len(rows)), 120, 0.5)
+            app.s.click('button.tab[data-screen="outset"]')
+            time.sleep(1.0)
+            said = _export_or_refused(app)
+        now = os.stat(image) if os.path.exists(image) else None
+        stream = os.path.join(night, "BDAV", "STREAM")
+        cut = sorted(os.listdir(stream)) if os.path.isdir(stream) else []
+        what = "image-only" if only else "folder and image"
+        t.check(f"33i {what}: refused before the cut, as the image read from",
+                not cut and ("読み込み元" in said or "read from" in said) and "すでに" not in said
+                and now is not None and now.st_ino == first.st_ino
+                and now.st_mtime_ns == first.st_mtime_ns,
+                f"streams {cut}; note {said!r}; image {now and (now.st_ino, now.st_mtime_ns)}")
+    shutil.rmtree(at, ignore_errors=True)
+
+
+def tracks_subtitle_stream(cfg, t):
+    """b.mkv with a SubRip track: no cut carries it, and the track menu lists
+    it as a subtitle stream SmartCut does not carry -- not as a data broadcast
+    (the line the window fell back to before it knew the kind), and without
+    the note whose reasons are the crawl's, a menu's and a disc's text
+    subtitles'. Opened twice, the second time from what the first left."""
+    at = os.path.join(cfg.work, "subtitle_stream")
+    os.makedirs(at, exist_ok=True)
+    srt = os.path.join(at, "s.srt")
+    path = os.path.join(at, "sr.mkv")
+    if not os.path.exists(path):
+        with open(srt, "w") as f:
+            f.write("1\n00:00:01,000 --> 00:00:03,000\nhello\n\n"
+                    "2\n00:00:05,000 --> 00:00:07,000\nworld\n\n")
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", cfg.b, "-i", srt,
+                        "-map", "0", "-map", "1", "-c", "copy", "-c:s", "srt",
+                        "-f", "matroska", path + ".part"], check=True)
+        os.replace(path + ".part", path)
+    for visit in (1, 2):
+        with App(cfg, f"tracks_subtitle_stream_{visit}", [{"path": path}]) as app:
+            app.open_row(1, "sr.mkv")
+            app.s.click("#tracks")
+            text = wait_for("the track list", lambda: app.s.js(
+                "const m = document.getElementById('tracks-modal');"
+                "const l = document.getElementById('tracks-list');"
+                "return !m.hidden && l.children.length > 1 && l.innerText"), 30)
+        t.check(f"33s visit {visit}: the SubRip track is a subtitle stream not carried",
+                "出力できません: 字幕ストリーム（SmartCut が扱わない形式）" in text
+                and "データ放送" not in text and "これらは選べません" not in text,
+                repr(text))
+
+
 # -- 19 --------------------------------------------------------------------
 def make_late_head(cfg):
     """A recording with no key picture in its first 32 MB, which is as far as
@@ -4130,6 +4212,88 @@ def held_selection_no_container_length(cfg, t):
                 f"cuts {e3.get('cuts')}")
 
 
+def save_marks_during_walk_no_container_length(cfg, t):
+    """Ctrl+H and Ctrl+Shift+H on a second visit to a recording whose
+    container states no length, before its walk has landed: the outline's
+    timeline is 0 s long, so every mark the row came back with and every
+    range it keeps lay past its end -- the .keyframe was written empty and
+    the Trim line kept nothing, over whatever was beside the recording.
+    They must be refused until the walk is in, or written whole. Says NOT
+    REACHED if the walk landed first."""
+    path = make_no_length(cfg)
+    stem = os.path.splitext(path)[0]
+    sides = (stem + ".keyframe", path + ".trim.avs")
+    def landed(app):
+        st = app.state()
+        return st["frames"] is not None and st["frames"] > 0 and st["plan"] \
+            and "読み込んで" not in st["plan"] and "Reading" not in st["plan"]
+    def body(p):
+        try:
+            with open(p) as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+    for p in sides:
+        if os.path.exists(p):
+            os.remove(p)
+    with App(cfg, "save_marks_during_walk_no_container_length", [{"path": path}]) as app:
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        left = app.cut(150, 300)
+        for at in (100, 200, 400):
+            app.goto(at)
+            app.s.keys("k")
+        time.sleep(0.3)
+        app.s.keys("Control+h")
+        wait_for("the .keyframe", lambda: body(sides[0]), 10)
+        app.s.keys("Control+Shift+h")
+        wait_for("the Trim line", lambda: body(sides[1]), 10)
+        time.sleep(0.3)
+        want = [body(p) for p in sides]
+        app.ok()
+        app.gone()
+        for p in sides:
+            os.remove(p)
+        app.open_row(1, "e.mkv", wait=False)
+        app.to_editor()
+        # Pressed over and over from the moment the window is up: refused
+        # (nothing written) while no row is in, so the first file to appear
+        # is the first press the window took.
+        during = [None, None]
+        early = False
+        said = False
+        until = time.time() + 30
+        while time.time() < until and during[0] is None:
+            early = early or not landed(app)
+            app.s.keys("Control+h")
+            during[0] = body(sides[0])
+            st = app.state()
+            # Its own words, not those of the files a first visit owes.
+            said = said or (st["status"] or "") in (
+                "解析が終わるまで保存できません", "Not saved: wait for the analysis to finish")
+        while time.time() < until and during[1] is None:
+            app.s.keys("Control+Shift+h")
+            during[1] = body(sides[1])
+        status = app.state()["status"]
+        wait_for("the walk again", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        st = app.state()
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+    for p in sides:
+        if os.path.exists(p):
+            os.remove(p)
+    t.check("p4gui-1 Ctrl+H pressed during the walk", early, "" if early else "NOT REACHED: the walk landed first")
+    ok = all(d is None or d == w for d, w in zip(during, want))
+    t.check("p4gui-1 marks written during the walk are the row's (no container length)",
+            ok and st["frames"] == left,
+            f"want {want!r}, written {during!r}; status {status!r}; {st['frames']} pictures (want {left})")
+    t.check("p4gui-1 the refusal says to wait for the analysis", said or not early,
+            "said" if said else "no refusal seen on the status line")
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -4172,6 +4336,8 @@ SCENARIOS = [
     disc_name_after_image_only,
     image_only_twice,
     image_only_twice_other,
+    image_from_its_own_image,
+    tracks_subtitle_stream,
     disc_gauge_overwritable,
     plays_owed_left_behind,
     plays_owed_removed_undone,
@@ -4189,6 +4355,7 @@ SCENARIOS = [
     reopen_selection_no_container_length,
     ok_during_walk_selection_no_container_length,
     held_selection_no_container_length,
+    save_marks_during_walk_no_container_length,
 ]
 
 

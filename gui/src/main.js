@@ -5719,6 +5719,11 @@ const markFilter = (kind) => ({
   extensions: { keyframe: ["keyframe"], cm: ["json"], cue: ["cue"] }[kind] || ["avs"],
 });
 
+/// Whether the timeline cannot hold the row yet: a recording whose container
+/// states no length has an outline of 0 s until its walk lands. See
+/// `heldSel`, and `early` in `openPath`.
+const timelineOwed = () => !!src && !walked() && !(src.duration > 0);
+
 /// Write the marks beside the recording.
 ///
 /// `ask` puts a picker up with the name already in it, which is what the
@@ -5738,8 +5743,14 @@ async function saveMarks(kind, ask) {
   // Nor before a first visit has read the files beside the recording: the
   // file about to be written is the one still owed to the timeline, and the
   // timeline does not hold its marks yet.
-  if (marksDue) {
-    el("status").textContent = tr("marks.notRead");
+  //
+  // Nor, on any visit, before the walk of a recording whose container states
+  // no length (`timelineOwed`): the outline's timeline is 0 s long, every
+  // mark the row came back with and every range it keeps lies past its end,
+  // and Ctrl+H wrote an empty `.keyframe` and a Trim line that keeps nothing
+  // over the files beside it.
+  if (marksDue || timelineOwed()) {
+    el("status").textContent = tr(marksDue ? "marks.notRead" : "marks.walkOwed");
     return;
   }
   // The menu greys this line out; the shortcut is the way in that cannot,
@@ -5789,9 +5800,10 @@ async function saveMarks(kind, ask) {
   if (gen !== openGen) return;
   // And asked again: the walk can land while the question above is up, and
   // where it put the first picture somewhere else the marks are owed a read
-  // on that head before they can be written (`recountEarly`).
-  if (marksDue) {
-    el("status").textContent = tr("marks.notRead");
+  // on that head before they can be written (`recountEarly`). Or it has
+  // not landed yet on a recording with no length.
+  if (marksDue || timelineOwed()) {
+    el("status").textContent = tr(marksDue ? "marks.notRead" : "marks.walkOwed");
     return;
   }
   // The backend refuses the recording it has open, and until the walk lands
@@ -5854,6 +5866,14 @@ const leaf = (path) => path.split(/[/\\]/).pop();
 async function loadMarksFrom(kind) {
   // Not while another row is coming in, for the reason `saveMarks` gives.
   if (!src || swapping || !dialog) return;
+  // Nor before the walk of a recording whose container states no length
+  // (`timelineOwed`): the outline's timeline is 0 s long, so every mark in
+  // the file lay past its end and was dropped, a Trim line cut nothing, and
+  // the line said there was nothing in a file that holds marks.
+  if (timelineOwed()) {
+    el("status").textContent = tr("marks.walkOwedRead");
+    return;
+  }
   const gen = openGen;
   const picked = await dialog.open({
     multiple: false,
@@ -5863,6 +5883,11 @@ async function loadMarksFrom(kind) {
   // Picked for the recording that was up when the picker was: another row
   // sent meanwhile is not the one it was chosen for.
   if (!picked || gen !== openGen) return;
+  // And again: the walk can still be running when the picker closes.
+  if (timelineOwed()) {
+    el("status").textContent = tr("marks.walkOwedRead");
+    return;
+  }
   const from = Array.isArray(picked) ? picked[0] : picked;
   if (/\.(keyframe|avs|json|cue)$/i.test(from)) kind = kindOf(from);
   const got =
@@ -8384,6 +8409,9 @@ function renderTracks() {
     substream: "tracks.substream",
     menu: "tracks.menu",
     "text subtitles": "tracks.textst",
+    // A subtitle format no cut carries (SubRip, ASS, mov_text, WebVTT,
+    // dvb_subtitle): without this line it would read as a data broadcast.
+    "subtitle stream": "tracks.subtitleStream",
   };
   for (const track of dropped) {
     const li = document.createElement("li");
@@ -8416,7 +8444,15 @@ function renderTracks() {
   // timeline at all, what could have but has nowhere to be written, and what
   // travels by an answer given on another screen.
   for (const [key, when, from] of [
-    ["tracks.droppedNote", (k) => k.detail !== "substream", dropped],
+    // The note gives the reasons for these three only. A subtitle stream (or
+    // a timecode track) under it was told reasons that are not its own --
+    // "a disc's text subtitles live on the disc" over a .mkv's SubRip --
+    // and its line already says why it goes.
+    [
+      "tracks.droppedNote",
+      (k) => ["superimpose", "menu", "text subtitles"].includes(k.detail),
+      dropped,
+    ],
     ["tracks.substreamNote", (k) => k.detail === "substream", dropped],
     ["tracks.settledNote", () => true, settled],
   ]) {

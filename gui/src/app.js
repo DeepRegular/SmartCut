@@ -7266,9 +7266,8 @@ async function discUsed() {
 /// as a recorder formats it, which holds less than the disc is named by
 /// (`disc_holds`). The gauge, 収める and the check after the run all price
 /// against this, so that the three say the same thing about the same disc.
-async function discHolds(named) {
+async function discHolds(named, access = settings.image ? settings.imageAccess : "") {
   if (!named) return 0;
-  const access = settings.image ? settings.imageAccess : "";
   const held = await invoke("disc_holds", { disc: named, access }).catch(() => named);
   return Number(held) > 0 ? Number(held) : named;
 }
@@ -9270,6 +9269,32 @@ async function runExport() {
 /// which is what they go back to when it ends. See `runExport`.
 let heldBeforeRun = false;
 
+/// Which of the names this run's image goes under -- `image` where the
+/// backend gave one, and the folder typed with `.iso` on -- a row of the
+/// list is read out of, or null: the row's
+/// path is a file inside it (`x.iso/BDMV/STREAM/00001.m2ts`, a DVD title on
+/// `x.iso/VIDEO_TS/...`) or the image itself. Every row, as `bdav_image`
+/// takes every row. By name only, so a row reached under another spelling
+/// (a share by its mount, a link) is not seen here -- `bdav_image` still
+/// refuses it after the cut, by file.
+function imageIsRead(image) {
+  const fold = (p) => {
+    const s = String(p || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    // Names fold case where Windows writes them.
+    return /^[A-Za-z]:\/|^\/\//.test(s) ? s.toLowerCase() : s;
+  };
+  const typed = discDir().replace(/[\\/]+$/, "");
+  const named = [image, typed && `${typed}.iso`].filter(Boolean);
+  return (
+    named.find((i) =>
+      clips.some((c) => {
+        const path = fold(c.path);
+        return path === fold(i) || path.startsWith(`${fold(i)}/`);
+      })
+    ) || null
+  );
+}
+
 async function startExport() {
   // Cleared first, before any of the ways this can decline to start: a stop
   // left over from the run before -- a batch job stopped from its row --
@@ -9404,8 +9429,26 @@ async function startExport() {
   // written under its own name. Refused before anything is cut; whether the
   // old image is still wanted is for whoever made it to say, by moving or
   // deleting it. See `bdav_image_in_way`.
-  if (disc && settings.image && settings.imageOnly) {
-    const image = await invoke("bdav_image_in_way", { dir: discDir() }).catch(() => null);
+  if (disc && settings.image) {
+    const image = settings.imageOnly
+      ? await invoke("bdav_image_in_way", { dir: discDir() }).catch(() => null)
+      : null;
+    // Unless the image is the one a row of the list is read out of -- in
+    // the way or not, image-only or not: then it is not an earlier run's
+    // disc to move or delete but the source, and what is said is what
+    // `bdav_image` says of it (in its own words, `out.imageIsRead`), which
+    // it said only after the cut. Here, before anything is cut, as the
+    // command line says it.
+    const read = imageIsRead(image);
+    if (read) {
+      note(t("out.imageIsRead", { image: read }));
+      runDir = null;
+      runDisc = null;
+      runFolder = null;
+      paused = heldBeforeRun && !resumeAfterRun;
+      pump();
+      return;
+    }
     if (image) {
       note(t("out.imageInTheWay", { image, dir: discDir() }));
       runDir = null;
@@ -9783,7 +9826,11 @@ async function startExport() {
         // far as they were asked to -- which is a thing this program can only
         // find out by trying, and which is worth knowing before a disc is
         // burned rather than after.
-        const capacity = await discHolds(Number(settings.disc) || 0);
+        // Against the image the size above was measured for, not the access
+        // on screen now: the screen stays editable through the minutes of
+        // indexing, and a change of it in them priced the disc one way and
+        // measured it the other.
+        const capacity = await discHolds(Number(settings.disc) || 0, overwritable ? "overwritable" : "");
         if (wroteBytes > 0 && capacity > 0) {
           // A disc that came out too large says so either way, but only a
           // run that was asked to make the pictures smaller can say they
