@@ -1061,6 +1061,18 @@ the wider of two identical tracks. On a two-track recording measured here it nam
 second — so a preview opened on the commentary, and the commercial detector listened to
 it.
 
+**A transport stream whose recording describes none of its sound** — a recorder's
+BD-RE clip carries no programme description at all — still has its map, and the map
+names each track by its component tag: ARIB gives the main sound 0x10 and the second
+0x11. So the main track there is the one with the lowest tag, or, where the map tags
+none, the first sound the map lists (`by_map` in `outline_of`,
+[`lib.rs`](../../rust/crates/core/src/lib.rs)). Left to `best`, which breaks a tie
+between two stereo AAC tracks on the bit rate, 5 of the 10 titles with commentary on
+two recorder discs opened on the commentary. `best` is still the answer for every other
+container, and for a transport stream whose map could not be read. The main track
+decides which track the editor's track list marks as the main one and which one the
+detections listen to; what a cut writes is the same either way.
+
 ### Cutting each track on its own
 
 On the way out, **each track is cut on its own**. That is the whole point, and the

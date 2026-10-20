@@ -482,13 +482,37 @@ there makes libavformat forget what it knew of the timestamps, and an
 `ffmpeg -c copy` `.mkv` of a broadcast recording -- which opens on two leading
 pictures at negative times in front of its first key picture -- came back from
 it with those two at positive times among the key picture's own: the cut kept
-the two broken pictures and lost the real one (599 of 600). A Matroska file
-with subtitles in it is still sought as before. A WebVTT block libavformat
-cannot parse makes it drop the rest of the cluster, pictures and sound alike,
-and read from the open such a file lost about its first two seconds (527
-pictures of 584 on the material of `tests/run_demux_tests.sh`). Read without
+the two broken pictures and lost the real one (599 of 600). Read without
 the seek, the first sound packet can arrive with no length, and is given its
 frame's own (`take_audio` in `cut.rs`).
+
+One kind of file can lose its head to the open instead. A WebVTT block
+libavformat cannot parse makes it drop the rest of the cluster the block is in,
+pictures and sound alike, and read from the open such a file lost about its
+first two seconds (527 pictures of 584 on the material of
+`tests/run_demux_tests.sh`, 826 frames of sound of 915). WebVTT is the one
+subtitle format the Matroska demuxer parses rather than hands over; SubRip,
+ASS, PGS and VobSub are passed through as they are, so a Matroska file with any
+of those is read from the open like any other. But the seek cannot be made on
+every WebVTT file either: a remuxed recording with a WebVTT track, every block
+of which reads, lost a picture to it from its head (143 of 144, 10 dB). So a
+Matroska file with WebVTT in it is sought only where the open really did lose
+something (`sought_at_head` and `open_lost` in
+[`sound.rs`](../../rust/crates/core/src/sound.rs)). The file is opened twice
+more: once read on from the open, once sought to the head with the subtitles
+switched off. Every picture and sound packet of the sought read from
+before where the open stopped reading must be among the open's, by stream and
+byte position; a packet missing, or one that does not say where it was read,
+means the seek. A cover picture is left out of the check: Matroska shows an
+attached image as a picture stream, but it is never read from a block and says
+nowhere where it was read, and a video site's recording saved with its
+thumbnail and its subtitles was sought for that alone and came out wrong at the
+head (145 packets for 144, failing its check). That costs two opens and a read
+of the head, and only on a Matroska file with WebVTT read from 0. The same rule decides the head of a
+`--sound-only` file, which never sought at the head before and so lost the
+same two seconds of sound. A file that has both an unparsable block in the
+head and leading pictures at negative times still loses the leading picture:
+neither read has all of it right.
 
 [`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
 [`Grid`]: ../../rust/crates/core/src/cut.rs

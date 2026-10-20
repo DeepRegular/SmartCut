@@ -438,7 +438,7 @@ These only surfaced on real material:
   measured at 17 dB.
 - **One video track only**, and in the Python reference implementation one audio track
   only. The Rust engine reads every sound track the recording carries and writes them
-  all, and carries every kind of subtitle across when writing a `.ts`: the ARIB
+  all, and carries these subtitles across when writing a `.ts`: the ARIB
   caption stream a broadcast sends, the crawl it sends beside it, the TTML a 4K
   broadcast sends instead, and the PGS a disc draws (see
   [audio](audio.md#multi-audio-broadcasts),
@@ -454,6 +454,11 @@ These only surfaced on real material:
   into a disc structure a cut does not have, and TextST is set in a typeface
   that lives on the disc rather than in the stream
   ([above](disc.md#a-menu-is-not-a-stream-and-the-index-is-the-only-thing-that-knows)).
+  Nor are the subtitle formats no reader takes — SubRip, ASS, `mov_text` and
+  WebVTT in an `.mkv` or `.mp4`, a DVB broadcast's bitmaps, a DVD's subpictures
+  outside a DVD — and they are named the same way, as `a subtitle stream`
+  (`outline_of` in [`lib.rs`](../../rust/crates/core/src/lib.rs)). Up to 0.8.28
+  they were left out of every cut without a word.
 - **The audio boundary is still rounded to a whole frame in every mode but
   `reencode`.** What `smart` removes is the audio from the far side of a cut being
   left in the seam; it does not change an interval being a whole number of frames

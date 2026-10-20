@@ -713,7 +713,15 @@ replaced without a word. So where `<disc>.iso` is there and the folder holds no
 numbered stream, clip index or playlist, the run is refused. Nothing is renamed
 around it: whether that image is still wanted is for its owner to say, by moving
 it or deleting it. A folder that holds a disc is added to as before, and its image
-made again.
+made again. Where that image is the one the recording is read out of, the run is
+refused as that, by the check before this one: told to move or delete the image,
+the user would have been told to move or delete the source. The window makes the
+same check before the cut too (`imageIsRead` in
+[`app.js`](../../gui/src/app.js)), image-only or not. Before, a run that was not
+image-only found out only once the disc was written, and one that was was told to
+move or delete its own source. It goes by name, so a row reached under
+another spelling -- a share by its mount, a link -- is still caught by file only
+after the cut.
 
 The image is a **UDF** filesystem, at revision 2.50 or 2.60 as the output
 settings screen asks. [`udfw.rs`](../../rust/crates/core/src/udfw.rs) writes
@@ -839,7 +847,9 @@ Laid out that way, a single-layer disc holds 11,776,736 blocks of files --
 whole 32-block (64 KB) units. A list past the single layer's room comes out at
 the dual layer's size, 23,652,352 sectors or 48.4 GB, which a burner will not put
 on a 25 GB disc; that used to happen without a word, and the run now says what
-the disc comes to against the 24.12 GB one layer holds and the size it became.
+the disc comes to, how many megabytes that is past the 24.12 GB one layer holds,
+and the size it became. The megabytes are there because a disc a few clusters over
+read as "24.12 GB, more than the 24.12 GB", which looked like a mistake.
 The estimate made before writing weighs the list against the same room
 ([Fitting a disc](transrate.md)).
 

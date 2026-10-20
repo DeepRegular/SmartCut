@@ -510,8 +510,10 @@ frames, and `Snap to lossless` can take those to zero once it lights up.
 Some files do not state how long they are: a `.webm` a browser recorded, an
 `.mkv` cut short, a bare `.m2ts` taken off a recorder's BD-RE. Their length is
 known only once the reading finishes, so the `.keyframe`, Trim and commercial
-detection files under the recording's name are read then, and `Ctrl+H` waits for
-it too. Opened again, or with a project loaded, such a recording comes back with
+detection files under the recording's name are read then. Saving the marks
+(`Ctrl+H`) and reading them from a file (`Ctrl+L`) wait for it too, on every
+visit and not only the first, and pressed sooner they say so on the info bar.
+Opened again, or with a project loaded, such a recording comes back with
 its cuts, its IN and OUT and its playhead where they were saved.
 
 ### What is where on the screen
@@ -1037,7 +1039,9 @@ program deciding what the recording is for.
   answer, in [the preferences](#output-settings), because it can only go into
   a `.ts`. Left off there, it appears here as `not carried`. For a recording off a disc, a
   menu and the text subtitles drawn with the disc's own typeface really cannot be
-  carried, and say so here.
+  carried, and say so here. So do the subtitles of a file SmartCut has no way to
+  carry — SubRip, ASS, `mov_text` or WebVTT in an `.mkv` or an `.mp4`, a DVB
+  broadcast's, a DVD's remuxed into an `.mkv`: `not carried: a subtitle stream`.
 - **A Blu-ray's subtitles are a choice here like any other track.** A DVD's are
   not: they go wherever the output settings send them, and the list says so on a
   line of its own — `inside the cut or beside it, as the output settings say`.
@@ -1471,7 +1475,7 @@ Writing a disc adds these fields:
 | **Channel** | Per clip. What the channel calls itself, and beside it the three digits a viewer knows it by — 0, or empty, where the recording does not say, which is what a terrestrial recording writes there |
 | **Recorded** | Per clip. When the programme went out, as `2026-08-17 01:00:00`. Slashes, a missing seconds field and single digits are understood and put back in that shape; anything that cannot be read as a moment stops the run rather than being written as no moment at all |
 | **About** | Per clip, and several lines of it: the sentence a listing carries and the cast and staff under it. This is what a recorder shows when the programme is selected in its list |
-| **Image** | Whether to wrap the finished disc in a `.iso` (`None` / `UDF 2.50` / `UDF 2.60`). The folder is written either way, and the image goes beside it under the same name. The image holds the disc, `BDAV`, and nothing else that is in the folder |
+| **Image** | Whether to wrap the finished disc in a `.iso` (`None` / `UDF 2.50` / `UDF 2.60`). The folder is written either way, and the image goes beside it under the same name. The image holds the disc, `BDAV`, and nothing else that is in the folder. Where that `.iso` is the image a row of the list is read out of, the run is refused before anything is cut, since the new image would replace it |
 | **Disc kind** | Under the image, and only there when one is being made. What the image says may be done to the disc it is burned onto. *Nothing writes to it again* is the default and is the truth about a BD-R, or a BD-RE you only play. *The recorder may go on editing it* is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off — pick it if the disc is going back into the recorder. The image is then laid out as a recorder lays out a BD-RE, and is the size of the whole disc (25 or 50 GB); the part with nothing in it takes no room where the image is saved. Laid out that way, a single-layer disc holds 24.12 GB of files and a dual-layer one 48.34 GB, and that is what **Disc used** and **Transcode** weigh the list against (a single layer reads 22.5 GiB); an XL disc holds what a dual layer does |
 | **Remove the folder once the image is written** | Under the image, and only there when one is being made: the same thirty gigabytes twice over is not what most runs want to be left with. The folder is still written and the image still made of it — this happens afterwards, and only where the image was written. `BDAV` goes, and the folder above it only where that leaves it empty, so a disc written into a folder of your own leaves the rest of it alone. Where a `.iso` of that name is already there and the subfolder holds no disc to add to, the run is refused before it starts, since the old image would be replaced by the new disc's: move it away or choose another subfolder to keep it, or delete it if it is no longer wanted |
 | **Disc** | The disc this is going to be burned onto (25GB / DL 50GB / XL 100GB / XL 128GB). The gauge below is drawn against it |

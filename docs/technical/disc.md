@@ -1708,7 +1708,14 @@ One difference from the pair, and it is the format's: **a `.sup` holds one
 stream**, where a `.idx` names as many as the disc had. A recording with two of
 them is written as two files, each taking the language the disc says it is in —
 `cut_title.eng.sup` — and the number it sits on where the disc says nothing, or
-says the same thing twice.
+says the same thing twice. A Matroska file numbers none of its streams, so every
+track of it sits on 0; where two of them share a number, each is named by its
+stream's index in the file instead — `cut_title.0002.sup`, `cut_title.0003.sup`
+for a rip with two English tracks, one of them forced — where both were once
+written to one `cut_title.0000.sup`, the second over the first. A name that
+still comes out twice, which only a crafted file can bring about, takes `-<n>`
+after it, `<n>` being its place in the list, so no `.sup` is written over
+another (`sup_tags` in [`cut.rs`](../../rust/crates/core/src/cut.rs)).
 
 Two things about the reading are worth writing down, because both cost an
 afternoon:

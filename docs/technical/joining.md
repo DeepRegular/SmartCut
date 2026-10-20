@@ -104,6 +104,14 @@ written afresh to fit it -- frame size: 640x360 vs 320x240; frame rate: 29.97
 vs 25; sample rate: 48000 Hz vs 44100 Hz; channels: 2 vs 1.
 ```
 
+A sound track that differs and is still not written afresh is left out of the
+note: one dropped with `--drop-stream`, which is not written at all, and a
+reel's TrueHD, MLP or DTS in another shape under a master of the same codec,
+which is carried frame for frame
+([below](#a-sound-track-any-reel-cannot-match-is-written-afresh-for-the-whole-file)).
+A TrueHD 2.0 reel joined onto a TrueHD 5.1 master was announced as decoded and
+encoded whole while its frames were copied.
+
 The window asks the same question. The `join_fit` command takes the list's
 paths and which of them is the master, and answers, per clip, whether its
 pictures and its sound are written afresh and what differs. The output screen's

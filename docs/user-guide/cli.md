@@ -177,7 +177,7 @@ refused rather than quietly ignored.
 | `--video-share 0.35..1` | The share itself, where you would rather name it than have a size worked out into one. Not with `--fit`, which works one out |
 | `--iso 2.50\|2.60` | Wrap the finished disc in an `.iso` beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The image holds the disc, `BDAV`, and nothing else in the folder. The folder stays. Refused before anything is written where that `.iso` is the image the recording is being read out of |
 | `--iso-access read-only\|overwritable` | What the image says may be done to the disc it is burned onto. `read-only`, the default, is the truth about a disc nothing will write to again — a BD-R, or a BD-RE you only play. `overwritable` is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off; the image is then laid out the way a recorder lays out a BD-RE, and is the size of the whole disc (25 GB, or 50 GB where one layer will not hold it — the part with nothing in it takes no room on the disk it is written to). An image that outgrows one layer and comes out the dual-layer size says so. Needs `--iso` |
-| `--iso-only` | And then take the folder away, leaving the image on its own. Needs `--iso`: the image is made *of* the folder, so the folder is written first and goes once the image holds it. What goes is `BDAV`, and the folder above it only where that leaves it empty — a disc written into a folder of your own leaves everything else in it alone. A file in `BDAV` that the image could not carry keeps the folder where it is. Where a `.iso` of that name is already there and the `--bdav` folder holds no disc to add to, the run is refused before anything is cut (exit code 1), since that image would be replaced by the new disc's; move it away to keep it, or give `--bdav` another folder |
+| `--iso-only` | And then take the folder away, leaving the image on its own. Needs `--iso`: the image is made *of* the folder, so the folder is written first and goes once the image holds it. What goes is `BDAV`, and the folder above it only where that leaves it empty — a disc written into a folder of your own leaves everything else in it alone. A file in `BDAV` that the image could not carry keeps the folder where it is. Where a `.iso` of that name is already there and the `--bdav` folder holds no disc to add to, the run is refused before anything is cut (exit code 1), since that image would be replaced by the new disc's; move it away to keep it, or give `--bdav` another folder. Where that `.iso` is the image the recording is read out of, the run is refused as that instead, as `--iso` says |
 | `--disc-title NAME` | What the disc is called. Left out, a disc that already has a name keeps it; a new disc is named after the series the recording is an episode of: the programme name with the episode number, the episode's own title and the broadcast's marks taken off it |
 | `--programme NAME` | What this recording is called in the disc's index. Left out, the name its playlist gave it if it came off a disc, otherwise the programme name the broadcast carries |
 | `--channel NAME[,N]` | The channel, and optionally the three digits a viewer knows it by (`--channel "衛星第一,161"`). Left out, both come from the recording. A number that is not one is refused |
@@ -222,8 +222,15 @@ default `pgs`, they are left out, and the run says so and names the two ways to
 keep them, a `.ts` or `.m2ts`, or `beside` or `sup`, which write them next to
 any output. A `.sup` holds
 one stream, so a recording with two of them is written as two files, named by
-language (`cut_title.eng.sup`). See
+language (`cut_title.eng.sup`), or by number where the language does not tell
+them apart. See
 [a disc's subtitles](../technical/disc.md#a-discs-subtitles-inside-the-cut-or-beside-it).
+
+Some kinds of subtitles are not carried into any output at all: SubRip, ASS,
+`mov_text` or WebVTT in an `.mkv` or an `.mp4`, a DVB broadcast's subtitles, and
+a DVD's subtitles remuxed into an `.mkv`. The run names each of them on a line
+of its own, `not carried: a subtitle stream (its format is not one a cut
+carries)`.
 
 ## VC-1 discs
 
