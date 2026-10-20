@@ -1030,18 +1030,29 @@ struct Converted {
     shown: usize,
 }
 
-/// What one stream's `.sup` is called beside the cut, or `None` where it is
-/// the only one and takes the cut's own name.
+/// What each stream's `.sup` is called beside the cut, in the order given,
+/// or `None` where it is the only one and takes the cut's own name.
 ///
 /// A pair holds as many streams as the disc had; a `.sup` holds one. So where
 /// there are several, each takes the language the disc says it is in --
 /// `cut_title.eng.sup` -- and the number it sits on where the disc says
 /// nothing, or says the same thing for two of them.
-fn sup_tag(languages: &[Option<String>], k: usize, id: i32) -> Option<String> {
-    if languages.len() < 2 {
-        return None;
+///
+/// Each entry is the stream's language, its number (a PID, a DVD's substream
+/// id) and, for a stream read off the recording, its index there.
+///
+/// **The number is the stream's index where two share it.** Only a transport
+/// stream and a DVD number their streams; a Matroska file leaves every one at
+/// 0, so a rip with two English PGS tracks (one of them forced) named both
+/// `cut_title.0000.sup`, and the second written over the first while the run
+/// said of each what it carried. A number nobody else has is used as it
+/// always was, so every transport stream's and every disc's names are as
+/// before. And whatever still comes out twice -- a crafted file -- takes its
+/// place in the list after it, so no `.sup` is ever written over another.
+fn sup_tags(streams: &[(Option<String>, i32, Option<usize>)]) -> Vec<Option<String>> {
+    if streams.len() < 2 {
+        return vec![None; streams.len()];
     }
-    let mine = languages.get(k).and_then(|l| l.as_deref());
     // The same when written: `eng` and `ENG` are one file where names fold
     // case, and `a/b` and `a:b` are both `a_b` once [`crate::vobsub::named_after`]
     // has made them a name. Two streams under one name, the second
@@ -1049,18 +1060,38 @@ fn sup_tag(languages: &[Option<String>], k: usize, id: i32) -> Option<String> {
     let written = |l: &str| {
         crate::vobsub::named_after("x", l).to_string_lossy().to_lowercase()
     };
-    let alone = mine.is_some_and(|l| {
-        let l = written(l);
-        languages
-            .iter()
-            .filter(|other| other.as_deref().is_some_and(|o| written(o) == l))
-            .count()
-            == 1
-    });
-    Some(match (alone, mine) {
-        (true, Some(language)) => language.to_string(),
-        _ => format!("{id:04x}"),
-    })
+    let tags: Vec<String> = streams
+        .iter()
+        .map(|(language, id, index)| {
+            let alone = language.as_deref().is_some_and(|l| {
+                let l = written(l);
+                streams
+                    .iter()
+                    .filter(|(other, _, _)| other.as_deref().is_some_and(|o| written(o) == l))
+                    .count()
+                    == 1
+            });
+            let shared = streams.iter().filter(|(_, other, _)| other == id).count() > 1;
+            match (alone, language, index) {
+                (true, Some(language), _) => language.clone(),
+                (_, _, Some(index)) if shared => format!("{index:04x}"),
+                _ => format!("{id:04x}"),
+            }
+        })
+        .collect();
+    let mut taken: Vec<String> = Vec::new();
+    tags.into_iter()
+        .enumerate()
+        .map(|(k, tag)| {
+            let tag = if taken.contains(&written(&tag)) {
+                format!("{tag}-{}", k + 1)
+            } else {
+                tag
+            };
+            taken.push(written(&tag));
+            Some(tag)
+        })
+        .collect()
 }
 
 /// Where a graphics track goes when it does not go into the cut.
@@ -3535,23 +3566,30 @@ fn seek_to(ictx: &mut ff::format::context::Input, src: &Source, time: f64) -> Re
     // two broken pictures, left out the real one at 0.033, and a re-encode
     // from the head decoded them as pictures of the range.
     //
-    // **Except a Matroska file with subtitles in it, which is sought as it
-    // always was.** What the open read is read with every stream switched
-    // on, and the open's packets are handed over first. A subtitle block
-    // libavformat cannot parse -- a video site's WebVTT, see
-    // [`crate::input::keep_only`] -- makes it drop the rest of the cluster
-    // the block is in, pictures and sound alike: read from the open, a cut
-    // of such a file from its head lost its first two seconds (527 pictures
-    // of 584 in `tests/run_demux_tests.sh`). Sought, the read starts again
-    // with the subtitles switched off (the callers switch them off after
-    // the seek), and nothing is lost.
-    let sought_anyway = landing <= 0.0 && {
-        let matroska = ictx.format().name().split(',').any(|n| n.trim() == "matroska");
-        matroska
-            && ictx
-                .streams()
-                .any(|s| s.parameters().medium() == ff::media::Type::Subtitle)
-    };
+    // **Except a Matroska file with WebVTT in it whose open has already
+    // lost some of the head, which is sought as it always was.** What the
+    // open read is read with every stream switched on, and the open's packets
+    // are handed over first. A WebVTT block libavformat cannot parse -- a
+    // video site's, see [`crate::input::keep_only`] -- makes it drop the rest
+    // of the cluster the block is in, pictures and sound alike: read from the
+    // open, a cut of such a file from its head lost its first two seconds
+    // (527 pictures of 584 in `tests/run_demux_tests.sh`). Sought, the read
+    // starts again with the subtitles switched off (the callers switch them
+    // off after the seek), and nothing is lost.
+    //
+    // **WebVTT only, not every subtitle,** and only where the open really
+    // lost something. It is the one subtitle block the Matroska demuxer
+    // parses rather than hands over, so the only one whose shape can cost the
+    // cluster. Every other kind -- SubRip, ASS, PGS, VobSub, a remux of a
+    // broadcast's -- is read from the open like the pictures, and has to be:
+    // sought, the open-GOP leading pictures in front of the first key picture
+    // were dropped again, and a cut from the head of a remuxed recording with
+    // an .srt beside its pictures copied the two broken ones and lost a
+    // picture (143 of 144, 10 dB) -- and so did the same recording with a
+    // WebVTT track every block of which reads. The rule is the sound-only
+    // writer's as well; see [`crate::sound::sought_at_head`].
+    let sought_anyway =
+        landing <= 0.0 && crate::sound::sought_at_head(ictx, &src.input.url);
     if landing <= 0.0 && !sought_anyway {
         return Ok(());
     }
@@ -8249,8 +8287,31 @@ fn cut_into(
         if !fit.anything() {
             continue;
         }
+        // A sound track that differs and is still not written afresh: one
+        // the caller dropped, which is not written at all, and lossless sound
+        // carried through as it is, which takes a reel of its own codec frame
+        // for frame (see the refusal below and `carried_whole` in
+        // [`crate::audio`]). Said to be "written afresh", a TrueHD 2.0 reel
+        // joined onto a TrueHD 5.1 master was announced as a decode and an
+        // encode of the whole of it while its frames were copied.
+        let as_is = |k: usize| {
+            let Some(m) = src.audios.get(k) else {
+                return true;
+            };
+            let whole = ff::decoder::find_by_name(&m.codec).map(|c| c.id()).is_some_and(|id| {
+                crate::audio::carried_whole(id)
+                    && carriage(id, writing_ts(output), 16, opts.audio_codec) == id
+            });
+            opts.drop_streams.contains(&m.stream_index)
+                || (whole && reels[n].src.audios.get(k).is_some_and(|r| r.codec == m.codec))
+        };
+        let sound = fit.audio.iter().enumerate().any(|(k, &a)| a && !as_is(k));
+        if !fit.video && !sound {
+            continue;
+        }
         let found: Vec<String> = differs
             .iter()
+            .filter(|m| !matches!(m.what, crate::conform::What::Sound(k, _) if as_is(k)))
             .map(crate::conform::Mismatch::describe)
             .collect();
         crate::note_once(format!(
@@ -8259,7 +8320,7 @@ fn cut_into(
              one pass can make them.",
             reels[n].src.path,
             src.path,
-            match (fit.video, fit.audio.iter().any(|&a| a)) {
+            match (fit.video, sound) {
                 (true, true) => "its pictures and its sound are",
                 (true, false) => "its pictures are",
                 _ => "its sound is",
@@ -9381,7 +9442,12 @@ fn cut_into(
         if n == master {
             continue;
         }
-        let spare = reel.src.audios.len().saturating_sub(audios.len());
+        // Against every track the master has, not the ones kept: with one of
+        // the master's dropped, the reel's track in its place is dropped with
+        // it rather than spare, and counted against the kept ones a join of
+        // two one-track recordings with the master's dropped said the other
+        // carried "1 more sound track than the master does".
+        let spare = reel.src.audios.len().saturating_sub(src.audios.len());
         if spare > 0 {
             crate::note_once(format!(
                 "note: {} carries {spare} more sound track(s) than the master does, and the \
@@ -9536,12 +9602,18 @@ fn cut_into(
     // What each `.sup` written beside the cut is called. Settled over all of
     // them at once because the answer for one depends on the others: the only
     // one takes the cut's own name and cannot where there is a second.
-    let sup_langs: Vec<Option<String>> = converting
-        .iter()
-        .filter(|(_, out_index)| out_index.is_none())
-        .map(|(info, _)| info.language.clone())
-        .chain(aside.iter().map(|info| info.language.clone()))
-        .collect();
+    let sup_tags = sup_tags(
+        &converting
+            .iter()
+            .filter(|(_, out_index)| out_index.is_none())
+            .map(|(info, _)| (info.language.clone(), info.id, None))
+            .chain(
+                aside
+                    .iter()
+                    .map(|info| (info.language.clone(), info.pid, Some(info.stream_index))),
+            )
+            .collect::<Vec<_>>(),
+    );
     let mut sup_at = 0usize;
     for (info, out_index) in &converting {
         let palette = crate::dvd::subtitles_of(&src.path)
@@ -9559,7 +9631,7 @@ fn cut_into(
         // Where it has no stream of the output to be written to, it has a
         // file of its own beside it instead.
         let destination = out_index.is_none().then(|| {
-            let tag = sup_tag(&sup_langs, sup_at, info.id);
+            let tag = sup_tags.get(sup_at).cloned().flatten();
             sup_at += 1;
             Aside::Sup(crate::pgs::Sup::new(tag))
         });
@@ -9592,7 +9664,7 @@ fn cut_into(
     for (k, info) in aside.iter().enumerate() {
         let id = 0x20 + k as i32;
         let destination = if sup {
-            let tag = sup_tag(&sup_langs, sup_at, info.pid);
+            let tag = sup_tags.get(sup_at).cloned().flatten();
             sup_at += 1;
             Aside::Sup(crate::pgs::Sup::new(tag))
         } else {
@@ -10606,6 +10678,44 @@ fn cut_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `.sup` of one cut has a name of its own. A transport stream's
+    /// are named as they always were, by language or else by PID; a Matroska
+    /// file's, whose streams all sit on 0, by their stream where the language
+    /// does not tell them apart.
+    #[test]
+    fn every_sup_of_a_cut_has_its_own_name() {
+        let tags = |s: &[(Option<&str>, i32, Option<usize>)]| {
+            sup_tags(
+                &s.iter()
+                    .map(|(l, id, at)| (l.map(String::from), *id, *at))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let names = |t: Vec<Option<String>>| {
+            t.into_iter().map(|t| t.unwrap_or_default()).collect::<Vec<_>>()
+        };
+        assert_eq!(tags(&[(Some("eng"), 0, Some(2))]), [None]);
+        assert_eq!(
+            names(tags(&[(Some("eng"), 0x1200, Some(3)), (Some("jpn"), 0x1201, Some(4))])),
+            ["eng", "jpn"]
+        );
+        assert_eq!(
+            names(tags(&[(Some("eng"), 0x1200, Some(3)), (Some("ENG"), 0x1201, Some(4))])),
+            ["1200", "1201"]
+        );
+        assert_eq!(names(tags(&[(None, 0x20, None), (None, 0x21, None)])), ["0020", "0021"]);
+        assert_eq!(
+            names(tags(&[(Some("eng"), 0, Some(2)), (Some("eng"), 0, Some(3))])),
+            ["0002", "0003"]
+        );
+        assert_eq!(names(tags(&[(None, 0, Some(2)), (Some("jpn"), 0, Some(3))])), ["0002", "jpn"]);
+        // Crafted: a language that reads as another's number.
+        assert_eq!(
+            names(tags(&[(Some("0003"), 0, Some(2)), (None, 0, Some(3))])),
+            ["0003", "0003-2"]
+        );
+    }
 
     /// A width asked of plain PCM outside a transport stream is a codec of
     /// that width, whatever spelling the samples came in: float and eight

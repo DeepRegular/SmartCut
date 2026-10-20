@@ -621,6 +621,9 @@ fn run(
     // nothing is owed: see `head_owed`.
     let mut opened = false;
     let mut ranges_done = 0usize;
+    // Whether the boundaries of a track carried whole have been asked about
+    // yet. See `patches` below.
+    let mut asked_whole = false;
     let say = |done: usize| {
         if let Some(report) = progress.as_ref() {
             let share = done as f64 / ranges_in_all as f64;
@@ -652,7 +655,17 @@ fn run(
         // The frames the boundaries fall inside, re-encoded with the far side
         // silenced and the fade ridden over the near one. Smart rendering,
         // and the same call the picture writer makes.
-        let patches: std::collections::HashMap<i64, Patch> = if setup.mode == AudioMode::Smart {
+        //
+        // Not asked again of a reel where the master's track is carried
+        // whole: the answer is that nothing is patched (every reel is of the
+        // master's codec, or the join was refused above), and asking printed
+        // the note that says so once per recording of the join. A reel that
+        // keeps no range is not an answer: the call returns before the note
+        // when there are no windows, so it does not count as asked.
+        let patches: std::collections::HashMap<i64, Patch> = if setup.mode == AudioMode::Smart
+            && !(carried && asked_whole)
+        {
+            asked_whole = !windows.is_empty();
             boundary_patches(
                 piece.src,
                 &track,
@@ -851,6 +864,132 @@ struct Clock {
     frame_secs: Option<f64>,
 }
 
+/// Whether a read from the head of a recording just opened has to seek
+/// there all the same rather than read on from the open.
+///
+/// **Only where the open has already lost something.** A Matroska file with a
+/// WebVTT stream: the open's look ahead reads with every stream switched on,
+/// and a WebVTT block libavformat cannot parse -- a video site's, see
+/// [`crate::input::keep_only`] -- makes it drop the rest of the cluster the
+/// block is in, sound and pictures alike: read from the open, a cut of such a
+/// file from its head lost its first two seconds (527 pictures of 584 in
+/// `tests/run_demux_tests.sh`, 826 of 915 frames of sound). Sought, the read
+/// starts again with the subtitles switched off, and nothing is lost.
+///
+/// But the seek costs something too, so it is not made on every such file.
+/// It flushes what libavformat knows of the timestamps, and a key picture's
+/// open-GOP leading pictures in front of 0 -- which Matroska cannot state, so
+/// libavformat works them out -- come back from it worked out wrong, behind
+/// the key picture instead of before it: a remuxed recording with a WebVTT
+/// track lost a picture from its head (143 of 144, 10 dB). So the open's
+/// packets are checked against the sought read's, see [`open_lost`], and the
+/// seek is made only where the open is missing some of them. Every other
+/// recording is read on from the open, without looking.
+///
+/// The one rule for both writers: `seek_to` in [`crate::cut`] asks it as well,
+/// and the two disagreeing put a different first frame at the head of the
+/// sound-only file than at the head of the cut's.
+pub(crate) fn sought_at_head(ictx: &ff::format::context::Input, url: &str) -> bool {
+    let matroska = ictx.format().name().split(',').any(|n| n.trim() == "matroska");
+    let webvtt = ictx.streams().any(|s| {
+        let par = s.parameters();
+        par.medium() == ff::media::Type::Subtitle && par.id() == ff::codec::Id::WEBVTT
+    });
+    // A check that cannot be made seeks, as every such file did before.
+    matroska && webvtt && open_lost(url).unwrap_or(true)
+}
+
+/// Whether a fresh open of `url` hands over fewer of the head's pictures and
+/// sound than a read sought to the head with the subtitles switched off.
+///
+/// What the open can lose, it loses while it looks ahead: once it is open the
+/// readers switch the subtitles off, and a block of a stream switched off is
+/// never parsed. So the loss lies inside the bytes the look ahead went
+/// through, and where the demuxer stands just after the open bounds it.
+/// Every packet of the sought read from before there has to be among the
+/// open's, by stream and byte position -- both reads hand over the same
+/// blocks of the same file, so they are named the same. A packet that does
+/// not say where it was read is a check that cannot be made.
+fn open_lost(url: &str) -> Result<bool> {
+    // How far past the bound each read goes on: a parser can hand a packet
+    // from before it over after one from beyond.
+    const PAST: usize = 64;
+    const SEEK_CUR: std::os::raw::c_int = 1;
+    // Not a cover picture: an attachment Matroska shows as a picture stream
+    // is one packet handed over at the open and again after every seek, and
+    // never read from a block, so it says nowhere that it was read -- and a
+    // video site's recording saved with its thumbnail and its subtitles was
+    // sought for that alone, and lost the picture the seek costs (145
+    // packets for 144, the copy failing its check).
+    let carried = |ictx: &ff::format::context::Input| -> Vec<usize> {
+        ictx.streams()
+            .filter(|s| {
+                matches!(s.parameters().medium(), ff::media::Type::Video | ff::media::Type::Audio)
+                    && !s.disposition().contains(ff::format::stream::Disposition::ATTACHED_PIC)
+            })
+            .map(|s| s.index())
+            .collect()
+    };
+    let mut open = crate::input::demux(url)?;
+    // SAFETY: the context is open and its reader is only read here.
+    let bound = unsafe {
+        let pb = (*open.as_ptr()).pb;
+        if pb.is_null() {
+            return Ok(true);
+        }
+        ff::ffi::avio_seek(pb, 0, SEEK_CUR)
+    };
+    if bound <= 0 {
+        return Ok(true);
+    }
+    let keep = carried(&open);
+    crate::input::keep_only(&mut open, &keep);
+    let mut had = std::collections::HashSet::new();
+    let mut past = 0;
+    for (stream, packet) in open.read_packets() {
+        if !keep.contains(&stream.index()) {
+            continue;
+        }
+        let at = packet.position() as i64;
+        if at < 0 {
+            return Ok(true);
+        }
+        if at >= bound {
+            past += 1;
+            if past > PAST {
+                break;
+            }
+        } else {
+            had.insert((stream.index(), at));
+        }
+    }
+    drop(open);
+    let mut sought = crate::input::demux(url)?;
+    // As `seek_to` in [`crate::cut`] seeks to the head, before the discards.
+    let target = i64::MIN / 2;
+    sought.seek(target, ..target)?;
+    crate::input::keep_only(&mut sought, &keep);
+    let mut past = 0;
+    for (stream, packet) in sought.read_packets() {
+        if !keep.contains(&stream.index()) {
+            continue;
+        }
+        let at = packet.position() as i64;
+        if at < 0 {
+            return Ok(true);
+        }
+        if at >= bound {
+            past += 1;
+            if past > PAST {
+                break;
+            }
+        } else if !had.contains(&(stream.index(), at)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The first frame a range laid: its instant, its length, and where the
 /// track's frame before it ended, where the read passed one over.
 type Opening = (f64, f64, Option<f64>);
@@ -893,9 +1032,18 @@ fn take_range(
     // picture, and a broadcast's sound starts before its first one does --
     // half a second of it on an off-air recording, which a whole-recording
     // .wav had as silence and an .aac did not have at all.
+    //
+    // Except where the cut with pictures seeks at the head too: a Matroska
+    // file with WebVTT in it whose open, read on, has already lost whole
+    // clusters to a block libavformat cannot parse -- 826 of 915 frames of
+    // sound, the first two seconds gone, where the cut with pictures had them
+    // all. See [`sought_at_head`].
     let landing = (range.0 - 0.5).max(0.0);
     if landing > 0.0 {
         let target = ((landing + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
+        ictx.seek(target, ..target)?;
+    } else if sought_at_head(&ictx, &src.input.url) {
+        let target = i64::MIN / 2;
         ictx.seek(target, ..target)?;
     }
     // After the seek, for the reason [`crate::input::keep_only`] gives, and

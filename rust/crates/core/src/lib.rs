@@ -503,7 +503,11 @@ pub struct DroppedStream {
     /// where the `pid` beside it is not a PID. See [`track_name`].
     pub stream_index: usize,
     /// Which of them it is: `"superimpose"`, `"data"`, `"data stream"`,
-    /// `"menu"` or `"text subtitles"`. `"data"` is a transport stream's,
+    /// `"menu"`, `"text subtitles"` or `"subtitle stream"`. The last is any
+    /// subtitle stream none of the readers takes -- SubRip, ASS, mov_text or
+    /// WebVTT in a .mkv/.mp4, a DVD's subpictures outside a DVD, a DVB
+    /// broadcast's -- where `"text subtitles"` is a Blu-ray's own text
+    /// format, whose typeface is on the disc. `"data"` is a transport stream's,
     /// which may be a data broadcast; `"data stream"` is any other
     /// container's -- a camera's timecode or metadata track, a DVD's
     /// navigation packets -- which never is. A name rather than a sentence,
@@ -523,6 +527,7 @@ impl DroppedStream {
             "menu" => "a menu",
             "text subtitles" => "text subtitles, whose typeface is on the disc",
             "data stream" => "a data stream",
+            "subtitle stream" => "a subtitle stream (its format is not one a cut carries)",
             _ => "data broadcast",
         }
     }
@@ -1907,14 +1912,46 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     // track is a language or a commentary, and a player that opens on the
     // commentary has opened on the wrong one.
     //
+    // Where a transport stream's recording says nothing about its sound --
+    // a recorder's BD-RE clip carries no programme description at all -- its
+    // own map still names each track: ARIB tags the main sound 0x10 and the
+    // second 0x11, so the lowest tag is the main one, and the first sound the
+    // map lists where none is tagged. libav's tie-break between two stereo
+    // AAC tracks is the bit rate, and on 5 of the 10 titles with commentary
+    // on two recorder discs it named the commentary (tag 0x11): the editor
+    // played it and the detections read it.
+    //
     // Otherwise libav's, since it weighs the disposition flags a container
     // may carry; and the first track where it has no opinion. libav's answer
     // is the widest track, which on a disc is right and on a broadcast is a
     // coin toss: on a two-track recording measured here it named the second.
+    let by_map = || -> Option<AudioInfo> {
+        if !on_a_ts || audios.len() < 2 || audios.iter().any(|a| a.said.is_some()) {
+            return None;
+        }
+        let service = described.as_ref()?;
+        let told = |a: &AudioInfo| u16::try_from(a.pid).ok().and_then(|pid| service.stream(pid));
+        let tagged = audios
+            .iter()
+            .filter_map(|a| told(a).and_then(si::ElementaryStream::component_tag).map(|t| (t, a)))
+            .min_by_key(|(t, _)| *t);
+        if let Some((_, a)) = tagged {
+            return Some(a.clone());
+        }
+        audios
+            .iter()
+            .filter_map(|a| {
+                let pid = u16::try_from(a.pid).ok()?;
+                service.streams.iter().position(|e| e.pid == pid).map(|n| (n, a))
+            })
+            .min_by_key(|(n, _)| *n)
+            .map(|(_, a)| a.clone())
+    };
     let audio = audios
         .iter()
         .find(|a| a.said.as_ref().is_some_and(|s| s.main))
         .cloned()
+        .or_else(by_map)
         .or_else(|| {
             ictx.streams()
                 .best(ff::media::Type::Audio)
@@ -2062,6 +2099,24 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
                     stream_index: s.index(),
                     what: if on_a_ts { "data" } else { "data stream" },
                 }),
+                // A subtitle stream none of the readers above takes: SubRip,
+                // ASS, mov_text or WebVTT, a DVD's subpictures where there is
+                // no DVD to name them (a .mkv, a loose .vob), a DVB
+                // broadcast's. None of them is carried, and until it was
+                // said here a cut left them behind without a word -- the run
+                // said "0 of 0 caption stream(s)" and the subtitles were gone.
+                // A Blu-ray's PGS is carried (see `graphics`), and so is a
+                // DVD's own (see `subpictures`); an ARIB caption is above.
+                (ff::media::Type::Subtitle, id)
+                    if !graphics.iter().any(|g| g.stream_index == s.index())
+                        && !(id == ff::codec::Id::DVD_SUBTITLE && !subpictures.is_empty()) =>
+                {
+                    Some(DroppedStream {
+                        pid: s.id(),
+                        stream_index: s.index(),
+                        what: "subtitle stream",
+                    })
+                }
                 _ => None,
             }
         })

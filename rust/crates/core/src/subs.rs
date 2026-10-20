@@ -104,9 +104,22 @@ pub enum Kind {
 pub struct Track {
     /// What the recording calls it: a PID in a transport stream, a
     /// substream id on a DVD. The same number the track chooser uses.
+    ///
+    /// **Unless another track goes by the same number.** Only a transport
+    /// stream and a DVD number their streams; every other container leaves
+    /// the number at 0, so a Matroska file with two subtitle tracks named
+    /// both of them 0. The menu had two lines that put up the same one, and
+    /// what it put up was every track of the file read as one: the display
+    /// sets of both, in turn, into one decoder. Such a track is called by
+    /// its stream instead, as a negative number no stream is ever given, and
+    /// read by its stream (see `stream`).
     pub id: i32,
     pub kind: Kind,
     pub language: Option<String>,
+    /// The stream a track that had to be renumbered is read from, and
+    /// `None` for every track that keeps its own number, which is read by
+    /// that number as it always was.
+    pub stream: Option<usize>,
 }
 
 /// Every subtitle track a recording carries: the subtitles first, then the
@@ -133,6 +146,7 @@ pub fn tracks(
 ) -> Vec<Track> {
     let captions = captions.iter().map(|c| Track {
         id: c.pid,
+        stream: Some(c.stream_index),
         kind: match (c.kind, c.format) {
             (crate::TextKind::Superimpose, _) => Kind::Superimpose,
             (_, crate::TextFormat::Ttml) => Kind::Ttml,
@@ -142,11 +156,16 @@ pub fn tracks(
     });
     let graphics = graphics.iter().map(|g| Track {
         id: g.pid,
+        stream: Some(g.stream_index),
         kind: Kind::Graphics,
         language: g.language.clone(),
     });
+    // A DVD's are matched on what the stream is, by its id: the streams may
+    // not exist until the read has gone a long way in. See
+    // [`crate::SubpictureInfo`].
     let subpictures = subpictures.iter().map(|s| Track {
         id: s.id,
+        stream: None,
         kind: Kind::Subpicture,
         language: s.language.clone(),
     });
@@ -160,6 +179,17 @@ pub fn tracks(
         Kind::Graphics => 3,
         Kind::Subpicture => 4,
     });
+    // Called by the stream where the number does not tell two apart, and by
+    // the number everywhere else -- every transport stream and every disc,
+    // whose menus and reads stay exactly as they were.
+    let ids: Vec<i32> = out.iter().map(|t| t.id).collect();
+    for t in out.iter_mut() {
+        let shared = ids.iter().filter(|&&id| id == t.id).count() > 1;
+        match t.stream {
+            Some(index) if shared => t.id = -1 - i32::try_from(index).unwrap_or(i32::MAX - 1),
+            _ => t.stream = None,
+        }
+    }
     out
 }
 
@@ -205,6 +235,9 @@ pub struct Reader {
     start_time: f64,
     /// Which track, by the number the recording gives it.
     id: i32,
+    /// Or by its stream, where that number is another track's as well. See
+    /// [`Track::stream`].
+    stream: Option<usize>,
     /// See [`crate::CaptionInfo::base`].
     base: f64,
     /// The recording's entry pictures, for a 4K recording's subtitles: what
@@ -250,7 +283,10 @@ impl Reader {
         let base = src
             .captions
             .iter()
-            .find(|c| c.pid == id)
+            .find(|c| match track.stream {
+                Some(index) => c.stream_index == index,
+                None => c.pid == id,
+            })
             .map_or(0.0, |c| c.base);
         let points = match track.kind {
             Kind::Ttml => src.points.clone(),
@@ -260,6 +296,7 @@ impl Reader {
             url: src.input.url.clone(),
             start_time: src.start_time,
             id,
+            stream: track.stream,
             base,
             points,
             kind: track.kind,
@@ -315,6 +352,11 @@ impl Reader {
         let from = (t - lookback).max(0.0);
         let to = t + AHEAD;
         let (id, kind, screen, start_time) = (self.id, self.kind, self.screen, self.start_time);
+        let by_stream = self.stream;
+        let ours = move |stream: &ff::format::stream::Stream| match by_stream {
+            Some(index) => stream.index() == index,
+            None => stream.id() == id,
+        };
         let base = self.base;
         let video = self.video;
         let ictx = match self.ictx.as_mut() {
@@ -333,7 +375,6 @@ impl Reader {
                 // recording looking for a packet to end on. An entry point
                 // every half second is a clock to stop against, and costs
                 // the demuxer nothing to hand over.
-                let keep = id;
                 let pictures = video;
                 for stream in c.streams() {
                     // A crawl and a 4K recording's subtitles arrive as data
@@ -343,7 +384,7 @@ impl Reader {
                     let mine = matches!(
                         stream.parameters().medium(),
                         ff::media::Type::Subtitle | ff::media::Type::Data
-                    ) && stream.id() == keep;
+                    ) && ours(&stream);
                     let discard = match () {
                         _ if mine => continue,
                         _ if stream.index() == pictures => ff::Discard::NonKey,
@@ -412,12 +453,8 @@ impl Reader {
         // unit over as nobody's and showed none, and only a window read
         // after that one found them.
         for (stream, packet) in ictx.read_packets() {
-            let (stream_id, tb, medium) = (
-                stream.id(),
-                f64::from(stream.time_base()),
-                stream.parameters().medium(),
-            );
-            let mine = stream_id == id
+            let (tb, medium) = (f64::from(stream.time_base()), stream.parameters().medium());
+            let mine = ours(&stream)
                 && matches!(
                     medium,
                     ff::media::Type::Subtitle | ff::media::Type::Data
@@ -783,6 +820,38 @@ mod tests {
                 .map(|t| t.kind)
                 .collect::<Vec<_>>(),
             [Kind::Ttml, Kind::Superimpose]
+        );
+    }
+
+    /// A Matroska file numbers none of its streams, so its two subtitle
+    /// tracks both came in as 0. Each is told apart by its stream; a
+    /// transport stream's keep their PIDs.
+    #[test]
+    fn two_tracks_of_one_number_are_told_apart_by_their_streams() {
+        let at = |pid: i32, stream_index: usize| crate::GraphicsInfo {
+            stream_index,
+            ..drawn(pid)
+        };
+        let got = tracks(&[], &[at(0, 2), at(0, 3)], &[]);
+        assert_eq!(
+            got.iter().map(|t| (t.id, t.stream)).collect::<Vec<_>>(),
+            [(-3, Some(2)), (-4, Some(3))]
+        );
+        let got = tracks(&[], &[at(0x1200, 3), at(0x1201, 4)], &[]);
+        assert_eq!(
+            got.iter().map(|t| (t.id, t.stream)).collect::<Vec<_>>(),
+            [(0x1200, None), (0x1201, None)]
+        );
+        // A caption and a display set on one number: both renumbered, and
+        // the one alone keeps its own.
+        let caption = crate::CaptionInfo {
+            stream_index: 2,
+            ..text(0, crate::TextKind::Caption, crate::TextFormat::Arib)
+        };
+        let got = tracks(&[caption], &[at(0, 3), at(7, 4)], &[]);
+        assert_eq!(
+            got.iter().map(|t| t.id).collect::<Vec<_>>(),
+            [-3, -4, 7]
         );
     }
 

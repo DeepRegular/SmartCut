@@ -1053,7 +1053,16 @@ fn run() -> Result<()> {
                 if v.trim().is_empty() {
                     bail!("--bdav needs a folder");
                 }
-                let trimmed = v.trim_end_matches(['/', '\\']);
+                let mut trimmed = v.trim_end_matches(['/', '\\']);
+                // Nor a `.` on the end: `disc/.` is the folder `disc`, and
+                // kept as it was typed the folder an `--iso-only` emptied
+                // stayed behind (`bdav::remove_disc` cannot remove `disc/.`)
+                // and every line named `disc/./BDAV`.
+                while let Some(rest) =
+                    trimmed.strip_suffix("/.").or_else(|| trimmed.strip_suffix("\\."))
+                {
+                    trimmed = rest.trim_end_matches(['/', '\\']);
+                }
                 bdav = Some(if trimmed.is_empty() { v.clone() } else { trimmed.to_string() });
             }
             // And whether to wrap the finished disc in an image. The
@@ -2502,24 +2511,6 @@ fn run() -> Result<()> {
     // The image goes beside the folder under the folder's name, and that can
     // be the very image the recording is being read out of. It would be
     // replaced by one of the new disc once the cut was done.
-    // And a run that is to take the folder away writes its image beside it:
-    // where an image is already there and the folder holds no disc to add
-    // to, that image is of a disc this run would not hold -- or the same
-    // list again -- and it would be replaced. Refused here, before the cut,
-    // rather than after it by `udfw::write` (or not at all). See
-    // `bdav::image_in_the_way`.
-    if let (Some(at), true) = (&bdav, iso_only) {
-        let at = std::path::Path::new(at);
-        if let Some(image) = smartcut_core::bdav::image_in_the_way(at) {
-            bail!(
-                "{} is already there, and {} holds no disc to add to: --iso-only would write a \
-                 new disc's image over it. Move the image away to keep it (or delete it if it is \
-                 no longer wanted), or give --bdav another folder",
-                image.display(),
-                at.display()
-            );
-        }
-    }
     if let (Some(at), Some(_)) = (&bdav, iso) {
         let image = image_beside(std::path::Path::new(at))?.to_string_lossy().into_owned();
         let reads = std::iter::once(src.input.file.clone()).chain(
@@ -2540,6 +2531,26 @@ fn run() -> Result<()> {
                      replace it. Give --bdav another folder"
                 );
             }
+        }
+    }
+    // And a run that is to take the folder away writes its image beside it:
+    // where an image is already there and the folder holds no disc to add
+    // to, that image is of a disc this run would not hold -- or the same
+    // list again -- and it would be replaced. Refused here, before the cut,
+    // rather than after it by `udfw::write` (or not at all). See
+    // `bdav::image_in_the_way`.
+    // Asked after the check above: an image that is the recording being
+    // read is told as that, and not as one to move away or delete.
+    if let (Some(at), true) = (&bdav, iso_only) {
+        let at = std::path::Path::new(at);
+        if let Some(image) = smartcut_core::bdav::image_in_the_way(at) {
+            bail!(
+                "{} is already there, and {} holds no disc to add to: --iso-only would write a \
+                 new disc's image over it. Move the image away to keep it (or delete it if it is \
+                 no longer wanted), or give --bdav another folder",
+                image.display(),
+                at.display()
+            );
         }
     }
     // A disc's slot is taken before the cut, as an empty stream (see

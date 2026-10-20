@@ -1019,11 +1019,15 @@ fn recorder_layout(tree: &mut [Node], meta_used: u64) -> Result<Plan> {
         // nothing to say why.
         if sectors != BD_RE_SECTORS[0] {
             let room = room_blocks(BD_RE_SECTORS[0], meta_blocks);
+            // And by how much: a disc a few clusters over came to "24.12 GB,
+            // more than the 24.12 GB", which reads as a mistake.
+            let over = (at - files_at).saturating_sub(room) * SECTOR as u64;
             crate::say!(
-                "note: the disc comes to {:.2} GB, more than the {:.2} GB of files a \
+                "note: the disc comes to {:.2} GB, {:.1} MB more than the {:.2} GB of files a \
                  single-layer BD-RE holds as a recorder formats it, so the overwritable image \
                  is of a dual-layer BD-RE ({:.1} GB)",
                 (at - files_at) as f64 * SECTOR as f64 / 1e9,
+                (over as f64 / 1e5).ceil() / 10.0,
                 room as f64 * SECTOR as f64 / 1e9,
                 sectors as f64 * SECTOR as f64 / 1e9
             );
@@ -1937,6 +1941,33 @@ mod tests {
         assert_eq!(overwritable_cost(196_608), 196_608);
         // A read-only image of the same is still a single-layer disc's.
         assert!(lay_out(&mut file(most + 1), Access::ReadOnly).unwrap().sectors < 12_219_392);
+    }
+
+    /// The price is what the layout does with many files of odd sizes too,
+    /// not only with one: a disc whose files cost exactly the room, one
+    /// 64 KB cluster at a time, is the single layer, and a byte more in the
+    /// last file is the dual.
+    #[test]
+    fn the_overwritable_price_holds_for_many_small_files() {
+        let tree = |sizes: &[u64]| {
+            let mut t = vec![Node { name: String::new(), source: None, size: 0, children: vec![], entry: 0, data: 0, blocks: 0, unique: 0 }];
+            for (k, &size) in sizes.iter().enumerate() {
+                t[0].children.push(k + 1);
+                t.push(Node { name: format!("{k:05}"), source: Some("x".into()), size, children: vec![], entry: 0, data: 0, blocks: 0, unique: 0 });
+            }
+            t
+        };
+        let room = overwritable_room()[0];
+        let mut sizes: Vec<u64> = (0..1500u64).map(|k| [0, 1, 1722, 28_000, 65_536, 65_537, 196_608][k as usize % 7]).collect();
+        let used: u64 = sizes.iter().map(|&s| overwritable_cost(s)).sum();
+        // The rest of the room in one stream, ending one byte into its last
+        // cluster.
+        let rest = room - used;
+        sizes.push(rest - 65_535);
+        assert_eq!(sizes.iter().map(|&s| overwritable_cost(s)).sum::<u64>(), room);
+        assert_eq!(lay_out(&mut tree(&sizes), Access::Overwritable).unwrap().sectors, BD_RE_SECTORS[0]);
+        *sizes.last_mut().unwrap() = rest + 1;
+        assert_eq!(lay_out(&mut tree(&sizes), Access::Overwritable).unwrap().sectors, BD_RE_SECTORS[1]);
     }
 
     /// An image is never written into the folder it is an image of: a
