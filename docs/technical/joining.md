@@ -110,7 +110,11 @@ reel's TrueHD, MLP or DTS in another shape under a master of the same codec,
 which is carried frame for frame
 ([below](#a-sound-track-any-reel-cannot-match-is-written-afresh-for-the-whole-file)).
 A TrueHD 2.0 reel joined onto a TrueHD 5.1 master was announced as decoded and
-encoded whole while its frames were copied.
+encoded whole while its frames were copied. In the same way, where only a
+clip's sound is written afresh, its pictures' differences are left out and so
+is the closing word on their quality: a join of two phone clips whose sound
+alone differed was told its pictures were only as good as one pass could make
+them, though they were copied.
 
 The window asks the same question. The `join_fit` command takes the list's
 paths and which of them is the master, and answers, per clip, whether its
@@ -348,6 +352,19 @@ lost. The crossing now counts the pictures it writes, and a copied clip after
 resumes on the first picture to begin after the last of them, read off its
 packets (`plan::picture_after`); a clip written afresh on the master's grid
 resumes that many of its frames on.
+
+Reading those packets has to get past what comes before the first key picture.
+An `ffmpeg -c copy` of a broadcast into an `.mkv` keeps the open-GOP leading
+pictures in front of it, and Matroska, which cannot time a block before 0,
+hands them over with no time at all. Taken for pictures that could not be read,
+they made every read from the head of such a file answer nothing, and the clip
+after fell back on the crossing's length in seconds: up to 0.8.29 a remuxed
+H.264 recording joined whole after a half-second slide resumed a picture late,
+one of its pictures never shown and the rest a frame off their sound. Those
+leading pictures are now passed over, as no range shows them. Where a read
+still answers nothing (a DVD's reference pictures carry no presentation time),
+the clip resumes on the frames the crossing counted rather than on the
+seconds.
 
 **And not every recording has a grid to work a bound out on.** A picture held
 for three fields moves every picture after it half a frame — soft telecine, a

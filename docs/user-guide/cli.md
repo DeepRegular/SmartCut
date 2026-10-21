@@ -55,7 +55,7 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 |---|---|
 | `-o OUTPUT` (or `--output`) | Output path. **The extension picks the container**. It has to be a file on this machine, and not the recording being read (or a link to it): either is refused before anything is written. On Linux a share named the Windows way or as a URL (`\\nas\rec\x.ts`, `smb://nas/rec/x.ts`) is written through the place it is mounted, as an input named that way is read; a share that is not mounted is refused. An extension that holds sound alone (`.aac`, `.ac3`, `.eac3`, `.mp2`, `.mp3`, `.dts`, `.wav`, `.aiff`, `.flac`, `.opus`, `.thd`) is accepted only with `--sound-only` |
 | `--drop-stream INDEX` | Leave one of the recording's streams out of the output. Repeatable. The same thing the cut editor's **Tracks** menu does. The index is a sound, caption or subtitle stream's; one the recording does not have, or the pictures', is an error. A broadcast's sound track with nothing in the ranges kept (a second track the programme before this one had, say) is left out without being asked, and the run says so |
-| `--title N` | Which recording on a disc (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. **Left out, it lists what is on the disc and stops.** If the run also asked for something that needs a recording open (a cut, an output, `--analyze` and the like), the list is followed by an error. **A recorder's title cut with no `--cut` or `--keep` keeps what the disc's playlist plays.** The clip a recorder writes holds more than that: a second or so of the programme before, the moment either side of a break the recorder left out, and the start of the programme after. Those stretches are cut, on the pictures, and the run names them on a `plays :` line. No chapter is put where they were. A pressed disc, a DVD and a disc made with an authoring tool play the whole clip, and are cut as before |
+| `--title N` | Which recording on a disc (a folder or an `.iso`) to open. Part of the programme's name works in place of the number. **Left out, it lists what is on the disc and stops.** If the run also asked for something that needs a recording open (a cut, an output, `--analyze`, a `--seek-index` and the like), the list is followed by an error. **A recorder's title cut with no `--cut` or `--keep` keeps what the disc's playlist plays.** The clip a recorder writes holds more than that: a second or so of the programme before, the moment either side of a break the recorder left out, and the start of the programme after. Those stretches are cut, on the pictures, and the run names them on a `plays :` line. No chapter is put where they were. A pressed disc, a DVD and a disc made with an authoring tool play the whole clip, and are cut as before |
 
 ## Joining several recordings
 
@@ -178,7 +178,7 @@ refused rather than quietly ignored.
 | `--iso 2.50\|2.60` | Wrap the finished disc in an `.iso` beside it: `--bdav ~/disc` writes `~/disc/BDAV` and `~/disc.iso`. The image holds the disc, `BDAV`, and nothing else in the folder. The folder stays. Refused before anything is written where that `.iso` is the image the recording is being read out of |
 | `--iso-access read-only\|overwritable` | What the image says may be done to the disc it is burned onto. `read-only`, the default, is the truth about a disc nothing will write to again — a BD-R, or a BD-RE you only play. `overwritable` is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off; the image is then laid out the way a recorder lays out a BD-RE, and is the size of the whole disc (25 GB, or 50 GB where one layer will not hold it — the part with nothing in it takes no room on the disk it is written to). An image that outgrows one layer and comes out the dual-layer size says so. Needs `--iso` |
 | `--iso-only` | And then take the folder away, leaving the image on its own. Needs `--iso`: the image is made *of* the folder, so the folder is written first and goes once the image holds it. What goes is `BDAV`, and the folder above it only where that leaves it empty — a disc written into a folder of your own leaves everything else in it alone. A file in `BDAV` that the image could not carry keeps the folder where it is. Where a `.iso` of that name is already there and the `--bdav` folder holds no disc to add to, the run is refused before anything is cut (exit code 1), since that image would be replaced by the new disc's; move it away to keep it, or give `--bdav` another folder. Where that `.iso` is the image the recording is read out of, the run is refused as that instead, as `--iso` says |
-| `--disc-title NAME` | What the disc is called. Left out, a disc that already has a name keeps it; a new disc is named after the series the recording is an episode of: the programme name with the episode number, the episode's own title and the broadcast's marks taken off it |
+| `--disc-title NAME` | What the disc is called. Left out, a disc that already has a name keeps it, and one with no name — a recorder's disc nobody named — stays without one; a new disc is named after the series the recording is an episode of: the programme name with the episode number, the episode's own title and the broadcast's marks taken off it |
 | `--programme NAME` | What this recording is called in the disc's index. Left out, the name its playlist gave it if it came off a disc, otherwise the programme name the broadcast carries |
 | `--channel NAME[,N]` | The channel, and optionally the three digits a viewer knows it by (`--channel "衛星第一,161"`). Left out, both come from the recording. A number that is not one is refused |
 | `--about TEXT` | What the disc's index says the programme was. Left out, the description the recording carries |
@@ -188,7 +188,7 @@ refused rather than quietly ignored.
 
 | Option | Meaning |
 |---|---|
-| `--analyze` | Work out the plan and print it. **Writes no cut** — not even into a `--bdav` folder. A `--seek-index` file, a `--proxy` or a `--preview` asked for alongside is still written |
+| `--analyze` | Work out the plan and print it. **Writes no cut** — not even into a `--bdav` folder. A `--seek-index` file, a `--proxy` or a `--preview` asked for alongside is still written. What the run would refuse before cutting it refuses as well: an `--iso` that is the image the recording is read out of, or an `--iso-only` image in the way |
 | `--detect-cm` | Look for the commercial breaks |
 | `--logo` | Let commercial detection use the station logo as well. Given with `--detect-cm` |
 | `--inserts` | ...and report the few seconds a subscription channel drops into a programme — its own animated ident. Off by default: the same test catches a programme's own caption card. Given with `--detect-cm`. See the [commercial detection guide](cm-detection.md) |
@@ -204,7 +204,7 @@ refused rather than quietly ignored.
 | Option | Meaning |
 |---|---|
 | `--seek-index PATH` | Where to keep the seek index. Written on the first run and read on the next, which saves walking the recording again. One that cannot be read — another version's, or a damaged one — is made again. A file that is not a seek index at all is left untouched and the run stops, so a mistyped path cannot write over a recording |
-| `--index auto\|disc\|scan\|container` | Where the entry points come from. `auto`, the default, asks whoever already knows and falls back: the disc's own map, then the container's seek table, then the walk over the packets. `disc` and `container` ask one of those and stop; `scan` always walks, which is what a transport stream needs — it has neither table. A container table is taken only where it covers the whole recording |
+| `--index auto\|disc\|scan\|container` | Where the entry points come from. `auto`, the default, asks whoever already knows and falls back: the disc's own map, then the container's seek table, then the walk over the packets. `disc` and `container` ask one of those and stop; `scan` always walks, which is what a transport stream needs — it has neither table. A container table is taken only where it covers the whole recording. `disc`, `container` and `scan` hold for every `--join` recording too: one that cannot be read that way stops the run with an error naming it, where up to 0.8.29 it fell back on the other table or the walk |
 | `--proxy` | Build the editing proxy (a light stand-in file) beside the recording and stop (`.proxy.mp4`, or `-o`) |
 | `--as-proxy` | Treat the input as a proxy rather than a recording — how a proxy is checked against what it stands in for |
 
@@ -230,7 +230,8 @@ Some kinds of subtitles are not carried into any output at all: SubRip, ASS,
 `mov_text` or WebVTT in an `.mkv` or an `.mp4`, a DVB broadcast's subtitles, and
 a DVD's subtitles remuxed into an `.mkv`. The run names each of them on a line
 of its own, `not carried: a subtitle stream (its format is not one a cut
-carries)`.
+carries)`. A `--join` recording's are named as well, each under the `join  :`
+line that names its recording.
 
 ## VC-1 discs
 

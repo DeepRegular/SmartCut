@@ -1044,11 +1044,21 @@ event information table. It carries the component tag the map names the stream b
 flag saying whether this is the main sound, the language, and the text a listing would
 print — 日本語, 英語, 日本語（解説）.
 
-`si::sound_tracks` reads it, and takes **the first description that names every
-component tag the map carries**. That rule is what makes the answer this programme's:
-the description on the air when the file opens is the previous programme's, and a
-programme with one sound track describes one. It is passed over rather than half
-believed.
+`si::sound_tracks` reads it, and passes over **a description that names fewer
+component tags than the map carries**: the description on the air when the file opens
+can be the previous programme's, and a programme with one sound track describes one.
+It is passed over rather than half believed.
+
+**Of those that name every track, the one on the air is taken, not the first to
+arrive.** The present and the following description come as two sections on their own
+schedules, and the following one — the programme after this one — is as likely to come
+first. A programme with commentary followed on the air by a ball game, whose second
+track is the stadium's sound, had its commentary named 球場音声: 7 of 54 two-track
+recordings in the corpus took the next programme's description this way. So the window
+is read to its end, and the answer is the description of the event last seen present;
+failing that, any present one; failing that, the first, which is then the following
+programme's — a recording that opens before its programme, on one whose description
+names fewer tracks — and the right one.
 
 Asked only where there is more than one track — on the other 363 recordings there is
 one track, it is the main sound whatever any table says, and the read would buy
@@ -1065,13 +1075,15 @@ it.
 BD-RE clip carries no programme description at all — still has its map, and the map
 names each track by its component tag: ARIB gives the main sound 0x10 and the second
 0x11. So the main track there is the one with the lowest tag, or, where the map tags
-none, the first sound the map lists (`by_map` in `outline_of`,
-[`lib.rs`](../../rust/crates/core/src/lib.rs)). Left to `best`, which breaks a tie
-between two stereo AAC tracks on the bit rate, 5 of the 10 titles with commentary on
-two recorder discs opened on the commentary. `best` is still the answer for every other
-container, and for a transport stream whose map could not be read. The main track
-decides which track the editor's track list marks as the main one and which one the
-detections listen to; what a cut writes is the same either way.
+none, the first sound the map lists that is not marked for viewers who cannot hear or
+see the programme (`by_map` in `outline_of`,
+[`lib.rs`](../../rust/crates/core/src/lib.rs)). A DVB broadcast marks its audio
+description that way, and one that lists it first had it named the main sound. Left to
+`best`, which breaks a tie between two stereo AAC tracks on the bit rate, 5 of the 10
+titles with commentary on two recorder discs opened on the commentary. `best` is still
+the answer for every other container, and for a transport stream whose map could not
+be read. The main track decides which track the editor's track list marks as the main
+one and which one the detections listen to; what a cut writes is the same either way.
 
 ### Cutting each track on its own
 
@@ -1212,6 +1224,25 @@ sits that much earlier than the cut with pictures, which keeps it as silence.
 Where the sound's own times step back (seen about a second before some
 recorder seams), the frames that repeat earlier sound are skipped, as the cut
 with pictures drops them.
+
+**A range kept from the head starts where the cut's sound starts.** An
+`ffmpeg`-made `.mkv` stamps its AAC's first frame, the encoder's priming, at
+-0.021 s, ahead of a first picture at 0. The cut with pictures starts the range
+on that picture and claims the frame nearest it, so the priming frame is not in
+its sound. Read from the range's own start, the sound alone opened on it, and
+the whole file ran one frame (21 ms) late against the cut's sound: 282 frames
+for 281 in six seconds. Such a range now starts where the cut starts it
+(`primed_from`). Only that frame goes: the half second a broadcast sends ahead
+of its first picture is the recording's own and is kept as before.
+
+The frames of a join's fade-in are decoded from a seek, and a seek to the head
+lands on a picture, where a broadcast's sound starts half a second before it.
+So in smart mode, a joined transport stream kept from its head had its fade-in
+left off the sound-only file's first half second, everything before the first
+picture copied at full level, where the cut with pictures, which starts on that
+picture, had the fade whole. Where the frames from the seek begin after the
+edge, they are now read on from a fresh open, as the writer reads them
+(`decode_around` in [`audio.rs`](../../rust/crates/core/src/audio.rs)).
 
 **An overlapping crossing takes the same seconds out of the sound as it does
 in a video run.** A dissolve, a wipe or a slide shows the head of the next clip

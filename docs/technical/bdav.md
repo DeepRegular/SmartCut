@@ -563,13 +563,15 @@ it is what settles it.
 **A disc that already has a name keeps it.** The series names a new disc only.
 A run that adds to a disc with no title given, `--disc-title` on the command
 line or typed on the settings screen, writes the name `info.bdav` already
-holds, whether a recorder or an earlier run put it there
-(`disc::bdav_title`). Up to 0.8.24 every run named the disc again after what
-it added, so a name given once was gone at the next run that did not repeat
-it. The settings screen asks only where the disc goes into a folder you chose,
-the output folder itself or a subfolder named by hand; the subfolder the
-screen fills in follows the disc's name, so what is in it is a disc of that
-name or a new one.
+holds, whether a recorder or an earlier run put it there (`bdav::kept_title`).
+Up to 0.8.24 every run named the disc again after what it added, so a name
+given once was gone at the next run that did not repeat it. A disc whose
+`info.bdav` holds no name at all — a recorder's disc nobody named — keeps that
+too: up to 0.8.29 it was named after the first recording added to it. The
+series names only a folder with no `info.bdav` yet. The settings screen asks
+only where the disc goes into a folder you chose, the output folder itself or
+a subfolder named by hand; the subfolder the screen fills in follows the
+disc's name, so what is in it is a disc of that name or a new one.
 
 The third source has two shapes to read, because this program writes one of
 them. A broadcast recording carries an event information table and a service

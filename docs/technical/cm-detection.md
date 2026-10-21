@@ -391,6 +391,13 @@ captions to read resets out of — 7 of 279 captioned recordings measured. Those
 opened a second time with a deeper probe now, and the marks are there to find; see
 [the captions the head of the file does not mention](broadcast-ts.md#the-captions-the-head-of-the-file-does-not-mention).
 
+WebVTT is the one subtitle stream not read here. It carries no reset, and a
+WebVTT block libavformat cannot parse throws away the rest of its cluster, so
+with the stream left on, a video site's Matroska file lost about two seconds of
+sound at every cue, read as neither loud nor quiet. Switched off, its blocks
+are never parsed. The same file's head is read as the cut reads it; see
+[the head of a Matroska file](rust-core.md#a-rate-with-nothing-round-in-it-and-the-ticks-a-container-can-state).
+
 **More stations may omit these marks than emit them.** Three of the five recordings
 emit none. So this takes the same shape as the logo detector: if nothing is found it
 returns "none" and the caller falls back to silence and logo. Only when resets are

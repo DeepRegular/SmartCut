@@ -514,6 +514,21 @@ same two seconds of sound. A file that has both an unparsable block in the
 head and leading pictures at negative times still loses the leading picture:
 neither read has all of it right.
 
+Every other read that runs on from the head of the whole recording now asks
+the same rule before it switches streams off: the film strip and the waveform,
+the walk that builds the seek index (and the rate measured for a Matroska file
+that states none), the black, white and quiet detections, the commercial
+detector's sound, the proxy, and a logo search over the whole recording. Read
+on from the open, each of them lost the two seconds the cut keeps. The proxy
+began two seconds in (527 pictures of 584), so the editor showed nothing
+there; the walk took the clusters it never saw for pictures held on screen,
+called an eight-second recording one whose pictures vary, and the cut wrote
+its `.mkv` with no rate; a quiet stretch that began inside them was marked
+from where the read picked up again. The commercial detector also leaves
+WebVTT out of the subtitle streams it reads for resets: WebVTT never carries
+one, and with the stream on, a block it could not parse cost the sound of its
+whole cluster at every cue.
+
 [`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
 [`Grid`]: ../../rust/crates/core/src/cut.rs
 
