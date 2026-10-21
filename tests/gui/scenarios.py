@@ -1655,6 +1655,77 @@ def disc_name_after_image_only(cfg, t):
     shutil.rmtree(at, ignore_errors=True)
 
 
+def disc_keeps_an_empty_name(cfg, t):
+    """A disc whose name is EMPTY (a recorder's disc nobody named; here made
+    by the command line with --disc-title "") in a folder that keeps its
+    disc's name: with no name typed, the field shows the empty name and a run
+    keeps it -- twice, the second from what the first left. `bdav_title`
+    answers null for a folder with no disc and "" for a disc with no name:
+    the output folder switched to an empty folder shows a new disc's name,
+    to a named disc that name, and back the empty one again."""
+    at = os.path.join(cfg.work, "disc_keeps_an_empty_name")
+    fresh = os.path.join(cfg.work, "disc_keeps_an_empty_name_fresh")
+    named = os.path.join(cfg.work, "disc_keeps_an_empty_name_named")
+    for d in (at, fresh, named):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+    for d, title in ((at, ""), (named, "NAMEDDISC")):
+        subprocess.run([_cli(), cfg.a, "--keep", "0-2", "--bdav", d, "--disc-title", title],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300, check=True)
+    t.check("34e-0 the command line made an empty-named disc", _disc_name(at) == b"",
+            repr(_disc_name(at)))
+
+    def playlists():
+        return len(os.listdir(os.path.join(at, "BDAV", "PLAYLIST")))
+
+    with App(cfg, "disc_keeps_an_empty_name", [{"path": cfg.c}],
+             {"mode": "bdav", "dir": at, "subfolder": "", "discTitle": ""}) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+
+        def field():
+            return app.s.js("return document.getElementById('out-disc-title').value")
+
+        def settled(want):
+            until = time.time() + 20
+            got = field()
+            while time.time() < until and not want(got):
+                time.sleep(0.2)
+                got = field()
+            return got
+
+        def to_dir(d):
+            app.s.js("const i = document.getElementById('out-dir'); i.value = arguments[0];"
+                     " i.dispatchEvent(new Event('input', {bubbles: true}));", d)
+
+        shown = settled(lambda v: v == "")
+        t.check("34e-1 the field shows the disc's empty name", shown == "", f"field {shown!r}")
+        to_dir(fresh)
+        shown = settled(lambda v: v != "")
+        t.check("34e-2 a folder with no disc: the field names a new disc", shown != "", f"field {shown!r}")
+        to_dir(named)
+        shown = settled(lambda v: v == "NAMEDDISC")
+        t.check("34e-3 a named disc: the field shows its name", shown == "NAMEDDISC", f"field {shown!r}")
+        to_dir(at)
+        shown = settled(lambda v: v == "")
+        t.check("34e-4 back to the unnamed disc: the field is empty again", shown == "", f"field {shown!r}")
+        app.export()
+        name = _disc_name(at)
+        t.check("34e-5 the run keeps the disc's empty name", name == b"" and playlists() == 2,
+                f"info.bdav {name!r}, {playlists()} playlists")
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        shown = settled(lambda v: v == "")
+        t.check("34e-6 after the run the field is still empty", shown == "", f"field {shown!r}")
+        app.export()
+        name = _disc_name(at)
+        t.check("34e-7 a second run keeps it too", name == b"" and playlists() == 3,
+                f"info.bdav {name!r}, {playlists()} playlists")
+    for d in (at, fresh, named):
+        shutil.rmtree(d, ignore_errors=True)
+
+
 
 def disc_gauge_overwritable(cfg, t):
     """An overwritable image is laid out as a recorder formats a BD-RE, which
@@ -1836,6 +1907,25 @@ def image_from_its_own_image(cfg, t):
                 and now is not None and now.st_ino == first.st_ino
                 and now.st_mtime_ns == first.st_mtime_ns,
                 f"streams {cut}; note {said!r}; image {now and (now.st_ino, now.st_mtime_ns)}")
+    # The folder typed with a `.` step in it (`F/.`): the backend reads it as
+    # F and makes F/night.iso all the same, so the check before the cut has
+    # to see that name too.
+    time.sleep(1.1)
+    with App(cfg, "image_from_its_own_image_dot", [{"path": inside}],
+             dict(settings, imageOnly=False, dir=at + "/.")) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        time.sleep(1.0)
+        said = _export_or_refused(app)
+    now = os.stat(image) if os.path.exists(image) else None
+    stream = os.path.join(night, "BDAV", "STREAM")
+    cut = sorted(os.listdir(stream)) if os.path.isdir(stream) else []
+    t.check("34i folder typed F/.: refused before the cut, as the image read from",
+            not cut and ("読み込み元" in said or "read from" in said)
+            and now is not None and now.st_ino == first.st_ino
+            and now.st_mtime_ns == first.st_mtime_ns,
+            f"streams {cut}; note {said!r}; image {now and (now.st_ino, now.st_mtime_ns)}")
     shutil.rmtree(at, ignore_errors=True)
 
 
@@ -4294,6 +4384,92 @@ def save_marks_during_walk_no_container_length(cfg, t):
             "said" if said else "no refusal seen on the status line")
 
 
+def save_marks_during_walk_late_head(cfg, t):
+    """`save_marks_during_walk_no_container_length` on a recording whose
+    head the outline could not find (`make_late_head`): on a second visit,
+    before the walk lands, the timeline's frame 0 is the clock's zero, some
+    twenty seconds before the first picture, so Ctrl+H wrote every mark and
+    every Trim end that many frames late over the files beside the
+    recording. They must be refused until the walk is in, or written as
+    the walked timeline writes them. Says NOT REACHED if the walk landed
+    first."""
+    make_late_head(cfg)
+    path = cfg.d
+    stem = os.path.splitext(path)[0]
+    sides = (stem + ".keyframe", path + ".trim.avs")
+    def landed(app):
+        st = app.state()
+        return st["frames"] is not None and st["frames"] > 0 and st["plan"] \
+            and "読み込んで" not in st["plan"] and "Reading" not in st["plan"]
+    def body(p):
+        try:
+            with open(p) as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+    for p in sides:
+        if os.path.exists(p):
+            os.remove(p)
+    with App(cfg, "save_marks_during_walk_late_head", [{"path": path}]) as app:
+        app.open_row(1, "d.ts", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        left = app.cut(100, 150)
+        for at in (50, 120, 200):
+            app.goto(at)
+            app.s.keys("k")
+        time.sleep(0.3)
+        app.s.keys("Control+h")
+        wait_for("the .keyframe", lambda: body(sides[0]), 10)
+        app.s.keys("Control+Shift+h")
+        wait_for("the Trim line", lambda: body(sides[1]), 10)
+        time.sleep(0.3)
+        want = [body(p) for p in sides]
+        app.ok()
+        app.gone()
+        for p in sides:
+            os.remove(p)
+        app.open_row(1, "d.ts", wait=False)
+        app.to_editor()
+        during = [None, None]
+        early = False
+        said = False
+        until = time.time() + 60
+        while time.time() < until and during[0] is None:
+            try:
+                early = early or not landed(app)
+                app.s.keys("Control+h")
+                during[0] = body(sides[0])
+                st = app.state()
+            except WebDriverError:
+                continue
+            said = said or (st["status"] or "") in (
+                "解析が終わるまで保存できません", "Not saved: wait for the analysis to finish")
+        while time.time() < until and during[1] is None:
+            try:
+                app.s.keys("Control+Shift+h")
+            except WebDriverError:
+                continue
+            during[1] = body(sides[1])
+        status = app.state()["status"]
+        wait_for("the walk again", lambda: landed(app), 180, 0.3)
+        time.sleep(1)
+        st = app.state()
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+    for p in sides:
+        if os.path.exists(p):
+            os.remove(p)
+    t.check("34m-1 Ctrl+H pressed during the walk", early, "" if early else "NOT REACHED: the walk landed first")
+    ok = all(d is None or d == w for d, w in zip(during, want))
+    t.check("34m-1 marks written during the walk are the row's (head unknown)",
+            ok and st["frames"] == left,
+            f"want {want!r}, written {during!r}; status {status!r}; {st['frames']} pictures (want {left})")
+    t.check("34m-1 the refusal says to wait for the analysis", said or not early,
+            "said" if said else "no refusal seen on the status line")
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -4334,6 +4510,7 @@ SCENARIOS = [
     disc_gauge_appends,
     disc_name_after_a_run,
     disc_name_after_image_only,
+    disc_keeps_an_empty_name,
     image_only_twice,
     image_only_twice_other,
     image_from_its_own_image,
@@ -4356,6 +4533,7 @@ SCENARIOS = [
     ok_during_walk_selection_no_container_length,
     held_selection_no_container_length,
     save_marks_during_walk_no_container_length,
+    save_marks_during_walk_late_head,
 ]
 
 

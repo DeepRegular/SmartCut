@@ -6890,7 +6890,9 @@ function imageLine() {
 /// The name the engine read out of the programmes, and the list it read it
 /// out of: asked once for a list rather than once for every redraw, and the
 /// screen and the export then use the one answer.
-let discGuess = { of: null, title: "" };
+/// `kept` where the title is the name of a disc already in the folder, which
+/// stands even when it is empty: a disc nobody named keeps no name.
+let discGuess = { of: null, title: "", kept: false };
 
 /// The names of the programmes in the list, as one string: what the guess
 /// above was made from, and what tells a stale guess from a good one.
@@ -6930,14 +6932,20 @@ async function guessDiscTitle(list) {
   // into the recorder -- as the command line keeps it: the series of what
   // is added names only a new disc. Renamed after each run's recordings, a
   // disc of one evening's mixture lost the name somebody gave it.
+  // A disc whose name is empty -- a recorder's disc nobody named -- keeps
+  // that too (`null` is no disc there yet).
   const kept = keptDiscDir();
-  if (kept) title = await invoke("bdav_title", { dir: kept }).catch(() => "");
+  const had = kept ? await invoke("bdav_title", { dir: kept }).catch(() => null) : null;
+  if (typeof had === "string") {
+    discGuess = { of: key, title: had, kept: true };
+    return had;
+  }
   try {
-    if (!title) title = await invoke("series_title", { names: list.map(programmeOf) });
+    title = await invoke("series_title", { names: list.map(programmeOf) });
   } catch {
     title = "";
   }
-  discGuess = { of: key, title: title || stamp() };
+  discGuess = { of: key, title: title || stamp(), kept: false };
   return discGuess.title;
 }
 
@@ -6945,7 +6953,7 @@ async function guessDiscTitle(list) {
 /// the disc there under a name it cannot be sure of -- see `keptDiscDir` and
 /// the end of the disc run.
 function rereadDiscName(list) {
-  discGuess = { of: null, title: "" };
+  discGuess = { of: null, title: "", kept: false };
   guessDiscTitle(list).then(() => renderOutset());
 }
 
@@ -7010,7 +7018,9 @@ function stampISO() {
 function discTitleFor(list) {
   if (settings.discTitle) return settings.discTitle;
   if (!list.length) return "";
-  if (discGuess.of === discGuessKey(list) && discGuess.title) return discGuess.title;
+  if (discGuess.of === discGuessKey(list) && (discGuess.title || discGuess.kept)) {
+    return discGuess.title;
+  }
   return stamp();
 }
 
@@ -9278,12 +9288,22 @@ let heldBeforeRun = false;
 /// (a share by its mount, a link) is not seen here -- `bdav_image` still
 /// refuses it after the cut, by file.
 function imageIsRead(image) {
+  // One spelling of a path: `/` for `\`, no doubled separator past a share's
+  // leading two, no `.` step, no trailing separator. The folder is typed, and
+  // `bdav_image` reads `F/x/.` as `F/x` -- its image is `F/x.iso`, which a
+  // `${typed}.iso` of `F/x/..iso` did not name, so a row read out of it was
+  // refused only after the cut.
+  const plain = (p) => {
+    const s = String(p || "").replace(/\\/g, "/");
+    const share = s.startsWith("//") ? "/" : "";
+    return share + s.replace(/\/{2,}/g, "/").replace(/\/\.(?=\/|$)/g, "").replace(/\/+$/, "");
+  };
   const fold = (p) => {
-    const s = String(p || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const s = plain(p);
     // Names fold case where Windows writes them.
     return /^[A-Za-z]:\/|^\/\//.test(s) ? s.toLowerCase() : s;
   };
-  const typed = discDir().replace(/[\\/]+$/, "");
+  const typed = plain(discDir());
   const named = [image, typed && `${typed}.iso`].filter(Boolean);
   return (
     named.find((i) =>
@@ -9480,6 +9500,10 @@ async function startExport() {
   // out once for the whole run: the recordings share a disc, so they share
   // the answer. A run that asked per clip would give the long one a harder
   // time than the short one for no reason but its length.
+  // The image's access is held from here as well: 収める prices the disc
+  // with it (`discHolds`), and the check after the run and the image itself
+  // must take the same one, not one changed on screen during the cutting.
+  const runAccess = settings.imageAccess;
   const share = await fitShare();
   if (share !== null) note(t("out.shrinking", { share: sharePct(share) }));
   // Stopped before a byte was written. The disc's numbers were taken, as
@@ -9783,7 +9807,12 @@ async function startExport() {
         const discName = discTitleFor(list);
         // Measured as the image will hold it, and against what that image
         // holds: see `discHolds`.
-        const overwritable = !!settings.image && settings.imageAccess === "overwritable";
+        // Held for the image as well: the screen stays editable through the
+        // run, and an access changed in it made an image of one kind after
+        // the disc had been shrunk and checked against the other's room.
+        // Taken where 収める was priced (`runAccess`).
+        const access = runAccess;
+        const overwritable = !!settings.image && access === "overwritable";
         const wroteBytes = await invoke("bdav_finish", {
           dir: discDir(),
           title: discName,
@@ -9813,7 +9842,7 @@ async function startExport() {
         // -- nothing, or a name since typed over -- and left standing, a
         // field emptied for the next run of the same list showed, and wrote,
         // that older name in place of the one just given. See `keptDiscDir`.
-        if (keptDiscDir()) discGuess = { of: discGuessKey(list), title: discName };
+        if (keptDiscDir()) discGuess = { of: discGuessKey(list), title: discName, kept: true };
         note(
           t("out.bdavDone", {
             path: `${discDir()}/BDAV`,
@@ -9869,7 +9898,7 @@ async function startExport() {
               // the image one thing and the disc inside it another.
               title: discName,
               revision: settings.image,
-              access: settings.imageAccess,
+              access,
               // What the list was read from, which the image must not be
               // written over. Every row, not only the ones in this run: a
               // row left out of it can still be the image. See `bdav_image`.

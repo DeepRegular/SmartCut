@@ -5722,7 +5722,20 @@ const markFilter = (kind) => ({
 /// Whether the timeline cannot hold the row yet: a recording whose container
 /// states no length has an outline of 0 s until its walk lands. See
 /// `heldSel`, and `early` in `openPath`.
-const timelineOwed = () => !!src && !walked() && !(src.duration > 0);
+///
+/// Nor one whose first picture the outline could not find (`head` null):
+/// until the walk lands its frame 0 is the clock's own zero (`headTime`),
+/// which on a broadcast recording is most of a second before the first
+/// picture. A `.keyframe` written then counted every mark that much late, and
+/// one read then -- or a Trim line, which cuts -- landed that much early, and
+/// nothing reads it again once the walk has found the head (`recountEarly` is
+/// for the files read on the outline's own head).
+const timelineOwed = () => !!src && !walked() && (!(src.duration > 0) || src.head == null);
+
+/// What a refusal under `timelineOwed` says: to wait, or -- where the walk
+/// has failed and nothing is coming to wait for -- why it failed.
+const owedSaid = (read) =>
+  walkFailed ? tr("editor.openFailed", { e: walkFailed }) : tr(read ? "marks.walkOwedRead" : "marks.walkOwed");
 
 /// Write the marks beside the recording.
 ///
@@ -5750,7 +5763,7 @@ async function saveMarks(kind, ask) {
   // and Ctrl+H wrote an empty `.keyframe` and a Trim line that keeps nothing
   // over the files beside it.
   if (marksDue || timelineOwed()) {
-    el("status").textContent = tr(marksDue ? "marks.notRead" : "marks.walkOwed");
+    el("status").textContent = marksDue ? tr("marks.notRead") : owedSaid(false);
     return;
   }
   // The menu greys this line out; the shortcut is the way in that cannot,
@@ -5803,7 +5816,7 @@ async function saveMarks(kind, ask) {
   // on that head before they can be written (`recountEarly`). Or it has
   // not landed yet on a recording with no length.
   if (marksDue || timelineOwed()) {
-    el("status").textContent = tr(marksDue ? "marks.notRead" : "marks.walkOwed");
+    el("status").textContent = marksDue ? tr("marks.notRead") : owedSaid(false);
     return;
   }
   // The backend refuses the recording it has open, and until the walk lands
@@ -5871,7 +5884,7 @@ async function loadMarksFrom(kind) {
   // the file lay past its end and was dropped, a Trim line cut nothing, and
   // the line said there was nothing in a file that holds marks.
   if (timelineOwed()) {
-    el("status").textContent = tr("marks.walkOwedRead");
+    el("status").textContent = owedSaid(true);
     return;
   }
   const gen = openGen;
@@ -5885,7 +5898,7 @@ async function loadMarksFrom(kind) {
   if (!picked || gen !== openGen) return;
   // And again: the walk can still be running when the picker closes.
   if (timelineOwed()) {
-    el("status").textContent = tr("marks.walkOwedRead");
+    el("status").textContent = owedSaid(true);
     return;
   }
   const from = Array.isArray(picked) ? picked[0] : picked;

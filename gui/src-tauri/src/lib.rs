@@ -6853,17 +6853,17 @@ fn series_title(names: Vec<String>) -> String {
     smartcut_core::series::shared(&names).unwrap_or_default()
 }
 
-/// What the disc already in `dir` is called, or empty where there is none
-/// yet or it has no name. A run adding to a disc nobody has named on the
-/// settings screen keeps that name; the series names only a new disc. The
-/// command line does the same (`--bdav` without `--disc-title`).
+/// What the disc already in `dir` is called: its name, an empty name where
+/// the disc has none, and `null` where there is no disc there yet. A run
+/// adding to a disc nobody has named on the settings screen keeps that name,
+/// or that lack of one; the series names only a new disc. The command line
+/// does the same (`--bdav` without `--disc-title`, `bdav::kept_title`).
 #[tauri::command]
-async fn bdav_title(dir: String) -> String {
+async fn bdav_title(dir: String) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || {
         local_path(&dir)
             .ok()
-            .and_then(|at| smartcut_core::disc::bdav_title(&at))
-            .unwrap_or_default()
+            .and_then(|at| smartcut_core::bdav::kept_title(&at))
     })
     .await
     .unwrap_or_default()
