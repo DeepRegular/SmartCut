@@ -637,6 +637,15 @@ pub fn build_with_sound(
 ) -> Result<(Track, Option<crate::wave::Wave>)> {
     crate::init()?;
     let mut ictx = crate::input::demux(&src.input.url)?;
+    // From the head as the cut reads it: read on from the open, except where
+    // the open has already lost some of it -- a Matroska file with a WebVTT
+    // block libavformat cannot parse, whose first two seconds of pictures and
+    // sound the open's look ahead threw away. See
+    // [`crate::sound::sought_at_head`]; before the discards, as there.
+    if crate::sound::sought_at_head(&ictx, &src.input.url) {
+        let target = i64::MIN / 2;
+        let _ = ictx.seek(target, ..target);
+    }
     let idx = src.video.stream_index;
     let mut wave = if sound && src.audio.is_some() {
         crate::wave::WaveBuilder::new(src, &ictx).ok()

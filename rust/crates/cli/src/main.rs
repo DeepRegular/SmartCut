@@ -419,7 +419,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             (
                 "--sound-only",
                 "Write one sound track and no pictures: .aac, .ac3, .eac3, .mp2, \
-                 .mp3, .dts, .m4a, .mka or .wav",
+                 .mp3, .dts, .m4a, .mka, .wav or .aiff -- and .flac, .opus or .thd \
+                 for a recording's own FLAC, Opus or TrueHD",
             ),
         ],
     ),
@@ -1519,7 +1520,10 @@ fn run() -> Result<()> {
                     || make_proxy
                     || preview_at.is_some()
                     || still_at.is_some()
-                    || cut_near.is_some();
+                    || cut_near.is_some()
+                    // An index of which recording? Listed and ended well,
+                    // the file asked for was never written.
+                    || seek_index.is_some();
                 if asked {
                     bail!("{input} is a disc: name the recording to work on with --title N");
                 }
@@ -2499,18 +2503,15 @@ fn run() -> Result<()> {
     if bdav.is_some() && master == 0 {
         disc_can_hold(&src, audio_codec, &drop_streams)?;
     }
-    // `--analyze` stops here, before the disc is touched. Reserving a slot on
-    // one makes its directories and takes a number the next run counts past,
-    // and asking what a cut would do is not asking for either.
-    if analyze {
-        return Ok(());
-    }
     // A recording on a disc is `BDAV/STREAM/00001.m2ts`, and which number it
     // is depends on what is on the disc already. So the name is the disc's
     // to give, not `-o`'s.
     // The image goes beside the folder under the folder's name, and that can
     // be the very image the recording is being read out of. It would be
     // replaced by one of the new disc once the cut was done.
+    // Asked before `--analyze` stops, which is how a run is checked before
+    // it is made: these touch nothing, and after it the check said nothing
+    // of a run that was going to be refused.
     if let (Some(at), Some(_)) = (&bdav, iso) {
         let image = image_beside(std::path::Path::new(at))?.to_string_lossy().into_owned();
         let reads = std::iter::once(src.input.file.clone()).chain(
@@ -2552,6 +2553,12 @@ fn run() -> Result<()> {
                 at.display()
             );
         }
+    }
+    // `--analyze` stops here, before the disc is touched. Reserving a slot on
+    // one makes its directories and takes a number the next run counts past,
+    // and asking what a cut would do is not asking for either.
+    if analyze {
+        return Ok(());
     }
     // A disc's slot is taken before the cut, as an empty stream (see
     // `bdav::prepare`). A run that stops before the cut is written leaves it,
@@ -2807,11 +2814,17 @@ fn run() -> Result<()> {
         let on_a_disc = smartcut_core::disc::clip_on_a_disc(&at).is_some();
         let mut also = match smartcut_core::scan_with(&at, own.as_ref()) {
             Ok(s) => s,
+            // `disc`, `container` and `scan` ask one table and stop, for a
+            // joined recording as for the first one: the run does not go on
+            // planned on a table that was not asked for.
+            Err(e) if index_kind != "auto" => {
+                return Err(e.context(format!(
+                    "--index {index_kind} cannot read the joined recording {path}"
+                )));
+            }
             // The container's table was the first choice and has answered
             // already; the walk is what is left.
-            Err(_) if !on_a_disc && matches!(index_kind.as_str(), "auto" | "container") => {
-                smartcut_core::scan_with(&at, &index::PacketScan)?
-            }
+            Err(_) if !on_a_disc => smartcut_core::scan_with(&at, &index::PacketScan)?,
             Err(_) => smartcut_core::scan_with(&at, &index::ContainerIndex)
                 .or_else(|_| smartcut_core::scan_with(&at, &index::PacketScan))?,
         };
@@ -2845,6 +2858,21 @@ fn run() -> Result<()> {
             also.video.frame_rate,
             also.duration,
         );
+        // And what this one cannot carry, under its own `join` line as the
+        // first recording's is said under its own: a joined .mkv's SubRip
+        // went without a word. Each recording's in full, a repeat of the
+        // first's included -- left out as said already, a reel dropping the
+        // same kind of stream at the same number read as the first's alone.
+        // A transport stream's data as the first recording's is: unsaid
+        // where the first's carousel travels (whose question it is), said
+        // where nothing's does.
+        for d in also.dropped.iter().filter(|d| !(data_travels && d.what == "data")) {
+            tell!(
+                "        not carried: {} on {}",
+                d.describe(),
+                smartcut_core::track_name(also.on_a_ts, d.pid, d.stream_index)
+            );
+        }
         joined_src.push(also);
     }
     // The recording the output is shaped like, whose stream numbers are the
@@ -3394,9 +3422,10 @@ fn run() -> Result<()> {
         // Except on a disc that already has a name: a recording added to it
         // is added to that disc, and the series of the one added renamed
         // it every time -- a name given with --disc-title, or typed into the
-        // recorder, gone at the next run that did not repeat it.
+        // recorder, gone at the next run that did not repeat it. A disc
+        // nobody named keeps no name, as the recorder left it.
         let title = disc_title
-            .or_else(|| smartcut_core::disc::bdav_title(&at))
+            .or_else(|| smartcut_core::bdav::kept_title(&at))
             .or_else(|| smartcut_core::series::shared(std::slice::from_ref(&name)))
             .or_else(|| channel.clone())
             .unwrap_or_else(|| name.clone());

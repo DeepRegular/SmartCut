@@ -187,6 +187,12 @@ pub fn tracks(
         let shared = ids.iter().filter(|&&id| id == t.id).count() > 1;
         match t.stream {
             Some(index) if shared => t.id = -1 - i32::try_from(index).unwrap_or(i32::MAX - 1),
+            // Alone on 0 in the menu, but not in the file: a container that
+            // numbers nothing gives 0 to the subtitles the menu leaves out as
+            // well (a SubRip, an ASS, a DVD's beside a .mkv's PGS), and read
+            // by the number their packets went into this track's decoder.
+            // No transport stream or disc names a track 0.
+            Some(_) if t.id == 0 => {}
             _ => t.stream = None,
         }
     }
@@ -841,6 +847,13 @@ mod tests {
         assert_eq!(
             got.iter().map(|t| (t.id, t.stream)).collect::<Vec<_>>(),
             [(0x1200, None), (0x1201, None)]
+        );
+        // One alone on 0 keeps its number in the menu and is read by its
+        // stream: the subtitles the menu leaves out are on 0 as well.
+        let got = tracks(&[], &[at(0, 1)], &[]);
+        assert_eq!(
+            got.iter().map(|t| (t.id, t.stream)).collect::<Vec<_>>(),
+            [(0, Some(1))]
         );
         // A caption and a display set on one number: both renumbered, and
         // the one alone keeps its own.

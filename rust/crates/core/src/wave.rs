@@ -67,6 +67,12 @@ pub fn read_wave(src: &Source, mut progress: Option<Box<dyn FnMut(f64) + Send>>)
     crate::init()?;
     let audio = outlined(src).ok_or_else(|| anyhow!("{} has no audio", src.path))?;
     let mut ictx = crate::input::demux(&src.input.url)?;
+    // From the head as the cut reads it, sought only where the open has lost
+    // some of it: see [`crate::sound::sought_at_head`].
+    if crate::sound::sought_at_head(&ictx, &src.input.url) {
+        let target = i64::MIN / 2;
+        let _ = ictx.seek(target, ..target);
+    }
     // The sound and nothing else: see [`crate::input::keep_only`].
     crate::input::keep_only(&mut ictx, &[audio.stream_index]);
     let mut builder = WaveBuilder::new(src, &ictx)?;

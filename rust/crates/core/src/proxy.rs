@@ -664,6 +664,16 @@ pub fn build(
     }
 
     let mut ictx = crate::input::demux(&src.input.url)?;
+    // From the head as the cut and the film strip read it, sought only where
+    // the open has lost some of it: a Matroska file with a WebVTT block
+    // libavformat cannot parse threw its first two seconds of pictures away
+    // while it looked ahead, and the proxy began two seconds in -- the editor
+    // showed nothing there. See [`crate::sound::sought_at_head`]; before the
+    // discards, as there.
+    if crate::sound::sought_at_head(&ictx, &src.input.url) {
+        let target = i64::MIN / 2;
+        let _ = ictx.seek(target, ..target);
+    }
     let idx = src.video.stream_index;
     // Only the pictures are read. See [`crate::input::keep_only`].
     crate::input::keep_only(&mut ictx, &[idx]);

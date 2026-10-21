@@ -274,6 +274,14 @@ fn walk_keyframes<T: Send + 'static>(
     mut visit: impl FnMut(f64, T),
 ) -> Result<()> {
     let mut ictx = crate::input::demux(&src.input.url)?;
+    // A whole read starts from the head as the cut and the film strip read
+    // it, sought only where the open has lost some of it (a Matroska file
+    // with a WebVTT block libavformat cannot parse); see
+    // [`crate::sound::sought_at_head`]. Stretches seek to each of their own.
+    if matches!(reach, Reach::Whole) && crate::sound::sought_at_head(&ictx, &src.input.url) {
+        let target = i64::MIN / 2;
+        let _ = ictx.seek(target, ..target);
+    }
     let idx = src.video.stream_index;
     // Only the pictures are read. See [`crate::input::keep_only`].
     crate::input::keep_only(&mut ictx, &[idx]);

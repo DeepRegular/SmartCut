@@ -256,6 +256,20 @@ pub fn root(at: &Path) -> PathBuf {
     at.join("BDAV")
 }
 
+/// The name a disc already in `at` goes on being called by a run that adds to
+/// it with nobody naming it: what its `info.bdav` says, and an empty name
+/// where the table says none -- a recorder's disc nobody named has a length
+/// of zero there, and the series of what is added named such a disc after
+/// the first recording put on it. `None` only where there is no table yet,
+/// a disc of this run's own to name.
+pub fn kept_title(at: &Path) -> Option<String> {
+    if let Some(name) = crate::disc::bdav_title(at) {
+        return Some(name);
+    }
+    let raw = crate::disc::read_index(&root(at).join("info.bdav")).ok()?;
+    (raw.len() >= 12 && &raw[..4] == b"BDAV").then(String::new)
+}
+
 /// Where one recording's stream goes.
 pub fn stream_of(at: &Path, clip: &str) -> PathBuf {
     root(at).join("STREAM").join(format!("{clip}.m2ts"))
@@ -2418,6 +2432,23 @@ mod tests {
         assert!(remove_disc(&at).is_ok());
         assert!(!at.exists());
         let _ = std::fs::remove_file(image);
+    }
+
+    /// A disc's name is kept by a run adding to it, and so is the lack of
+    /// one; only a folder with no table yet has no name to keep.
+    #[test]
+    fn a_disc_keeps_its_name_even_an_empty_one() {
+        let at = std::env::temp_dir().join(format!("bdav-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(root(&at).join("PLAYLIST")).unwrap();
+        assert_eq!(kept_title(&at), None, "no table yet");
+        std::fs::write(root(&at).join("info.bdav"), b"x").unwrap();
+        assert_eq!(kept_title(&at), None, "not a table");
+        write_table(&root(&at), "").unwrap();
+        assert_eq!(kept_title(&at).as_deref(), Some(""));
+        write_table(&root(&at), "夜").unwrap();
+        assert_eq!(kept_title(&at).as_deref(), Some("夜"));
+        let _ = std::fs::remove_dir_all(&at);
     }
 
     /// Two runs writing the table of one disc at once each finish, and the

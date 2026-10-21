@@ -845,9 +845,22 @@ const SOUND_WINDOW: usize = 16 << 20;
 /// `wanted` is the component tags the map named, and is what makes this
 /// answer about *this* programme. A recorder starts before the programme
 /// does, so the description at the head of the file is the previous
-/// programme's -- and a programme with one sound track describes one. So the
-/// first description that names every tag the map carries is taken, and one
-/// that names fewer is passed over rather than half believed.
+/// programme's -- and a programme with one sound track describes one. So a
+/// description that names fewer tags than the map carries is passed over
+/// rather than half believed.
+///
+/// **Of those that name them all, the one on the air is taken, not the first
+/// to arrive.** Present and following come as two sections on their own
+/// schedules, and the following one -- the programme after this one -- is as
+/// likely to come first. A recording of a programme with commentary, followed
+/// on the air by a ball game with its stadium sound on the second track,
+/// named its commentary 球場音声: 7 of the 54 two-track recordings in the
+/// corpus took the next programme's description this way. So the window is
+/// read to its end, and the description of the programme last seen present
+/// is the answer; failing that, any present one; failing that -- a recording
+/// that opens before its programme starts, on one whose description names
+/// fewer tracks -- the first, which is then the following programme's, and
+/// the right one.
 ///
 /// Empty where the recording carries no such description: a cut this program
 /// has already made, a clip off a disc, anything that is not a broadcast.
@@ -874,7 +887,12 @@ pub fn sound_tracks(
     };
 
     let mut eit = SectionReader::default();
-    let mut found: Vec<SoundTrack> = Vec::new();
+    // Every description that names every wanted tag, in the order they
+    // arrived: whether it was the present section, which event, and what it
+    // said.
+    let mut named: Vec<(bool, u16, Vec<SoundTrack>)> = Vec::new();
+    // The event last seen on the air, whatever it said about its sound.
+    let mut on_air: Option<u16> = None;
     let mut at = base;
     while at + PACKET <= buf.len() {
         let p = &buf[at..at + PACKET];
@@ -891,15 +909,14 @@ pub fn sound_tracks(
         }
         eit.feed(p, |sec| {
             // Both halves are read. Present and following describe two
-            // programmes and only one of them is this file's -- but which
-            // one that is depends on how early the recorder started, and
-            // `wanted` settles it either way.
+            // programmes and only one of them is this file's -- which one is
+            // settled below, once the window has been read.
             //
             // Thirty bytes is the shortest section with an event in it:
             // fourteen of header, twelve of event, four of CRC. See
             // [`programme`], where being four short brought the program
             // down.
-            if !found.is_empty() || sec[0] != TABLE_EIT_PF_ACTUAL || sec.len() < 30 {
+            if sec[0] != TABLE_EIT_PF_ACTUAL || sec.len() < 30 {
                 return;
             }
             if service_id != 0 && ((sec[3] as u16) << 8) | sec[4] as u16 != service_id {
@@ -908,6 +925,11 @@ pub fn sound_tracks(
             let Some(event) = sec.get(14..sec.len() - 4) else {
                 return;
             };
+            let present = sec[6] == 0;
+            let id = u16::from_be_bytes([event[0], event[1]]);
+            if present {
+                on_air = Some(id);
+            }
             let len = (((event[10] & 0x0F) as usize) << 8) | event[11] as usize;
             let Some(loop_bytes) = event.get(12..12 + len) else {
                 return;
@@ -917,14 +939,23 @@ pub fn sound_tracks(
             let written = crate::text::Written::of_network(((sec[10] as u16) << 8) | sec[11] as u16);
             let said = audio_components(loop_bytes, written);
             if wanted.iter().all(|tag| said.iter().any(|s| s.component_tag == *tag)) {
-                found = said;
+                named.push((present, id, said));
             }
         });
-        if !found.is_empty() {
-            break;
-        }
     }
-    found
+    // Known, left for after 1.0: a recording that opens more than one window
+    // before its programme, on a programme before it that names every track
+    // of its own, takes that previous programme's description.
+    let pick = named
+        .iter()
+        .position(|(_, id, _)| Some(*id) == on_air)
+        .or_else(|| named.iter().position(|(present, _, _)| *present))
+        .unwrap_or(0);
+    if pick < named.len() {
+        named.swap_remove(pick).2
+    } else {
+        Vec::new()
+    }
 }
 
 /// Every audio component descriptor in one event's descriptor loop.
@@ -4176,6 +4207,113 @@ mod tests {
         assert!(plain.stream(second).is_none());
 
         let _ = std::fs::remove_file(&at);
+    }
+
+    /// The same section about another event: the id is the first two bytes
+    /// of the event, and the checksum is taken again over the change.
+    fn eit_pf_of(service: u16, section: u8, event: u16, components: &[Vec<u8>]) -> Vec<u8> {
+        let mut sec = eit_pf(service, section, components);
+        sec.truncate(sec.len() - 4);
+        sec[14..16].copy_from_slice(&event.to_be_bytes());
+        finish_section(&mut sec);
+        sec
+    }
+
+    /// A recording whose programme is on the air from its first byte, and
+    /// whose next programme -- a ball game, its stadium sound on the second
+    /// track -- is described first. The commentary is this recording's; the
+    /// stadium sound is not.
+    #[test]
+    fn the_programme_on_the_air_names_the_sound_not_the_one_after_it() {
+        let (service, video) = (1u16, 0x200u16);
+        let (main, second) = (0x110u16, 0x111u16);
+        const COMMENTARY: [u8; 4] = [0x32, 0x72, 0x40, 0x62]; // 解説
+        const STADIUM: [u8; 4] = [0x35, 0x65, 0x3E, 0x6C]; // 球場
+        let mut out = Vec::new();
+        let mut cc = 0u8;
+        packetize(PID_PAT, &pat(service, 0x100), &mut cc, &mut out);
+        let (mut map, mut eit) = (0u8, 0u8);
+        let next = eit_pf_of(
+            service,
+            1,
+            2,
+            &[
+                audio_component(0x10, true, b"jpn", &JAPANESE),
+                audio_component(0x11, false, b"jpn", &STADIUM),
+            ],
+        );
+        let this = eit_pf_of(
+            service,
+            0,
+            1,
+            &[
+                audio_component(0x10, true, b"jpn", &JAPANESE),
+                audio_component(0x11, false, b"jpn", &COMMENTARY),
+            ],
+        );
+        for _ in 0..4 {
+            packetize(0x100, &pmt_with_sound(service, 5, video, &[main, second]), &mut map, &mut out);
+            packetize(PID_EIT, &next, &mut eit, &mut out);
+        }
+        for _ in 0..4 {
+            packetize(PID_EIT, &this, &mut eit, &mut out);
+            packetize(PID_EIT, &next, &mut eit, &mut out);
+        }
+        let at = std::env::temp_dir().join("smartcut-sound-on-the-air.ts");
+        std::fs::write(&at, &out).expect("write the sample");
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+        let said = sound_tracks(&input, service, &[0x10, 0x11]);
+        let _ = std::fs::remove_file(&at);
+        assert_eq!(said.len(), 2);
+        assert_eq!(said[1].name.as_deref(), Some("解説"));
+    }
+
+    /// A recording that opens on the programme before its own. Where that
+    /// programme describes fewer tracks than the map carries, the following
+    /// description -- this recording's programme -- is the answer; and where
+    /// the programme changes on the air inside the window, the one that came
+    /// on is, whatever the one before it said.
+    #[test]
+    fn a_recording_that_opens_before_its_programme_names_its_own_sound() {
+        let (service, video) = (1u16, 0x200u16);
+        let (main, second) = (0x110u16, 0x111u16);
+        const COMMENTARY: [u8; 4] = [0x32, 0x72, 0x40, 0x62]; // 解説
+        let both = |name: &[u8]| {
+            vec![audio_component(0x10, true, b"jpn", &JAPANESE), audio_component(0x11, false, b"eng", name)]
+        };
+        let sample = |sections: &[Vec<u8>], name: &str| {
+            let mut out = Vec::new();
+            let mut cc = 0u8;
+            packetize(PID_PAT, &pat(service, 0x100), &mut cc, &mut out);
+            let (mut map, mut eit) = (0u8, 0u8);
+            for sec in sections {
+                packetize(0x100, &pmt_with_sound(service, 5, video, &[main, second]), &mut map, &mut out);
+                packetize(PID_EIT, sec, &mut eit, &mut out);
+            }
+            let at = std::env::temp_dir().join(name);
+            std::fs::write(&at, &out).expect("write the sample");
+            let input = crate::input::Input::plain(&at.to_string_lossy());
+            let said = sound_tracks(&input, service, &[0x10, 0x11]);
+            let _ = std::fs::remove_file(&at);
+            said
+        };
+
+        // The programme before describes one track: passed over, and the
+        // following description taken.
+        let before = eit_pf_of(service, 0, 1, &[audio_component(0x10, true, b"jpn", &JAPANESE)]);
+        let this = eit_pf_of(service, 1, 2, &both(&ENGLISH));
+        let said = sample(&[before.clone(), this.clone(), before, this], "smartcut-sound-opens-early.ts");
+        assert_eq!(said.len(), 2);
+        assert_eq!(said[1].name.as_deref(), Some("英語"));
+
+        // The programme before describes two tracks of its own, and this
+        // one comes on the air inside the window.
+        let before = eit_pf_of(service, 0, 1, &both(&COMMENTARY));
+        let next = eit_pf_of(service, 1, 2, &both(&ENGLISH));
+        let on = eit_pf_of(service, 0, 2, &both(&ENGLISH));
+        let said = sample(&[before.clone(), next.clone(), before, next, on], "smartcut-sound-comes-on.ts");
+        assert_eq!(said.len(), 2);
+        assert_eq!(said[1].name.as_deref(), Some("英語"));
     }
 
     /// An event-information section with no room in it for an event.

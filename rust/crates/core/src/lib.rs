@@ -1938,8 +1938,19 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         if let Some((_, a)) = tagged {
             return Some(a.clone());
         }
+        // Not a track the map says is for a viewer who cannot see or hear
+        // the programme: a DVB broadcast marks its audio description so
+        // (ISO 639 audio type 3), and one that lists it first had it named
+        // the main sound, where libav's answer, which weighs that, had not.
+        let impaired = |a: &AudioInfo| {
+            use ff::format::stream::Disposition;
+            ictx.stream(a.stream_index).is_some_and(|s| {
+                s.disposition().intersects(Disposition::HEARING_IMPAIRED | Disposition::VISUAL_IMPAIRED)
+            })
+        };
         audios
             .iter()
+            .filter(|a| !impaired(a))
             .filter_map(|a| {
                 let pid = u16::try_from(a.pid).ok()?;
                 service.streams.iter().position(|e| e.pid == pid).map(|n| (n, a))
@@ -2346,6 +2357,14 @@ fn measured_rate(url: &str, stream_index: usize) -> Option<f64> {
     /// pictures are few and far between is not to be read to its end.
     const PACKETS: usize = 20_000;
     let mut ictx = crate::input::demux(url).ok()?;
+    // From the head as the cut reads it, sought only where the open has lost
+    // some of it (a Matroska file with a WebVTT block libavformat cannot
+    // parse); see [`crate::sound::sought_at_head`]. Before the discards, as
+    // there.
+    if crate::sound::sought_at_head(&ictx, url) {
+        let target = i64::MIN / 2;
+        let _ = ictx.seek(target, ..target);
+    }
     crate::input::keep_only(&mut ictx, &[stream_index]);
     let mut shown: Vec<i64> = Vec::with_capacity(PICTURES);
     let mut tick = 0.0;

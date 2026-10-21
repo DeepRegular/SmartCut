@@ -647,7 +647,11 @@ fn run(
             continue;
         };
         let base = pieces[..n].iter().map(|p| p.ranges.len()).sum::<usize>();
-        let ranges = &kept[n];
+        let mut ranges = kept[n].clone();
+        if let Some(head) = ranges.first_mut() {
+            head.0 = primed_from(piece.src, &track, *head)?;
+        }
+        let ranges = &ranges;
         let windows: Vec<(i64, i64)> = ranges
             .iter()
             .map(|&r| window(r, track.sample_rate))
@@ -808,6 +812,92 @@ fn run(
     octx.write_trailer()?;
     say(ranges_in_all);
     Ok(())
+}
+
+/// Where a range read from the head of a recording starts, where the cut
+/// with pictures leaves out the frame the track opens on: where the cut
+/// starts it.
+///
+/// **An encoder's priming.** An `ffmpeg`-made .mkv stamps its AAC's first
+/// frame -- the encoder's priming, 1024 samples of it -- at -0.021 s, ahead
+/// of a first picture at 0 (a remux of an .mp4 shifts both, and the frame is
+/// at 0 with the first picture a frame after it). The cut with pictures
+/// starts the range on that picture and claims the frame nearest it
+/// ([`crate::cut`]'s `take_audio`), so the priming frame is not in its
+/// sound; read from the range's own start, this writer opened on it, and the
+/// whole of a sound-only file of such a recording ran one frame (21 ms) late
+/// against the cut's sound (282 frames for 281 in six seconds). Started
+/// where the cut starts, it claims the same first frame, copied or
+/// re-encoded, and lays its ranges against the same start.
+///
+/// Only that frame. The sound a broadcast sends ahead of its first picture
+/// -- half a second of it, stamped after the recording's zero like all of it
+/// -- is the recording's own and is kept, as it always was; what is left out
+/// is a frame stamped before the recording's zero, and a track that opens
+/// less than one frame ahead of the cut's start on a frame the cut leaves
+/// out (more than half of it ahead). A track that opens on a frame the cut
+/// claims, or opens after the cut's start, keeps its range as it was.
+///
+/// Not the cut's other rule at the head, that its first range opens on no
+/// frame before its start (`min_start`): an AC-3 or Opus priming frame mostly
+/// after the start is left out there and the cut's sound opens a frame in,
+/// on a gap the container keeps. This file is laid from its first frame with
+/// no gap to keep, so the same frame left out here would put the sound a
+/// frame early; kept, it is within half a frame, as every range is.
+fn primed_from(src: &Source, track: &AudioInfo, range: (f64, f64)) -> Result<f64> {
+    let cut_from = src.points.first().map_or(range.0, |p| p.time).max(range.0).min(range.1);
+    if cut_from <= range.0 {
+        return Ok(range.0);
+    }
+    let ictx = crate::input::demux(&src.input.url)?;
+    let Some(stream) = ictx.stream(track.stream_index) else {
+        return Ok(range.0);
+    };
+    let at = stream.start_time();
+    if at == ff::ffi::AV_NOPTS_VALUE {
+        return Ok(range.0);
+    }
+    // SAFETY: the parameters belong to a stream of a context still open.
+    let size = unsafe { (*stream.parameters().as_ptr()).frame_size };
+    let frame = if size > 0 && track.sample_rate > 0 {
+        f64::from(size) / f64::from(track.sample_rate)
+    } else {
+        0.0
+    };
+    // A 33-bit clock (a transport or program stream) is stamped before its
+    // zero only where it wraps: a broadcast recorded in the last minute
+    // before its clock turns over has every frame up to the turn stamped
+    // negative by libavformat, and the sound it sends ahead of its pictures
+    // was taken for priming and left out -- up to all of it, where the cut
+    // with pictures in the same file is laid as in any other recording.
+    // SAFETY: the stream belongs to a context still open.
+    let wraps = unsafe { (*stream.as_ptr()).pts_wrap_bits } < 63;
+    let raw = at as f64 * track.time_base;
+    Ok(cut_start(range.0, cut_from, src.start_time, raw, frame, !wraps))
+}
+
+/// The arithmetic of [`primed_from`]: `from` is the range's own start,
+/// `cut_from` the cut's, `start_time` the recording's, `raw` where the track's
+/// first frame is stamped (on the recording's own clock, before `start_time`
+/// is taken off), `frame` how long one frame lasts (0 where it varies) and
+/// `primes` whether a stamp before the zero can be priming at all (not on a
+/// 33-bit clock, where it is the clock wrapping).
+fn cut_start(from: f64, cut_from: f64, start_time: f64, raw: f64, frame: f64, primes: bool) -> f64 {
+    // Stamped before the recording's zero: an encoder's priming, left out up
+    // to the zero (or the cut's start, where that comes first).
+    let mut from = from;
+    if primes && raw < 0.0 {
+        from = from.max(cut_from.min(-start_time));
+    }
+    // And where what is left opens on a frame the cut leaves out, less than
+    // one frame ahead of its start -- give or take the millisecond a
+    // Matroska clock rounds the picture's time by.
+    let opens = (raw - start_time).max(from);
+    let ahead = cut_from - opens;
+    if frame > 0.0 && ahead >= frame / 2.0 && ahead < frame + 1e-3 {
+        from = cut_from;
+    }
+    from
 }
 
 /// How far the sound written (`written`) has drifted from where the ranges
@@ -1456,7 +1546,7 @@ fn write_encoded(
 
 #[cfg(test)]
 mod tests {
-    use super::{behind, drift_from, dts_core, flac_block, head_owed, hole_before, less, opus_samples};
+    use super::{behind, cut_start, drift_from, dts_core, flac_block, head_owed, hole_before, less, opus_samples};
 
     #[test]
     fn ranges_lose_the_unwritten_stretches() {
@@ -1531,6 +1621,30 @@ mod tests {
         assert_eq!(laid, 1.0);
         assert_eq!(drift_from(0.4, &mut laid), 0.0);
         assert_eq!(laid, 0.4);
+    }
+
+    #[test]
+    fn the_head_starts_where_the_cut_does_only_past_a_priming_frame() {
+        let aac = 1024.0 / 48000.0;
+        // ffmpeg's .mkv: AAC priming at -0.021, the first picture at 0.
+        assert!((cut_start(0.0, 0.021, -0.021, -0.021, aac, true) - 0.021).abs() < 1e-9);
+        // The same remuxed from an .mp4: everything shifted, the frame at 0.
+        let aac441 = 1024.0 / 44100.0;
+        assert_eq!(cut_start(0.0, 0.023, 0.0, 0.0, aac441, true), 0.023);
+        // A broadcast's sound half a second ahead of its pictures is kept.
+        assert_eq!(cut_start(0.0, 0.624, 1.4, 1.4, aac, true), 0.0);
+        // A priming frame ahead of sound that runs on before the pictures:
+        // only the priming goes.
+        assert!((cut_start(0.0, 1.323, -0.021, -0.021, aac, true) - 0.021).abs() < 1e-9);
+        // A first frame the cut claims (less than half of it ahead) or one
+        // after the cut's start: unchanged.
+        assert_eq!(cut_start(0.0, 0.008, 0.0, 0.0, aac, true), 0.0);
+        assert_eq!(cut_start(0.0, 0.0, 0.0, 0.004, aac, true), 0.0);
+        // A broadcast recorded just before its 33-bit clock wraps: the sound
+        // ahead of its pictures is stamped before the zero and still kept.
+        assert_eq!(cut_start(0.0, 0.624, -0.3, -0.3, aac, false), 0.0);
+        // Opus priming that the nearest-frame rule keeps: up to its zero.
+        assert!((cut_start(0.0, 0.007, -0.007, -0.007, 0.0, true) - 0.007).abs() < 1e-9);
     }
 
     #[test]

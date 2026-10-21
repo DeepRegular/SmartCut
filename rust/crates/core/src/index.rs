@@ -134,10 +134,27 @@ pub fn walk(
     let codec = video.codec.clone();
     let framing = video.framing;
     let vc1 = video.vc1.as_ref();
+    // **From the head the cut reads.** A Matroska file with WebVTT in it
+    // whose open already lost some of the head -- a block libavformat cannot
+    // parse costs the rest of its cluster while the open looks ahead with
+    // every stream on -- is read by the cut from a seek to the head, and the
+    // walk read on from the open: on an eight-second recording off a video
+    // site the clusters it never saw read as pictures held on screen, the
+    // recording was called one whose pictures vary, and the cut wrote its
+    // .mkv with no rate and re-encoded at a rate the lost bytes left low.
+    // The cut's own rule decides; see [`crate::sound::sought_at_head`].
+    let url = unsafe {
+        let u = (*ictx.as_ptr()).url;
+        (!u.is_null()).then(|| std::ffi::CStr::from_ptr(u).to_string_lossy().into_owned())
+    };
+    if url.is_some_and(|u| crate::sound::sought_at_head(&ictx, &u)) {
+        let target = i64::MIN / 2;
+        ictx.seek(target, ..target)
+            .map_err(|e| anyhow!("seek to the head failed: {e}"))?;
+    }
     // Only the pictures are counted here, and on some recordings a stream
-    // left switched on costs the pictures. Nothing seeks in this pass, so
-    // there is no seek for this to get in front of; see
-    // [`crate::input::keep_only`].
+    // left switched on costs the pictures. After the one seek above, for
+    // the reason given at [`crate::input::keep_only`].
     crate::input::keep_only(&mut ictx, &[stream_index]);
 
     // How far there is to read. Asked of the byte stream rather than of

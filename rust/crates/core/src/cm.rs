@@ -293,8 +293,29 @@ fn read_sound(
         .as_ref()
         .ok_or_else(|| anyhow!("{} has no audio", src.path))?;
     let mut ictx = crate::input::demux(&src.input.url)?;
+    // From the head as the cut and the waveform read it, sought only where
+    // the open has lost some of it -- a Matroska file with a WebVTT block
+    // libavformat cannot parse, whose first two seconds of sound the open's
+    // look ahead threw away: a quiet stretch that began inside them was
+    // marked from where the read picked up again, half a second late on the
+    // file measured. See [`crate::sound::sought_at_head`].
+    if crate::sound::sought_at_head(&ictx, &src.input.url) {
+        let target = i64::MIN / 2;
+        let _ = ictx.seek(target, ..target);
+    }
+    // Every subtitle stream but WebVTT, which carries no reset and costs the
+    // sound: a block of it libavformat cannot parse throws away the rest of
+    // its cluster, so with the stream left on, a video site's Matroska file
+    // lost about two seconds of sound at every cue -- half of it, read as
+    // neither loud nor quiet. Switched off, its blocks are never parsed.
     let captions = if marks_too {
         crate::caption::reset_streams(&ictx)
+            .into_iter()
+            .filter(|&(i, _)| {
+                ictx.stream(i)
+                    .is_none_or(|s| s.parameters().id() != ff::codec::Id::WEBVTT)
+            })
+            .collect()
     } else {
         Vec::new()
     };

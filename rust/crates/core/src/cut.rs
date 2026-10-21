@@ -7409,12 +7409,26 @@ fn ranges_with_transitions(
                                 )
                             })
                             .flatten();
+                            // Where the pictures could not be read (a DVD's
+                            // reference pictures carry no time), on the
+                            // frames the crossing read this clip on, as the
+                            // arm below: `given` is the clip before's seconds,
+                            // on its pictures, up to a coarse clock's slack
+                            // more than those frames, and from it the clip
+                            // resumed a picture late (a remuxed .mkv whose
+                            // head read failed, after a half-second slide:
+                            // its picture 15 never shown).
                             read.unwrap_or_else(|| {
+                                let resume = if shown > 0 {
+                                    plan.t_in + shown as f64 * step
+                                } else {
+                                    plan.t_in + given
+                                };
                                 crate::plan::on_a_picture(
                                     &reel.src.video,
                                     reel.src.duration,
                                     &reel.src.points,
-                                    plan.t_in + given,
+                                    resume,
                                 )
                             })
                         }
@@ -8309,15 +8323,20 @@ fn cut_into(
         if !fit.video && !sound {
             continue;
         }
+        // And where only the sound is written afresh, neither the pictures'
+        // free differences -- said in the note above already -- nor a word
+        // about their quality: they are copied. Said of a join of two phone
+        // clips whose sound alone differed, "the pictures are only as good
+        // as one pass can make them" announced a loss nothing suffered.
         let found: Vec<String> = differs
             .iter()
             .filter(|m| !matches!(m.what, crate::conform::What::Sound(k, _) if as_is(k)))
+            .filter(|m| fit.video || !m.what.is_video())
             .map(crate::conform::Mismatch::describe)
             .collect();
         crate::note_once(format!(
             "note: {} is not the shape of {}, so {} written afresh to fit it -- {}. That is \
-             a decode and an encode of the whole of it, and the pictures are only as good as \
-             one pass can make them.",
+             a decode and an encode of the whole of it{}",
             reels[n].src.path,
             src.path,
             match (fit.video, sound) {
@@ -8326,6 +8345,11 @@ fn cut_into(
                 _ => "its sound is",
             },
             found.join("; "),
+            if fit.video {
+                ", and the pictures are only as good as one pass can make them."
+            } else {
+                "."
+            },
         ));
     }
     // Which of the output's sound tracks has to be written afresh. **One

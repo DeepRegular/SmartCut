@@ -476,6 +476,20 @@ fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
     let mut shape = src.video.field_shape;
     let mut half_open = false;
     let mut opened = false;
+    // Set while the read is among the pictures coded after the recording's
+    // first key picture and shown before it: the open-GOP leading pictures a
+    // remux leaves in front of the first entry point, which nothing can
+    // decode and no range shows (a range begins at the first entry point at
+    // the earliest; see [`plan_range`]). Matroska cannot time a block before
+    // 0, so libavformat hands them over with no time at all -- `ffmpeg -i
+    // x.ts -c copy x.mkv` of a broadcast writes exactly that -- and taken for
+    // a picture that could not be read, they made every read from the head
+    // of such a file answer nothing. The clip after a crossing then resumed
+    // on a grid worked out from seconds, a picture late, and one of its
+    // pictures was never shown (a remuxed recording joined whole after a
+    // half-second slide: its picture 15 lost, the rest a frame early against
+    // the sound).
+    let mut head_leading: Option<f64> = None;
     let mut starts = Vec::new();
     let mut reading = ictx.read_packets();
     for (stream, packet) in reading.by_ref() {
@@ -487,6 +501,17 @@ fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
                 continue;
             }
             opened = true;
+            let first = src.points.first().map(|p| p.time);
+            head_leading = packet
+                .pts()
+                .map(|p| p as f64 * tb - src.start_time)
+                .filter(|&t| first.is_some_and(|f| (t - f).abs() < fd / 2.0));
+            // The key picture itself is read below as any other.
+        } else if let (Some(key), Some(p)) = (head_leading, packet.pts()) {
+            // The first picture shown after the key picture ends them.
+            if p as f64 * tb - src.start_time > key {
+                head_leading = None;
+            }
         }
         let second_half = src.video.field_shape.is_some() && {
             if let Some(restated) = packet
@@ -515,7 +540,15 @@ fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
         if second_half {
             continue;
         }
-        let t = pts?;
+        // Only a packet with no time of either kind: a program stream (a
+        // DVD) leaves its reference pictures without a presentation time
+        // all through and libavformat gives them a decode time, and one of
+        // those skipped here would be a picture missing from the answer.
+        let t = match pts {
+            Some(t) => t,
+            None if head_leading.is_some() && dts.is_none() => continue,
+            None => return None,
+        };
         if t >= lo && t <= hi {
             starts.push(t);
         }

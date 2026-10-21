@@ -467,6 +467,16 @@ pub fn find_runs_with(
 ) -> Result<Vec<Run>> {
     crate::init()?;
     let mut ictx = crate::input::demux(&src.input.url)?;
+    // From the head as the cut and the film strip read it, sought only where
+    // the open has lost some of it: a Matroska file with a WebVTT block
+    // libavformat cannot parse threw its first two seconds of pictures away
+    // while it looked ahead, and a second of black at the head was reported
+    // as two, running on over the picture that came back.
+    // See [`crate::sound::sought_at_head`].
+    if crate::sound::sought_at_head(&ictx, &src.input.url) {
+        let target = i64::MIN / 2;
+        let _ = ictx.seek(target, ..target);
+    }
     let idx = src.video.stream_index;
     // Only the pictures are read. See [`crate::input::keep_only`].
     crate::input::keep_only(&mut ictx, &[idx]);

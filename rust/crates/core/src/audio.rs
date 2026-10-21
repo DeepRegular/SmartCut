@@ -1935,12 +1935,6 @@ fn decode_around(
     reach: i64,
 ) -> Result<Vec<Decoded>> {
     const LEAD: f64 = 0.5;
-    /// Frames to keep either side of the edge: the straddler, its guard, and
-    /// the lead-in and lead-out the encoder needs around both.
-    const KEEP: usize = 6;
-    /// How far past the edge the pictures may go with no frame of this
-    /// track before it is taken to have stopped.
-    const GIVE_UP: f64 = 10.0;
 
     // A fade is rewritten frame by frame like the boundary itself, so every
     // frame it reaches has to be decoded. Taken on both sides of the edge
@@ -1948,12 +1942,58 @@ fn decode_around(
     // sound either way, and the alternative is two reaches to keep in step
     // with each other for no gain anybody can hear.
     let landing = (at - LEAD - reach as f64 / audio.sample_rate as f64).max(0.0) + src.start_time;
-    let target = if landing <= src.start_time {
-        i64::MIN / 2
-    } else {
-        (landing * ff::ffi::AV_TIME_BASE as f64) as i64
-    };
+    if landing > src.start_time {
+        let target = (landing * ff::ffi::AV_TIME_BASE as f64) as i64;
+        ictx.seek(target, ..target)?;
+        return decode_on(ictx, params, src, audio, at, reach);
+    }
+    let target = i64::MIN / 2;
     ictx.seek(target, ..target)?;
+    let frames = decode_on(ictx, params, src, audio, at, reach)?;
+    // A seek to the head lands on a picture, and a broadcast's sound starts
+    // before its first one does. Where the frames from there begin after the
+    // edge itself, the edge is one the writers reach without a seek -- a
+    // range kept from the head, read on from the open (`take_range` in
+    // [`crate::sound`]) -- and its frames are read the way they read them,
+    // on from a fresh open. Without, the fade-in of a joined recording kept
+    // from its head was left off the sound-only file's first half second
+    // (everything before the first picture was copied at full level), where
+    // the cut with pictures, which starts on that picture, had it whole.
+    let edge = (at * audio.sample_rate as f64).round() as i64;
+    if frames.first().is_none_or(|f| f.first <= edge) {
+        return Ok(frames);
+    }
+    // A second look, so a read that fails keeps what the first one found.
+    let again = (|| -> Result<Vec<Decoded>> {
+        let mut fresh = crate::input::demux(&src.input.url)?;
+        if crate::sound::sought_at_head(&fresh, &src.input.url) {
+            fresh.seek(target, ..target)?;
+        }
+        crate::input::keep_with_pictures(&mut fresh, &[audio.stream_index]);
+        decode_on(&mut fresh, params, src, audio, at, reach)
+    })();
+    Ok(match again {
+        Ok(again) if again.first().is_some_and(|f| f.first < frames[0].first) => again,
+        _ => frames,
+    })
+}
+
+/// The frames around `at`, decoded from wherever `ictx` stands. See
+/// [`decode_around`].
+fn decode_on(
+    ictx: &mut ff::format::context::Input,
+    params: &ff::codec::Parameters,
+    src: &Source,
+    audio: &AudioInfo,
+    at: f64,
+    reach: i64,
+) -> Result<Vec<Decoded>> {
+    /// Frames to keep either side of the edge: the straddler, its guard, and
+    /// the lead-in and lead-out the encoder needs around both.
+    const KEEP: usize = 6;
+    /// How far past the edge the pictures may go with no frame of this
+    /// track before it is taken to have stopped.
+    const GIVE_UP: f64 = 10.0;
 
     let mut decoder = ff::codec::context::Context::from_parameters(params.clone())?
         .decoder()
