@@ -514,6 +514,36 @@ same two seconds of sound. A file that has both an unparsable block in the
 head and leading pictures at negative times still loses the leading picture:
 neither read has all of it right.
 
+**The sound ahead of the first key picture needs a seek of its own.** A
+broadcast sends half a second to a second of sound before its first picture, and
+copied into a Matroska file (`ffmpeg -c copy` of a recording) that sound sits
+in a cluster of its own, ahead of the first key picture's. A seek to the head
+does not land there: libavformat's index of a Matroska file is its cues, which
+name key pictures only, so the sought read starts on the key picture's cluster.
+Where a WebVTT block the demuxer cannot parse sits in that first cluster, the
+open loses its sound too, and the sought read then has nothing the open lacks:
+`open_lost` said no, and the head was read from the open. A `--sound-only`
+file of the first ten seconds of such a recording came out 9.15 seconds long,
+the 0.85 s at its head gone and everything after it that much early, where the
+same file with a readable WebVTT track kept it. libavformat does know where the
+sound starts: it indexes every cluster it reads a sound frame in, the open's
+look-ahead among them. So where the sound track's first entry lies in a cluster
+before every picture stream's, the read is sought on the sound track itself, to
+that cluster, and read whole once the subtitles are switched off
+(`sound_from_head` and `seek_to_sound_head` in
+[`sound.rs`](../../rust/crates/core/src/sound.rs)). Where the open was not sought,
+the same check as `open_lost`, made on the sound track alone, decides whether
+it lost any. Only a Matroska file with WebVTT ever reaches this; the cut with
+pictures, which starts on the first picture, is not touched by it. The readers
+that take the sound from the head of the whole recording use it as well: the
+waveform, the commercial detector's sound and the quiet detection, the fade-in
+of a join (which reads the head again from a fresh open), and `--verify`, which
+reads the head of each track by the same steps the sound-only writer takes for a
+range that opens at the head. The saved waveform's number (`WAVE_VERSION` in
+[`lib.rs`](../../gui/src-tauri/src/lib.rs)) went up to 3 with this, so an
+outline saved by an earlier version is drawn afresh, once, the next time it
+is shown.
+
 Every other read that runs on from the head of the whole recording now asks
 the same rule before it switches streams off: the film strip and the waveform,
 the walk that builds the seek index (and the rate measured for a Matroska file

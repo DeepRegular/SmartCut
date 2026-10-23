@@ -395,7 +395,8 @@ WebVTT is the one subtitle stream not read here. It carries no reset, and a
 WebVTT block libavformat cannot parse throws away the rest of its cluster, so
 with the stream left on, a video site's Matroska file lost about two seconds of
 sound at every cue, read as neither loud nor quiet. Switched off, its blocks
-are never parsed. The same file's head is read as the cut reads it; see
+are never parsed. The same file's head is read as a file of its sound alone
+reads it, the sound a broadcast sends ahead of its first picture included; see
 [the head of a Matroska file](rust-core.md#a-rate-with-nothing-round-in-it-and-the-ticks-a-container-can-state).
 
 **More stations may omit these marks than emit them.** Three of the five recordings

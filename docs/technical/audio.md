@@ -273,10 +273,49 @@ The timestamps are still the container's, and still too coarse to place the
 frames by: a sixth of them carry the instant of the frame before. So a track
 measured this way is laid from where it has reached rather than from the
 instant on the packet, and two frames at the same instant are only refused
-where the output is a transport stream, which is the one that will not take
-them. Measured on a three-second `.mkv` cut to two: 70,072 bytes of TrueHD
-out of 105,064, into a `.ts`, a `.mp4` and a `.mkv` alike -- and nought before
-this.
+where the output will not take them: a transport stream, and an MP4 (below).
+Laid end to end, a measured track never hands either two. Measured on a
+three-second `.mkv` cut to two: 70,072 bytes of TrueHD out of 105,064, into a
+`.ts`, a `.mp4` and a `.mkv` alike -- and nought before this.
+
+**An MP4 refuses two frames at one instant as a transport stream does.** Every
+muxer libavformat does not mark as lenient about timestamps -- `.mp4`, `.m4v`
+and `.mov` among them -- stops at a frame stamped with the instant of the frame
+before, with a bare "Invalid argument". MPEG program streams (`.mpg`, `.vob`)
+hand such frames over in two ways. An AC-3 frame whose start straddles two
+packs can come with the next pack's stamp, so that two frames share it: ten in
+90 seconds of a file `ffmpeg -f vob` wrote, none on a pressed DVD. And sought
+into the middle of an MP2 frame, the MPEG audio parser can lock onto a false
+sync inside the frames and hand over pieces of them with made-up stamps until a
+stamped pack steps back onto one of them; a steady tone, a line-up tone, keeps
+it locked. Up to 0.8.30 either stopped a cut of such a recording to `.mp4`
+outright.
+
+**The AC-3 frame is now put back where it belongs as it is read.** The first of
+the two is really the frame before: it comes a frame past where its track has
+reached, with a frame's hole behind it. So on a program stream a sound frame
+that comes a frame past where its track has reached is held back until the
+track's next frame is read. Where that one carries the same stamp, the held one
+is stamped where the track had reached, end to end, and both are kept;
+otherwise it goes on as it came (`LateFrames` in
+[`input.rs`](../../rust/crates/core/src/input.rs)). Nothing else is held, and on
+any other container nothing at all. The cut's segments, copied and re-encoded
+alike, a program-stream recording conformed as a reel of a join, and
+`--sound-only` all read through it. Before, a `.ts` or `.mp4` kept the late
+frame in the slot of the next and left the real one out, a frame of sound lost
+and a frame of silence in its place each time, and a Matroska file got both at
+one instant. On the file with ten of them, a cut of 1 to 89 seconds wrote 2,741 frames
+with nine holes and the note; it now writes 2,750 with none and no note.
+
+What the read cannot put back, such as the MP2 parser's pieces, is still left
+out where the muxer would refuse it, counted in the note that names the frames
+that do not follow, as into a `.ts` (`Writer::push_audio` in
+[`cut.rs`](../../rust/crates/core/src/cut.rs)); a Matroska file, which takes
+both, still gets both. Where a frame is left out
+that way, the sound written so far is taken to reach as far as the frame
+written at that instant does: counted only by the frames it wrote, it fell a
+frame short, and the next range opened a frame early, laying a frame of the
+sound the cut took away over the last one.
 
 The average is the container's arithmetic too. A TrueHD `.mkv` that ffmpeg or
 SmartCut wrote starts on gaps of 13 or 75 ms where 0.83 is due, so the average
@@ -316,6 +355,20 @@ track that ends more than half a second after the last picture ends is now
 reported as off (`Sound::past` in
 [`verify.rs`](../../rust/crates/core/src/verify.rs)); on correct outputs the most
 measured was 0.051 s.
+
+**`--verify` reads the head of a track as the writers read it.** A range from
+the head was read through a seek, and a seek lands on the first key picture,
+where a broadcast's sound starts half a second to a second before it. That sound was
+taken for sound the recording does not have and allowed for -- 0.896 s on a
+broadcast remuxed into an `.mkv`, between 0.6 and 1.2 s on transport streams
+and Blu-ray clips, 1.85 s on a remuxed recording joined to itself -- so a file
+of sound alone that had lost that much at its head passed: a ten-second range
+written as 9.15 s was called OK. Each track's head is now read with
+`sound::sound_from_head`, as the sound-only writer reads it (see [the head of a
+Matroska file](rust-core.md#a-rate-with-nothing-round-in-it-and-the-ticks-a-container-can-state)),
+and only what is really missing is allowed for: 0.06 to 0.15 s on the same
+files, and none on the remuxed one. The verdicts on correct outputs did not
+change; that 9.15-second file now reads as off.
 
 **Nothing may finish having written a declared track and no frames of it.**
 Every other way of losing one ends in an error: a codec the container has no
@@ -1060,6 +1113,19 @@ failing that, any present one; failing that, the first, which is then the follow
 programme's — a recording that opens before its programme, on one whose description
 names fewer tracks — and the right one.
 
+**A programme on the air that describes no sound at all names nothing.** It has
+not described fewer tracks than the map carries; it has said nothing about them.
+That is what a cut SmartCut wrote with its sound folded, resampled or in another
+codec looks like read back: the description of the programme on now goes out
+with its audio component descriptors taken off, since they no longer describe
+the track ([only the description of the programme on now is
+trimmed](broadcast-ts.md#what-is-put-back-is-trimmed-to-what-was-written)),
+while the following programme's is left whole. Taken as the fallback above,
+that next programme named the cut's tracks: a two-track drama cut with
+`--audio-codec ac3` read back with the next programme's names on its tracks (the
+language, which the map states, stayed right). Such a file's tracks now go
+unnamed, and the map's tags decide the main one, as on a recorder's clip.
+
 Asked only where there is more than one track — on the other 363 recordings there is
 one track, it is the main sound whatever any table says, and the read would buy
 nothing. Measured over the 37: the first description naming every track arrives between
@@ -1214,6 +1280,22 @@ half a second behind, the track had a hole rather than a drift — a broadcast's
 sound stops before its pictures — and the count starts over, as the picture
 writer's does, so sound the cut took away is never pulled back in. A single
 range has nothing before it and is written exactly as it was.
+
+**The track's very first frame is counted too.** The cut with pictures lays it
+at its own instant, some milliseconds off the range's start, and sums how
+far the sound has reached from there, so the drift every later range opens
+against carries that offset. The sound alone took it for the rounding of the
+opening rule and counted nothing; from the second range on the two counts
+differed by it, and where that crossed the middle of a frame a range opened a
+frame away from the cut's. The first frame's offset is now counted the way the
+cut counts it, and where a range's ends sit on pictures (as the editor sets
+them) every range after the first opens on the frame the cut opens it on.
+(Times on a millisecond clock, as in a `.mkv`, still part by a fraction of a
+millisecond a range, and over many ranges a head can come out a frame off. A
+command-line range whose ends fall inside a picture, `--keep 5-12` say, is
+counted by the cut in whole pictures and by the sound-only writer in seconds,
+so its later heads can still open a frame apart.) The first range's own head
+keeps its own rule (below).
 
 A hole in the track is never taken for drift. Where a range's own sound starts
 late (the recording's sound begins after its pictures, or the track breaks off

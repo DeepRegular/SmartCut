@@ -61,7 +61,7 @@ smartcut input.ts --cut 8.0-20.0 --bdav ~/disc  # onto a disc instead of a file
 
 | Option | Meaning |
 |---|---|
-| `--join RECORDING` | Another recording, written into the same output after this one. **Repeatable**, and they go in the order they are named. Where the master's sound is TrueHD or DTS, a recording whose sound is another codec is refused before anything is written; make it the master with `--master`, or name a codec with `--audio-codec` |
+| `--join RECORDING` | Another recording, written into the same output after this one. **Repeatable**, and they go in the order they are named. Where the master's sound is TrueHD or DTS, a recording whose sound is another codec is refused before anything is written; make it the master with `--master`, or name a codec with `--audio-codec`. A disc, a folder or an `.iso`, is refused at once, before the first recording is read: name one of its recordings by its path inside it (`DISC/BDAV/STREAM/00001.m2ts`, or `DISC/VIDEO_TS/VTS_01_1.VOB` on a DVD) |
 | `--master N` | Which of them the output takes its shape from — frame size, rate, codec, sound tracks, tables. Counting the first as 1. **Left out, it is the first**. A number past the last recording is refused |
 
 `--keep` and `--cut` belong to the first recording; a joined one is written
@@ -160,7 +160,7 @@ it is re-encoded as linear PCM.
 | Option | Meaning |
 |---|---|
 | `--tables partial\|broadcast\|muxer` | How a transport stream describes its own contents. Unsaid, a `.ts` gets `broadcast` — the recording's own SDT, EIT and TOT, which is where a player reads the programme name, the station and the clock — and a `.m2ts` gets `partial`, the shape a disc's stream is written in. `muxer` adds nothing. `--no-tables` is the old name for `muxer`. With `--bdav` only `partial` is taken: a disc's stream is written in that shape, and `muxer` or `broadcast` stops the run before anything is read |
-| `--no-data-broadcast` | Leave out the recording's data broadcast — what is behind the d button. It is otherwise carried into any `.ts` whose tables are not left to the muxer (`broadcast` or `partial`); a `.m2ts` has nowhere to put one: the modules come out whole and byte for byte, so a receiver draws the same pages. What turning it down buys is size — a carousel is between a hundredth and a fifth of what a broadcast multiplex spends. `--data-broadcast` asks for it outright, which only changes what is said when it cannot be carried |
+| `--no-data-broadcast` | Leave out the recording's data broadcast — what is behind the d button. It is otherwise carried into any `.ts` whose tables are not left to the muxer (`broadcast` or `partial`); a `.m2ts` has nowhere to put one: the modules come out whole and byte for byte, so a receiver draws the same pages. What turning it down buys is size — a carousel is between a hundredth and a fifth of what a broadcast multiplex spends. `--data-broadcast` asks for it outright, which only changes what is said when it cannot be carried. With `--join`, every recording's carousel goes in over its own stretch and is listed as `data   : carousel` among that recording's lines; this takes a master that is itself a transport stream, since the tables, the programme guide included, are put back from that recording |
 
 ## Writing a disc (BDAV)
 
@@ -188,7 +188,7 @@ refused rather than quietly ignored.
 
 | Option | Meaning |
 |---|---|
-| `--analyze` | Work out the plan and print it. **Writes no cut** — not even into a `--bdav` folder. A `--seek-index` file, a `--proxy` or a `--preview` asked for alongside is still written. What the run would refuse before cutting it refuses as well: an `--iso` that is the image the recording is read out of, or an `--iso-only` image in the way |
+| `--analyze` | Work out the plan and print it. **Writes no cut** — not even into a `--bdav` folder. A `--seek-index` file, a `--proxy` or a `--preview` asked for alongside is still written. What the run would refuse before cutting it refuses as well: an `--iso` that is the image the recording is read out of, an `--iso-only` image in the way, an `-o` that is a recording of the run or the `--transition-image`, the `.aac` that `--audio-es` would write beside `-o` where that is a recording of the run, and — only where `-o` or `--bdav` says the run would write — a `--drop-stream` number or a `--drop-subpicture` id that names nothing. Those two are checked against the first recording, since `--analyze` does not open the `--join` ones: not at all with `--master` past the first for `--drop-stream`, or with any `--join` for `--drop-subpicture` |
 | `--detect-cm` | Look for the commercial breaks |
 | `--logo` | Let commercial detection use the station logo as well. Given with `--detect-cm` |
 | `--inserts` | ...and report the few seconds a subscription channel drops into a programme — its own animated ident. Off by default: the same test catches a programme's own caption card. Given with `--detect-cm`. See the [commercial detection guide](cm-detection.md) |

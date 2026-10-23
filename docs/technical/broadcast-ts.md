@@ -323,6 +323,26 @@ Which leaves where it goes and how it is declared:
   in; a Blu-ray's own framing has nowhere to put it, which is why a recorder dubbing to
   a disc drops it too; and an MP4 is not a transport stream. Into those it is left out
   quietly, and `--data-broadcast` — asking outright — is what makes the cut say so.
+- **A join carries every recording's carousel over its own stretch.** Up to
+  0.8.30 only the master's went in, so a join of two halves of one programme had
+  pages behind the d button for the first half and none for the second. The rest
+  of the account stays the master's: the output is one service, with one map,
+  and its name, its events and its programme guide are the master's over the
+  whole file. So another recording's carousel goes out on the PID the master's
+  map names for the same component tag (a receiver finds a carousel by its
+  tag, not its PID; with no tags on either side, the same PID). A component the
+  master's map has no entry for is announced in the map on the PID it came on,
+  with that recording's own description of it, where that PID is free in the
+  output; where it is not, it is left out and the run says so. The packets of
+  each are renumbered onto their output PID before the continuity count, so the
+  count runs on across every seam (`reel_carousels` in
+  [`cut.rs`](../../rust/crates/core/src/cut.rs), `Graft::feeds` in
+  [`si.rs`](../../rust/crates/core/src/si.rs)). It goes in only where the
+  master's own tables do: a plain `.ts`, a master that is itself a transport
+  stream. The command line lists each recording's as `data   : carousel` among
+  that recording's lines. An entry announced for one recording alone is in the one
+  map for the whole file, so over the other recordings' stretches it names a
+  PID with no packets behind it.
 - **The map names it** the way the recording named it, its own entry with its own data
   component descriptor, and the programme description stops being trimmed of the
   descriptors that point at it.

@@ -307,6 +307,15 @@ satellite broadcast, where 4 is the answer, and copying it wrote "satellite"
 onto every terrestrial recording this ever put on a disc. The recorder's discs
 carry the network they came off, and so does this.
 
+A recording that came off no network has nothing to put in the block, and it is
+left clear: the flags off and the three ids at zero. That is what a cut out of
+an `.mp4` or an `.mkv` is, though the muxer that writes it names a network, a
+transport stream and a service of its own: network 0xFF01, the first id kept
+for private use, and 1 and 1. Up to 0.8.30 those were read back off the cut and written
+into the clip index as the recording's, on every disc made from such a file.
+They are now left out (`clpi` in [`bdav.rs`](../../rust/crates/core/src/bdav.rs)).
+The tool's name goes into the same block either way.
+
 ### The entry point map
 
 This is what makes a disc seekable. Without it a player has to read forward
