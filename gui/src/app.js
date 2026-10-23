@@ -7289,10 +7289,10 @@ async function discHolds(named, access = settings.image ? settings.imageAccess :
 /// already on it included, and a list priced against all of it was said to
 /// fit, had nothing taken off by 収める, and came out over the disc. The
 /// answer is about the room left; `disc` and `used` say what it was left of.
-async function askRoom() {
+async function askRoom(access = undefined) {
   const used = await discUsed();
   const costs = discCosts();
-  const disc = await discHolds(Number(settings.disc) || 25025314816);
+  const disc = await discHolds(Number(settings.disc) || 25025314816, access);
   const capacity = Math.max(disc - used, 0);
   const key = JSON.stringify([disc, used, costs.map((c) => [c.seconds, c.video_rate, c.audio_rate, c.can_shrink])]);
   // The stored answer has to be about this list and not the one before it:
@@ -7314,9 +7314,9 @@ async function askRoom() {
 ///
 /// Asked afresh rather than read off the gauge: the list can be edited
 /// between looking at the screen and pressing the button.
-async function fitShare() {
+async function fitShare(access = undefined) {
   if (!writesDisc() || !settings.fit) return null;
-  const { room: r } = await askRoom();
+  const { room: r } = await askRoom(access);
   if (!r || r.fits) return null;
   // A list that cannot be reached is still written -- as small as this goes,
   // which is the best answer available to somebody who has pressed the
@@ -9406,9 +9406,14 @@ async function startExport() {
   // called. Asked before the folder below is settled, not after: the folder
   // a disc is written into is named after the disc, and a name worked out a
   // moment too late would leave the folder called something else.
+  // And held: the guess is keyed by the programmes' names, and a row renamed
+  // or a programme typed on the output screen while the run cut missed it
+  // at the end, so a disc that keeps its name -- or the series the folder was
+  // just named after -- was indexed under the moment the run ended instead.
+  let runGuess = "";
   if (disc) {
     for (const clip of list) await askProgramme(clip);
-    await guessDiscTitle(list);
+    runGuess = await guessDiscTitle(list);
   }
   // Settled before the first byte and held until the last: see `runDir`.
   runDir = settings.dir;
@@ -9503,8 +9508,12 @@ async function startExport() {
   // The image's access is held from here as well: 収める prices the disc
   // with it (`discHolds`), and the check after the run and the image itself
   // must take the same one, not one changed on screen during the cutting.
-  const runAccess = settings.imageAccess;
-  const share = await fitShare();
+  // Only where an image was asked for at the start: one turned on during the
+  // run (see the image step) was priced without it, and its kind is the one
+  // its control shows when the image is made.
+  const runImaged = !!settings.image;
+  const runAccess = runImaged ? settings.imageAccess : "";
+  const share = await fitShare(runAccess);
   if (share !== null) note(t("out.shrinking", { share: sharePct(share) }));
   // Stopped before a byte was written. The disc's numbers were taken, as
   // empty streams, and are given back.
@@ -9804,14 +9813,16 @@ async function startExport() {
       el("out-state").textContent = t("out.bdavIndexing", { clip: wrote[0].slot.clip });
       renderOutScreen();
       try {
-        const discName = discTitleFor(list);
+        // A title typed during the run is still the one written; what the
+        // field would otherwise fill in is the guess the run began with.
+        const discName = settings.discTitle || runGuess;
         // Measured as the image will hold it, and against what that image
         // holds: see `discHolds`.
         // Held for the image as well: the screen stays editable through the
         // run, and an access changed in it made an image of one kind after
         // the disc had been shrunk and checked against the other's room.
         // Taken where 収める was priced (`runAccess`).
-        const access = runAccess;
+        const access = runImaged ? runAccess : settings.imageAccess;
         const overwritable = !!settings.image && access === "overwritable";
         const wroteBytes = await invoke("bdav_finish", {
           dir: discDir(),

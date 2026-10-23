@@ -5763,7 +5763,7 @@ async function saveMarks(kind, ask) {
   // and Ctrl+H wrote an empty `.keyframe` and a Trim line that keeps nothing
   // over the files beside it.
   if (marksDue || timelineOwed()) {
-    el("status").textContent = marksDue ? tr("marks.notRead") : owedSaid(false);
+    el("status").textContent = marksDue && !walkFailed ? tr("marks.notRead") : owedSaid(false);
     return;
   }
   // The menu greys this line out; the shortcut is the way in that cannot,
@@ -5816,7 +5816,7 @@ async function saveMarks(kind, ask) {
   // on that head before they can be written (`recountEarly`). Or it has
   // not landed yet on a recording with no length.
   if (marksDue || timelineOwed()) {
-    el("status").textContent = marksDue ? tr("marks.notRead") : owedSaid(false);
+    el("status").textContent = marksDue && !walkFailed ? tr("marks.notRead") : owedSaid(false);
     return;
   }
   // The backend refuses the recording it has open, and until the walk lands

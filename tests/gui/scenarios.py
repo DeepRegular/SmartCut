@@ -1727,6 +1727,68 @@ def disc_keeps_an_empty_name(cfg, t):
 
 
 
+def disc_name_renamed_during_run(cfg, t):
+    """A disc that keeps its name (a folder not named after the disc, no
+    title typed), added to by a run during which a row's programme is
+    renamed on 出力設定. The disc's name was guessed at the start, keyed by
+    the programmes' names; at the end the key no longer matched and the disc
+    was indexed under the moment the run ended. It keeps its name."""
+    at = os.path.join(cfg.work, "disc_name_renamed_during_run")
+    shutil.rmtree(at, ignore_errors=True)
+    os.makedirs(at)
+    subprocess.run([_cli(), cfg.a, "--keep", "0-2", "--bdav", at, "--disc-title", "KEEPNAME"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300, check=True)
+    info = os.path.join(at, "BDAV", "info.bdav")
+    before = os.stat(info).st_mtime_ns
+    rows = [{"path": cfg.a}, {"path": cfg.c}, {"path": cfg.a}, {"path": cfg.c}]
+    with App(cfg, "disc_name_renamed_during_run", rows,
+             {"mode": "bdav", "dir": at, "subfolder": "", "discTitle": ""}) as app:
+        app.to_list()
+        for n in (1, 2, 3, 4):
+            wait_for(f"row {n} read", lambda n=n: _walked(app, n), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        shown = wait_for("the disc's name", lambda: app.s.js(
+            "return document.getElementById('out-disc-title').value") == "KEEPNAME", 30, 0.2)
+        app.s.click('button.tab[data-screen="out"]')
+        label = wait_for("the start button", lambda: app.s.js(
+            "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 30)
+        app.s.click("#run-export")
+        stream = os.path.join(at, "BDAV", "STREAM", "00002.m2ts")
+        wait_for("the first recording being cut", lambda: os.path.exists(stream)
+                 and os.path.getsize(stream) > 0, 60, 0.02)
+        app.s.js("const i = document.getElementById('out-programme');"
+                 " i.value = 'RENAMED DURING THE RUN';"
+                 " i.dispatchEvent(new Event('input', {bubbles: true}));")
+        reached = os.stat(info).st_mtime_ns == before
+        wait_for("the run to finish", lambda: app.s.js(
+            "return document.getElementById('run-export').innerText") == label, 300, 0.5)
+        name = _disc_name(at)
+        if not reached:
+            t.check("35a NOT REACHED: the index was written before the rename", True, "")
+        else:
+            t.check("35a a programme renamed during the run: the disc keeps its name",
+                    name is not None and name.endswith(b"KEEPNAME"), f"info.bdav {name!r}")
+            # And the next run of the same session, with the renamed list:
+            # the guess put down at the end of the first run (keyed by the
+            # list as it ended) is what this one starts from.
+            first = os.stat(info).st_mtime_ns
+            app.s.click('button.tab[data-screen="outset"]')
+            shown = app.s.js("return document.getElementById('out-disc-title').value")
+            app.s.click('button.tab[data-screen="out"]')
+            wait_for("the start button again", lambda: app.s.js(
+                "const b = document.getElementById('run-export'); return !b.disabled && b.innerText") == label,
+                30)
+            app.s.click("#run-export")
+            wait_for("the second index", lambda: os.stat(info).st_mtime_ns != first, 300, 0.2)
+            wait_for("the second run to finish", lambda: app.s.js(
+                "return document.getElementById('run-export').innerText") == label, 300, 0.5)
+            name = _disc_name(at)
+            t.check("35a2 the next run of the renamed list: the disc still keeps its name",
+                    shown == "KEEPNAME" and name is not None and name.endswith(b"KEEPNAME"),
+                    f"field {shown!r}, info.bdav {name!r}")
+    shutil.rmtree(at, ignore_errors=True)
+
+
 def disc_gauge_overwritable(cfg, t):
     """An overwritable image is laid out as a recorder formats a BD-RE, which
     holds 24,118,755,328 bytes of files on a single layer -- not the
@@ -1781,6 +1843,58 @@ def disc_gauge_overwritable(cfg, t):
         t.check("32b the check after the run says the same disc",
                 "22.5 GiB のディスクに収まります" in said and os.path.exists(os.path.join(at, "night.iso")),
                 f"{[l for l in said.splitlines() if 'ディスクに収' in l][:2]}")
+    shutil.rmtree(at, ignore_errors=True)
+
+
+def image_turned_on_during_run(cfg, t):
+    """An image asked for while the run is cutting (the image step is made
+    for it, see app.js), with 書き換え可 chosen as it is turned on. The kind
+    held from the run's start is the one 収める priced; nothing was priced
+    with an image here, so the image is made of the kind its control shows
+    and the check after the run prices it so -- not the kind the hidden
+    control held when the run began."""
+    at = os.path.join(cfg.work, "image_turned_on_during_run")
+    shutil.rmtree(at, ignore_errors=True)
+    os.makedirs(at)
+
+    def pick(app, id, value):
+        app.s.js("const s = document.getElementById(arguments[0]); s.value = arguments[1];"
+                 " s.dispatchEvent(new Event('input', {bubbles: true}));", id, value)
+
+    rows = [{"path": cfg.a}, {"path": cfg.c}, {"path": cfg.a}, {"path": cfg.c}]
+    with App(cfg, "image_turned_on_during_run", rows,
+             {"mode": "bdav", "dir": at, "subfolder": "night", "discTitle": "OW",
+              "image": "", "imageAccess": "read-only"}) as app:
+        app.to_list()
+        for n in (1, 2, 3, 4):
+            wait_for(f"row {n} read", lambda n=n: _walked(app, n), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        app.s.click('button.tab[data-screen="out"]')
+        label = wait_for("the start button", lambda: app.s.js(
+            "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 30)
+        app.s.click("#run-export")
+        stream = os.path.join(at, "night", "BDAV", "STREAM", "00001.m2ts")
+        wait_for("the first recording being cut", lambda: os.path.exists(stream)
+                 and os.path.getsize(stream) > 0, 60, 0.02)
+        pick(app, "out-image", "2.50")
+        pick(app, "out-image-access", "overwritable")
+        reached = not os.path.exists(os.path.join(at, "night", "BDAV", "info.bdav"))
+        wait_for("the run to finish", lambda: app.s.js(
+            "return document.getElementById('run-export').innerText") == label, 300, 0.5)
+        said = ""
+        for root, _, files in os.walk(app.dir):
+            for f in files:
+                if f.endswith(".log") or f.endswith(".txt"):
+                    with open(os.path.join(root, f), "rb") as fh:
+                        said += fh.read().decode("utf-8", "replace")
+        said = [l for l in said.splitlines() if "ディスクに収" in l or "GiB" in l][:3]
+        said = " | ".join(said)
+        if not reached:
+            t.check("35b NOT REACHED: the index was written before the image was asked for", True, "")
+        else:
+            t.check("35b an image turned on mid-run: made and checked as the kind shown",
+                    "22.5 GiB のディスクに収まります" in said
+                    and os.path.exists(os.path.join(at, "night.iso")), repr(said[:300]))
     shutil.rmtree(at, ignore_errors=True)
 
 
@@ -4511,11 +4625,13 @@ SCENARIOS = [
     disc_name_after_a_run,
     disc_name_after_image_only,
     disc_keeps_an_empty_name,
+    disc_name_renamed_during_run,
     image_only_twice,
     image_only_twice_other,
     image_from_its_own_image,
     tracks_subtitle_stream,
     disc_gauge_overwritable,
+    image_turned_on_during_run,
     plays_owed_left_behind,
     plays_owed_removed_undone,
     plays_due_snapped,

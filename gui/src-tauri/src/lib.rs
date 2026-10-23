@@ -5028,7 +5028,10 @@ struct WaveOut {
 /// 1: as first written.
 /// 2: the first track outlined rather than the main one, which is the track
 ///    the editor plays (see [`heard_track`]).
-const WAVE_VERSION: u32 = 2;
+/// 3: the head read the way a sound-only file reads it
+///    ([`smartcut_core::sound`]'s `sound_from_head`): a .mkv whose WebVTT libav
+///    cannot read no longer outlines its first seconds as silence.
+const WAVE_VERSION: u32 = 3;
 
 /// Where this recording's outline is kept: beside its flat detections.
 fn wave_path(app: &tauri::AppHandle, path: &str) -> Result<std::path::PathBuf, String> {
