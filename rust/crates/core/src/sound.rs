@@ -768,9 +768,28 @@ fn run(
             // opens early on; laid end to end here it would be written -- a
             // fifth of a second of the sound the cut took away, in front of
             // the next range.
+            //
+            // **The track's very first frame is counted where it falls,
+            // however near.** The picture writer puts it at its own instant
+            // -- 8.7 ms after the first picture on an off-air recording --
+            // and sums where its sound has reached (`end`) from there, so
+            // the drift every later range opens against carries that
+            // lateness. Taken here as the rounding of the opening rule, the
+            // two counts differed by it from the second range on, and where
+            // that crossed the middle of a frame a range opened on another
+            // frame than the cut's: the third of five ranges a frame early on
+            // a terrestrial recording. Counted alike (early as well as late:
+            // a frame this file opens on up to half a frame before its
+            // start, where the cut, which opens on none before its first
+            // range, takes the next one, leaves the two at the same place
+            // after it), every range opens on the cut's frame.
             if let Some((t, dur, before)) = first {
+                laid += if opened {
+                    head_owed(range.0 + drift, t, dur, before)
+                } else {
+                    -(t - (range.0 + drift))
+                };
                 opened = true;
-                laid += head_owed(range.0 + drift, t, dur, before);
             }
             // And a hole further into the range, for the same reason: the
             // picture writer leaves it as silence and the frames after it at
@@ -931,6 +950,9 @@ fn drift_from(written: f64, laid: &mut f64) -> f64 {
 /// open more than half its own length after the start with nothing missing.
 ///
 /// `start` is the instant the range's first frame was chosen against.
+///
+/// Not asked about the track's very first frame, which is counted where it
+/// falls, as the picture writer counts it (see `run`).
 fn head_owed(start: f64, opened_at: f64, dur: f64, before: Option<f64>) -> f64 {
     let late = opened_at - start;
     let runs_on = before.is_some_and(|end| end >= opened_at - 2e-3);
@@ -980,13 +1002,187 @@ struct Clock {
 /// and the two disagreeing put a different first frame at the head of the
 /// sound-only file than at the head of the cut's.
 pub(crate) fn sought_at_head(ictx: &ff::format::context::Input, url: &str) -> bool {
-    let matroska = ictx.format().name().split(',').any(|n| n.trim() == "matroska");
-    let webvtt = ictx.streams().any(|s| {
-        let par = s.parameters();
-        par.medium() == ff::media::Type::Subtitle && par.id() == ff::codec::Id::WEBVTT
-    });
     // A check that cannot be made seeks, as every such file did before.
-    matroska && webvtt && open_lost(url).unwrap_or(true)
+    matroska_with_webvtt(ictx) && open_lost(url).unwrap_or(true)
+}
+
+/// A Matroska file with a WebVTT stream: the files whose open can lose part
+/// of their head. See [`sought_at_head`].
+fn matroska_with_webvtt(ictx: &ff::format::context::Input) -> bool {
+    let matroska = ictx.format().name().split(',').any(|n| n.trim() == "matroska");
+    matroska
+        && ictx.streams().any(|s| {
+            let par = s.parameters();
+            par.medium() == ff::media::Type::Subtitle && par.id() == ff::codec::Id::WEBVTT
+        })
+}
+
+/// Make a recording just opened ready to read the sound track `track` from
+/// its head: sought as the cut seeks it ([`sought_at_head`]), and from the
+/// cluster where the sound starts where that is ahead of the first key
+/// picture's and would be lost otherwise ([`seek_to_sound_head`]). Every
+/// recording that is not a Matroska file with a WebVTT stream is left as it
+/// was opened. Returns whether it was sought.
+pub(crate) fn sound_from_head(
+    ictx: &mut crate::input::Demux,
+    url: &str,
+    track: usize,
+) -> Result<bool> {
+    if sought_at_head(ictx, url) {
+        let target = i64::MIN / 2;
+        ictx.seek(target, ..target)?;
+        // Sought to the first key picture: from the cluster before it, where
+        // the sound starts ahead of it.
+        if seek_to_sound_head(ictx, track) == SoundHead::Failed {
+            *ictx = crate::input::demux(url)?;
+            ictx.seek(target, ..target)?;
+        }
+        return Ok(true);
+    }
+    // Read on from the open, the sound ahead of the first key picture is
+    // lost where the open lost it.
+    if matroska_with_webvtt(ictx) && sound_lost(url, track).unwrap_or(false) {
+        match seek_to_sound_head(ictx, track) {
+            SoundHead::Sought => return Ok(true),
+            SoundHead::Failed => *ictx = crate::input::demux(url)?,
+            SoundHead::Same => {}
+        }
+    }
+    Ok(false)
+}
+
+/// What [`seek_to_sound_head`] did.
+#[derive(PartialEq)]
+enum SoundHead {
+    /// Nothing: the track's first cluster is not ahead of the pictures'.
+    Same,
+    Sought,
+    /// The seek was refused, and the read is wherever libavformat left it.
+    Failed,
+}
+
+/// Seek a Matroska file to the first cluster its index knows the sound track
+/// `track` in, where that comes before the first one it knows a picture in.
+///
+/// **The sound a broadcast sends ahead of its first picture.** Copied into a
+/// Matroska file (`ffmpeg -c copy` of a recording), its first 0.9 s of sound
+/// sit in a cluster of their own, ahead of the first key picture's. A seek to
+/// the head lands on that picture: libavformat's index of a Matroska file is
+/// its Cues, which name key pictures only, so the cluster before is never
+/// read. And an open that has lost that cluster's sound to a WebVTT block it
+/// cannot parse (see [`sought_at_head`]) has nothing else to lose -- the
+/// sought read of [`open_lost`] has no packet the open lacks, so the head was
+/// read from the open: a sound-only file of such a recording lost 0.85 s of
+/// its head, every frame after it early by as much, where the same file with
+/// a readable WebVTT track kept it. libavformat does know where it saw the
+/// sound first: it indexes each cluster it reads a sound frame in, the open's
+/// look ahead included. Sought by the track, the read starts on that cluster
+/// with the subtitles about to be switched off, and the cluster is read
+/// whole.
+fn seek_to_sound_head(ictx: &mut ff::format::context::Input, track: usize) -> SoundHead {
+    // SAFETY: the streams belong to a context still open, and the entries
+    // are read before anything else uses it.
+    let first = |s: &ff::format::stream::Stream| unsafe {
+        let st = s.as_ptr() as *mut ff::ffi::AVStream;
+        if ff::ffi::avformat_index_get_entries_count(st) <= 0 {
+            return None;
+        }
+        let e = ff::ffi::avformat_index_get_entry(st, 0);
+        (!e.is_null()).then(|| ((*e).pos, (*e).timestamp))
+    };
+    let Some((at, when)) = ictx.stream(track).and_then(|s| first(&s)) else {
+        return SoundHead::Same;
+    };
+    let pictures = ictx
+        .streams()
+        .filter(|s| {
+            s.parameters().medium() == ff::media::Type::Video
+                && !s.disposition().contains(ff::format::stream::Disposition::ATTACHED_PIC)
+        })
+        .filter_map(|s| first(&s).map(|e| e.0))
+        .min();
+    if at < 0 || pictures.is_some_and(|p| at >= p) {
+        return SoundHead::Same;
+    }
+    let Ok(index) = std::os::raw::c_int::try_from(track) else {
+        return SoundHead::Same;
+    };
+    // SAFETY: the context is open and nothing else is reading it.
+    let done = unsafe {
+        ff::ffi::av_seek_frame(ictx.as_mut_ptr(), index, when, ff::ffi::AVSEEK_FLAG_BACKWARD)
+    };
+    if done >= 0 {
+        SoundHead::Sought
+    } else {
+        SoundHead::Failed
+    }
+}
+
+/// Whether the open of `url` hands over less of the sound track `track` from
+/// the file's head than a read sought by [`seek_to_sound_head`] does: the
+/// bytes and the bound as in [`open_lost`]. A check that cannot be made, or a
+/// track whose first cluster is not ahead of the pictures', is `false`: the
+/// head is read as it was.
+fn sound_lost(url: &str, track: usize) -> Result<bool> {
+    const PAST: usize = 64;
+    const SEEK_CUR: std::os::raw::c_int = 1;
+    let mut open = crate::input::demux(url)?;
+    // SAFETY: the context is open and its reader is only read here.
+    let bound = unsafe {
+        let pb = (*open.as_ptr()).pb;
+        if pb.is_null() {
+            return Ok(false);
+        }
+        ff::ffi::avio_seek(pb, 0, SEEK_CUR)
+    };
+    if bound <= 0 {
+        return Ok(false);
+    }
+    crate::input::keep_only(&mut open, &[track]);
+    let mut had = std::collections::HashSet::new();
+    let mut past = 0;
+    for (stream, packet) in open.read_packets() {
+        if stream.index() != track {
+            continue;
+        }
+        let at = packet.position() as i64;
+        if at < 0 {
+            return Ok(false);
+        }
+        if at >= bound {
+            past += 1;
+            if past > PAST {
+                break;
+            }
+        } else {
+            had.insert(at);
+        }
+    }
+    drop(open);
+    let mut sought = crate::input::demux(url)?;
+    if seek_to_sound_head(&mut sought, track) != SoundHead::Sought {
+        return Ok(false);
+    }
+    crate::input::keep_only(&mut sought, &[track]);
+    let mut past = 0;
+    for (stream, packet) in sought.read_packets() {
+        if stream.index() != track {
+            continue;
+        }
+        let at = packet.position() as i64;
+        if at < 0 {
+            return Ok(false);
+        }
+        if at >= bound {
+            past += 1;
+            if past > PAST {
+                break;
+            }
+        } else if !had.contains(&at) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Whether a fresh open of `url` hands over fewer of the head's pictures and
@@ -1132,9 +1328,8 @@ fn take_range(
     if landing > 0.0 {
         let target = ((landing + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
         ictx.seek(target, ..target)?;
-    } else if sought_at_head(&ictx, &src.input.url) {
-        let target = i64::MIN / 2;
-        ictx.seek(target, ..target)?;
+    } else {
+        sound_from_head(&mut ictx, &src.input.url, track.stream_index)?;
     }
     // After the seek, for the reason [`crate::input::keep_only`] gives, and
     // with the pictures, which say when the range is over where the track
@@ -1152,17 +1347,38 @@ fn take_range(
     let mut reached: Option<f64> = None;
     let mut latest: Option<f64> = None;
     let mut holes = 0.0f64;
+    // The track's frames as the cut with pictures takes them: a frame of a
+    // program stream one frame late on the next one's stamp is put back
+    // where it belongs. See [`crate::input::LateFrames`]. What it hands on
+    // waits in `due`; what it still holds when the read ends is taken last.
+    let mut late = crate::input::LateFrames::new(&ictx, 1);
+    let mut due = std::collections::VecDeque::new();
+    let mut read_over = false;
     let mut packets = ictx.read_packets();
-    for (stream, packet) in packets.by_ref() {
-        if stream.index() != track.stream_index {
-            // Leeway for the pictures running a little ahead of their sound.
-            if crate::input::packet_time(&stream, &packet, src.start_time)
-                .is_some_and(|t| t >= range.1 + 5.0)
-            {
-                break;
+    loop {
+        let packet = match due.pop_front() {
+            Some(packet) => packet,
+            None if read_over => break,
+            None => {
+                match packets.next() {
+                    Some((stream, packet)) if stream.index() != track.stream_index => {
+                        // Leeway for the pictures running a little ahead of their sound.
+                        if crate::input::packet_time(&stream, &packet, src.start_time)
+                            .is_some_and(|t| t >= range.1 + 5.0)
+                        {
+                            read_over = true;
+                            due.extend(late.rest().into_iter().map(|(_, p)| p));
+                        }
+                    }
+                    Some((_, packet)) => due.extend(late.pass(0, packet).into_iter().flatten()),
+                    None => {
+                        read_over = true;
+                        due.extend(late.rest().into_iter().map(|(_, p)| p));
+                    }
+                }
+                continue;
             }
-            continue;
-        }
+        };
         let Some(pts) = packet.pts() else { continue };
         let t = pts as f64 * in_tb - src.start_time;
         // A frame that comes with no length at all, on a track whose

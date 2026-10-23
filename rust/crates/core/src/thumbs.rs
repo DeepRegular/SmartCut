@@ -637,21 +637,35 @@ pub fn build_with_sound(
 ) -> Result<(Track, Option<crate::wave::Wave>)> {
     crate::init()?;
     let mut ictx = crate::input::demux(&src.input.url)?;
-    // From the head as the cut reads it: read on from the open, except where
-    // the open has already lost some of it -- a Matroska file with a WebVTT
-    // block libavformat cannot parse, whose first two seconds of pictures and
-    // sound the open's look ahead threw away. See
-    // [`crate::sound::sought_at_head`]; before the discards, as there.
-    if crate::sound::sought_at_head(&ictx, &src.input.url) {
-        let target = i64::MIN / 2;
-        let _ = ictx.seek(target, ..target);
-    }
     let idx = src.video.stream_index;
     let mut wave = if sound && src.audio.is_some() {
         crate::wave::WaveBuilder::new(src, &ictx).ok()
     } else {
         None
     };
+    // From the head as the cut reads it: read on from the open, except where
+    // the open has already lost some of it -- a Matroska file with a WebVTT
+    // block libavformat cannot parse, whose first two seconds of pictures and
+    // sound the open's look ahead threw away. See
+    // [`crate::sound::sought_at_head`]; before the discards, as there.
+    //
+    // Where the outline rides along, as [`crate::wave::read_wave`] reads the
+    // head: also from the cluster the sound starts in where that is ahead of
+    // the first key picture's (see [`crate::sound::sound_from_head`]), or the
+    // ride-along outline of such a file drew its first 0.85 s as silence and
+    // the outline read on its own did not. The pictures all lie behind that
+    // cluster, and come out the same either way.
+    match &wave {
+        Some(w) => {
+            let _ = crate::sound::sound_from_head(&mut ictx, &src.input.url, w.stream_index);
+        }
+        None => {
+            if crate::sound::sought_at_head(&ictx, &src.input.url) {
+                let target = i64::MIN / 2;
+                let _ = ictx.seek(target, ..target);
+            }
+        }
+    }
     // The pass reads the pictures and nothing else, and a stream left on
     // costs the pictures on some recordings. See [`crate::input::keep_only`].
     // The sound, where it is being outlined, is the one exception: it is

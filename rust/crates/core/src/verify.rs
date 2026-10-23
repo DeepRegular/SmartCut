@@ -1238,33 +1238,77 @@ impl Ears<'_> {
         }
         self.reads -= 1;
         let start = self.src.start_time;
-        crate::input::keep_everything(&mut self.ictx);
-        let target = (((x - 1.0).max(0.0) + start) * ff::ffi::AV_TIME_BASE as f64) as i64;
-        self.ictx.seek(target, ..target).ok()?;
-        crate::input::keep_with_pictures(&mut self.ictx, &self.tracks);
         let mut got: Heard = vec![None; self.tracks.len()];
-        let mut packets = self.ictx.read_packets();
-        for (stream, packet) in packets.by_ref() {
-            let Some(t) = crate::input::packet_time(&stream, &packet, start) else { continue };
-            let Some(k) = self.tracks.iter().position(|&i| i == stream.index()) else {
-                // The pictures say when the stretch is over: sound is laid
-                // into a stream up to a second either side of them.
-                if t > y + 1.5 {
-                    break;
-                }
-                continue;
-            };
-            if t >= x && t < y {
-                let end = t + packet.duration().max(0) as f64 * f64::from(stream.time_base());
-                got[k] = Some(got[k].map_or((t, end), |(f, l)| (f.min(t), l.max(end))));
+        let from = (x - 1.0).max(0.0);
+        if from <= 0.0 {
+            // **The head, as the file of sound alone reads it**: each track
+            // from where [`head_of`] puts it. Sought instead, a Matroska file
+            // is read from its first key picture's cluster, and a broadcast
+            // copied into one (`ffmpeg -c copy`) sends 0.9 s of sound ahead
+            // of that picture in a cluster of its own: the read began after
+            // it, and the track was taken to start 0.9 s in -- allowed for as
+            // the recording's own, which let a file of sound alone that had
+            // lost those 0.9 s pass.
+            for (k, &track) in self.tracks.iter().enumerate() {
+                let mut ictx = head_of(self.src, track)?;
+                let mut one = vec![None; self.tracks.len()];
+                listen(&mut ictx, &self.tracks, start, (x, y), &mut one)?;
+                got[k] = one[k];
             }
+        } else {
+            crate::input::keep_everything(&mut self.ictx);
+            let target = ((from + start) * ff::ffi::AV_TIME_BASE as f64) as i64;
+            self.ictx.seek(target, ..target).ok()?;
+            crate::input::keep_with_pictures(&mut self.ictx, &self.tracks);
+            listen(&mut self.ictx, &self.tracks, start, (x, y), &mut got)?;
         }
-        // A read that stopped on an error says nothing it can be held to.
-        packets.finished().ok()?;
-        drop(packets);
         self.heard.push(((x, y), got.clone()));
         Some(got)
     }
+}
+
+/// Read on from where `ictx` stands, putting each of `tracks`' first packet
+/// in `[x, y)` and the end of its last into `got`. `None` where the read
+/// stopped on an error.
+fn listen(
+    ictx: &mut crate::input::Demux,
+    tracks: &[usize],
+    start: f64,
+    (x, y): (f64, f64),
+    got: &mut Heard,
+) -> Option<()> {
+    let mut packets = ictx.read_packets();
+    for (stream, packet) in packets.by_ref() {
+        let Some(t) = crate::input::packet_time(&stream, &packet, start) else { continue };
+        let Some(k) = tracks.iter().position(|&i| i == stream.index()) else {
+            // The pictures say when the stretch is over: sound is laid
+            // into a stream up to a second either side of them.
+            if t > y + 1.5 {
+                break;
+            }
+            continue;
+        };
+        if t >= x && t < y {
+            let end = t + packet.duration().max(0) as f64 * f64::from(stream.time_base());
+            got[k] = Some(got[k].map_or((t, end), |(f, l)| (f.min(t), l.max(end))));
+        }
+    }
+    // A read that stopped on an error says nothing it can be held to.
+    packets.finished().ok()
+}
+
+/// A recording opened to read sound track `track` from its head, the way
+/// the file of sound alone reads it ([`crate::sound`]'s `take_range` at a
+/// range that opens at the head): positioned by
+/// [`crate::sound::sound_from_head`], then everything but the track and the
+/// pictures switched off. The one head rule for every read here that starts
+/// at the head: two rules once measured the same recording two ways (see
+/// [`sound_span`] and [`Ears::heard`]). `None` where it cannot be read so.
+fn head_of(src: &Source, track: usize) -> Option<crate::input::Demux> {
+    let mut ictx = crate::input::demux(&src.input.url).ok()?;
+    crate::sound::sound_from_head(&mut ictx, &src.input.url, track).ok()?;
+    crate::input::keep_with_pictures(&mut ictx, &[track]);
+    Some(ictx)
 }
 
 /// How much of `ranges` a track's `hole` covers, leaving out `between`: the
@@ -1413,22 +1457,29 @@ fn sound_span(src: &Source, head: bool, tail: bool, near: f64) -> Option<(f64, f
     let time = |packet: &ff::Packet, tb: f64| {
         packet.pts().map(|p| p as f64 * tb - src.start_time)
     };
+    // What each read hands over: the tracks, and the pictures that say when
+    // the stretch is over -- not the subtitles. A Matroska file's WebVTT
+    // block libavformat cannot parse costs every stream the cluster it sits
+    // in while it is read, and with it left on, a video site's recording
+    // came back with its sound starting 1.5 s late: allowed for as the
+    // recording's own, which let a cut that lost that much of it pass.
+    let indices: Vec<usize> = tracks.iter().map(|t| t.0).collect();
     let mut from = 0.0_f64;
     if head {
-        let mut ictx = crate::input::demux(&src.input.url).ok()?;
+        // Each track from its head as the file of sound alone reads it: see
+        // [`head_of`].
         let mut first: Vec<Option<f64>> = vec![None; tracks.len()];
-        for (stream, packet) in ictx.read_packets() {
-            let Some(k) = tracks.iter().position(|t| t.0 == stream.index()) else {
-                if time(&packet, f64::from(stream.time_base())).is_some_and(|t| t > near) {
-                    break;
+        for (k, &(index, tb)) in tracks.iter().enumerate() {
+            let mut ictx = head_of(src, index)?;
+            for (stream, packet) in ictx.read_packets() {
+                if stream.index() != index {
+                    if time(&packet, f64::from(stream.time_base())).is_some_and(|t| t > near) {
+                        break;
+                    }
+                    continue;
                 }
-                continue;
-            };
-            let Some(t) = time(&packet, tracks[k].1) else { continue };
-            if first[k].is_none() {
+                let Some(t) = time(&packet, tb) else { continue };
                 first[k] = Some(t);
-            }
-            if t > near || first.iter().all(Option::is_some) {
                 break;
             }
         }
@@ -1440,6 +1491,7 @@ fn sound_span(src: &Source, head: bool, tail: bool, near: f64) -> Option<(f64, f
         let target = ((src.duration - near).max(0.0) + src.start_time) * ff::ffi::AV_TIME_BASE as f64;
         let target = target as i64;
         ictx.seek(target, ..target).ok()?;
+        crate::input::keep_with_pictures(&mut ictx, &indices);
         let mut last: Vec<Option<f64>> = vec![None; tracks.len()];
         // Where the read was sent. A transport stream hands a track's last
         // packet over only when the file ends, wherever the track stopped:

@@ -30,7 +30,12 @@ fn main() -> Result<()> {
                     Some(smartcut_core::subs::Shown::Text { runs, .. }) => {
                         Some(runs.iter().map(|r| r.text.as_str()).collect::<String>())
                     }
-                    _ => None,
+                    // A picture by its place and size, which is what tells
+                    // one display set from the next.
+                    Some(smartcut_core::subs::Shown::Picture { x, y, width, height, .. }) => {
+                        Some(format!("[{width}x{height} at {x},{y}]"))
+                    }
+                    None => None,
                 };
                 if words != said {
                     println!("  {t:9.2}s  {}", words.as_deref().unwrap_or("-"));

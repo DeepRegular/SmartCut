@@ -67,14 +67,31 @@ pub fn read_wave(src: &Source, mut progress: Option<Box<dyn FnMut(f64) + Send>>)
     crate::init()?;
     let audio = outlined(src).ok_or_else(|| anyhow!("{} has no audio", src.path))?;
     let mut ictx = crate::input::demux(&src.input.url)?;
-    // From the head as the cut reads it, sought only where the open has lost
-    // some of it: see [`crate::sound::sought_at_head`].
-    if crate::sound::sought_at_head(&ictx, &src.input.url) {
-        let target = i64::MIN / 2;
-        let _ = ictx.seek(target, ..target);
+    // From the head as the sound-only file reads it: sought only where the
+    // open has lost some of it, see [`crate::sound::sought_at_head`], and
+    // from the cluster the sound starts in where that is ahead of the first
+    // key picture's, see [`crate::sound::sound_from_head`]. Without the
+    // second, a broadcast copied into a Matroska file with a WebVTT block
+    // libavformat cannot parse drew its first 0.85 s as silence, where the
+    // same file with a readable WebVTT track drew the sound.
+    //
+    // Sought, the pictures stay switched on as well, as they are for the
+    // outline that rides along with them and for the cut's sound. With the
+    // sound alone switched on, the Matroska demuxer's read after the seek
+    // left out the frame stamped before the first key picture (an AAC
+    // priming frame at -21 ms), the decoder began a frame late, and the
+    // head's buckets came out a level apart from the ride-along outline of
+    // the same file. Read from the open, as every other recording is, the
+    // sound alone. A read that failed to say is taken as sought: the
+    // pictures cost only their reading.
+    let sought =
+        crate::sound::sound_from_head(&mut ictx, &src.input.url, audio.stream_index).unwrap_or(true);
+    if sought {
+        crate::input::keep_only(&mut ictx, &[audio.stream_index, src.video.stream_index]);
+    } else {
+        // The sound and nothing else: see [`crate::input::keep_only`].
+        crate::input::keep_only(&mut ictx, &[audio.stream_index]);
     }
-    // The sound and nothing else: see [`crate::input::keep_only`].
-    crate::input::keep_only(&mut ictx, &[audio.stream_index]);
     let mut builder = WaveBuilder::new(src, &ictx)?;
     let mut told = -1.0;
     for (stream, packet) in ictx.read_packets() {

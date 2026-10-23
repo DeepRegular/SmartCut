@@ -1085,6 +1085,97 @@ fn is_program_stream(ictx: &ff::format::context::Input) -> bool {
     ictx.format().name().split(',').any(|n| n.trim() == "mpeg")
 }
 
+/// Sound frames of an MPEG program stream that came stamped a frame late.
+///
+/// **libavformat's program stream reader hands an AC-3 frame whose start
+/// straddles two packs the stamp of the next pack**, so two frames arrive
+/// with one stamp and the first of them is really the frame before: a frame
+/// later than where the track has reached, with a hole of a frame behind it.
+/// An `ffmpeg -f vob` file with AC-3 has some ten of them in 90 s; a pressed
+/// DVD none. A transport stream or an MP4 refuses a frame at the instant of
+/// the one before, so the second -- the real frame of that instant -- was
+/// left out (`Writer::push_audio` in [`crate::cut`]): a frame of sound lost and a frame of
+/// silence where the first belonged, each time, and the "do not follow" note.
+///
+/// So on a program stream, a sound frame that comes a frame past where its
+/// track has reached is held back until the next frame of that track is
+/// read. Where that one has the same stamp, the held one goes where the
+/// track had reached -- end to end, which is where it belongs -- and both
+/// are kept. Otherwise it goes on as it came, a frame of the recording's
+/// own silence. Nothing else is held, and on any other container nothing
+/// at all, so what reaches the cut's `take_audio` there is what was read.
+pub(crate) struct LateFrames {
+    on: bool,
+    /// Per sound track the caller numbers (the cut's: one per track of the
+    /// segment), the stamp and length of the last frame passed on, and the frame held back.
+    tracks: Vec<(Option<Passed>, Option<ff::Packet>)>,
+}
+
+/// The stamp and length of a sound frame passed on, in its stream's ticks.
+type Passed = (i64, i64);
+
+impl LateFrames {
+    pub(crate) fn new(ictx: &ff::format::context::Input, tracks: usize) -> LateFrames {
+        LateFrames {
+            on: is_program_stream(ictx),
+            tracks: (0..tracks).map(|_| (None, None)).collect(),
+        }
+    }
+
+    /// What of track `k` is to go on now that `packet` has been read: the
+    /// frame held back before it, if any, and then this one, unless it is
+    /// held in its turn.
+    pub(crate) fn pass(&mut self, k: usize, packet: ff::Packet) -> [Option<ff::Packet>; 2] {
+        if !self.on {
+            return [Some(packet), None];
+        }
+        let Some((last, held)) = self.tracks.get_mut(k) else {
+            return [Some(packet), None];
+        };
+        let mut out = [None, None];
+        if let Some(mut h) = held.take() {
+            if let (Some(hp), Some(p), Some((lp, ld))) = (h.pts(), packet.pts(), *last) {
+                if p == hp {
+                    h.set_pts(Some(lp + ld));
+                    if h.dts() == Some(hp) {
+                        h.set_dts(Some(lp + ld));
+                    }
+                }
+            }
+            *last = h.pts().map(|p| (p, h.duration()));
+            out[0] = Some(h);
+        }
+        // A frame past where the track reached, by half a frame to a frame
+        // and a half: one frame late, or a frame of the recording missing.
+        let late = match (packet.pts(), *last) {
+            (Some(p), Some((lp, ld))) if ld > 0 => {
+                let gap = p - (lp + ld);
+                2 * gap >= ld && 2 * gap <= 3 * ld
+            }
+            _ => false,
+        };
+        if late {
+            *held = Some(packet);
+        } else {
+            if let Some(p) = packet.pts() {
+                *last = Some((p, packet.duration()));
+            }
+            out[1] = Some(packet);
+        }
+        out
+    }
+
+    /// The frames still held when the read ends, by track: a frame held back
+    /// is not one to lose.
+    pub(crate) fn rest(&mut self) -> Vec<(usize, ff::Packet)> {
+        self.tracks
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(k, (_, held))| held.take().map(|p| (k, p)))
+            .collect()
+    }
+}
+
 /// What libavformat may open to read a recording. See [`open_with`].
 pub(crate) const LOCAL_PROTOCOLS: &str = "file,subfile,concat";
 
@@ -2073,5 +2164,37 @@ mod tests {
         assert_eq!(total, HAS);
         assert_eq!(last, FAIL);
         assert_eq!(again, FAIL);
+    }
+
+    /// The shape an `ffmpeg -f vob` AC-3 track has: 798824 ends at 801958,
+    /// and the next two frames both say 805094. The first goes back to
+    /// 801958; a lone frame a frame late (a real gap) goes on as it came.
+    #[test]
+    fn late_frames_put_back() {
+        let frame = |pts: i64| {
+            let mut p = ff::Packet::empty();
+            p.set_pts(Some(pts));
+            p.set_dts(Some(pts));
+            p.set_duration(3134);
+            p
+        };
+        let mut late = LateFrames { on: true, tracks: vec![(None, None)] };
+        let mut out = Vec::new();
+        for pts in [795690, 798824, 805094, 805094, 808228, 814498, 817632] {
+            for p in late.pass(0, frame(pts)).into_iter().flatten() {
+                out.push(p.pts().unwrap());
+            }
+        }
+        out.extend(late.rest().into_iter().map(|(_, p)| p.pts().unwrap()));
+        assert_eq!(out, [795690, 798824, 801958, 805094, 808228, 814498, 817632]);
+
+        // Held at the end of the read, it is still handed over.
+        let mut late = LateFrames { on: true, tracks: vec![(None, None)] };
+        let first = late.pass(0, frame(0));
+        assert!(first[0].is_none() && first[1].is_some());
+        assert!(late.pass(0, frame(6268)).iter().all(Option::is_none));
+        let rest = late.rest();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].1.pts(), Some(6268));
     }
 }

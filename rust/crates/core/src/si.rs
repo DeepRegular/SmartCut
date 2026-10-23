@@ -893,6 +893,12 @@ pub fn sound_tracks(
     let mut named: Vec<(bool, u16, Vec<SoundTrack>)> = Vec::new();
     // The event last seen on the air, whatever it said about its sound.
     let mut on_air: Option<u16> = None;
+    // Whether that description said nothing about any sound at all. A cut
+    // this program made with its sound re-encoded is one: the present event
+    // goes out with its audio component descriptors taken off (see
+    // [`Components`]), and the following programme's, which is left whole,
+    // would otherwise name this file's tracks -- 韓国語 read back as ENG.
+    let mut on_air_silent = false;
     let mut at = base;
     while at + PACKET <= buf.len() {
         let p = &buf[at..at + PACKET];
@@ -929,6 +935,7 @@ pub fn sound_tracks(
             let id = u16::from_be_bytes([event[0], event[1]]);
             if present {
                 on_air = Some(id);
+                on_air_silent = false;
             }
             let len = (((event[10] & 0x0F) as usize) << 8) | event[11] as usize;
             let Some(loop_bytes) = event.get(12..12 + len) else {
@@ -938,6 +945,9 @@ pub fn sound_tracks(
             // text is written; see [`crate::text`].
             let written = crate::text::Written::of_network(((sec[10] as u16) << 8) | sec[11] as u16);
             let said = audio_components(loop_bytes, written);
+            if present {
+                on_air_silent = said.is_empty();
+            }
             if wanted.iter().all(|tag| said.iter().any(|s| s.component_tag == *tag)) {
                 named.push((present, id, said));
             }
@@ -946,11 +956,17 @@ pub fn sound_tracks(
     // Known, left for after 1.0: a recording that opens more than one window
     // before its programme, on a programme before it that names every track
     // of its own, takes that previous programme's description.
-    let pick = named
-        .iter()
-        .position(|(_, id, _)| Some(*id) == on_air)
-        .or_else(|| named.iter().position(|(present, _, _)| *present))
-        .unwrap_or(0);
+    let pick = match named.iter().position(|(_, id, _)| Some(*id) == on_air) {
+        Some(pick) => pick,
+        // A programme on the air that describes no sound has not described
+        // fewer tracks than the map carries; it has said nothing, and the
+        // programme after it is not this file's.
+        None if on_air_silent => return Vec::new(),
+        None => named
+            .iter()
+            .position(|(present, _, _)| *present)
+            .unwrap_or(0),
+    };
     if pick < named.len() {
         named.swap_remove(pick).2
     } else {
@@ -1396,6 +1412,30 @@ impl Snapshot {
         if self.tot.is_none() && self.tdt.is_none() {
             self.tdt = sit.and_then(clock_from_sit);
         }
+    }
+}
+
+/// Whether the file at `path` is a transport stream, read off its first
+/// packets: for a caller that has to say whether a recording's tables, and
+/// so the data broadcast of a join, go into the output before it has opened
+/// that recording. `false` where it cannot be read.
+///
+/// Named as a recording is named anywhere else, so a clip inside a disc
+/// image (`disc.iso/BDAV/STREAM/00001.m2ts`) is read out of the image: taken
+/// as a plain path it named nothing on disk, and a `--join` with such a
+/// master listed every recording's carousel as "not carried" over a file
+/// that carried them.
+pub fn is_transport_stream(path: &str) -> bool {
+    let Ok(input) = crate::input::Input::parse(path) else {
+        return false;
+    };
+    let Ok(mut f) = input.open() else {
+        return false;
+    };
+    let mut buf = vec![0u8; M2TS_PACKET * 16];
+    match read_fully(&mut f, &mut buf) {
+        Ok(n) => framing(&buf[..n]).is_some(),
+        Err(_) => false,
     }
 }
 
@@ -2476,6 +2516,41 @@ pub struct Graft<'a> {
     /// in the sample keeps its clock on a PID of its own, and a cut of one
     /// puts it back in the pictures.
     pub source_pcr_pid: u16,
+    /// The stretches of the output that came off *another* recording -- the
+    /// reels of a join other than the one the output is shaped like -- and
+    /// carry that recording's own data broadcast. Only those that have one:
+    /// a stretch with nothing to carry is not listed, and the master's range
+    /// before it carries on as it always did.
+    ///
+    /// **Only the carousel.** The map, the service, the event and the clock
+    /// stay the master's over these stretches as over the rest of the file:
+    /// the file is one service, and it says so once. Nor the programme
+    /// guide, which is the master's days ahead and nobody else's.
+    pub feeds: Vec<Feed<'a>>,
+}
+
+/// One stretch of the output whose data broadcast is read out of another
+/// recording than [`Graft::input`]. See [`Graft::feeds`].
+pub struct Feed<'a> {
+    /// How many of [`Graft::ranges`] are written before this stretch, which
+    /// is what places it among them: two stretches can begin at the same
+    /// moment (a range shorter than a picture writes nothing), and the order
+    /// they are written in is the order they are read in.
+    pub after: usize,
+    /// Where it begins on the output timeline, in seconds.
+    pub start: f64,
+    /// The recording it came off.
+    pub input: &'a crate::input::Input,
+    /// Each PID carried, as (on in that recording, on in the output). Not
+    /// always the same: a carousel goes out on the PID the master's map
+    /// names for the same component, so the map a receiver reads is the one
+    /// that finds it.
+    pub carry: Vec<(u16, u16)>,
+    /// The PID that recording's clock is on. See [`Graft::source_pcr_pid`].
+    pub source_pcr_pid: u16,
+    /// Where in that recording the stretch came from. `None` where its index
+    /// could not say, and nothing is carried.
+    pub source: Option<crate::carousel::Span>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -3304,19 +3379,50 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
     // likes in, and one that names a carousel on the PAT's PID, a table's,
     // or the PID a stream was renumbered onto would have the recording's
     // packets dealt in among the output's own on the same PID.
-    let carry: Vec<u16> = g
-        .carry
+    let free = |pid: u16| {
+        pid > PID_SIT
+            && pid != 0x1FFF
+            && pid != out_pmt_pid
+            && pid != pcr_pid
+            && !(bluray && pid == BDAV_PCR_PID)
+            && !g.streams.iter().any(|s| s.pid == pid && s.was != pid)
+    };
+    let carry: Vec<u16> = g.carry.iter().copied().filter(|&pid| free(pid)).collect();
+    // The same of every other recording's, judged by the PID each goes out
+    // on here, and the PID it is read off there checked as the recording's
+    // own are: nothing on a table's PID or on the null one.
+    let fed: Vec<Vec<(u16, u16)>> = g
+        .feeds
         .iter()
-        .copied()
-        .filter(|&pid| {
-            pid > PID_SIT
-                && pid != 0x1FFF
-                && pid != out_pmt_pid
-                && pid != pcr_pid
-                && !(bluray && pid == BDAV_PCR_PID)
-                && !g.streams.iter().any(|s| s.pid == pid && s.was != pid)
+        .map(|f| {
+            f.carry
+                .iter()
+                .copied()
+                .filter(|&(from, to)| from > PID_SIT && from != 0x1FFF && free(to))
+                .collect()
         })
         .collect();
+    // What the carousel is read from, stretch by stretch, in the order they
+    // are written: the master's own ranges with every other recording's
+    // stretches in among them. With no other recording carrying anything
+    // this is the master's ranges and nothing else, one for one, which is
+    // what it was before a join carried more than the master's.
+    #[derive(Clone, Copy)]
+    enum Slot {
+        Own(usize),
+        Fed(usize),
+    }
+    let mut slots: Vec<(f64, Slot)> = Vec::with_capacity(g.ranges.len() + g.feeds.len());
+    for i in 0..=g.ranges.len() {
+        for (j, f) in g.feeds.iter().enumerate() {
+            if f.after == i && !fed[j].is_empty() {
+                slots.push((f.start, Slot::Fed(j)));
+            }
+        }
+        if let Some(r) = g.ranges.get(i) {
+            slots.push((r.start, Slot::Own(i)));
+        }
+    }
     let mut told = crate::Told::new();
     let mut read: u64 = 0;
     let outcome = (|| -> Result<()> {
@@ -3354,14 +3460,33 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
         // rate has to state it for a stream this pass has not finished
         // writing. Measured only where such a table is being written, since
         // it is a read of its own; see [`crate::carousel::rate`].
-        let data_rate = |g: &Graft| match (g.input, carry.is_empty()) {
-            (Some(input), false) => crate::carousel::rate(
-                input,
-                &carry,
-                g.source_pcr_pid,
-                g.ranges.first().and_then(|r| r.source).map_or(0, |s| s.pos),
-            ),
-            _ => 0.0,
+        //
+        // A join's other recordings each send their own carousel at their
+        // own rate, one at a time, so the peak is the busiest of them rather
+        // than their sum.
+        let data_rate = |g: &Graft| {
+            let own = match (g.input, carry.is_empty()) {
+                (Some(input), false) => crate::carousel::rate(
+                    input,
+                    &carry,
+                    g.source_pcr_pid,
+                    g.ranges.first().and_then(|r| r.source).map_or(0, |s| s.pos),
+                ),
+                _ => 0.0,
+            };
+            g.feeds
+                .iter()
+                .zip(&fed)
+                .filter(|(_, pairs)| !pairs.is_empty())
+                .fold(own, |most, (f, pairs)| {
+                    let from: Vec<u16> = pairs.iter().map(|p| p.0).collect();
+                    most.max(crate::carousel::rate(
+                        f.input,
+                        &from,
+                        f.source_pcr_pid,
+                        f.source.map_or(0, |s| s.pos),
+                    ))
+                })
         };
         // One selection information table per range, so a cut spanning two
         // programmes names each over its own stretch -- the same reason the
@@ -3457,18 +3582,25 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
         let reading_pids: Vec<u16> = carry.iter().copied().chain(guide.then_some(PID_EIT)).collect();
         // What a failed read loses, named as what was being read: a recording
         // with no carousel is only losing its guide.
-        let reading_what = match (carry.is_empty(), guide) {
+        let own_what = match (carry.is_empty(), guide) {
             (false, true) => "the data broadcast and the programme guide",
             (false, false) => "the data broadcast",
             _ => "the programme guide",
         };
-        let carrying = g.input.is_some() && !reading_pids.is_empty();
+        let mut reading_what = own_what;
+        let own_reads = g.input.is_some() && !reading_pids.is_empty();
+        let carrying = own_reads || fed.iter().any(|pairs| !pairs.is_empty());
         let mut carousel: Option<crate::carousel::Reader> = None;
         let mut guide_sections = SectionReader::default();
         let mut guide_found: Vec<Vec<u8>> = Vec::new();
-        // Which range the reader in hand was opened for. Nothing is open to
-        // begin with, and the first packet written opens the first one.
+        // Which stretch the reader in hand was opened for (see `slots`), and
+        // where its packets go out: on the PIDs they came on, or -- off
+        // another recording -- on the PIDs the master's map names for them.
+        // Nothing is open to begin with, and the first packet written opens
+        // the first one.
         let mut reading = usize::MAX;
+        let mut slot = 0usize;
+        let mut onto: &[(u16, u16)] = &[];
         // Whether the map has gone out yet. A stream opens with the map and
         // not with a description of what the map is about -- both reference
         // discs do, and libavformat writes its service description first --
@@ -3539,6 +3671,9 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                 pending.clear();
                 next_sit = now;
             }
+            while slot + 1 < slots.len() && now >= slots[slot + 1].0 {
+                slot += 1;
+            }
 
             match pid {
                 PID_PAT if pat_section.is_some() => {
@@ -3599,18 +3734,37 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
             // went in rather than in a burst at every clock reference, which
             // is what taking everything due at once would do.
             if carrying {
-                if reading != range {
-                    reading = range;
+                if reading != slot {
+                    reading = slot;
                     // A section begun at the far end of the range before is
                     // of material that was not kept.
                     guide_sections = SectionReader::default();
-                    carousel = match (g.input, g.ranges[range].source) {
-                        (Some(input), Some(span)) => crate::carousel::Reader::open(
+                    let from: Vec<u16>;
+                    let opening = match slots.get(slot).map(|s| s.1) {
+                        Some(Slot::Own(i)) if own_reads => {
+                            onto = &[];
+                            reading_what = own_what;
+                            g.input.zip(g.ranges[i].source).map(|(input, span)| {
+                                (input, &reading_pids[..], g.source_pcr_pid, span, g.ranges[i].start)
+                            })
+                        }
+                        Some(Slot::Fed(j)) => {
+                            onto = &fed[j];
+                            reading_what = "the data broadcast";
+                            from = fed[j].iter().map(|p| p.0).collect();
+                            let f = &g.feeds[j];
+                            f.source
+                                .map(|span| (f.input, &from[..], f.source_pcr_pid, span, f.start))
+                        }
+                        _ => None,
+                    };
+                    carousel = match opening {
+                        Some((input, pids, clock_pid, span, start)) => crate::carousel::Reader::open(
                             input,
-                            &reading_pids,
-                            g.source_pcr_pid,
+                            pids,
+                            clock_pid,
                             span,
-                            g.ranges[range].start,
+                            start,
                         )
                         // A cut that came out right is not worth failing over
                         // a stream nothing but a receiver reads. Say what was
@@ -3675,6 +3829,15 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                     // for a packet *with a payload*; one without repeats
                     // the number the packet before it carried, which is
                     // what the standard says and what a receiver checks.
+                    //
+                    // Off another recording, onto the PID the output's map
+                    // names it on first, so that the count is the count of
+                    // that PID: one carousel giving way to another on the
+                    // same component is one stream to a receiver.
+                    if let Some(&(_, to)) = onto.iter().find(|p| p.0 == pid_of(&one)) {
+                        one[1] = (one[1] & 0xE0) | ((to >> 8) as u8 & 0x1F);
+                        one[2] = to as u8;
+                    }
                     let c = cc.entry(pid_of(&one)).or_default();
                     if one[3] & 0x10 != 0 {
                         one[3] = (one[3] & 0xF0) | (*c & 0x0F);
@@ -4316,6 +4479,37 @@ mod tests {
         assert_eq!(said[1].name.as_deref(), Some("英語"));
     }
 
+    /// A cut whose sound was re-encoded, read back: its present event goes
+    /// out with no audio component descriptor, and the following programme
+    /// -- in another language -- is not what its tracks are.
+    #[test]
+    fn a_present_event_that_describes_no_sound_names_nothing() {
+        let (service, video) = (1u16, 0x200u16);
+        let (main, second) = (0x110u16, 0x111u16);
+        let mut out = Vec::new();
+        let mut cc = 0u8;
+        packetize(PID_PAT, &pat(service, 0x100), &mut cc, &mut out);
+        let (mut map, mut eit) = (0u8, 0u8);
+        let this = eit_pf_of(service, 0, 1, &[]);
+        let next = eit_pf_of(
+            service,
+            1,
+            2,
+            &[audio_component(0x10, true, b"eng", &ENGLISH), audio_component(0x11, false, b"eng", &ENGLISH)],
+        );
+        for _ in 0..4 {
+            packetize(0x100, &pmt_with_sound(service, 5, video, &[main, second]), &mut map, &mut out);
+            packetize(PID_EIT, &next, &mut eit, &mut out);
+            packetize(PID_EIT, &this, &mut eit, &mut out);
+        }
+        let at = std::env::temp_dir().join("smartcut-sound-pruned.ts");
+        std::fs::write(&at, &out).expect("write the sample");
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+        let said = sound_tracks(&input, service, &[0x10, 0x11]);
+        let _ = std::fs::remove_file(&at);
+        assert!(said.is_empty(), "{said:?}");
+    }
+
     /// An event-information section with no room in it for an event.
     ///
     /// Fourteen bytes of header and four of checksum leave ten, and a whole
@@ -4444,6 +4638,7 @@ mod tests {
             input: None,
             carry: Vec::new(),
             source_pcr_pid: 0x1011,
+            feeds: Vec::new(),
         };
         let sec = build_pmt(
             &graft,
@@ -4502,6 +4697,7 @@ mod tests {
             input: None,
             carry: Vec::new(),
             source_pcr_pid: 0x0111,
+            feeds: Vec::new(),
         };
         let none = Components { described: HashSet::new(), carried: HashSet::new() };
         let sec = build_pmt(&graft, 0x0111, &none);

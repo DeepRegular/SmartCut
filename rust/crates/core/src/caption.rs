@@ -381,6 +381,14 @@ pub fn resets_with(
     if streams.is_empty() {
         return Err(NoResets.into());
     }
+    // From the head as `cm::read_sound` reads it beside the sound: sought
+    // only where the open's look ahead lost some of it (a Matroska file with
+    // a WebVTT block libavformat cannot parse). See
+    // [`crate::sound::sought_at_head`].
+    if crate::sound::sought_at_head(&ictx, &src.input.url) {
+        let target = i64::MIN / 2;
+        let _ = ictx.seek(target, ..target);
+    }
     // The subtitles and nothing else: this pass reads the whole recording,
     // and the pictures are the bulk of it. See [`crate::input::keep_only`].
     let keep: Vec<usize> = streams.iter().map(|(i, _)| *i).collect();
@@ -407,9 +415,15 @@ pub fn resets_with(
 }
 
 /// Which streams of a recording carry subtitles, and on what clock.
+///
+/// Not WebVTT, which carries no reset and costs the rest: a block of it
+/// libavformat cannot parse throws away the rest of its cluster, captions
+/// and all, where the stream is left on. Switched off, it is never parsed.
+/// The same rule `cm::read_sound` reads beside the sound.
 pub(crate) fn reset_streams(ictx: &crate::input::Demux) -> Vec<(usize, f64)> {
     ictx.streams()
         .filter(|s| s.parameters().medium() == ff::media::Type::Subtitle)
+        .filter(|s| s.parameters().id() != ff::codec::Id::WEBVTT)
         .map(|s| (s.index(), f64::from(s.time_base())))
         .collect()
 }

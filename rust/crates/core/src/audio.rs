@@ -1845,7 +1845,8 @@ pub fn boundary_patches(
             // patch at all, unless a fade reaches in from it -- and neither
             // is known until the frames are in hand, so the decode happens
             // first and the work is skipped after.
-            let mut frames = decode_around(&mut ictx, &params, src, audio, at, fade_reach)?;
+            let mut frames =
+                decode_around(&mut ictx, &params, src, audio, at, fade_reach, is_head)?;
             // Whether this edge opens on a frame that is not the track's
             // shape, which is what says whether the run of them is worth
             // looking for. Asked of the frame the edge is in rather than
@@ -1860,7 +1861,7 @@ pub fn boundary_patches(
                 .map(|f| f.shape);
             if is_head && opens_on.is_some_and(|it| it != shape) {
                 let cap = (FOREIGN_CAP * audio.sample_rate as f64) as i64;
-                frames = decode_around(&mut ictx, &params, src, audio, at, cap)?;
+                frames = decode_around(&mut ictx, &params, src, audio, at, cap, true)?;
                 let said = opens_on.map_or(0, |it| it.0);
                 match foreign_reach(&frames, edge, shape, cap) {
                     Some(n) if n > 0 => {
@@ -1933,6 +1934,7 @@ fn decode_around(
     audio: &AudioInfo,
     at: f64,
     reach: i64,
+    is_head: bool,
 ) -> Result<Vec<Decoded>> {
     const LEAD: f64 = 0.5;
 
@@ -1959,16 +1961,27 @@ fn decode_around(
     // from its head was left off the sound-only file's first half second
     // (everything before the first picture was copied at full level), where
     // the cut with pictures, which starts on that picture, had it whole.
+    //
+    // A tail's fade runs back from its edge, so there it is where the fade
+    // begins that the frames have to reach: a range kept from the head of a
+    // broadcast and ending within a second of it, read from its first
+    // picture, had no frame before the fade's to prime the encoder with, and
+    // the fade-out was left off the sound-only file altogether.
     let edge = (at * audio.sample_rate as f64).round() as i64;
-    if frames.first().is_none_or(|f| f.first <= edge) {
+    let need = if is_head { edge } else { edge - reach };
+    if frames.first().is_none_or(|f| f.first <= need) {
         return Ok(frames);
     }
     // A second look, so a read that fails keeps what the first one found.
+    // Positioned as `take_range` positions the writers' own read of a head
+    // range ([`crate::sound::sound_from_head`]): from the cluster the sound
+    // starts in where an open that lost it to a WebVTT block libavformat
+    // cannot parse would start later, or the fade-in of such a joined
+    // Matroska file was left off the 0.85 s of sound the sound-only file
+    // writes ahead of its first picture.
     let again = (|| -> Result<Vec<Decoded>> {
         let mut fresh = crate::input::demux(&src.input.url)?;
-        if crate::sound::sought_at_head(&fresh, &src.input.url) {
-            fresh.seek(target, ..target)?;
-        }
+        crate::sound::sound_from_head(&mut fresh, &src.input.url, audio.stream_index)?;
         crate::input::keep_with_pictures(&mut fresh, &[audio.stream_index]);
         decode_on(&mut fresh, params, src, audio, at, reach)
     })();

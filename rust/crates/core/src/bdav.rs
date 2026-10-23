@@ -1604,11 +1604,21 @@ fn clpi(clip: &Clip) -> Vec<u8> {
     // put here, and then the block says so: flags clear, and the fields it
     // would vouch for left at zero, which is what this wrote before 0.5.13.
     //
+    // **Nor are libavformat's own.** A cut with no tables behind it is not a
+    // stream with no ids: the muxer that wrote it names one network, one
+    // stream and one service of its own -- 0xFF01, 1 and 1, the first of the
+    // numbers kept for private use -- and read back, those were vouched for
+    // here as the recording's, on every disc cut out of an MP4 or a Matroska
+    // file.
+    //
     // The name of the tool is not a claim about the recording, so it goes in
     // either way. Sixteen bytes, padded out with the same 0xFF the discs
     // that carry a name pad theirs with.
+    const MUXER_IDS: (u16, u16, u16) = (0xFF01, 0x0001, 0x0001);
     let mut about = vec![0u8; 30];
-    if (clip.tsid, clip.service_id) != (0, 0) {
+    if (clip.tsid, clip.service_id) != (0, 0)
+        && (clip.network_id, clip.tsid, clip.service_id) != MUXER_IDS
+    {
         about[0] = 0x7C;
         about[5..7].copy_from_slice(&clip.network_id.to_be_bytes());
         about[7..9].copy_from_slice(&clip.tsid.to_be_bytes());
@@ -2279,6 +2289,12 @@ mod tests {
         assert_eq!(about[0], 0x00);
         assert_eq!(&about[..14], &[0u8; 14]);
         assert_eq!(&about[14..22], b"SmartCut");
+
+        // Nor for the ids the muxer gives a stream it was told none for.
+        let mut muxed = clip();
+        (muxed.network_id, muxed.tsid, muxed.service_id) = (0xFF01, 1, 1);
+        let raw = clpi(&muxed);
+        assert_eq!(&raw[0xBE..0xBE + 14], &[0u8; 14]);
     }
 
     #[test]

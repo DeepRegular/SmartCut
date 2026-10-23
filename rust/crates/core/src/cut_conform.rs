@@ -356,14 +356,20 @@ fn pictures_afresh(
         };
     }
 
+    // See [`crate::input::LateFrames`], as in the cut's own segments.
+    let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
         let index = stream.index();
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
                 if !audio_done[k] {
-                    audio_done[k] =
-                        take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+                    for packet in late.pass(k, packet).into_iter().flatten() {
+                        if !audio_done[k] {
+                            audio_done[k] =
+                                take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+                        }
+                    }
                 }
             } else if let Some(k) = ctx.captions.iter().position(|c| c.in_index == index) {
                 if !caption_done[k] {
@@ -415,6 +421,11 @@ fn pictures_afresh(
         }
         keyed |= packet.is_key();
         feed!();
+    }
+    for (k, packet) in late.rest() {
+        if !audio_done[k] {
+            audio_done[k] = take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+        }
     }
     packets.finished()?;
     if !past_end {

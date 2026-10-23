@@ -1515,15 +1515,38 @@ impl Writer {
         // much was left out is said when the cut finishes.
         //
         // Two frames at the *same* instant are a different matter, and only
-        // a transport stream minds them. They are what a container keeping
-        // time more coarsely than its frames are long hands over: Matroska
-        // counts in milliseconds, a TrueHD frame is 1/1200 of a second, and
-        // a sixth of them round onto the instant before. Written back into
-        // a Matroska file they go where they came from and nothing is lost;
-        // left out, a sixth of the sound would be.
-        let clashes = self.audio[track]
-            .last_out
-            .is_some_and(|last| if self.into_ts { pts <= last } else { pts < last });
+        // a muxer that insists on strictly rising timestamps minds them.
+        // They are what a container keeping time more coarsely than its
+        // frames are long hands over: Matroska counts in milliseconds, a
+        // TrueHD frame is 1/1200 of a second, and a sixth of them round onto
+        // the instant before. Written back into a Matroska file they go where
+        // they came from and nothing is lost; left out, a sixth of the sound
+        // would be.
+        //
+        // **An MP4 minds them as much as a transport stream does.** Every
+        // muxer libavformat does not mark as non-strict refuses a frame at
+        // the instant of the one before, with "Invalid argument" -- except
+        // after a frame at nought, which it lets pass, and which is left to
+        // pass here too. It is met in MPEG program streams (.mpg/.vob). Read
+        // straight through, an AC-3 frame whose start straddles two packs
+        // can come with the next pack's stamp, so two frames share it (ten
+        // in 90 s of an `ffmpeg -f vob` file; none on a pressed DVD) --
+        // which the read now puts back where it belongs before it gets here
+        // ([`crate::input::LateFrames`]), so this is only for one it could
+        // not tell, such as the first frame read after a seek. And
+        // sought into the middle of an MP2 frame, the MPEG audio parser can
+        // lock onto a false sync inside the frames and hand over pieces of
+        // them with made-up stamps until the next stamped pack steps back
+        // onto one of them; a steady tone (a line-up tone) keeps it locked.
+        // Cut to .mp4, either stopped the whole cut with "Invalid argument";
+        // the frame is left out instead, as in a transport stream.
+        let strict = self.into_ts || {
+            use ff::format::Flags;
+            !self.octx.format().flags().intersects(Flags::TS_NONSTRICT | Flags::NO_TIMESTAMPS)
+        };
+        let clashes = self.audio[track].last_out.is_some_and(|last| {
+            pts < last || (strict && pts == last && (self.into_ts || last != 0))
+        });
         // Not counted where the frame is one of the sound the cut took
         // away, claimed only because the track looked behind: see
         // `cut_away` in [`take_audio`]. Left out, it is what the cut asked
@@ -1531,6 +1554,25 @@ impl Writer {
         if clashes {
             if !cut_away {
                 self.audio[track].dropped += 1;
+            }
+            // **At the same instant as the last frame written, the instant is
+            // spent all the same.** Where two frames of a program stream share
+            // a stamp, the first is the frame before stamped a frame late:
+            // laid in the second's place, it left a hole of a frame where it
+            // belonged, and `end`, which sums the lengths of the frames
+            // written, fell a frame behind where the sound reaches. The next
+            // range took that for sound still owed and opened a frame early
+            // -- a frame of the sound the cut took away, laid a millisecond
+            // after the last one written, over it. A Matroska file, which
+            // writes both frames, did not. So `end` is brought up to where
+            // the last frame written runs to, where it has fallen more than
+            // half a frame behind it; nearer, it is the rounding of the stamp.
+            if let Some(last) = self.audio[track].last_out.filter(|&l| l == pts) {
+                let reach = last as f64 * tb + out_dur;
+                let t = &mut self.audio[track];
+                if t.end.is_some_and(|end| reach - end > out_dur / 2.0) {
+                    t.end = Some(reach);
+                }
             }
             return Ok(());
         }
@@ -3923,6 +3965,8 @@ fn copy_segment(
         || src.subpictures.is_empty()
         || (writer.subpictures.is_none() && writer.converted.is_empty());
 
+    // See [`crate::input::LateFrames`].
+    let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
         let index = stream.index();
@@ -3943,8 +3987,12 @@ fn copy_segment(
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
                 if !audio_done[k] {
-                    audio_done[k] =
-                        take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+                    for packet in late.pass(k, packet).into_iter().flatten() {
+                        if !audio_done[k] {
+                            audio_done[k] =
+                                take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+                        }
+                    }
                 }
             } else if let Some(k) = ctx.captions.iter().position(|c| c.in_index == index) {
                 if !caption_done[k] {
@@ -4214,6 +4262,11 @@ fn copy_segment(
             display,
             fields,
         })?;
+    }
+    for (k, packet) in late.rest() {
+        if !audio_done[k] {
+            audio_done[k] = take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+        }
     }
     packets.finished()?;
     if !started {
@@ -5657,6 +5710,8 @@ fn reencode_segment(
         };
     }
 
+    // See [`crate::input::LateFrames`].
+    let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
         let index = stream.index();
@@ -5676,8 +5731,12 @@ fn reencode_segment(
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
                 if !audio_done[k] {
-                    audio_done[k] =
-                        take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+                    for packet in late.pass(k, packet).into_iter().flatten() {
+                        if !audio_done[k] {
+                            audio_done[k] =
+                                take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+                        }
+                    }
                 }
             } else if let Some(k) = ctx.captions.iter().position(|c| c.in_index == index) {
                 if !caption_done[k] {
@@ -5765,6 +5824,11 @@ fn reencode_segment(
         // Decoded frames arrive in display order, so a simple window test
         // picks out exactly the pictures this segment owns.
         feed!();
+    }
+    for (k, packet) in late.rest() {
+        if !audio_done[k] {
+            audio_done[k] = take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
+        }
     }
     packets.finished()?;
     if !drained {
@@ -6873,6 +6937,8 @@ fn graft_tables(
     tables: crate::si::Tables,
     strip_dovi: bool,
     numbered_from: i32,
+    announced: &[u16],
+    feeds: Vec<crate::si::Feed>,
 ) -> Result<crate::si::Stats> {
     // Pictures written without their Dolby Vision are not described as
     // having it, in the map any more than in the stream. See
@@ -7064,6 +7130,19 @@ fn graft_tables(
             extra: Vec::new(),
         });
     }
+    // And another recording's, joined on, whose component the master's map
+    // has no entry for: announced on the PID it came on, with that
+    // recording's own description of it. See [`reel_carousels`].
+    for pid in announced {
+        streams.push(crate::si::GraftStream {
+            pid: *pid,
+            was: *pid,
+            faithful: true,
+            declared: None,
+            language: None,
+            extra: Vec::new(),
+        });
+    }
 
     let ranges: Vec<crate::si::GraftRange> = plans
         .iter()
@@ -7100,8 +7179,9 @@ fn graft_tables(
     let guide = tables == crate::si::Tables::Broadcast
         && !writing_m2ts(output)
         && ranges.iter().any(|r| r.snapshot.heard_events());
-    if (!data.is_empty() || guide) && ranges.iter().any(|r| r.source.is_none()) {
-        let what = match (data.is_empty(), guide) {
+    let fed_blind = feeds.iter().any(|f| f.source.is_none());
+    if ((!data.is_empty() || guide) && ranges.iter().any(|r| r.source.is_none())) || fed_blind {
+        let what = match (data.is_empty() && !fed_blind, guide) {
             (false, true) => "the data broadcast and the programme guide are",
             (false, false) => "the data broadcast is",
             _ => "the programme guide is",
@@ -7134,8 +7214,189 @@ fn graft_tables(
             } else {
                 video_pid as u16
             },
+            feeds,
         },
     )
+}
+
+/// Where one kept range sits in its recording, for the data broadcast read
+/// out of it as bytes: the byte the index says its opening picture arrives
+/// at, and how far past that picture the range begins. The same reckoning
+/// [`graft_tables`] makes for the master's own ranges.
+fn carousel_span(src: &Source, plan: &RangePlan) -> Option<crate::carousel::Span> {
+    src.points
+        .iter()
+        .rfind(|p| p.time <= plan.t_in + 1e-6 && p.pos >= 0)
+        .map(|p| crate::carousel::Span {
+            pos: p.pos,
+            skip: plan.t_in - p.time,
+            length: plan.t_out - plan.t_in,
+        })
+}
+
+/// What a join's other recordings carry of their own data broadcast.
+///
+/// **Each recording's own carousel goes out over its own stretch of the
+/// output.** Before, only the master's did, and a join of two halves of one
+/// programme had pages behind the d button for the first half and none for
+/// the second.
+///
+/// The rest of the account stays the master's: the file is one service, its
+/// map, its name and its event are said once, and a receiver reads one map.
+/// So a carousel off another recording goes out on the PID the master's map
+/// names for **the same component** (ARIB finds a carousel by its component
+/// tag, not its PID: 0x40 is the entry into it on every station sampled). A
+/// component the master's map has no entry for is announced on the PID it
+/// came on, with that recording's own description of it -- where that PID is
+/// free in the output. Where it is not, it is left out and said so.
+/// One reel's carried PIDs, as (in that recording, in the output), and the
+/// PID that recording's clock is on.
+type ReelCarry = (Vec<(u16, u16)>, u16);
+
+#[derive(Default)]
+struct ReelCarousels {
+    /// Per reel: each PID carried, as (on in that recording, in the output),
+    /// and the PID that recording's clock is on. `None` for the master and
+    /// for a reel with nothing to carry.
+    reels: Vec<Option<ReelCarry>>,
+    /// The entries the output's map gains for components the master's has
+    /// none for.
+    announced: Vec<crate::si::ElementaryStream>,
+}
+
+fn reel_carousels(
+    reels: &[Reel],
+    master: usize,
+    service: &crate::si::Service,
+    data: &[u16],
+    master_video_pid: u16,
+    taken: &[u16],
+    asked_outright: bool,
+) -> ReelCarousels {
+    let src = reels[master].src;
+    // What each output PID is the carousel of, by component: the master's
+    // own first, then whatever is announced for another recording.
+    let mut known: Vec<(Option<u8>, u16)> = data
+        .iter()
+        .map(|&pid| (service.stream(pid).and_then(|es| es.component_tag()), pid))
+        .collect();
+    let mut out = ReelCarousels::default();
+    for (n, reel) in reels.iter().enumerate() {
+        let rsrc = reel.src;
+        if n == master {
+            out.reels.push(None);
+            continue;
+        }
+        // The very recording the master is -- the window joins a row onto
+        // itself -- carries what the master does, on the same PIDs.
+        if std::ptr::eq(rsrc, src) {
+            out.reels.push((!data.is_empty()).then(|| {
+                (
+                    data.iter().map(|&p| (p, p)).collect(),
+                    if service.pcr_pid > 0 {
+                        service.pcr_pid
+                    } else {
+                        master_video_pid
+                    },
+                )
+            }));
+            continue;
+        }
+        let maybe: Vec<u16> = if rsrc.on_a_ts {
+            rsrc.dropped
+                .iter()
+                .filter(|d| d.what == "data" && d.pid > 0)
+                .map(|d| d.pid as u16)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if maybe.is_empty() {
+            out.reels.push(None);
+            continue;
+        }
+        let video_pid = crate::input::demux(&rsrc.input.url)
+            .ok()
+            .and_then(|d| d.stream(rsrc.video.stream_index).map(|s| s.id()))
+            .and_then(|id| u16::try_from(id).ok())
+            .unwrap_or(0);
+        let own = match crate::si::read_service(&rsrc.input, video_pid, &maybe) {
+            Ok(s) => s,
+            Err(e) => {
+                crate::say!(
+                    "note: the data broadcast of {} is not carried: its own map could not be \
+                     read ({e})",
+                    rsrc.path
+                );
+                out.reels.push(None);
+                continue;
+            }
+        };
+        let mut pairs: Vec<(u16, u16)> = Vec::new();
+        let mut unnamed = false;
+        for &pid in &maybe {
+            let Some(es) = own
+                .stream(pid)
+                .filter(|es| es.stream_type == crate::carousel::DSMCC_SECTIONS)
+            else {
+                unnamed = true;
+                continue;
+            };
+            let tag = es.component_tag();
+            // The same component the master's map names, on whatever PID it
+            // names it on; with no tags on either side, the same PID.
+            let onto = known
+                .iter()
+                .find(|(t, out_pid)| match (tag, t) {
+                    (Some(a), Some(b)) => a == *b,
+                    (None, None) => *out_pid == pid,
+                    _ => false,
+                })
+                .map(|k| k.1);
+            let onto = match onto {
+                Some(o) => Some(o),
+                // A component of its own, announced on its own PID where
+                // nothing else in the output is on it: not a stream of the
+                // master's map (carried or not -- its entry would be read
+                // for this one), not a stream the cut writes, not a table.
+                None if pid > 0x1F
+                    && pid != 0x1FFF
+                    && pid != service.pmt_pid
+                    && service.stream(pid).is_none()
+                    && !taken.contains(&pid)
+                    && !known.iter().any(|k| k.1 == pid) =>
+                {
+                    let mut entry = es.clone();
+                    entry.pid = pid;
+                    out.announced.push(entry);
+                    known.push((tag, pid));
+                    Some(pid)
+                }
+                None => None,
+            };
+            match onto {
+                Some(o) if !pairs.iter().any(|p| p.1 == o) => pairs.push((pid, o)),
+                _ => crate::say!(
+                    "note: the data broadcast of {} on pid 0x{pid:04x} is not carried: the \
+                     PID it would go out on is taken by another stream of the output",
+                    rsrc.path
+                ),
+            }
+        }
+        // As the master's own: said only where it was asked for outright.
+        if unnamed && asked_outright && pairs.is_empty() {
+            crate::say!(
+                "note: the map {} opens on does not name its data broadcast as one -- a \
+                 station takes it out of the map between programmes, and a recording that \
+                 begins before one starts can open on a map without it. Nothing of it is \
+                 carried.",
+                rsrc.path
+            );
+        }
+        let clock = if own.pcr_pid > 0 { own.pcr_pid } else { video_pid };
+        out.reels.push((!pairs.is_empty()).then_some((pairs, clock)));
+    }
+    out
 }
 
 pub fn cut(src: &Source, plans: &[RangePlan], output: &str, opts: &CutOptions) -> Result<()> {
@@ -9855,6 +10116,10 @@ fn cut_into(
     // came off, and a reel written after it is a stretch of the same file
     // that carries no account of itself. See [`graft_tables`].
     let mut range_starts: Vec<f64> = Vec::with_capacity(plans.len());
+    // And where every other reel's ranges began, for that reel's own data
+    // broadcast: which reel, which of its ranges, how many of the master's
+    // came before it, and where in the output. See [`reel_carousels`].
+    let mut other_starts: Vec<(usize, usize, usize, f64)> = Vec::new();
     // Which range of the whole job this is. A seam is a seam whether the
     // range before it came off this recording or off the one before it, so
     // everything that asks "is there something on the other side of this
@@ -9960,6 +10225,8 @@ fn cut_into(
         let target_start = display_base as f64 * grid.unit();
         if reel_no == master {
             range_starts.push(target_start);
+        } else {
+            other_starts.push((reel_no, plan_no, range_starts.len(), target_start));
         }
         // How far each track actually laid down runs ahead of or behind where
         // this range's video starts. Zero for the first range, which is
@@ -10629,7 +10896,74 @@ fn cut_into(
     };
     // The file is complete and correct as a file; what it does not yet have
     // is the broadcast's own account of itself. See [`crate::si`].
-    if let Some(service) = tables.as_ref().or(own_map.as_ref()) {
+    // Every other recording's own data broadcast, over its own stretch of
+    // the output -- only where the master's tables are going in, since the
+    // map that names a carousel is written by the pass that carries it. See
+    // [`reel_carousels`].
+    let others = match &tables {
+        Some(service) if asked_for_data && reels.len() > 1 => {
+            // Every PID a stream of the cut goes out on, worked out as
+            // [`graft_tables`] places them, so that a carousel announced on
+            // its own PID never lands on one of them.
+            let given: Vec<i32> = std::iter::once(pids.video(video_pid))
+                .chain(setups.iter().enumerate().map(|(n, s)| pids.audio(n, s.info.pid)))
+                .chain(captions.iter().enumerate().map(|(n, c)| pids.caption(n, c.pid)))
+                .chain(graphics.iter().enumerate().map(|(n, g)| pids.graphics(n, g.pid)))
+                .chain(
+                    converted_streams
+                        .iter()
+                        .enumerate()
+                        .map(|(n, c)| pids.graphics(graphics.len() + n, c.id)),
+                )
+                .collect();
+            let taken: Vec<u16> = given
+                .iter()
+                .enumerate()
+                .map(|(k, &pid)| {
+                    if STREAM_PIDS.contains(&pid) {
+                        pid as u16
+                    } else {
+                        (numbered_from + k as i32) as u16
+                    }
+                })
+                .chain(carried.iter().copied())
+                .collect();
+            reel_carousels(
+                reels,
+                master,
+                service,
+                &data,
+                ours,
+                &taken,
+                opts.data_broadcast == Some(true),
+            )
+        }
+        _ => ReelCarousels::default(),
+    };
+    let widened = (!others.announced.is_empty())
+        .then(|| tables.clone())
+        .flatten()
+        .map(|mut service| {
+            service.streams.extend(others.announced.iter().cloned());
+            service
+        });
+    let announced: Vec<u16> = others.announced.iter().map(|es| es.pid).collect();
+    let feeds: Vec<crate::si::Feed> = other_starts
+        .iter()
+        .filter_map(|&(reel_no, plan_no, after, start)| {
+            let (carry, clock) = others.reels.get(reel_no)?.as_ref()?;
+            let rsrc = reels[reel_no].src;
+            Some(crate::si::Feed {
+                after,
+                start,
+                input: &rsrc.input,
+                carry: carry.clone(),
+                source_pcr_pid: *clock,
+                source: carousel_span(rsrc, reel_plans[reel_no].get(plan_no)?),
+            })
+        })
+        .collect();
+    if let Some(service) = widened.as_ref().or(tables.as_ref()).or(own_map.as_ref()) {
         match graft_tables(
             src,
             service,
@@ -10657,6 +10991,8 @@ fn cut_into(
             },
             signalling.strip_dovi,
             numbered_from,
+            &announced,
+            feeds,
         ) {
             Ok(stats) if std::env::var("SMARTCUT_DEBUG").is_ok() => {
                 crate::say!(

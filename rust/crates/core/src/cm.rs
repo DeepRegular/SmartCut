@@ -298,11 +298,18 @@ fn read_sound(
     // libavformat cannot parse, whose first two seconds of sound the open's
     // look ahead threw away: a quiet stretch that began inside them was
     // marked from where the read picked up again, half a second late on the
-    // file measured. See [`crate::sound::sought_at_head`].
-    if crate::sound::sought_at_head(&ictx, &src.input.url) {
-        let target = i64::MIN / 2;
-        let _ = ictx.seek(target, ..target);
-    }
+    // file measured. See [`crate::sound::sought_at_head`]. And from the
+    // cluster the sound starts in, where that is ahead of the first key
+    // picture's: see [`crate::sound::sound_from_head`].
+    //
+    // Sought, the pictures stay switched on as well, as in
+    // [`crate::wave::read_wave`]: with the sound alone, the Matroska
+    // demuxer's read after the seek left out the frame stamped before the
+    // first key picture (an AAC priming frame at -21 ms), and a quiet head
+    // was measured from a frame late. A read that failed to say is taken as
+    // sought: the pictures cost only their reading.
+    let sought =
+        crate::sound::sound_from_head(&mut ictx, &src.input.url, audio.stream_index).unwrap_or(true);
     // Every subtitle stream but WebVTT, which carries no reset and costs the
     // sound: a block of it libavformat cannot parse throws away the rest of
     // its cluster, so with the stream left on, a video site's Matroska file
@@ -324,6 +331,9 @@ fn read_sound(
     // [`crate::input::keep_only`].
     let mut keep: Vec<usize> = captions.iter().map(|(i, _)| *i).collect();
     keep.push(audio.stream_index);
+    if sought {
+        keep.push(src.video.stream_index);
+    }
     crate::input::keep_only(&mut ictx, &keep);
     let mut marks = crate::caption::Marks::new(captions.clone());
     let params = ictx

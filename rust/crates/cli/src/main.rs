@@ -1368,6 +1368,21 @@ fn run() -> Result<()> {
             bail!("--transition-image {image}: there is no such file");
         }
     }
+    // A joined recording is one recording: a disc names several, and opened
+    // as a file it failed with libav's "Is a directory" or "Invalid data
+    // found", once the first recording had been read and planned (and a
+    // `--bdav` slot taken).
+    for j in &joined {
+        let at = smartcut_core::netpath::resolve(j).unwrap_or_else(|_| j.into());
+        if at.exists() && smartcut_core::disc::looks_like_disc(&at) {
+            bail!(
+                "--join {j} is a disc, and --join takes one recording: name one of its recordings \
+                 by its path inside it ({0}/BDAV/STREAM/00001.m2ts, or {0}/VIDEO_TS/VTS_01_1.VOB \
+                 on a DVD, say)",
+                j.trim_end_matches(['/', '\\'])
+            );
+        }
+    }
     // The index is written as soon as the recording is open and the cut over
     // it afterwards, so the run ended well with the index gone -- and the
     // next run with the same line stopped at a seek index that was a cut.
@@ -1818,13 +1833,28 @@ fn run() -> Result<()> {
     // DVD's navigation packets and a camera's timecode or metadata track in a
     // .mov are "data" to the demuxer too, and were listed as a carousel that
     // would travel into a .ts -- where nothing of them is written.
-    let data_travels = data_broadcast != Some(false)
-        && src.on_a_ts
+    //
+    // And only where the recording the output is shaped like is a transport
+    // stream: the tables are put back from that one, and the map that names
+    // a carousel is written by the same pass that carries it. Where it is,
+    // every recording of a `--join` carries its own carousel over its own
+    // stretch of the output (`cut::reel_carousels`); before, only the
+    // master's travelled. Read off the master's first packets where the
+    // master is a recording not yet opened.
+    let data_shape = data_broadcast != Some(false)
         && match (&bdav, &output) {
             (Some(_), _) => false,
             (None, Some(out)) => smartcut_core::can_carry_data_broadcast(out, tables),
             (None, None) => true,
         };
+    let master_on_a_ts = match master {
+        0 => src.on_a_ts,
+        n => joined.get(n - 1).is_some_and(|path| {
+            smartcut_core::netpath::resolve(path)
+                .is_ok_and(|at| smartcut_core::si::is_transport_stream(&at.to_string_lossy()))
+        }),
+    };
+    let data_travels = data_shape && src.on_a_ts && master_on_a_ts;
     if data_travels {
         for d in src.dropped.iter().filter(|d| d.what == "data") {
             tell!(
@@ -2557,7 +2587,46 @@ fn run() -> Result<()> {
     // `--analyze` stops here, before the disc is touched. Reserving a slot on
     // one makes its directories and takes a number the next run counts past,
     // and asking what a cut would do is not asking for either.
+    //
+    // What the run refuses further on before it writes anything is refused
+    // here too, where it can be asked without the joined recordings open:
+    // `--analyze --drop-stream 9` and `--analyze -o <the recording>` ended
+    // well, the run with the same line in an error.
     if analyze {
+        if let (Some(out), Some(image)) = (&output, &crossing_image) {
+            if smartcut_core::input::same_file(std::path::Path::new(image), std::path::Path::new(out)) {
+                bail!("{out} is the --transition-image; writing there would destroy it");
+            }
+        }
+        // The joined recordings' numbers and subpictures are read once they
+        // are open, which `--analyze` does not do. And only where the run
+        // would go on to write: with neither `-o` nor `--bdav` it stops at
+        // "nothing written" before asking, and ends well.
+        let writes = output.is_some() || bdav.is_some();
+        if writes && master == 0 {
+            drop_streams_named(&src, &drop_streams)?;
+        }
+        if writes && joined.is_empty() {
+            drop_subpictures_named(&src, &[], &drop_subpictures)?;
+        }
+        let reads = |at: &str| -> Result<()> {
+            src.input.refuse_as_output(at)?;
+            for j in &joined {
+                let j = smartcut_core::netpath::resolve(j).unwrap_or_else(|_| j.into());
+                if let Ok(i) = smartcut_core::input::Input::parse(&j.to_string_lossy()) {
+                    i.refuse_as_output(at)?;
+                }
+            }
+            Ok(())
+        };
+        if let Some(out) = output.as_deref().filter(|_| !sound_only) {
+            if audio_es {
+                reads(&std::path::Path::new(out).with_extension("aac").to_string_lossy())?;
+            }
+        }
+        if let Some(out) = &output {
+            reads(out)?;
+        }
         return Ok(());
     }
     // A disc's slot is taken before the cut, as an empty stream (see
@@ -2768,7 +2837,13 @@ fn run() -> Result<()> {
     // engine says so itself rather than this promising it here.
     // Only off a transport stream: the carousel goes in with the broadcast's
     // own tables, and a DVD's navigation packets are "data" too.
+    //
+    // And only where the recording the output is shaped like is a transport
+    // stream, as `data_travels` has it: its tables are what a carousel goes
+    // in with. Each recording of a join carries its own, so this line, which
+    // counts the first recording's streams, says the first one's.
     let data = if data_broadcast != Some(false)
+        && master_on_a_ts
         && src.on_a_ts
         && smartcut_core::can_carry_data_broadcast(&out, tables)
         && src.dropped.iter().any(|d| d.what == "data")
@@ -2863,10 +2938,20 @@ fn run() -> Result<()> {
         // went without a word. Each recording's in full, a repeat of the
         // first's included -- left out as said already, a reel dropping the
         // same kind of stream at the same number read as the first's alone.
-        // A transport stream's data as the first recording's is: unsaid
-        // where the first's carousel travels (whose question it is), said
-        // where nothing's does.
-        for d in also.dropped.iter().filter(|d| !(data_travels && d.what == "data")) {
+        // A transport stream's data as the first recording's is: listed as
+        // a carousel where it travels, which is wherever the recording the
+        // output is shaped like is a transport stream (see `data_travels`):
+        // each recording's own carousel goes in over its own stretch.
+        let own_data = data_shape && also.on_a_ts && master_on_a_ts;
+        if own_data {
+            for d in also.dropped.iter().filter(|d| d.what == "data") {
+                tell!(
+                    "data   : carousel   [{}]",
+                    smartcut_core::track_name(also.on_a_ts, d.pid, d.stream_index)
+                );
+            }
+        }
+        for d in also.dropped.iter().filter(|d| !(own_data && d.what == "data")) {
             tell!(
                 "        not carried: {} on {}",
                 d.describe(),
@@ -2887,32 +2972,8 @@ fn run() -> Result<()> {
     if bdav.is_some() && master > 0 {
         disc_can_hold(shaped_like, audio_codec, &drop_streams)?;
     }
-    // A number that names no track that can be dropped would drop nothing,
-    // and the run would go ahead as though it had been obeyed.
-    let droppable = |n: usize| {
-        shaped_like.audios.iter().any(|a| a.stream_index == n)
-            || shaped_like.captions.iter().any(|c| c.stream_index == n)
-            || shaped_like.graphics.iter().any(|g| g.stream_index == n)
-    };
-    if let Some(n) = drop_streams.iter().find(|&&n| !droppable(n)) {
-        bail!(
-            "--drop-stream {n}: {} has no sound, caption or subtitle stream {n} (the pictures cannot be dropped)",
-            shaped_like.path
-        );
-    }
-    // The same courtesy `--drop-stream` gets: an id no recording of the run
-    // carries -- a typo, or a stream of another disc -- dropped nothing, and
-    // the run went ahead as though it had been obeyed.
-    if let Some(id) = drop_subpictures.iter().find(|&&id| {
-        !std::iter::once(&src)
-            .chain(&joined_src)
-            .any(|s| s.subpictures.iter().any(|p| p.id == id))
-    }) {
-        bail!(
-            "--drop-subpicture 0x{id:02x}: {} has no subtitle stream with that id",
-            src.path
-        );
-    }
+    drop_streams_named(shaped_like, &drop_streams)?;
+    drop_subpictures_named(&src, &joined_src, &drop_subpictures)?;
     // The sound and no pictures. Taken here, once every recording of the run
     // is open: what the sound writer wants is the ranges and the joins, both
     // of which are in hand, and nothing the planner works out.
@@ -3562,6 +3623,45 @@ fn disc_can_hold(
                 a.stream_index
             );
         }
+    }
+    Ok(())
+}
+
+/// A number that names no track that can be dropped would drop nothing,
+/// and the run would go ahead as though it had been obeyed. `shaped_like` is
+/// the recording the output is shaped like, whose numbers these are.
+fn drop_streams_named(shaped_like: &smartcut_core::Source, drop_streams: &[usize]) -> Result<()> {
+    let droppable = |n: usize| {
+        shaped_like.audios.iter().any(|a| a.stream_index == n)
+            || shaped_like.captions.iter().any(|c| c.stream_index == n)
+            || shaped_like.graphics.iter().any(|g| g.stream_index == n)
+    };
+    if let Some(n) = drop_streams.iter().find(|&&n| !droppable(n)) {
+        bail!(
+            "--drop-stream {n}: {} has no sound, caption or subtitle stream {n} (the pictures cannot be dropped)",
+            shaped_like.path
+        );
+    }
+    Ok(())
+}
+
+/// The same courtesy `--drop-stream` gets: an id no recording of the run
+/// carries -- a typo, or a stream of another disc -- dropped nothing, and
+/// the run went ahead as though it had been obeyed.
+fn drop_subpictures_named(
+    src: &smartcut_core::Source,
+    joined: &[smartcut_core::Source],
+    ids: &[i32],
+) -> Result<()> {
+    if let Some(id) = ids.iter().find(|&&id| {
+        !std::iter::once(src)
+            .chain(joined)
+            .any(|s| s.subpictures.iter().any(|p| p.id == id))
+    }) {
+        bail!(
+            "--drop-subpicture 0x{id:02x}: {} has no subtitle stream with that id",
+            src.path
+        );
     }
     Ok(())
 }
