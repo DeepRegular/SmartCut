@@ -1846,6 +1846,91 @@ def disc_gauge_overwritable(cfg, t):
     shutil.rmtree(at, ignore_errors=True)
 
 
+def _busy(cfg):
+    """A recording whose last ten seconds hold more than twice their share of
+    its bytes: MPEG-2 at a fixed quantiser, film grain from 20 s on. Made once
+    and kept beside the work directory's other recordings (not in `media`,
+    which `clear_sidecars` empties of everything but its own four)."""
+    at = os.path.join(cfg.work, "fitmedia", "busy.ts")
+    if not os.path.exists(at):
+        os.makedirs(os.path.dirname(at), exist_ok=True)
+        subprocess.run([
+            "ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+            "testsrc2=size=720x480:rate=30000/1001:duration=30,"
+            "noise=alls=30:allf=t+u:enable=gte(t\\,20)",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=30:sample_rate=48000",
+            "-c:v", "mpeg2video", "-g", "15", "-bf", "2", "-q:v", "6",
+            "-c:a", "mp2", "-b:a", "192k", "-f", "mpegts", at + ".part"], check=True)
+        os.replace(at + ".part", at)
+    return at
+
+
+def disc_fit_busy_stretch(cfg, t):
+    """収める prices a row by what the stretch it keeps holds, not by the
+    recording's average rate times the seconds kept. The busy last ten
+    seconds of `_busy` hold over twice the average: priced at the average,
+    the gauge said a 20 MB disc took them as they were, 収める took nothing
+    off, and the disc came out about a third over. Now: the gauge's price is
+    the plain cut's size (a little over, never under), 収める's share is the
+    command line's --fit share for the same keep, and the disc it writes fits."""
+    busy = _busy(cfg)
+    plain = os.path.join(cfg.work, "disc_fit_busy_plain")
+    at = os.path.join(cfg.work, "disc_fit_busy")
+    for d in (plain, at):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+    disc = 20_000_000
+    pct = lambda g: float((re.search(r"[（(]([\d.]+)%[）)]", g["note"]) or [0, "nan"])[1])
+    share = lambda g: float((re.search(r"映像を ([\d.]+)% のサイズ", g["note"]) or [0, "nan"])[1])
+    row = {"path": busy, "edit": {"cuts": [{"a": 0.0, "b": 20.0}], "keyframes": []}}
+    with App(cfg, "disc_fit_busy_stretch", [row],
+             {"mode": "bdav", "dir": plain, "subfolder": "", "discTitle": "F"}) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        # What the kept stretch really comes to on a disc, cut as it is.
+        app.export()
+        real = _bdav_bytes(plain)
+        app.s.click('button.tab[data-screen="outset"]')
+        app.s.js("const i = document.getElementById('out-dir'); i.value = arguments[0];"
+                 " i.dispatchEvent(new Event('input', {bubbles: true}));", at)
+        app.s.js("const s = document.getElementById('out-disc'); const o = document.createElement('option');"
+                 " o.value = String(arguments[0]); o.textContent = 'test'; s.appendChild(o); s.value = o.value;"
+                 " s.dispatchEvent(new Event('input', {bubbles: true}));", disc)
+        over = wait_for("the gauge on the small disc", lambda: (lambda g: g if "%" in g["note"] and not any(
+            "fixed" in c for c, _, _ in g["segs"]) and "/ 0.0 GiB" in g["note"] else None)(_gauge(app)), 60, 0.25)
+        time.sleep(0.5)
+        over = _gauge(app)
+        priced = pct(over) / 100 * disc
+        t.check("36f the gauge prices the busy stretch at what it holds",
+                0.98 * real <= priced <= 1.10 * real and "超過" in over["note"],
+                f"priced {priced / 1e6:.2f} MB, cut as it is {real / 1e6:.2f} MB; {over['note']!r}")
+        app.s.click("#out-fit")
+        fitted = wait_for("収める's answer", lambda: (lambda g: g if "トランスコード" in g["note"]
+                                                     else None)(_gauge(app)), 30, 0.2)
+        time.sleep(0.5)
+        fitted = _gauge(app)
+        # The command line's answer for the same keep, where it is built.
+        repo = os.path.abspath(os.path.join(os.path.dirname(cfg.gui), "..", "..", "..", ".."))
+        cli = os.path.join(repo, "rust", "target", "release", "smartcut")
+        if os.access(cli, os.X_OK):
+            said = subprocess.run([cli, busy, "--keep", "20-30", "--fit", str(disc), "--bdav",
+                                   os.path.join(at, "cli-not-written"), "--analyze"],
+                                  capture_output=True, text=True, timeout=300)
+            m = re.search(r"written at ([\d.]+)% of their own size", said.stdout + said.stderr)
+            asked = float(m[1]) if m else float("nan")
+            t.check("36f 収める's share is the command line's --fit share",
+                    "収めます" in fitted["note"] and abs(share(fitted) - asked) <= 0.3,
+                    f"GUI {share(fitted)}%, CLI {asked}%")
+        else:
+            print(f"        (not compared with the command line: {cli} is not built)", flush=True)
+        app.export()
+        wrote = _bdav_bytes(at)
+        t.check("36f 収める onto the small disc: the disc fits", 0 < wrote <= disc,
+                f"disc {wrote} bytes of {disc}; cut as it is {real}")
+    for d in (plain, at):
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def image_turned_on_during_run(cfg, t):
     """An image asked for while the run is cutting (the image step is made
     for it, see app.js), with 書き換え可 chosen as it is turned on. The kind
@@ -4584,6 +4669,232 @@ def save_marks_during_walk_late_head(cfg, t):
             "said" if said else "no refusal seen on the status line")
 
 
+def outline_fails_ctrl_h(cfg, t):
+    """Row 2 visited once (its marks read), row 1 opened, then row 2's
+    recording replaced by something that is not one (the list only asks
+    whether the file is there) and row 2 double-clicked: the open fails and says so, and the window still holds
+    row 1's recording and marks. Ctrl+H then must not write row 1's marks
+    into row 2's .keyframe (the name beside the recording is set before the
+    open, and was left on the row that failed)."""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    a_marks, e_marks = [400, 500], [50, 100]
+    a_file = os.path.join(cfg.media, "a.keyframe")
+    e_file = os.path.join(cfg.media, "e.keyframe")
+
+    def put(path, frames):
+        with open(path, "w", newline="") as f:
+            f.write("".join(f"{n}\n" for n in frames))
+
+    def read(path):
+        with open(path, "rb") as f:
+            body = f.read()
+        return [int(x) for x in body.split()], b"\r\n" in body
+
+    put(a_file, a_marks)
+    put(e_file, e_marks)
+    try:
+        with App(cfg, "outline_fails_ctrl_h", [{"path": cfg.a}, {"path": e}]) as app:
+            app.open_row(2, "e.ts")
+            wait_for("row 2's marks", lambda: app.state()["keys"].startswith("2"), 30)
+            app.open_row(1, "a.ts")
+            wait_for("row 1's marks", lambda: app.state()["keys"].startswith("2"), 30)
+            time.sleep(1)
+            # Still there, so the list's `clip_gone` lets the press through,
+            # but no longer a recording: the open itself fails.
+            with open(e, "wb") as f:
+                f.write(b"\0" * (1 << 20))
+            app.open_row(2, "e.ts", wait=False)
+            app.to_editor()
+            failed = wait_for("the open to fail", lambda: (lambda s: s if (
+                "開けません" in s or "annot open" in s) else None)(app.state()["status"] or ""), 60)
+            app.s.keys("Control+h")
+            asked = app.answer(True, timeout=3)
+            time.sleep(1)
+            st = app.state()
+            got_e, wrote_e = read(e_file)
+            t.check("36m-1 the open of the missing recording failed", True, repr(failed))
+            t.check("36m-1 Ctrl+H after it leaves row 2's .keyframe",
+                    got_e == e_marks and not wrote_e,
+                    f"e.keyframe {got_e} (want {e_marks}), {'rewritten' if wrote_e else 'untouched'}; "
+                    f"asked {asked}; status {st['status']!r}")
+    finally:
+        for p in (e, a_file, e_file):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def outline_fails_first_visit(cfg, t):
+    """Row 1 up with its marks, then row 2 -- never visited, its recording
+    replaced by something that is not one -- double-clicked: the open fails
+    and the window still holds row 1. Ctrl+H then answers for row 1, the
+    recording on screen: its marks beside it, nothing beside row 2. (The
+    failed first visit left `marksDue` set, so Ctrl+H was refused on row 1
+    as 「まだ読み込んでいない」.)"""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    a_file = os.path.join(cfg.media, "a.keyframe")
+    e_file = os.path.join(cfg.media, "e.keyframe")
+    with open(a_file, "w", newline="") as f:
+        f.write("400\n500\n")
+    try:
+        with App(cfg, "outline_fails_first_visit", [{"path": cfg.a}, {"path": e}]) as app:
+            app.open_row(1, "a.ts")
+            wait_for("row 1's marks", lambda: app.state()["keys"].startswith("2"), 30)
+            time.sleep(1)
+            with open(e, "wb") as f:
+                f.write(b"\0" * (1 << 20))
+            app.open_row(2, "e.ts", wait=False)
+            app.to_editor()
+            failed = wait_for("the open to fail", lambda: (lambda s: s if (
+                "開けません" in s or "annot open" in s) else None)(app.state()["status"] or ""), 60)
+            t.check("36g-1 the first open of the broken recording failed", True, repr(failed))
+            app.s.keys("Control+h")
+            asked = app.answer(True, timeout=3)
+            time.sleep(1)
+            st = app.state()
+            with open(a_file, "rb") as f:
+                got_a = [int(x) for x in f.read().split()]
+            t.check("36g-2 Ctrl+H after it writes row 1's marks beside row 1",
+                    not os.path.exists(e_file) and got_a == [400, 500] and "a.keyframe" in st["status"],
+                    f"e.keyframe {'written' if os.path.exists(e_file) else 'absent'}; a.keyframe {got_a}; "
+                    f"asked {asked}; status {st['status']!r}")
+    finally:
+        for p in (e, a_file, e_file):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def outline_fails_after_success(cfg, t):
+    """Row 1 up, row 2 (not a recording) fails, row 3 opens and comes up,
+    then row 2 fails again: the window holds row 3, and Ctrl+H writes row 3's
+    marks beside row 3 -- not beside row 1, whose snapshot the first failure
+    put back (`outlineLeft` must be cleared once an open has come up)."""
+    e = os.path.join(cfg.media, "e.ts")
+    f3 = os.path.join(cfg.media, "f.ts")
+    shutil.copyfile(cfg.a, f3)
+    shutil.copyfile(cfg.a, e)
+    a_file = os.path.join(cfg.media, "a.keyframe")
+    e_file = os.path.join(cfg.media, "e.keyframe")
+    f_file = os.path.join(cfg.media, "f.keyframe")
+    for path, frames in ((a_file, [400, 500]), (f_file, [70, 80, 90])):
+        with open(path, "w", newline="") as f:
+            f.write("".join(f"{n}\n" for n in frames))
+
+    def ints(path):
+        with open(path, "rb") as f:
+            return [int(x) for x in f.read().split()]
+
+    def fail_row2(app):
+        # So the first failure's line is not taken for the second's.
+        app.s.js("document.getElementById('status').innerText = ''; return 0")
+        app.open_row(2, "e.ts", wait=False)
+        app.to_editor()
+        return wait_for("the open to fail", lambda: (lambda s: s if (
+            "開けません" in s or "annot open" in s) else None)(app.state()["status"] or ""), 60)
+
+    try:
+        with App(cfg, "outline_fails_after_success",
+                 [{"path": cfg.a}, {"path": e}, {"path": f3}]) as app:
+            app.open_row(1, "a.ts")
+            wait_for("row 1's marks", lambda: app.state()["keys"].startswith("2"), 30)
+            time.sleep(1)
+            # Broken only now: a row the list could not read is not sent.
+            with open(e, "wb") as f:
+                f.write(b"\0" * (1 << 20))
+            fail_row2(app)
+            app.open_row(3, "f.ts")
+            wait_for("row 3's marks", lambda: app.state()["keys"].startswith("3"), 30)
+            time.sleep(1)
+            failed = fail_row2(app)
+            t.check("36p-1 the second open of the broken recording failed", True, repr(failed))
+            app.s.keys("Control+h")
+            asked = app.answer(True, timeout=3)
+            time.sleep(1)
+            st = app.state()
+            got_a, got_f = ints(a_file), ints(f_file)
+            t.check("36p-2 Ctrl+H after it answers for row 3 beside row 3",
+                    not os.path.exists(e_file) and got_a == [400, 500] and got_f == [70, 80, 90]
+                    and "f.keyframe" in st["status"],
+                    f"e.keyframe {'written' if os.path.exists(e_file) else 'absent'}; a.keyframe {got_a}; "
+                    f"f.keyframe {got_f}; asked {asked}; status {st['status']!r}")
+    finally:
+        for p in (e, f3, a_file, e_file, f_file):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def sound_join_named_by_master(cfg, t):
+    """全部を 1 本に with 音声のみ: the file is named by the sound written,
+    which is the master's (a reel unlike it is made over into it). a.ts has
+    MP2 and b.mkv AAC; with b.mkv the master at 入力と同じ the file was named
+    `.mp2` off the first row, and the engine refused the whole run. A codec
+    chosen names it whatever the master; a join with pictures keeps the first
+    row's container."""
+    def codec_of(path):
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+             "stream=codec_name", "-of", "csv=p=0", path], capture_output=True, text=True).stdout
+        return out.strip().split("\n")[0] if out.strip() else None
+
+    def seconds(path):
+        # The packets' own times: an ADTS file's stated length is a guess
+        # from its bit rate.
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+             "packet=pts_time,duration_time", "-of", "csv=p=0", path],
+            capture_output=True, text=True).stdout
+        try:
+            last = [ln for ln in out.split() if ln][-1].split(",")
+            return round(float(last[0]) + float(last[1]), 3)
+        except (ValueError, IndexError):
+            return None
+
+    rows = [{"path": cfg.a}, {"path": cfg.b}]
+    cases = [
+        ("master b.mkv (AAC), 入力と同じ", {"container": "sound", "master": 1}, ".aac", "aac"),
+        ("master a.ts (MP2), 入力と同じ", {"container": "sound", "master": 0}, ".mp2", "mp2"),
+        ("master b.mkv, AC-3 chosen", {"container": "sound", "master": 1, "audio": "reencode",
+                                       "audioCodec": "ac3"}, ".ac3", "ac3"),
+    ]
+    for n, (label, extra, ext, codec) in enumerate(cases):
+        with App(cfg, f"sound_join_named_by_master/{n}", rows, {"joinAll": True, **extra}) as app:
+            app.to_list()
+            app.s.click('button.tab[data-screen="out"]')
+            wait_for("both rows on the output screen", lambda: app.s.js(
+                "return document.querySelectorAll('#out-list > li').length") == 2, 60)
+            time.sleep(0.5)
+            files = app.export()
+            notes = app.s.js(
+                "return [...document.querySelectorAll('#out-list > li .note')].map((n) => n.innerText);")
+            got = [f for f in files if os.path.isfile(f)]
+            one = got[0] if len(got) == 1 else None
+            sec = seconds(one) if one else None
+            c = codec_of(one) if one else None
+            t.check(f"36g sound join, {label}: one {ext} of {codec}, both rows",
+                    one is not None and one.endswith(ext) and c == codec and sec is not None
+                    and 39 < sec < 41,
+                    f"outputs {[os.path.basename(f) for f in files]}, codec {c}, {sec} s; notes {notes}")
+            for f in files:
+                shutil.rmtree(f) if os.path.isdir(f) else os.remove(f)
+
+    # With pictures: the first row's container, whatever the master.
+    with App(cfg, "sound_join_named_by_master/pictures", rows, {"joinAll": True, "master": 1}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("both rows on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == 2, 60)
+        time.sleep(0.5)
+        files = app.export(600)
+        ts = [f for f in files if f.endswith(".ts")]
+        got = pictures(ts[0]) if len(ts) == 1 else None
+        t.check("36g join with pictures, master b.mkv: still the first row's .ts",
+                len(files) == 1 and len(ts) == 1 and got == 2 * FRAMES,
+                f"outputs {[os.path.basename(f) for f in files]}, {got} pictures (want {2 * FRAMES})")
+        for f in files:
+            shutil.rmtree(f) if os.path.isdir(f) else os.remove(f)
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -4631,6 +4942,7 @@ SCENARIOS = [
     image_from_its_own_image,
     tracks_subtitle_stream,
     disc_gauge_overwritable,
+    disc_fit_busy_stretch,
     image_turned_on_during_run,
     plays_owed_left_behind,
     plays_owed_removed_undone,
@@ -4650,6 +4962,10 @@ SCENARIOS = [
     held_selection_no_container_length,
     save_marks_during_walk_no_container_length,
     save_marks_during_walk_late_head,
+    outline_fails_ctrl_h,
+    outline_fails_first_visit,
+    outline_fails_after_success,
+    sound_join_named_by_master,
 ]
 
 

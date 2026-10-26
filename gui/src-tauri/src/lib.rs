@@ -3241,6 +3241,13 @@ fn index_clip_now(
 /// ways of reading one; see [`one_read`].
 fn clip_info_of(path: &str, src: &Source, cached: bool, seconds: f64) -> ClipInfo {
     let rates = smartcut_core::fit::rates(src);
+    // Where its bytes lie, for [`disc_room`] to price the stretches kept by.
+    let profile = std::sync::Arc::new(smartcut_core::fit::Profile::of(src));
+    {
+        let mut held = locked(&PROFILES);
+        held.insert(src.path.clone(), profile.clone());
+        held.insert(path.to_string(), profile);
+    }
     ClipInfo {
         name: clip_name(path),
         path: src.path.clone(),
@@ -5031,7 +5038,9 @@ struct WaveOut {
 /// 3: the head read the way a sound-only file reads it
 ///    ([`smartcut_core::sound`]'s `sound_from_head`): a .mkv whose WebVTT libav
 ///    cannot read no longer outlines its first seconds as silence.
-const WAVE_VERSION: u32 = 3;
+/// 4: the same head read where the sound starts ahead of the key picture in
+///    that picture's own cluster (a third of a second outlined as silence).
+const WAVE_VERSION: u32 = 4;
 
 /// Where this recording's outline is kept: beside its flat detections.
 fn wave_path(app: &tauri::AppHandle, path: &str) -> Result<std::path::PathBuf, String> {
@@ -5907,6 +5916,14 @@ fn free_folder_now(dirs: &[String], name: &str) -> Result<String, String> {
     ))
 }
 
+/// Where each recording read this session has its bytes along its clock,
+/// by the name the row knows it by. See `smartcut_core::fit::Profile`: what
+/// [`disc_room`] prices the stretches a row keeps from, where the window
+/// says which they are. Kept until the program closes, as [`LISTED`] is.
+static PROFILES: Mutex<
+    std::collections::BTreeMap<String, std::sync::Arc<smartcut_core::fit::Profile>>,
+> = Mutex::new(std::collections::BTreeMap::new());
+
 /// What one recording of a list costs a disc, as the window knows it.
 ///
 /// The rates came off the recording when it was indexed and travel with the
@@ -5920,6 +5937,13 @@ struct ClipCost {
     video_rate: f64,
     audio_rate: f64,
     can_shrink: bool,
+    /// The recording, and the stretches of it kept (`keepsOf`), for the
+    /// pictures to be priced from what those stretches hold rather than the
+    /// recording's average ([`PROFILES`]). Without them, the average.
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    keeps: Option<Vec<(f64, f64)>>,
 }
 
 /// What one of them is expected to come to, for the gauge to draw.
@@ -5953,16 +5977,22 @@ struct DiscRoom {
 #[tauri::command]
 fn disc_room(clips: Vec<ClipCost>, capacity: u64, margin: f64) -> DiscRoom {
     use smartcut_core::fit;
+    let profiles = locked(&PROFILES).clone();
     let estimates: Vec<fit::Estimate> = clips
         .iter()
         .map(|c| {
-            fit::estimate_at(
+            let busier = match (&c.path, &c.keeps) {
+                (Some(path), Some(keeps)) => profiles.get(path).map_or(0.0, |p| p.busier(keeps)),
+                _ => 0.0,
+            };
+            fit::estimate_kept(
                 fit::Rates {
                     video: c.video_rate,
                     audio: c.audio_rate,
                     can_shrink: c.can_shrink,
                 },
                 c.seconds,
+                busier,
                 fit::Going::Disc,
             )
         })

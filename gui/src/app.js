@@ -5181,7 +5181,12 @@ function outputPath(clip) {
 function joinedPath(list = ready()) {
   if (!list.length) return "";
   const { dir, name, ext } = outputBase(list[0]);
-  return `${dir}${name}.${ext}`;
+  // Sound alone is named by the sound written, which is the master's (a
+  // reel unlike it is made over into it): named after the first row's, a
+  // join of a broadcast's AAC onto a master carrying AC-3 was `.aac`, and
+  // the engine refused the whole run -- "cannot hold AC3 sound".
+  const kind = soundOnly() ? containerFor(masterClip(list) || list[0]) : ext;
+  return `${dir}${name}.${kind}`;
 }
 
 /// Which control stands for which setting. Kept because the flow is
@@ -7202,16 +7207,27 @@ function discGiB(bytes, digits = 1) {
 /// the rows line up. A clip that has not been indexed yet has no rates to
 /// give and is left out -- it has no cuts either, so there is nothing of it
 /// to draw.
+///
+/// With each, the recording and the stretches of it kept (`keepsOf`), for the
+/// engine to price the pictures from what those stretches hold rather than
+/// from the recording's average: a busy stretch costs more than its seconds
+/// at the average, and was said to fit when it did not (`disc_room`). The CLI's
+/// --fit prices the same way, so the two give one answer for the same keeps.
 function discCosts() {
   return ready()
     .filter((c) => c.info && c.info.video_rate > 0)
-    .map((c) => ({
-      clip: c,
-      seconds: keepsOf(c).reduce((n, k) => n + (k.b - k.a), 0),
-      video_rate: c.info.video_rate,
-      audio_rate: soundRate(c),
-      can_shrink: !!c.info.can_shrink,
-    }));
+    .map((c) => {
+      const keeps = keepsOf(c);
+      return {
+        clip: c,
+        seconds: keeps.reduce((n, k) => n + (k.b - k.a), 0),
+        video_rate: c.info.video_rate,
+        audio_rate: soundRate(c),
+        can_shrink: !!c.info.can_shrink,
+        path: c.info.path,
+        keeps: keeps.map((k) => [k.a, k.b]),
+      };
+    });
 }
 
 /// What a clip's sound costs the disc per second, the tracks it keeps each
@@ -7294,7 +7310,10 @@ async function askRoom(access = undefined) {
   const costs = discCosts();
   const disc = await discHolds(Number(settings.disc) || 25025314816, access);
   const capacity = Math.max(disc - used, 0);
-  const key = JSON.stringify([disc, used, costs.map((c) => [c.seconds, c.video_rate, c.audio_rate, c.can_shrink])]);
+  // The stretches kept are part of the question: a range moved without
+  // changing how much is kept keeps its seconds and changes its price.
+  const asked = costs.map((c) => [c.seconds, c.video_rate, c.audio_rate, c.can_shrink, c.path, c.keeps]);
+  const key = JSON.stringify([disc, used, asked]);
   // The stored answer has to be about this list and not the one before it:
   // the key says so, and the count is checked as well because everything
   // drawn from it is drawn per clip.

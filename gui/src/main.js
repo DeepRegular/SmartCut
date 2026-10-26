@@ -6651,6 +6651,10 @@ let openGen = 0;
 /// The head a first visit's mark files were read on before the walk, while
 /// the walk's answer is still to come; null otherwise. See `recountEarly`.
 let recountHead = null;
+/// What the recording up in the window had when the open on its way in
+/// started (`openPath`), until that open has replaced `src` or failed; null
+/// otherwise.
+let outlineLeft = null;
 
 async function openPath(picked, saved, side, name, chapters, dropPids, detected, plays) {
   jlog(`openPath ${picked}`);
@@ -6660,6 +6664,16 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
   // app.js.
   const first = !saved || !!saved.fresh;
   if (!picked) return;
+  // What the recording up in the window had, put back where this open fails
+  // before its own recording is up: see the `catch` below. Taken before any
+  // of it is set for this row. Where an open is already on its way in and
+  // has not replaced `src` yet -- a second row double-clicked during the
+  // first's outline -- these are already that row's, not the recording's
+  // that is up, and that open's own snapshot is the one to put back.
+  const left = outlineLeft || {
+    sideBase, discChapters, chaptersDue, marksDue, playsDue, unplayedCuts, walkFailed,
+  };
+  outlineLeft = left;
   marksDue = first;
   // The playlist's cuts, where the list still owes them: on a first visit,
   // or on one after a first visit left before its walk had landed.
@@ -6753,6 +6767,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
       if (overtaken()) return;
     }
     src = outline;
+    outlineLeft = null;
     // A recording that did not come off a disc brings its own chapters, if
     // its container has any, and they are owed on the same terms a disc's
     // are: on a first visit, and on the visit after one left early.
@@ -7052,6 +7067,17 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // walked -- the walk is what failed, usually (`pointsArrived`) -- since
     // that plan finds `src` unwalked and puts 「読み込み中」 back for good.
     inbound = false;
+    // The outline never came, so the window still holds the last recording,
+    // its marks and its cuts -- under this row's name. Ctrl+H then wrote the
+    // last recording's marks over this row's `.keyframe`, and 録画のチャプター
+    // put this row's chapters onto the last recording. Both go back to the
+    // recording that is up, and so does what was owed it: a first visit that
+    // failed left Ctrl+H refused on the last recording as 「まだ読み込んでいない」,
+    // and a last recording whose own walk had failed lost that failure.
+    if (!src || src.path !== picked) {
+      ({ sideBase, discChapters, chaptersDue, marksDue, playsDue, unplayedCuts, walkFailed } = left);
+    }
+    outlineLeft = null;
     if (src && src.path === picked && !walked()) {
       walkFailed = e;
       clearTimeout(planTimer);
@@ -7059,6 +7085,8 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
       planSettled();
       el("plan-text").textContent = tr("plan.failed", { e });
     } else {
+      // A last recording whose own walk failed says so again here, by its
+      // `walkFailed` put back above: the plan reads it.
       schedulePlan();
     }
     throw e;
