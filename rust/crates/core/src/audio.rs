@@ -2035,10 +2035,22 @@ fn decode_on(
     // frames a fade-out runs over.
     let mut ended = false;
     let mut last_bytes = 0;
+    // The track's frames as the writers take them: a frame of a program
+    // stream stamped with the next one's time is put back where it belongs
+    // ([`crate::input::LateFrames`]), so a patch is keyed on the stamp the
+    // writers look it up by. Read raw, an `ffmpeg -f vob` AC-3 range ending
+    // on the frame after a late one had the late frame's sound re-encoded
+    // into its place. What it hands on waits in `due`.
+    let mut late = crate::input::LateFrames::new(ictx, 1);
+    let mut due = std::collections::VecDeque::new();
     let mut packets = ictx.read_packets();
     loop {
-        let bytes = match packets.next() {
-            Some((stream, packet)) if stream.index() != audio.stream_index => {
+        let next = match due.pop_front() {
+            Some(packet) => Some((None, packet)),
+            None => packets.next().map(|(stream, packet)| (Some(stream), packet)),
+        };
+        let bytes = match next {
+            Some((Some(stream), packet)) if stream.index() != audio.stream_index => {
                 // The pictures, which are kept to say where the reading has
                 // got to. Well past the edge with nothing of this track is a
                 // track that is not there -- the programme before this one's
@@ -2048,11 +2060,21 @@ fn decode_on(
                 if !gone {
                     continue;
                 }
+                // A frame still held back goes in before the end.
+                let rest = late.rest();
+                if !rest.is_empty() {
+                    due.extend(rest.into_iter().map(|(_, p)| p));
+                    continue;
+                }
                 ended = true;
                 let _ = decoder.send_eof();
                 last_bytes
             }
-            Some((_, packet)) => {
+            Some((Some(_), packet)) => {
+                due.extend(late.pass(0, packet).into_iter().flatten());
+                continue;
+            }
+            Some((None, packet)) => {
                 if decoder.send_packet(&packet).is_err() {
                     continue;
                 }
@@ -2062,6 +2084,11 @@ fn decode_on(
                 last_bytes
             }
             None => {
+                let rest = late.rest();
+                if !rest.is_empty() {
+                    due.extend(rest.into_iter().map(|(_, p)| p));
+                    continue;
+                }
                 ended = true;
                 let _ = decoder.send_eof();
                 // What the frames still inside it cost, as well as can be

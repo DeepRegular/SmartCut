@@ -412,6 +412,43 @@ impl ElementaryStream {
             .filter(|d| d.len() >= 2)
             .map(|d| u16::from_be_bytes([d[0], d[1]]))
     }
+
+    /// What a receiver goes by, in a carousel's data component descriptor,
+    /// to tell whether it can present the carousel and how to start it.
+    ///
+    /// The data_component_id names the coding -- the multimedia profile of
+    /// one kind of network: the sampled stations say 0x0007, 0x000B and
+    /// 0x000C -- and for those the info after it (ARIB STD-B24's
+    /// additional_arib_bxml_info) says whether this component is the entry
+    /// into the broadcast, whether it starts on its own, the screen it is
+    /// written for and the version of the document language. That much is
+    /// what this answers. The carousel info that follows it (cache and
+    /// retrieval hints) is left out: one station rewrites it between
+    /// programmes, and two recordings of one station are the same broadcast.
+    /// For a coding this program does not know the layout of, the whole of
+    /// the descriptor. `None` where there is no descriptor.
+    pub fn data_coding(&self) -> Option<&[u8]> {
+        let d = descriptor(&self.descriptors, 0xFD)?;
+        if d.len() < 3 || !matches!(u16::from_be_bytes([d[0], d[1]]), 0x0007 | 0x000B | 0x000C)
+        {
+            return Some(d);
+        }
+        // transmission_format (2), entry_point_flag, ...: the rest of the
+        // first byte is the start flag and the resolution, or reserved.
+        let mut end = 3;
+        if d[2] & 0x20 != 0 {
+            // use_xml, default_version_flag, independent_flag,
+            // style_for_tv_flag; then the BML version unless the default
+            // one, and the B-XML version as well where XML is used.
+            end = 4;
+            if let Some(&flags) = d.get(3) {
+                if flags & 0x40 == 0 {
+                    end += if flags & 0x80 != 0 { 8 } else { 4 };
+                }
+            }
+        }
+        Some(&d[..end.min(d.len())])
+    }
 }
 
 /// What the recording says about itself.
@@ -1792,7 +1829,13 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 if sec[0] != TABLE_SDT_ACTUAL {
                     return;
                 }
-                if let Some(d) = service_descriptor(sec, want) {
+                // libavformat's own name for a service nobody named (see
+                // `muxer_default_naming`) names no channel: off a `.ts` that
+                // `ffmpeg -c copy` wrote, `Service01` went onto a disc's list
+                // as the station.
+                if let Some(d) = service_descriptor(sec, want)
+                    .filter(|d| !d.get(2..).is_some_and(muxer_default_naming))
+                {
                     // As above: the network the description came off says
                     // how the name on it is written.
                     let written =
@@ -1838,6 +1881,10 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                     .or_else(|| event_description(described, written));
                 out.channel = out.channel.take().or_else(|| {
                     let whole = descriptor(described, 0x48)?;
+                    // A cut of such a `.ts` carries the muxer's name on here.
+                    if muxer_default_naming(whole) {
+                        return None;
+                    }
                     service_name(&[&[0x48, whole.len() as u8], whole].concat(), written)
                 });
             }),
@@ -3945,6 +3992,36 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
 mod tests {
     use super::*;
 
+    #[test]
+    fn data_coding_leaves_out_the_carousel_info() {
+        let es = |fd: &[u8]| ElementaryStream {
+            pid: 0x140,
+            stream_type: 0x0D,
+            descriptors: [&[0x52, 1, 0x40][..], &[0xFD, fd.len() as u8], fd].concat(),
+        };
+        // An entry with the BML version, one with the default version, and
+        // a component that is no entry: what follows is carousel info.
+        let v1 = es(&[0, 7, 0x33, 0x3F, 0, 1, 0, 0, 0xFF, 0xFF]);
+        assert_eq!(v1.data_coding(), Some(&[0, 7, 0x33, 0x3F, 0, 1, 0, 0][..]));
+        let dflt = es(&[0, 7, 0x33, 0x5F, 0xFF, 0xBF]);
+        assert_eq!(dflt.data_coding(), Some(&[0, 7, 0x33, 0x5F][..]));
+        let sub = es(&[0, 0x0C, 0x1F, 0xFF, 0xBF]);
+        let sub_short = es(&[0, 0x0C, 0x1F, 0xFF]);
+        assert_eq!(sub.data_coding(), sub_short.data_coding());
+        // Another network's profile is another coding.
+        let cs = es(&[0, 0x0B, 0x33, 0x3F, 0, 2, 0, 0, 0xFF, 0xFF]);
+        assert_ne!(cs.data_coding(), v1.data_coding());
+        // A coding of unknown layout is compared whole; none is none.
+        let other = es(&[0, 0x20, 1, 2, 3]);
+        assert_eq!(other.data_coding(), Some(&[0, 0x20, 1, 2, 3][..]));
+        let bare = ElementaryStream {
+            pid: 0x140,
+            stream_type: 0x0D,
+            descriptors: vec![0x52, 1, 0x40],
+        };
+        assert_eq!(bare.data_coding(), None);
+    }
+
     /// Every section `drain` hands over out of these bytes.
     fn drained(bytes: &[u8]) -> Vec<Vec<u8>> {
         let mut r = SectionReader { buf: bytes.to_vec(), filling: true };
@@ -4540,6 +4617,39 @@ mod tests {
         let read = programme(&input, 0).expect("a reading");
         assert!(read.name.is_none(), "there is no event here to be named by");
         let _ = std::fs::remove_file(&at);
+    }
+
+    /// libavformat's name for a service nobody named is no channel: a `.ts`
+    /// that `ffmpeg -c copy` wrote put `Service01` on a disc's list as the
+    /// station. Any other provider's name is still read.
+    #[test]
+    fn the_muxers_service_name_names_no_channel() {
+        let read = |provider: &[u8]| {
+            let mut named = vec![0x01, provider.len() as u8];
+            named.extend_from_slice(provider);
+            named.push(9);
+            named.extend_from_slice(b"Service01");
+            let mut service = recording(None);
+            (service.transport_stream_id, service.original_network_id, service.service_id) =
+                (1, 0xFF01, 1);
+            let sdt = sdt_naming(&service, &named);
+            let mut out = Vec::new();
+            let (mut a, mut b, mut c) = (0u8, 0u8, 0u8);
+            for _ in 0..4 {
+                packetize(PID_PAT, &pat(1, 0x100), &mut a, &mut out);
+                packetize(0x100, &pmt(1, 0, &[0x200]), &mut b, &mut out);
+                packetize(PID_SDT, &sdt, &mut c, &mut out);
+            }
+            let at = std::env::temp_dir()
+                .join(format!("smartcut-muxer-name-{}.ts", provider.len()));
+            std::fs::write(&at, &out).expect("write the sample");
+            let input = crate::input::Input::plain(&at.to_string_lossy());
+            let read = programme(&input, 0).expect("a reading");
+            let _ = std::fs::remove_file(&at);
+            read.channel
+        };
+        assert_eq!(read(b"FFmpeg"), None);
+        assert!(read(b"Station").is_some());
     }
 
     /// A component descriptor, which is about one stream and says so third.

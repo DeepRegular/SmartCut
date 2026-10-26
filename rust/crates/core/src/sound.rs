@@ -1003,12 +1003,14 @@ struct Clock {
 /// sound-only file than at the head of the cut's.
 pub(crate) fn sought_at_head(ictx: &ff::format::context::Input, url: &str) -> bool {
     // A check that cannot be made seeks, as every such file did before.
-    matroska_with_webvtt(ictx) && open_lost(url).unwrap_or(true)
+    // Asked once per file: [`crate::input::demux`] asks it as well, for the
+    // clock.
+    matroska_with_webvtt(ictx) && crate::input::lost_at_open(url).unwrap_or(true)
 }
 
 /// A Matroska file with a WebVTT stream: the files whose open can lose part
 /// of their head. See [`sought_at_head`].
-fn matroska_with_webvtt(ictx: &ff::format::context::Input) -> bool {
+pub(crate) fn matroska_with_webvtt(ictx: &ff::format::context::Input) -> bool {
     let matroska = ictx.format().name().split(',').any(|n| n.trim() == "matroska");
     matroska
         && ictx.streams().any(|s| {
@@ -1054,7 +1056,8 @@ pub(crate) fn sound_from_head(
 /// What [`seek_to_sound_head`] did.
 #[derive(PartialEq)]
 enum SoundHead {
-    /// Nothing: the track's first cluster is not ahead of the pictures'.
+    /// Nothing: the track does not start ahead of the pictures, in a cluster
+    /// of its own or in theirs.
     Same,
     Sought,
     /// The seek was refused, and the read is wherever libavformat left it.
@@ -1062,7 +1065,8 @@ enum SoundHead {
 }
 
 /// Seek a Matroska file to the first cluster its index knows the sound track
-/// `track` in, where that comes before the first one it knows a picture in.
+/// `track` in, where that comes before the first one it knows a picture in
+/// (or is that one, with the sound starting ahead of the key picture).
 ///
 /// **The sound a broadcast sends ahead of its first picture.** Copied into a
 /// Matroska file (`ffmpeg -c copy` of a recording), its first 0.9 s of sound
@@ -1090,18 +1094,31 @@ fn seek_to_sound_head(ictx: &mut ff::format::context::Input, track: usize) -> So
         let e = ff::ffi::avformat_index_get_entry(st, 0);
         (!e.is_null()).then(|| ((*e).pos, (*e).timestamp))
     };
-    let Some((at, when)) = ictx.stream(track).and_then(|s| first(&s)) else {
+    let Some(sound) = ictx.stream(track) else {
         return SoundHead::Same;
     };
+    let Some((at, when)) = first(&sound) else {
+        return SoundHead::Same;
+    };
+    let starts = when as f64 * f64::from(sound.time_base());
+    // The cluster each picture stream is first indexed in, and the instant
+    // of that first entry.
     let pictures = ictx
         .streams()
         .filter(|s| {
             s.parameters().medium() == ff::media::Type::Video
                 && !s.disposition().contains(ff::format::stream::Disposition::ATTACHED_PIC)
         })
-        .filter_map(|s| first(&s).map(|e| e.0))
-        .min();
-    if at < 0 || pictures.is_some_and(|p| at >= p) {
+        .filter_map(|s| first(&s).map(|e| (e.0, e.1 as f64 * f64::from(s.time_base()))))
+        .min_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    // In the pictures' own cluster too, where the sound starts ahead of the
+    // key picture: a seek to the head skips every block before the key
+    // picture's instant, and a WebVTT block between the two that the open
+    // could not parse took the rest of them from the open as well -- a
+    // remux whose sound leads by a third of a second lost its first 0.26 s
+    // (709 frames for the readable twin's 721). Sought by the track, the
+    // cluster is read from its sound's first block.
+    if at < 0 || pictures.is_some_and(|(p, t)| at > p || (at == p && starts >= t)) {
         return SoundHead::Same;
     }
     let Ok(index) = std::os::raw::c_int::try_from(track) else {
@@ -1121,12 +1138,12 @@ fn seek_to_sound_head(ictx: &mut ff::format::context::Input, track: usize) -> So
 /// Whether the open of `url` hands over less of the sound track `track` from
 /// the file's head than a read sought by [`seek_to_sound_head`] does: the
 /// bytes and the bound as in [`open_lost`]. A check that cannot be made, or a
-/// track whose first cluster is not ahead of the pictures', is `false`: the
+/// track that does not start ahead of the pictures, is `false`: the
 /// head is read as it was.
 fn sound_lost(url: &str, track: usize) -> Result<bool> {
     const PAST: usize = 64;
     const SEEK_CUR: std::os::raw::c_int = 1;
-    let mut open = crate::input::demux(url)?;
+    let mut open = crate::input::demux_as_opened(url)?;
     // SAFETY: the context is open and its reader is only read here.
     let bound = unsafe {
         let pb = (*open.as_ptr()).pb;
@@ -1159,7 +1176,7 @@ fn sound_lost(url: &str, track: usize) -> Result<bool> {
         }
     }
     drop(open);
-    let mut sought = crate::input::demux(url)?;
+    let mut sought = crate::input::demux_as_opened(url)?;
     if seek_to_sound_head(&mut sought, track) != SoundHead::Sought {
         return Ok(false);
     }
@@ -1196,7 +1213,11 @@ fn sound_lost(url: &str, track: usize) -> Result<bool> {
 /// open's, by stream and byte position -- both reads hand over the same
 /// blocks of the same file, so they are named the same. A packet that does
 /// not say where it was read is a check that cannot be made.
-fn open_lost(url: &str) -> Result<bool> {
+///
+/// Both reads open as libavformat leaves the file
+/// ([`crate::input::demux_as_opened`]): the clock [`crate::input::demux`]
+/// puts right is worked out from this answer.
+pub(crate) fn open_lost(url: &str) -> Result<bool> {
     // How far past the bound each read goes on: a parser can hand a packet
     // from before it over after one from beyond.
     const PAST: usize = 64;
@@ -1216,7 +1237,7 @@ fn open_lost(url: &str) -> Result<bool> {
             .map(|s| s.index())
             .collect()
     };
-    let mut open = crate::input::demux(url)?;
+    let mut open = crate::input::demux_as_opened(url)?;
     // SAFETY: the context is open and its reader is only read here.
     let bound = unsafe {
         let pb = (*open.as_ptr()).pb;
@@ -1250,7 +1271,7 @@ fn open_lost(url: &str) -> Result<bool> {
         }
     }
     drop(open);
-    let mut sought = crate::input::demux(url)?;
+    let mut sought = crate::input::demux_as_opened(url)?;
     // As `seek_to` in [`crate::cut`] seeks to the head, before the discards.
     let target = i64::MIN / 2;
     sought.seek(target, ..target)?;

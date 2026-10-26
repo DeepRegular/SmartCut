@@ -398,8 +398,20 @@ fn split_at_image(path: &Path) -> Option<(PathBuf, String)> {
 ///
 /// The other three things said here are for program streams, for a container
 /// that could not say how often pictures arrive, and for a recording whose
-/// captions the head of the file does not mention; all three are below.
+/// captions the head of the file does not mention; all three are below. And
+/// where the open lost the head its clock is read from, the clock is put
+/// right: see [`true_start`].
 pub fn demux(url: &str) -> Result<Demux> {
+    let mut ictx = demux_as_opened(url)?;
+    true_start(url, &mut ictx);
+    Ok(ictx)
+}
+
+/// [`demux`] without [`true_start`]: the open as libavformat leaves it. For
+/// the checks that compare what the open handed over with what a sought read
+/// does, which go by byte positions and not by the clock, and which
+/// [`true_start`] itself asks.
+pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
     let ictx = open(url, false)?;
     // A program stream -- which on a DVD is every stream -- leaves the
     // presentation time off any picture whose place in the display order can
@@ -444,6 +456,225 @@ pub fn demux(url: &str) -> Result<Demux> {
         return Ok(again);
     }
     Ok(ictx)
+}
+
+/// Where a recording's clock starts, put right where the open lost the
+/// blocks libavformat reads it from.
+///
+/// **A Matroska file with a WebVTT block libavformat cannot parse** loses the
+/// rest of that block's cluster while the open looks ahead with every stream
+/// on (see [`crate::sound::sought_at_head`]). Where the block is a cue ahead
+/// of every picture and sound block of the first cluster, the open sees none
+/// of them, and libavformat's start is the next cluster's: 2.419 s on a file
+/// whose twin with readable cues starts at 0. Everything before that lay
+/// before the recording's zero -- a cut of the whole file lost its first GOP
+/// (182 pictures of 240), and `--keep 0-2` cut another stretch than the
+/// twin's.
+///
+/// So where the open has lost something ([`crate::sound::open_lost`]), the
+/// starts are those of an open that had the WebVTT switched off before it
+/// looked ahead, and so lost nothing; and each WebVTT track's start is its
+/// first entry in the file's Cues, which name every cue without its block
+/// being parsed. The recording's start is then worked out from the streams'
+/// as libavformat works it out (`update_stream_timings`: a text track
+/// starting less than a second ahead of the pictures and sound is the
+/// start), so the file starts where its readable twin does. Written into
+/// this open, streams and all, so that every reader of it -- the outline and
+/// everything rebased by it, the preview, the media information, the sound's
+/// priming rule -- counts from the same zero.
+///
+/// Every other recording is left as opened. One whose open lost blocks after
+/// the first of each kind keeps its zero: the fixture of
+/// `tests/run_demux_tests.sh`, and the broadcast copies and video-site
+/// files with unreadable cues measured, cut byte for byte as before.
+/// Answered once per file for as long as the program runs (its size and time
+/// in the key), because the check costs two opens and the answer one more,
+/// and a cut opens a recording many times; the list's outline of such a file
+/// now pays the check once as well.
+fn true_start(url: &str, ictx: &mut Demux) {
+    if !crate::sound::matroska_with_webvtt(ictx) {
+        return;
+    }
+    let Some(clock) = known(url).clock else {
+        return;
+    };
+    // SAFETY: the context is open and nothing else holds it; the streams
+    // are the same header's as those the clock was read from, which is
+    // checked stream by stream.
+    unsafe {
+        let ctx = ictx.as_mut_ptr();
+        let n = (*ctx).nb_streams as usize;
+        if n != clock.streams.len() {
+            return;
+        }
+        let same = clock.streams.iter().enumerate().all(|(i, (kind, _))| {
+            let st = *(*ctx).streams.add(i);
+            !st.is_null() && !(*st).codecpar.is_null() && (*(*st).codecpar).codec_type == *kind
+        });
+        if !same {
+            return;
+        }
+        for (i, (_, start)) in clock.streams.iter().enumerate() {
+            let st = *(*ctx).streams.add(i);
+            if *start != ff::ffi::AV_NOPTS_VALUE {
+                (*st).start_time = *start;
+            }
+        }
+        (*ctx).start_time = clock.start;
+    }
+}
+
+/// Whether the open of `url`, a Matroska file with WebVTT in it, lost some
+/// of its head; `None` where that could not be told. See
+/// [`crate::sound::open_lost`], whose answer this keeps with the clock
+/// [`true_start`] reads after it.
+pub(crate) fn lost_at_open(url: &str) -> Option<bool> {
+    known(url).lost
+}
+
+/// What [`true_start`] finds out about one file, worked out once.
+fn known(url: &str) -> Known {
+    remembered(url, |url| {
+        let lost = crate::sound::open_lost(url).ok();
+        let clock = if lost == Some(true) { starts_unlost(url) } else { None };
+        Known { lost, clock }
+    })
+}
+
+/// What [`true_start`] found out about one file.
+#[derive(Clone)]
+struct Known {
+    lost: Option<bool>,
+    clock: Option<Clock>,
+}
+
+/// The starts of a recording, read where the open lost them: its own in
+/// libavformat's microseconds, and each stream's kind and start on its own
+/// clock.
+#[derive(Clone)]
+struct Clock {
+    start: i64,
+    streams: Vec<(ff::ffi::AVMediaType, i64)>,
+}
+
+/// [`Known`] of a Matroska file with WebVTT in it, worked out by `find` the
+/// first time it is asked and kept while the file keeps its size and time.
+fn remembered(url: &str, find: impl FnOnce(&str) -> Known) -> Known {
+    use std::sync::Mutex;
+    type Seen = Vec<(String, (u64, u128), Known)>;
+    /// Enough for any list, and no more held than that.
+    const KEPT: usize = 256;
+    static SEEN: Mutex<Seen> = Mutex::new(Vec::new());
+    // Asked of the file where the URL is one (or is one with [`as_local`]'s
+    // `file:` in front, as the demuxer's own copy of it can be); one inside
+    // an image or a folder of a DVD's is never rewritten under the same name.
+    let identity = std::fs::metadata(url)
+        .or_else(|e| url.strip_prefix("file:").map_or(Err(e), std::fs::metadata))
+        .map(|m| {
+            let mtime = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            (m.len(), mtime)
+        })
+        .unwrap_or((0, 0));
+    if let Ok(seen) = SEEN.lock() {
+        if let Some((_, _, known)) = seen.iter().find(|(u, id, _)| u == url && *id == identity) {
+            return known.clone();
+        }
+    }
+    let known = find(url);
+    if let Ok(mut seen) = SEEN.lock() {
+        seen.retain(|(u, _, _)| u != url);
+        if seen.len() >= KEPT {
+            seen.remove(0);
+        }
+        seen.push((url.to_string(), identity, known.clone()));
+    }
+    known
+}
+
+/// The starts of `url` read by an open whose WebVTT is switched off before it
+/// looks ahead, and so cannot lose a cluster to a block it cannot parse. See
+/// [`true_start`]. `None` where that open fails.
+fn starts_unlost(url: &str) -> Option<Clock> {
+    use ff::ffi::{AVMediaType, AV_NOPTS_VALUE, AV_TIME_BASE};
+    no_nul(url).ok()?;
+    let name = CString::new(as_local(url).as_bytes()).ok()?;
+    let mut opts = ff::Dictionary::new();
+    opts.set("protocol_whitelist", LOCAL_PROTOCOLS);
+    // SAFETY: the context is wrapped as soon as it is open, so it is closed
+    // on every way out; its streams are read while it is.
+    unsafe {
+        let mut ps = ptr::null_mut();
+        let mut raw = opts.disown();
+        let opened = ff::ffi::avformat_open_input(&mut ps, name.as_ptr(), ptr::null(), &mut raw);
+        drop(ff::Dictionary::own(raw));
+        if opened < 0 || ps.is_null() {
+            return None;
+        }
+        let mut ictx = ff::format::context::Input::wrap(ps);
+        let webvtt = |st: *mut ff::ffi::AVStream| {
+            let par = (*st).codecpar;
+            !par.is_null()
+                && (*par).codec_type == AVMediaType::AVMEDIA_TYPE_SUBTITLE
+                && (*par).codec_id == ff::ffi::AVCodecID::AV_CODEC_ID_WEBVTT
+        };
+        let streams = |ps: *mut ff::ffi::AVFormatContext| {
+            (0..(*ps).nb_streams as usize)
+                .map(|i| *(*ps).streams.add(i))
+                .filter(|st| !st.is_null())
+                .collect::<Vec<_>>()
+        };
+        // A block of a stream switched off is passed over before it is
+        // parsed.
+        for st in streams(ps) {
+            if webvtt(st) {
+                (*st).discard = ff::ffi::AVDiscard::AVDISCARD_ALL;
+            }
+        }
+        if ff::ffi::avformat_find_stream_info(ps, ptr::null_mut()) < 0 {
+            return None;
+        }
+        // The Cues are read on the first seek, and name the WebVTT's blocks
+        // as well as the pictures'.
+        let target = i64::MIN / 2;
+        let _ = ictx.seek(target, ..target);
+        let all = streams(ps);
+        if all.len() != (*ps).nb_streams as usize {
+            return None;
+        }
+        let mut kept = Vec::with_capacity(all.len());
+        let (mut start, mut text) = (i64::MAX, i64::MAX);
+        let micro = ff::ffi::AVRational { num: 1, den: AV_TIME_BASE };
+        for st in all {
+            let mut at = (*st).start_time;
+            if webvtt(st) && ff::ffi::avformat_index_get_entries_count(st) > 0 {
+                let first = ff::ffi::avformat_index_get_entry(st, 0);
+                if !first.is_null() && (*first).timestamp != AV_NOPTS_VALUE {
+                    at = (*first).timestamp;
+                }
+            }
+            let kind = (*(*st).codecpar).codec_type;
+            kept.push((kind, at));
+            // As libavformat's update_stream_timings.
+            if at != AV_NOPTS_VALUE && (*st).time_base.den != 0 {
+                let at = ff::ffi::av_rescale_q(at, (*st).time_base, micro);
+                if matches!(kind, AVMediaType::AVMEDIA_TYPE_SUBTITLE | AVMediaType::AVMEDIA_TYPE_DATA) {
+                    text = text.min(at);
+                } else {
+                    start = start.min(at);
+                }
+            }
+        }
+        if start == i64::MAX
+            || (start > text && (start as u64).wrapping_sub(text as u64) < AV_TIME_BASE as u64)
+        {
+            start = text;
+        }
+        (start != i64::MAX).then_some(Clock { start, streams: kept })
+    }
 }
 
 /// Put back where a recording starts and how long it runs, as the open

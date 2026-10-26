@@ -1611,14 +1611,22 @@ fn clpi(clip: &Clip) -> Vec<u8> {
     // here as the recording's, on every disc cut out of an MP4 or a Matroska
     // file.
     //
+    // **And not once a cut has carried them over.** A transport stream the
+    // muxer wrote -- `ffmpeg -c copy` into a `.ts`, or a cut of an MP4 into
+    // one -- has those three in its own tables, and a cut of it keeps them
+    // as the recording's. Its partial stream has no way to say 0xFF01 (see
+    // `si::network_descriptor`, which names Japan's networks only), so read
+    // back the network is nought and the stream and the service are still
+    // the muxer's 1 and 1.
+    //
     // The name of the tool is not a claim about the recording, so it goes in
     // either way. Sixteen bytes, padded out with the same 0xFF the discs
     // that carry a name pad theirs with.
-    const MUXER_IDS: (u16, u16, u16) = (0xFF01, 0x0001, 0x0001);
+    const MUXER_IDS: (u16, u16) = (0x0001, 0x0001);
+    let muxers =
+        (clip.tsid, clip.service_id) == MUXER_IDS && matches!(clip.network_id, 0 | 0xFF01);
     let mut about = vec![0u8; 30];
-    if (clip.tsid, clip.service_id) != (0, 0)
-        && (clip.network_id, clip.tsid, clip.service_id) != MUXER_IDS
-    {
+    if (clip.tsid, clip.service_id) != (0, 0) && !muxers {
         about[0] = 0x7C;
         about[5..7].copy_from_slice(&clip.network_id.to_be_bytes());
         about[7..9].copy_from_slice(&clip.tsid.to_be_bytes());
@@ -2295,6 +2303,17 @@ mod tests {
         (muxed.network_id, muxed.tsid, muxed.service_id) = (0xFF01, 1, 1);
         let raw = clpi(&muxed);
         assert_eq!(&raw[0xBE..0xBE + 14], &[0u8; 14]);
+
+        // Nor once a cut of such a stream has carried them over, with the
+        // network it cannot name read back as nought.
+        muxed.network_id = 0;
+        let raw = clpi(&muxed);
+        assert_eq!(&raw[0xBE..0xBE + 14], &[0u8; 14]);
+
+        // A real service on the muxer's stream number is still named.
+        muxed.service_id = 0x00D3;
+        let raw = clpi(&muxed);
+        assert_eq!(raw[0xBE], 0x7C);
     }
 
     #[test]

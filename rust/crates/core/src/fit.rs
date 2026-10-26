@@ -76,12 +76,12 @@ pub fn holds(capacity: u64, overwritable: bool) -> u64 {
 
 /// How much of a disc to leave alone.
 ///
-/// The estimate below is an estimate: it is built from rates measured over a
-/// whole recording and applied to the parts of it being kept, and a cut of
-/// the busiest minutes of a programme is dearer per second than the average
-/// it was measured against. A disc that turns out a hundred megabytes too
-/// large is four hours of writing and a coaster, so the default keeps a
-/// little back.
+/// The estimate below is an estimate: [`Profile`] prices each kept stretch
+/// from the bytes between its entry points, but the pictures re-encoded at
+/// the ends of every range are not priced, and the transrater can write a
+/// little more than the share it was asked for. A disc that turns out a
+/// hundred megabytes too large is four hours of writing and a coaster, so the
+/// default keeps a little back.
 pub const MARGIN: f64 = 0.01;
 
 /// What the disc's own files cost, beyond the streams.
@@ -294,7 +294,12 @@ pub fn estimate(src: &Source, keeps: &[(f64, f64)], going: Going) -> Estimate {
     } else {
         kept_seconds(keeps)
     };
-    let mut out = estimate_at(rates(src), seconds, going);
+    let busier = if keeps.is_empty() {
+        0.0
+    } else {
+        Profile::of(src).busier(keeps)
+    };
+    let mut out = estimate_kept(rates(src), seconds, busier, going);
     // **A cut into a file carries things a disc has no room for**, and the
     // largest of them by far is the data broadcast: the pages behind the blue
     // button are between a hundredth and a fifth of what a broadcast spends,
@@ -303,7 +308,7 @@ pub fn estimate(src: &Source, keeps: &[(f64, f64)], going: Going) -> Estimate {
     // everything the recording carries, including what was never counted --
     // wherever it is the larger of the two.
     if going == Going::File {
-        let whole = (file_rate(src) / 8.0 * seconds) as u64;
+        let whole = (file_rate(src) / 8.0 * seconds + busier * TS_FRAMING).max(0.0) as u64;
         out.bytes = out.bytes.max(whole);
     }
     out
@@ -311,6 +316,13 @@ pub fn estimate(src: &Source, keeps: &[(f64, f64)], going: Going) -> Estimate {
 
 /// The same, for a recording whose rates are already known.
 pub fn estimate_at(rates: Rates, seconds: f64, going: Going) -> Estimate {
+    estimate_kept(rates, seconds, 0.0, going)
+}
+
+/// [`estimate_at`], with the pictures of the stretches kept `busier` than the
+/// recording's average by that many bytes ([`Profile::busier`]; less than
+/// nought for stretches quieter than it).
+pub fn estimate_kept(rates: Rates, seconds: f64, busier: f64, going: Going) -> Estimate {
     let (video_rate, audio_rate) = (rates.video.max(0.0), rates.audio.max(0.0));
     // A file's packets are 188 bytes where a disc's are 192, and everything
     // else about the framing is the same.
@@ -318,7 +330,8 @@ pub fn estimate_at(rates: Rates, seconds: f64, going: Going) -> Estimate {
         Going::Disc => (FRAMING, SOUND_FRAMING, disc_files(seconds).saturating_add(PADDING)),
         Going::File => (FRAMING * 188.0 / 192.0, SOUND_FRAMING * 188.0 / 192.0, 0),
     };
-    let video_es = video_rate / 8.0 * seconds;
+    let busier = if busier.is_finite() { busier } else { 0.0 };
+    let video_es = (video_rate / 8.0 * seconds + busier).max(0.0);
     let audio_es = audio_rate / 8.0 * seconds;
     let video_bytes = (video_es * framing) as u64;
     // Saturating: a float past the end of a u64 casts to u64::MAX, and the
@@ -332,6 +345,124 @@ pub fn estimate_at(rates: Rates, seconds: f64, going: Going) -> Estimate {
     }
 }
 
+/// Where a recording's bytes lie along its clock: the byte each entry point
+/// starts at, against its time.
+///
+/// **The rates above are an average over the whole recording, and a cut keeps
+/// part of it.** A cut of its busiest minutes is dearer per second than that
+/// average, and priced at the average it came out larger than the disc it was
+/// fitted to: thirty seconds of a broadcast in two pieces, 6% over the price,
+/// so a 20 MB disc came to 21 MB; four minutes of another, 1.7% over, past
+/// [`MARGIN`]. The index already knows where in the file every entry point
+/// is, and the bytes between two of them are what the copy carries for that
+/// stretch -- so the stretches kept are priced from those, the difference from
+/// the average put on the pictures, which are what moves (the sound and the
+/// tables go out at the same rate whatever the pictures are doing).
+///
+/// Only pairs of neighbouring points whose bytes go forward count: a title
+/// read out of several files starts each over, and a point with no byte says
+/// nothing. Clock no pair covers -- before the first point, after the last,
+/// an index with no bytes at all -- is priced at the average, as before.
+#[derive(Clone, Debug, Default)]
+pub struct Profile {
+    /// Neighbouring entry points as (from, to, bytes between): time in
+    /// order, on the clock the kept ranges are given in.
+    pairs: Vec<(f64, f64, f64)>,
+    /// Bytes a second over all of them.
+    average: f64,
+    /// What a byte of the pictures' own takes of the file: its packets'
+    /// framing. The difference from the average is in the file's bytes and
+    /// is wanted in the pictures'.
+    framing: f64,
+}
+
+impl Profile {
+    /// Read off the entry points of a recording.
+    pub fn of(src: &Source) -> Profile {
+        let framing = if !src.on_a_ts {
+            1.0
+        } else if src.input.range.is_some() || {
+            let name = src.input.file.to_string_lossy().to_ascii_lowercase();
+            name.ends_with(".m2ts") || name.ends_with(".mts")
+        } {
+            // A disc's packets are 192 bytes, as written.
+            FRAMING
+        } else {
+            TS_FRAMING
+        };
+        let at: Vec<(f64, f64)> = src
+            .points
+            .iter()
+            .filter(|p| p.pos >= 0 && p.time.is_finite())
+            .map(|p| (p.time, p.pos as f64))
+            .collect();
+        Profile::from_points(&at, framing)
+    }
+
+    fn from_points(at: &[(f64, f64)], framing: f64) -> Profile {
+        let mut pairs: Vec<(f64, f64, f64)> = at
+            .windows(2)
+            .filter_map(|w| {
+                let ((t0, p0), (t1, p1)) = (w[0], w[1]);
+                (t1 > t0 && p1 >= p0).then_some((t0, t1, p1 - p0))
+            })
+            .collect();
+        // In order and apart, which is what [`Profile::busier`] looks them
+        // up by: a clock that runs over itself (two files on the same one)
+        // keeps the first of what overlaps.
+        pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut reach = f64::NEG_INFINITY;
+        pairs.retain(|&(t0, t1, _)| {
+            let apart = t0 >= reach;
+            if apart {
+                reach = t1;
+            }
+            apart
+        });
+        let (clock, bytes) = pairs
+            .iter()
+            .fold((0.0, 0.0), |(c, b), &(t0, t1, n)| (c + (t1 - t0), b + n));
+        // Too little of it to say anything about an average: nothing.
+        if clock < 10.0 || bytes <= 0.0 {
+            return Profile::default();
+        }
+        Profile {
+            pairs,
+            average: bytes / clock,
+            framing,
+        }
+    }
+
+    /// How many bytes of pictures `keeps` hold beyond what the average says
+    /// they do (less than nought where they hold fewer). Nought where nothing
+    /// is known.
+    pub fn busier(&self, keeps: &[(f64, f64)]) -> f64 {
+        if self.pairs.is_empty() {
+            return 0.0;
+        }
+        let mut over = 0.0;
+        for &(a, b) in keeps {
+            // Nothing for a range that runs backwards, or is not a number.
+            if b.partial_cmp(&a) != Some(std::cmp::Ordering::Greater) {
+                continue;
+            }
+            // The first pair that ends past `a`: they are in time order and
+            // do not overlap.
+            let from = self.pairs.partition_point(|&(_, t1, _)| t1 <= a);
+            for &(t0, t1, n) in &self.pairs[from..] {
+                if t0 >= b {
+                    break;
+                }
+                let held = b.min(t1) - a.max(t0);
+                if held > 0.0 {
+                    over += held * (n / (t1 - t0) - self.average);
+                }
+            }
+        }
+        over / self.framing
+    }
+}
+
 /// What the framing round the pictures costs.
 ///
 /// A coded picture is carried in transport packets of 188 bytes, of which 184
@@ -341,6 +472,9 @@ pub fn estimate_at(rates: Rates, seconds: f64, going: Going) -> Estimate {
 /// reference disc, a stream whose pictures come to 1.58 MB a second takes
 /// 1.67 MB a second of packets.
 const FRAMING: f64 = 1.056;
+
+/// [`FRAMING`] in a file's 188-byte packets, where a disc's are 192.
+pub const TS_FRAMING: f64 = FRAMING * 188.0 / 192.0;
 
 /// And round the sound, which fares worse.
 ///
@@ -586,6 +720,64 @@ mod tests {
         // Two stretches over the same clock count it once.
         let k = clock_per_written(100.0, &[(10.0, 30.0), (20.0, 40.0), (25.0, 26.0)]);
         assert!((k - 100.0 / 70.0).abs() < 1e-12, "{k}");
+    }
+
+    /// A recording of 100 s at 1 MB a second, but for 10 s at 3 MB.
+    fn busy_middle() -> Profile {
+        let mut at = Vec::new();
+        let mut pos = 0.0;
+        for k in 0..=100 {
+            let t = k as f64;
+            at.push((t, pos));
+            pos += if (40.0..50.0).contains(&t) { 3e6 } else { 1e6 };
+        }
+        Profile::from_points(&at, 1.0)
+    }
+
+    #[test]
+    fn a_busy_stretch_is_priced_from_its_own_bytes() {
+        let p = busy_middle();
+        let average = 120e6 / 100.0;
+        // The busy ten seconds hold 30 MB, against 12 at the average.
+        assert!((p.busier(&[(40.0, 50.0)]) - (30e6 - 10.0 * average)).abs() < 1.0);
+        // A quiet stretch is cheaper than the average.
+        assert!((p.busier(&[(0.0, 10.0)]) - (10e6 - 10.0 * average)).abs() < 1.0);
+        // Half a pair counts half its bytes; the whole recording is the
+        // average and nothing else.
+        assert!((p.busier(&[(45.5, 46.0)]) - (1.5e6 - 0.5 * average)).abs() < 1.0);
+        assert!(p.busier(&[(0.0, 100.0)]).abs() < 1.0);
+        // Clock no pair covers is the average.
+        assert!(p.busier(&[(100.0, 200.0), (-5.0, 0.0)]).abs() < 1e-9);
+        // Two ranges add up.
+        let two = p.busier(&[(40.0, 45.0), (45.0, 50.0)]);
+        assert!((two - p.busier(&[(40.0, 50.0)])).abs() < 1.0);
+    }
+
+    #[test]
+    fn bytes_that_go_back_or_are_missing_say_nothing() {
+        // A title in two files, each counted from nought.
+        let at = [(0.0, 0.0), (10.0, 10e6), (20.0, 20e6), (30.0, 5e6), (40.0, 15e6)];
+        let p = Profile::from_points(&at, 1.0);
+        assert_eq!(p.pairs.len(), 3);
+        assert!((p.average - 1e6).abs() < 1e-6);
+        // Too little clock to know an average from.
+        assert!(Profile::from_points(&[(0.0, 0.0), (5.0, 1e6)], 1.0).pairs.is_empty());
+        assert_eq!(Profile::default().busier(&[(0.0, 10.0)]), 0.0);
+    }
+
+    #[test]
+    fn the_pictures_carry_what_a_busy_stretch_costs() {
+        let r = Rates {
+            video: 8e6,
+            audio: 0.0,
+            can_shrink: true,
+        };
+        let plain = estimate_at(r, 10.0, Going::File);
+        let busy = estimate_kept(r, 10.0, 5e6, Going::File);
+        assert!(busy.video_bytes > plain.video_bytes);
+        assert_eq!(estimate_kept(r, 10.0, 0.0, Going::Disc).bytes, estimate_at(r, 10.0, Going::Disc).bytes);
+        // Never below nothing.
+        assert_eq!(estimate_kept(r, 10.0, -1e9, Going::File).video_bytes, 0);
     }
 
     fn clip(bytes: u64, video: u64) -> Estimate {

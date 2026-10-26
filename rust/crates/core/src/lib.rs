@@ -2260,6 +2260,19 @@ fn first_picture(ictx: &mut input::Demux, video: &VideoInfo, start_time: f64) ->
     /// What bounds it where the demuxer will not say which byte a packet came
     /// from -- a pipe, a stream.
     const PACKETS: u64 = 200_000;
+    // From the head the walk reads ([`index`]'s own rule): a Matroska file
+    // whose open lost the first cluster to a WebVTT block it could not parse
+    // has its zero there now (see [`input::demux`]), and read on from the
+    // open, the head was the next cluster's key picture -- two seconds in,
+    // where the walk's first point is at 0.
+    let url = unsafe {
+        let u = (*ictx.as_ptr()).url;
+        (!u.is_null()).then(|| std::ffi::CStr::from_ptr(u).to_string_lossy().into_owned())
+    };
+    if url.is_some_and(|u| crate::sound::sought_at_head(ictx, &u)) {
+        let target = i64::MIN / 2;
+        ictx.seek(target, ..target).ok()?;
+    }
     let mut head: Option<f64> = None;
     let mut seen: u64 = 0;
     for (s, p) in ictx.read_packets() {

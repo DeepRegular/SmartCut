@@ -1375,12 +1375,28 @@ fn run() -> Result<()> {
     for j in &joined {
         let at = smartcut_core::netpath::resolve(j).unwrap_or_else(|_| j.into());
         if at.exists() && smartcut_core::disc::looks_like_disc(&at) {
+            // The path to give is the one the disc's own list opens, and the
+            // example is that list's first. Made up from the disc's layout it
+            // was wrong in two ways: `disc/BDAV` was told to try
+            // `disc/BDAV/BDAV/STREAM/00001.m2ts`, and a DVD was told to try
+            // `VIDEO_TS/VTS_01_1.VOB` -- which opens, without a word, as the
+            // first gigabyte of the title set rather than as a title.
+            let base = j.trim_end_matches(['/', '\\']);
+            let first = smartcut_core::disc::read(&at)
+                .ok()
+                .and_then(|d| d.entries.first().map(|e| e.path.clone()))
+                .map(|p| format!(" -- the first one's is {p}"))
+                .unwrap_or_default();
             bail!(
                 "--join {j} is a disc, and --join takes one recording: name one of its recordings \
-                 by its path inside it ({0}/BDAV/STREAM/00001.m2ts, or {0}/VIDEO_TS/VTS_01_1.VOB \
-                 on a DVD, say)",
-                j.trim_end_matches(['/', '\\'])
+                 by the path `smartcut {base} --title N --analyze` prints on its `input :` \
+                 line{first}"
             );
+        }
+        // Nor is a folder that holds no disc: it failed the same way, as
+        // late (libav's "Is a directory").
+        if at.is_dir() {
+            bail!("--join {j} is a folder, and --join takes one recording: name a file in it");
         }
     }
     // The index is written as soon as the recording is open and the cut over
@@ -1536,6 +1552,8 @@ fn run() -> Result<()> {
                     || preview_at.is_some()
                     || still_at.is_some()
                     || cut_near.is_some()
+                    // A recording read as a proxy: of which one?
+                    || as_proxy
                     // An index of which recording? Listed and ended well,
                     // the file asked for was never written.
                     || seek_index.is_some();
@@ -1854,22 +1872,52 @@ fn run() -> Result<()> {
                 .is_ok_and(|at| smartcut_core::si::is_transport_stream(&at.to_string_lossy()))
         }),
     };
-    let data_travels = data_shape && src.on_a_ts && master_on_a_ts;
-    if data_travels {
-        for d in src.dropped.iter().filter(|d| d.what == "data") {
-            tell!(
-                "data   : carousel   [{}]",
-                smartcut_core::track_name(src.on_a_ts, d.pid, d.stream_index)
-            );
+    // And only where its carousels are described as the master's are, for a
+    // component the master's map already names: the cut leaves out a
+    // recording whose carousel would go out under another station's data
+    // component descriptor (`cut::DataComponents`). Asked in the order the
+    // cut asks it, the master's carousels first.
+    let mut data_known = if data_shape && master_on_a_ts && !joined.is_empty() {
+        match master {
+            0 => smartcut_core::cut::data_components(&src),
+            n => joined
+                .get(n - 1)
+                .and_then(|path| smartcut_core::netpath::resolve(path).ok())
+                .map(|at| smartcut_core::cut::data_components_at(&at.to_string_lossy()))
+                .unwrap_or_default(),
         }
+    } else {
+        smartcut_core::cut::DataComponents::default()
+    };
+    // Which of a joined recording's data PIDs the cut carries
+    // (`cut::DataComponents::join`): none where its data broadcast is left
+    // out, and not one whose PID is taken.
+    let data_carried = |known: &mut smartcut_core::cut::DataComponents, s: &smartcut_core::Source| {
+        smartcut_core::cut::data_map(s)
+            .map(|(own, pids)| known.join(&own, &pids))
+            .unwrap_or_default()
+    };
+    // The first recording's: every data PID where it is the master.
+    let src_carried: Option<Vec<u16>> = (master > 0 && data_shape && src.on_a_ts && master_on_a_ts)
+        .then(|| data_carried(&mut data_known, &src));
+    let src_data_agrees = src_carried.as_ref().is_none_or(|c| !c.is_empty());
+    let data_travels = data_shape && src.on_a_ts && master_on_a_ts && src_data_agrees;
+    let src_travels = |d: &smartcut_core::DroppedStream| {
+        data_travels
+            && d.what == "data"
+            && src_carried
+                .as_ref()
+                .is_none_or(|c| u16::try_from(d.pid).is_ok_and(|p| c.contains(&p)))
+    };
+    for d in src.dropped.iter().filter(|d| src_travels(d)) {
+        tell!(
+            "data   : carousel   [{}]",
+            smartcut_core::track_name(src.on_a_ts, d.pid, d.stream_index)
+        );
     }
     // Said out loud rather than dropped in silence: these are streams a cut
     // has no way to carry. See `smartcut_core::DroppedStream`.
-    for d in src
-        .dropped
-        .iter()
-        .filter(|d| !(data_travels && d.what == "data"))
-    {
+    for d in src.dropped.iter().filter(|d| !src_travels(d)) {
         tell!(
             "        not carried: {} on {}",
             d.describe(),
@@ -2417,13 +2465,15 @@ fn run() -> Result<()> {
             // for past the end of it is planned as it was asked for -- the
             // copy simply stops when the packets do -- so the recording's own
             // length is what the arithmetic is done against.
-            let kept: f64 = plans
+            let ranges: Vec<(f64, f64)> = plans
                 .iter()
-                .map(|p| {
-                    let (a, b) = (p.t_in.min(src.duration), p.t_out.min(src.duration));
-                    (b - a).max(0.0)
-                })
-                .sum();
+                .map(|p| (p.t_in.min(src.duration), p.t_out.min(src.duration)))
+                .collect();
+            let kept: f64 = ranges.iter().map(|&(a, b)| (b - a).max(0.0)).sum();
+            // And what those stretches really hold, against the recording's
+            // average: a cut of its busiest minutes is dearer than that. See
+            // `fit::Profile`.
+            let busier = smartcut_core::fit::Profile::of(&src).busier(&ranges);
             let going = if bdav.is_some()
                 || output.as_deref().is_some_and(|o| o.to_ascii_lowercase().ends_with(".m2ts"))
             {
@@ -2451,13 +2501,15 @@ fn run() -> Result<()> {
                     to_ts,
                 },
             );
-            let mut estimate = smartcut_core::fit::estimate_at(rates, kept, going);
+            let mut estimate = smartcut_core::fit::estimate_kept(rates, kept, busier, going);
             // The file's own rate stands in for everything a cut into a file
             // carries that was never counted -- see `fit::estimate`.
             if going == smartcut_core::fit::Going::File {
                 let whole = smartcut_core::fit::estimate(&src, &[], going);
                 let share = if src.duration > 0.0 { kept / src.duration } else { 1.0 };
-                estimate.bytes = estimate.bytes.max((whole.bytes as f64 * share) as u64);
+                // The same stretches, as the file carries them.
+                let held = whole.bytes as f64 * share + busier * smartcut_core::fit::TS_FRAMING;
+                estimate.bytes = estimate.bytes.max(held.max(0.0) as u64);
             }
             // A disc already in the --bdav folder is added to, so what this
             // recording has is the room left on it -- see `fit::already_on`.
@@ -2625,6 +2677,9 @@ fn run() -> Result<()> {
             }
         }
         if let Some(out) = &output {
+            // As the writer asks first (`cut::join`, `sound::write`): an
+            // `-o http://...` ended `--analyze` well and the run in an error.
+            smartcut_core::input::refuse_url_output(out)?;
             reads(out)?;
         }
         return Ok(());
@@ -2847,6 +2902,7 @@ fn run() -> Result<()> {
         && src.on_a_ts
         && smartcut_core::can_carry_data_broadcast(&out, tables)
         && src.dropped.iter().any(|d| d.what == "data")
+        && src_data_agrees
     {
         ", the data broadcast"
     } else {
@@ -2942,16 +2998,25 @@ fn run() -> Result<()> {
         // a carousel where it travels, which is wherever the recording the
         // output is shaped like is a transport stream (see `data_travels`):
         // each recording's own carousel goes in over its own stretch.
+        // Where it is not the master, only what the cut carries of it
+        // (`cut::DataComponents::join`).
         let own_data = data_shape && also.on_a_ts && master_on_a_ts;
-        if own_data {
-            for d in also.dropped.iter().filter(|d| d.what == "data") {
-                tell!(
-                    "data   : carousel   [{}]",
-                    smartcut_core::track_name(also.on_a_ts, d.pid, d.stream_index)
-                );
-            }
+        let carried: Option<Vec<u16>> = (own_data && joined_src.len() + 1 != master)
+            .then(|| data_carried(&mut data_known, &also));
+        let travels = |d: &smartcut_core::DroppedStream| {
+            own_data
+                && d.what == "data"
+                && carried
+                    .as_ref()
+                    .is_none_or(|c| u16::try_from(d.pid).is_ok_and(|p| c.contains(&p)))
+        };
+        for d in also.dropped.iter().filter(|d| travels(d)) {
+            tell!(
+                "data   : carousel   [{}]",
+                smartcut_core::track_name(also.on_a_ts, d.pid, d.stream_index)
+            );
         }
-        for d in also.dropped.iter().filter(|d| !(own_data && d.what == "data")) {
+        for d in also.dropped.iter().filter(|d| !travels(d)) {
             tell!(
                 "        not carried: {} on {}",
                 d.describe(),

@@ -653,8 +653,10 @@ pub fn build_with_sound(
     // head: also from the cluster the sound starts in where that is ahead of
     // the first key picture's (see [`crate::sound::sound_from_head`]), or the
     // ride-along outline of such a file drew its first 0.85 s as silence and
-    // the outline read on its own did not. The pictures all lie behind that
-    // cluster, and come out the same either way.
+    // the outline read on its own did not. That cluster is the pictures'
+    // first one or comes before it -- the same one where the sound starts
+    // ahead of the key picture inside it -- and read from its first block it
+    // hands over the pictures the same either way.
     match &wave {
         Some(w) => {
             let _ = crate::sound::sound_from_head(&mut ictx, &src.input.url, w.stream_index);

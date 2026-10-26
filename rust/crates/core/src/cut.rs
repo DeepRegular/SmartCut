@@ -7234,6 +7234,311 @@ fn carousel_span(src: &Source, plan: &RangePlan) -> Option<crate::carousel::Span
         })
 }
 
+/// The carousels of a join's output map so far, by component: the master's
+/// own, then whatever was announced for an earlier recording. Kept as each
+/// one's tag, output PID and [`crate::si::ElementaryStream::data_coding`].
+///
+/// One recording's carousel goes out on the PID of the same component only
+/// where the two describe their coding alike. The map is the master's, and
+/// so is the descriptor beside that PID: a carousel of another network's
+/// profile, another document version or a component that is no entry went
+/// out under a description that was not its own, and a receiver that goes
+/// by it may not start the pages, or start them as the wrong kind. Such a
+/// recording's data broadcast is left out whole -- its other components are
+/// reached only through that entry, and the entry cannot also be announced
+/// on a PID of its own, a map naming one component twice. The command line
+/// asks the same question before the cut (see [`DataComponents::join`]).
+///
+/// Beside them, the PIDs the master's map gives a stream of its own, and the
+/// map's own PID: no component is announced on one of those
+/// ([`reel_carousels`]), so the command line does not count one there.
+#[derive(Default, Clone)]
+pub struct DataComponents(Vec<DataComponent>, Vec<u16>);
+
+/// One carousel of [`DataComponents`]: its component tag, the PID it goes
+/// out on, and its coding.
+type DataComponent = (Option<u8>, u16, Option<Vec<u8>>);
+
+/// A carousel [`DataComponents::clash`] finds: its PID, its coding, and the
+/// coding the output already gives the same component.
+type Clash = (u16, Option<Vec<u8>>, Option<Vec<u8>>);
+
+impl DataComponents {
+    /// A master's: the carousels of `data` as `service` describes them.
+    pub fn of(service: &crate::si::Service, data: &[u16]) -> Self {
+        DataComponents(
+            data.iter()
+                .map(|&pid| {
+                    let es = service.stream(pid);
+                    (
+                        es.and_then(|es| es.component_tag()),
+                        pid,
+                        es.and_then(|es| es.data_coding()).map(<[u8]>::to_vec),
+                    )
+                })
+                .collect(),
+            Self::in_use(service),
+        )
+    }
+
+    /// The PIDs `service`'s map is on and names a stream on.
+    fn in_use(service: &crate::si::Service) -> Vec<u16> {
+        std::iter::once(service.pmt_pid)
+            .chain(service.streams.iter().map(|es| es.pid))
+            .collect()
+    }
+
+    /// The output PID that carries the same component: by tag, and with no
+    /// tags on either side, the same PID.
+    fn find(&self, tag: Option<u8>, pid: u16) -> Option<&DataComponent> {
+        self.0.iter().find(|(t, out_pid, _)| match (tag, t) {
+            (Some(a), Some(b)) => a == *b,
+            (None, None) => *out_pid == pid,
+            _ => false,
+        })
+    }
+
+    /// The first of a recording's carousels (`pids`, as its own map `own`
+    /// names them) whose component is already in the output under another
+    /// description of its coding, as (that PID, its coding, the output's).
+    pub fn clash(
+        &self,
+        own: &crate::si::Service,
+        pids: &[u16],
+    ) -> Option<Clash> {
+        pids.iter().find_map(|&pid| {
+            let es = own
+                .stream(pid)
+                .filter(|es| es.stream_type == crate::carousel::DSMCC_SECTIONS)?;
+            let (_, _, theirs) = self.find(es.component_tag(), pid)?;
+            let ours = es.data_coding();
+            (ours != theirs.as_deref()).then(|| (pid, ours.map(<[u8]>::to_vec), theirs.clone()))
+        })
+    }
+
+    fn add(&mut self, es: &crate::si::ElementaryStream) {
+        self.0.push((
+            es.component_tag(),
+            es.pid,
+            es.data_coding().map(<[u8]>::to_vec),
+        ));
+    }
+
+    /// What of a recording's carousels (`pids`, as its own map `own` names
+    /// them) goes out, and on which PIDs: the one answer [`reel_carousels`]
+    /// and the command line's listing ([`DataComponents::join`]) both go by.
+    /// `free` says whether a component the output has no entry for yet may
+    /// be announced on the PID it came on (besides the PIDs no stream is
+    /// ever announced on and those already announced). The components it
+    /// announces are taken into the account only where the recording's
+    /// data broadcast goes out at all.
+    ///
+    /// Where the recording's ENTRY cannot go out -- its component already
+    /// described otherwise ([`DataComponents::clash`]), or the PID it would
+    /// go out on taken -- none of it does: its other components are
+    /// reached only through that entry, and announced without it they are
+    /// a broadcast nothing can start, beside which a later recording's
+    /// entry of another coding was then announced as well.
+    fn carry(
+        &mut self,
+        own: &crate::si::Service,
+        pids: &[u16],
+        free: &dyn Fn(u16) -> bool,
+    ) -> Carriage {
+        if let Some(clash) = self.clash(own, pids) {
+            return Carriage::Clash(clash);
+        }
+        let mut known = self.clone();
+        let mut out = Carried::default();
+        for &pid in pids {
+            let Some(es) = own
+                .stream(pid)
+                .filter(|es| es.stream_type == crate::carousel::DSMCC_SECTIONS)
+            else {
+                out.unnamed = true;
+                continue;
+            };
+            let tag = es.component_tag();
+            // The same component the master's map names, on whatever PID it
+            // names it on; with no tags on either side, the same PID.
+            let onto = match known.find(tag, pid).map(|k| k.1) {
+                Some(o) => Some(o),
+                // A component of its own, announced on its own PID where
+                // nothing else in the output is on it.
+                None if pid > 0x1F
+                    && pid != 0x1FFF
+                    && free(pid)
+                    && !known.0.iter().any(|k| k.1 == pid) =>
+                {
+                    let mut entry = es.clone();
+                    entry.pid = pid;
+                    known.add(&entry);
+                    out.announced.push(entry);
+                    Some(pid)
+                }
+                None => None,
+            };
+            match onto {
+                Some(o) if !out.pairs.iter().any(|p| p.1 == o) => out.pairs.push((pid, o)),
+                _ if is_entry(es) => return Carriage::EntryTaken(pid),
+                _ => out.taken.push(pid),
+            }
+        }
+        *self = known;
+        Carriage::Carried(out)
+    }
+
+    /// Which of a recording's carousels go out, in its own numbering --
+    /// none where its data broadcast is left out -- taking the components
+    /// the output does not have yet into the account as [`reel_carousels`]
+    /// announces them: only on a PID the master's map leaves free, as the
+    /// cut has it. For the command line's listing, which is said before the
+    /// cut; the cut also keeps off the PIDs its own streams are given, which
+    /// are the master's but for a recording numbered afresh.
+    pub fn join(&mut self, own: &crate::si::Service, pids: &[u16]) -> Vec<u16> {
+        let in_use = std::mem::take(&mut self.1);
+        let carriage = self.carry(own, pids, &|pid| !in_use.contains(&pid));
+        self.1 = in_use;
+        match carriage {
+            Carriage::Carried(c) => c.pairs.iter().map(|p| p.0).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// What [`DataComponents::carry`] answers for one recording.
+enum Carriage {
+    /// Left out: a component of it is described otherwise in the output.
+    Clash(Clash),
+    /// Left out: its entry, on this PID, has nowhere to go out.
+    EntryTaken(u16),
+    /// Carried, as far as it goes.
+    Carried(Carried),
+}
+
+#[derive(Default)]
+struct Carried {
+    /// Each PID carried, as (in that recording, in the output).
+    pairs: Vec<(u16, u16)>,
+    /// The entries the output's map gains for it.
+    announced: Vec<crate::si::ElementaryStream>,
+    /// Components that are no entry and have nowhere to go out.
+    taken: Vec<u16>,
+    /// Whether one of its data PIDs is not named a carousel by its map.
+    unnamed: bool,
+}
+
+/// Whether a carousel is the entry into its data broadcast: as its data
+/// component descriptor says (ARIB STD-B24's entry_point_flag) for the
+/// codings whose layout is known, else by the component tag every entry
+/// sampled is on (0x40).
+fn is_entry(es: &crate::si::ElementaryStream) -> bool {
+    match es.data_coding() {
+        Some(d)
+            if d.len() >= 3
+                && matches!(u16::from_be_bytes([d[0], d[1]]), 0x0007 | 0x000B | 0x000C) =>
+        {
+            d[2] & 0x20 != 0
+        }
+        _ => es.component_tag() == Some(0x40),
+    }
+}
+
+/// A recording's own map and the PIDs its demuxer called data, read as
+/// [`reel_carousels`] reads them; with the PID its pictures are on. `None`
+/// for a recording that is not a transport stream or has no data, an `Err`
+/// where its map could not be read.
+fn data_map_of(src: &Source) -> Option<Result<(crate::si::Service, Vec<u16>, u16)>> {
+    let maybe: Vec<u16> = if src.on_a_ts {
+        src.dropped
+            .iter()
+            .filter(|d| d.what == "data" && d.pid > 0)
+            .map(|d| d.pid as u16)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if maybe.is_empty() {
+        return None;
+    }
+    let video_pid = crate::input::demux(&src.input.url)
+        .ok()
+        .and_then(|d| d.stream(src.video.stream_index).map(|s| s.id()))
+        .and_then(|id| u16::try_from(id).ok())
+        .unwrap_or(0);
+    Some(crate::si::read_service(&src.input, video_pid, &maybe).map(|s| (s, maybe, video_pid)))
+}
+
+/// A recording's carousels for [`DataComponents`]: its map and its data
+/// PIDs. `None` where it has none or its map cannot be read -- as the cut
+/// has it, nothing of its data broadcast then goes out.
+pub fn data_map(src: &Source) -> Option<(crate::si::Service, Vec<u16>)> {
+    data_map_of(src)?.ok().map(|(s, pids, _)| (s, pids))
+}
+
+/// The master's [`DataComponents`], off the recording opened: its carousels
+/// as its own map names them. A master with no data broadcast has none, but
+/// its map still holds the PIDs its own streams are on.
+pub fn data_components(src: &Source) -> DataComponents {
+    match data_map(src) {
+        Some((service, pids)) => {
+            let data: Vec<u16> = pids
+                .into_iter()
+                .filter(|pid| {
+                    service
+                        .stream(*pid)
+                        .is_some_and(|es| es.stream_type == crate::carousel::DSMCC_SECTIONS)
+                })
+                .collect();
+            DataComponents::of(&service, &data)
+        }
+        None if src.on_a_ts => {
+            let video_pid = crate::input::demux(&src.input.url)
+                .ok()
+                .and_then(|d| d.stream(src.video.stream_index).map(|s| s.id()))
+                .and_then(|id| u16::try_from(id).ok())
+                .unwrap_or(0);
+            crate::si::read_service(&src.input, video_pid, &[])
+                .map(|service| DataComponents::of(&service, &[]))
+                .unwrap_or_default()
+        }
+        None => DataComponents::default(),
+    }
+}
+
+/// The master's [`DataComponents`], read off a recording that has not been
+/// opened yet (the command line's `--master N`): the first map of the file
+/// and every carousel it names.
+pub fn data_components_at(path: &str) -> DataComponents {
+    let Ok(input) = crate::input::Input::parse(path) else {
+        return DataComponents::default();
+    };
+    match crate::si::read_service(&input, 0, &[]) {
+        Ok(service) => {
+            let data: Vec<u16> = service
+                .streams
+                .iter()
+                .filter(|es| es.stream_type == crate::carousel::DSMCC_SECTIONS)
+                .map(|es| es.pid)
+                .collect();
+            DataComponents::of(&service, &data)
+        }
+        Err(_) => DataComponents::default(),
+    }
+}
+
+/// How a data coding is said in a note: the data_component_id, or "none".
+fn coding_named(coding: &Option<Vec<u8>>) -> String {
+    match coding.as_deref() {
+        Some([a, b, rest @ ..]) => {
+            let more: String = rest.iter().map(|b| format!("{b:02x}")).collect();
+            format!("0x{a:02x}{b:02x} {more}").trim_end().to_string()
+        }
+        Some(_) => "a malformed one".to_string(),
+        None => "none".to_string(),
+    }
+}
+
 /// What a join's other recordings carry of their own data broadcast.
 ///
 /// **Each recording's own carousel goes out over its own stretch of the
@@ -7276,10 +7581,7 @@ fn reel_carousels(
     let src = reels[master].src;
     // What each output PID is the carousel of, by component: the master's
     // own first, then whatever is announced for another recording.
-    let mut known: Vec<(Option<u8>, u16)> = data
-        .iter()
-        .map(|&pid| (service.stream(pid).and_then(|es| es.component_tag()), pid))
-        .collect();
+    let mut known = DataComponents::of(service, data);
     let mut out = ReelCarousels::default();
     for (n, reel) in reels.iter().enumerate() {
         let rsrc = reel.src;
@@ -7302,27 +7604,13 @@ fn reel_carousels(
             }));
             continue;
         }
-        let maybe: Vec<u16> = if rsrc.on_a_ts {
-            rsrc.dropped
-                .iter()
-                .filter(|d| d.what == "data" && d.pid > 0)
-                .map(|d| d.pid as u16)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        if maybe.is_empty() {
-            out.reels.push(None);
-            continue;
-        }
-        let video_pid = crate::input::demux(&rsrc.input.url)
-            .ok()
-            .and_then(|d| d.stream(rsrc.video.stream_index).map(|s| s.id()))
-            .and_then(|id| u16::try_from(id).ok())
-            .unwrap_or(0);
-        let own = match crate::si::read_service(&rsrc.input, video_pid, &maybe) {
-            Ok(s) => s,
-            Err(e) => {
+        let (own, maybe, video_pid) = match data_map_of(rsrc) {
+            None => {
+                out.reels.push(None);
+                continue;
+            }
+            Some(Ok(m)) => m,
+            Some(Err(e)) => {
                 crate::say!(
                     "note: the data broadcast of {} is not carried: its own map could not be \
                      read ({e})",
@@ -7332,56 +7620,48 @@ fn reel_carousels(
                 continue;
             }
         };
-        let mut pairs: Vec<(u16, u16)> = Vec::new();
-        let mut unnamed = false;
-        for &pid in &maybe {
-            let Some(es) = own
-                .stream(pid)
-                .filter(|es| es.stream_type == crate::carousel::DSMCC_SECTIONS)
-            else {
-                unnamed = true;
-                continue;
-            };
-            let tag = es.component_tag();
-            // The same component the master's map names, on whatever PID it
-            // names it on; with no tags on either side, the same PID.
-            let onto = known
-                .iter()
-                .find(|(t, out_pid)| match (tag, t) {
-                    (Some(a), Some(b)) => a == *b,
-                    (None, None) => *out_pid == pid,
-                    _ => false,
-                })
-                .map(|k| k.1);
-            let onto = match onto {
-                Some(o) => Some(o),
-                // A component of its own, announced on its own PID where
-                // nothing else in the output is on it: not a stream of the
-                // master's map (carried or not -- its entry would be read
-                // for this one), not a stream the cut writes, not a table.
-                None if pid > 0x1F
-                    && pid != 0x1FFF
-                    && pid != service.pmt_pid
-                    && service.stream(pid).is_none()
-                    && !taken.contains(&pid)
-                    && !known.iter().any(|k| k.1 == pid) =>
-                {
-                    let mut entry = es.clone();
-                    entry.pid = pid;
-                    out.announced.push(entry);
-                    known.push((tag, pid));
-                    Some(pid)
+        // Not under another recording's description of the same component,
+        // and not without its entry. See [`DataComponents`] and
+        // [`DataComponents::carry`]. A component of its own is announced
+        // only on a PID nothing else in the output is on: not a stream of
+        // the master's map (carried or not -- its entry would be read for
+        // this one), not a stream the cut writes, not a table.
+        let free = |pid: u16| {
+            pid != service.pmt_pid && service.stream(pid).is_none() && !taken.contains(&pid)
+        };
+        let Carried { pairs, announced, taken: left, unnamed } =
+            match known.carry(&own, &maybe, &free) {
+                Carriage::Carried(c) => c,
+                Carriage::Clash((pid, ours, theirs)) => {
+                    crate::say!(
+                        "note: the data broadcast of {} is not carried: its pid 0x{pid:04x} is \
+                         coded otherwise ({}) than the same component already in the output \
+                         ({}), whose description the output's map gives",
+                        rsrc.path,
+                        coding_named(&ours),
+                        coding_named(&theirs)
+                    );
+                    out.reels.push(None);
+                    continue;
                 }
-                None => None,
+                Carriage::EntryTaken(pid) => {
+                    crate::say!(
+                        "note: the data broadcast of {} is not carried: the PID its entry \
+                         (pid 0x{pid:04x}) would go out on is taken by another stream of the \
+                         output, and its other components are reached only through it",
+                        rsrc.path
+                    );
+                    out.reels.push(None);
+                    continue;
+                }
             };
-            match onto {
-                Some(o) if !pairs.iter().any(|p| p.1 == o) => pairs.push((pid, o)),
-                _ => crate::say!(
-                    "note: the data broadcast of {} on pid 0x{pid:04x} is not carried: the \
-                     PID it would go out on is taken by another stream of the output",
-                    rsrc.path
-                ),
-            }
+        out.announced.extend(announced);
+        for pid in left {
+            crate::say!(
+                "note: the data broadcast of {} on pid 0x{pid:04x} is not carried: the \
+                 PID it would go out on is taken by another stream of the output",
+                rsrc.path
+            );
         }
         // As the master's own: said only where it was asked for outright.
         if unnamed && asked_outright && pairs.is_empty() {

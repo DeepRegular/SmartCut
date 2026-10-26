@@ -121,7 +121,16 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// picture does, read off the clip's tail ([`index::DiscIndex`]); the length
 /// libavformat guesses can be a picture short. An index of 14 -- again only
 /// from development builds -- keeps the guess as the clip's end.
-pub const VERSION: u32 = 15;
+///
+/// 16: a Matroska file whose WebVTT libavformat cannot parse, with a cue
+/// ahead of every picture and sound block of its first cluster, starts where
+/// the open that lost that cluster did not see -- at the cue, as its twin
+/// with readable cues does, where it started at the next cluster before
+/// ([`crate::input::demux`]'s `true_start`). An index written before holds
+/// every time on the old zero, two seconds off, and no entry point for the
+/// first GOP: read against the new zero, every range would cut another
+/// stretch.
+pub const VERSION: u32 = 16;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 
