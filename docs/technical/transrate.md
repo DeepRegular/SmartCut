@@ -232,9 +232,47 @@ cent:
 | fifty-nine minutes | 6,345 MB | 6,276 MB |
 
 A per cent of a disc is a quarter of a gigabyte, so a hundredth of it is kept
-back by default. A *short* stretch is a different matter — the rates are means
+back by default.
+
+**A stretch that is kept is priced from what it holds.** The rates are means
 over a whole recording, and a minute taken out of the middle of one can be
-half again as busy as its mean.
+half again as busy as its mean. Priced at the mean, two quarter-minute pieces
+of one broadcast came to 37 MB where the cut was 39, and fitted to a 20 MB disc
+they were written at 21 MB; three minutes of another, fitted to 90% of its
+plain cut, came out 2.4% larger than the room it was given. The index already
+knows the byte each entry point starts at, and the bytes between two
+neighbouring points are what a copy carries for that stretch. So each range
+kept is priced from the pairs of points it covers: what they hold beyond the
+average for that much clock -- or short of it, where the stretch is quieter --
+goes onto the pictures, which are what moves; the sound and the tables go out
+at the same rate whatever the pictures are doing (`fit::Profile`). The
+positions are whatever the index has: the walk's, a disc's entry-point map,
+a container's seek table, or a saved index. Clock no pair covers is priced at
+the average, as before: before the first point and after the last, a pair whose
+bytes go backwards (a title that runs on into its next file and counts from
+nought again), an index that holds no positions; and an index whose pairs cover
+less than ten seconds is not used at all. A whole recording kept is priced as
+it was. `--fit` and the window's gauge and **Transcode** price the same
+stretches this way, so the same cuts are given the same share.
+
+Against the plain cut of twelve broadcast recordings, three minutes of each
+now price 0.35% to 1.8% above what is written, where the mean put them from 3.6%
+under to 2.0% over; two quarter-minute pieces of each, 1.5% under to 6.5% over,
+where it had them 5% under to 30% over. What can still come out larger than
+the room it was fitted to:
+
+- **The rewrite does not always reach the share it is asked for.** On short
+  pieces at a hard share it can land a few points above it -- 62% of the
+  pictures where 55% was asked, on the worst of the twelve -- so short pieces
+  fitted to 60% of their size came out up to 5% over.
+- **The pictures re-encoded at each range's ends are not priced.** Each range
+  opens and closes on a few pictures written afresh, which on one recording
+  cost about 0.8 MB a range more than the stretch held. Five ranges of three
+  seconds cut to 14% more than their price; ten to twenty ranges over an hour's
+  programme come to a tenth or two of a per cent, inside the hundredth kept back.
+- **Only MPEG-2 can be written smaller.** For anything else the share only
+  says whether it fits as it is, and into a `.ts` the file's own rate stands in
+  for what it carries: a phone's H.264 recording came out 4% above that.
 
 **A recorder's title is measured over clock that no cut writes.** At a seam,
 from where the pictures before it stop to the first entry point after it,

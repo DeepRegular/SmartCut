@@ -307,6 +307,14 @@ and a frame of silence in its place each time, and a Matroska file got both at
 one instant. On the file with ten of them, a cut of 1 to 89 seconds wrote 2,741 frames
 with nine holes and the note; it now writes 2,750 with none and no note.
 
+So does the decode that makes the smart-rendered frames at a range's edges
+(`decode_on` in [`audio.rs`](../../rust/crates/core/src/audio.rs)). Up to 0.8.31 it
+read the frames as they came, so what it made was keyed on the stamp the two
+frames shared, while the cut looks it up by the one put back: a range ending on
+the frame after a late one got the late frame's sound, re-encoded, in that
+frame's place, and an edge inside a restamped frame found nothing made for it
+and copied the frame whole, up to 32 ms of sound the cut had taken away.
+
 What the read cannot put back, such as the MP2 parser's pieces, is still left
 out where the muxer would refuse it, counted in the note that names the frames
 that do not follow, as into a `.ts` (`Writer::push_audio` in

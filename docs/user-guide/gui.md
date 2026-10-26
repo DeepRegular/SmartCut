@@ -524,6 +524,13 @@ picture, and the marks would be written late or read early by the difference.
 Where the reading fails, the info bar says why (`Cannot open: …`) instead of
 asking you to wait.
 
+A row whose recording will not open at all -- the file has been replaced by
+something that is not a recording -- says so on the info bar, and the window
+goes on showing the recording that was up before, with everything that belongs
+to it: its marks, its chapters, and the mark file `Ctrl+H` writes them to.
+Up to 0.8.31 the name beside it was already the failed row's, so `Ctrl+H`
+wrote the recording on screen's marks over that row's `.keyframe`.
+
 ### What is where on the screen
 
 | Where | What |
@@ -1401,6 +1408,13 @@ The extension follows **what the sound is**: `.aac` for a broadcast's own,
 broadcast's LATM-framed AAC has no file of its own either and is written as
 plain AAC in an `.aac`, which re-encodes the whole track.
 
+With **Write the list as one file**, it is the **master clip**'s sound that is
+written -- a row whose sound is unlike it is made over into it -- so the
+extension is the master's: a list whose first row carries a broadcast's AAC and
+whose master carries AC-3 gives an `.ac3`. Up to 0.8.31 it followed the first
+row, and that file was refused as unable to hold the sound. The name is still
+the first row's.
+
 The audio settings work as they always do. Left at smart rendering, only the
 frames a boundary falls inside are rebuilt and the rest are the recording's
 own; change the channels or the rate and the whole track is re-encoded, the
@@ -1480,7 +1494,7 @@ Writing a disc adds these fields:
 |---|---|
 | **Disc title** | The name a recorder shows over the list of what is on the disc. Filled in with the series the recordings are episodes of — the programme name with the episode number, the episode's own title and the broadcast's marks taken off it. Where they are not all one series — several programmes, or two seasons of one — there is no such name, and the moment the disc is being made stands there instead: `2026-09-11 00:15`. Where the disc goes into a folder you chose (the output folder itself, or a subfolder you typed) and a disc with a name is already there, the field shows that disc's name instead, and a run adds to the disc under it. Where the disc there has no name — a recorder's disc nobody named — the field is left empty, and the disc stays without a name unless you type one. Typed over from any of these. The name is settled when a run starts: renaming a row, or typing a programme name, while the disc is being written does not change it (it used to give the disc the moment the run ended instead); a name typed into this field during the run is still the one written |
 | **Programme name** | **Per clip**, not per list: what this recording is called in the disc's index. Filled in from what the recording says about itself, and typed over from there. Emptied, it goes back to what the recording said |
-| **Channel** | Per clip. What the channel calls itself, and beside it the three digits a viewer knows it by — 0, or empty, where the recording does not say, which is what a terrestrial recording writes there |
+| **Channel** | Per clip. What the channel calls itself, and beside it the three digits a viewer knows it by — 0, or empty, where the recording does not say, which is what a terrestrial recording writes there. The name stays empty for a `.ts` that `ffmpeg` wrote: the `Service01` there is the tool's own placeholder, not a station |
 | **Recorded** | Per clip. When the programme went out, as `2026-08-17 01:00:00`. Slashes, a missing seconds field and single digits are understood and put back in that shape; anything that cannot be read as a moment stops the run rather than being written as no moment at all |
 | **About** | Per clip, and several lines of it: the sentence a listing carries and the cast and staff under it. This is what a recorder shows when the programme is selected in its list |
 | **Image** | Whether to wrap the finished disc in a `.iso` (`None` / `UDF 2.50` / `UDF 2.60`). The folder is written either way, and the image goes beside it under the same name. The image holds the disc, `BDAV`, and nothing else that is in the folder. Where that `.iso` is the image a row of the list is read out of, the run is refused before anything is cut, since the new image would replace it |
@@ -1488,7 +1502,7 @@ Writing a disc adds these fields:
 | **Remove the folder once the image is written** | Under the image, and only there when one is being made: the same thirty gigabytes twice over is not what most runs want to be left with. The folder is still written and the image still made of it — this happens afterwards, and only where the image was written. `BDAV` goes, and the folder above it only where that leaves it empty, so a disc written into a folder of your own leaves the rest of it alone. Where a `.iso` of that name is already there and the subfolder holds no disc to add to, the run is refused before it starts, since the old image would be replaced by the new disc's: move it away or choose another subfolder to keep it, or delete it if it is no longer wanted |
 | **Disc** | The disc this is going to be burned onto (25GB / DL 50GB / XL 100GB / XL 128GB). The gauge below is drawn against it |
 | **Transcode** | Where the list does not fit the disc chosen above, the pictures are transcoded smaller until it does. **Where it fits, nothing is done to them.** The sound, the subtitles and the programme information are untouched; only the pictures give anything up. Turning it on adds a second row to the gauge -- "before" and "after" -- showing what the disc comes to afterwards and what share the pictures are written at. MPEG-2 recordings only; anything else takes its full room. What happens inside is in [Fitting a disc](../technical/transrate.md) |
-| **Disc used** | What the list comes to against the disc, a band per recording. The white line is the edge of the disc and the faint one before it is the hundredth held back; anything past the line is drawn in red. The figures are an estimate made before anything is written, and on whole recordings it lands within about one per cent. They are counted in GiB, the way the file manager beside the window counts, which is why a single-layer disc reads 23.3 GiB here and "25GB" on the control above -- that one is the name on the box. Where the disc folder already holds a disc, the list is added to it: what is already written there is measured rather than estimated, drawn first as a grey hatched band, and the list is weighed against the room left, by **Transcode** too |
+| **Disc used** | What the list comes to against the disc, a band per recording. The white line is the edge of the disc and the faint one before it is the hundredth held back; anything past the line is drawn in red. The figures are an estimate made before anything is written, and on whole recordings it lands within about one per cent. What a cut keeps is priced from the bytes the recording holds over those stretches, read off its index, so a busy stretch counts as busy and a quiet one as quiet; a list of many very short ranges can still come out a little larger than drawn, since the pictures re-encoded at each range's ends are not in the estimate. They are counted in GiB, the way the file manager beside the window counts, which is why a single-layer disc reads 23.3 GiB here and "25GB" on the control above -- that one is the name on the box. Where the disc folder already holds a disc, the list is added to it: what is already written there is measured rather than estimated, drawn first as a grey hatched band, and the list is weighed against the room left, by **Transcode** too |
 | **Disc folder** | Replaces "Output folder", and **cannot be left empty** — a disc is one place, and the recordings in a list can have come from four. SmartCut makes one more folder under it, named by "Subfolder", and writes `BDAV` in there |
 
 **The programme information comes with the recording.** This is the point of

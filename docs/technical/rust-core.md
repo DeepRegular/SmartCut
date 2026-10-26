@@ -544,6 +544,22 @@ range that opens at the head. The saved waveform's number (`WAVE_VERSION` in
 outline saved by an earlier version is drawn afresh, once, the next time it
 is shown.
 
+**Or ahead of it in the same cluster.** Where the sound leads by less -- 0.38 s
+in the case that showed it -- its first frames share the first cluster with the
+key picture and come before it there. The sound's first entry was then the
+pictures' own cluster, nothing lay ahead of it by the check above, and the head
+was read as before: a seek skips every block before the key picture's instant,
+and a WebVTT block the open could not parse, sitting between the sound's start
+and the key picture, took the rest of them from the open too. A `--sound-only`
+file of such a recording wrote 709 frames where the same file with a readable
+WebVTT track wrote 721, its first 0.26 s gone and the rest that much early;
+`--verify`, reading the head the same way, called it OK. So where the sound's
+first entry is in the pictures' first cluster but its first instant comes before
+the first picture's, the read is sought on the sound track as well, and the
+cluster is read from the sound's first block. Every reader named above takes the
+same rule; the cut with pictures is still not touched by it. The saved
+waveform's number went up to 4 with this, as it had to 3.
+
 Every other read that runs on from the head of the whole recording now asks
 the same rule before it switches streams off: the film strip and the waveform,
 the walk that builds the seek index (and the rate measured for a Matroska file
@@ -558,6 +574,33 @@ from where the read picked up again. The commercial detector also leaves
 WebVTT out of the subtitle streams it reads for resets: WebVTT never carries
 one, and with the stream on, a block it could not parse cost the sound of its
 whole cluster at every cue.
+
+**A cue ahead of everything in the first cluster moves the recording's zero.**
+Where the first cluster opens with a cue, ahead of every picture and sound
+block in it, and that cue is one libavformat cannot parse, the open sees none
+of the cluster: libavformat's start is the next cluster's, 2.4 s on a file
+whose twin with readable cues starts at 0. Everything before it lay before the
+recording's zero. A cut of the whole file lost its first GOP (182 pictures of
+240), and `--keep 0-2` cut another stretch than the twin's. So where the open
+has lost something (`open_lost`, above), the file is opened once more with the
+WebVTT switched off before libavformat looks ahead, an open that loses
+nothing, and each WebVTT track's start is taken from its first entry in the
+file's Cues, which name every cue without its block being parsed. The
+recording's start is worked out from those streams' starts as libavformat
+works it out (a text track starting less than a second ahead of the pictures
+and sound is the start), which is where the readable twin starts, and is
+written into the open, every stream's start with it (`true_start` in
+[`input.rs`](../../rust/crates/core/src/input.rs)). Every reader of the open
+counts from that zero: the outline and everything rebased by it (the index
+walk, the plan, the cut, the sound-only file, the film strip and the
+detections), the preview, the media information and the sound's priming rule.
+A file whose open lost blocks after the first of each kind keeps its zero, and
+is cut byte for byte as before. The answer is kept per file (by its size and
+time) for as long as the program runs, since the check costs two opens and the
+answer a third, and a cut opens a recording many times. A seek index saved
+before holds every time on the old zero and no entry point for the first GOP,
+so `seek_index::VERSION` went up to 16 with this, and every saved index is
+made again once.
 
 [`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
 [`Grid`]: ../../rust/crates/core/src/cut.rs

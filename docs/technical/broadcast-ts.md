@@ -232,6 +232,15 @@ a name is compared, sorted and written into a file name. UTF-8 is tried first, t
 a muxer that writes a name of its own writes whatever the operating system handed it,
 and fewer of them write the selector that would have said so than write the text.
 
+**Read right, the muxer's own name is still no channel.** `Service01` under the
+provider `FFmpeg` is what libavformat writes for a service nobody named, and up to
+0.8.31 it was taken at its word: a `.ts` that `ffmpeg -c copy` wrote went onto a
+disc's list with `Service01` as the station, and showed it as the channel on the
+output settings screen and as the service in the media information. `si::programme`
+now passes over that pair, in the service description and in the selection table a
+cut of such a file carries it on in, and the channel is left empty, as for a
+recording that names none. A name any other provider wrote is read as before.
+
 ## What is put back is trimmed to what was written
 
 The same reasoning is needed one step further along. The broadcast describes the data
@@ -330,10 +339,23 @@ Which leaves where it goes and how it is declared:
   and its name, its events and its programme guide are the master's over the
   whole file. So another recording's carousel goes out on the PID the master's
   map names for the same component tag (a receiver finds a carousel by its
-  tag, not its PID; with no tags on either side, the same PID). A component the
+  tag, not its PID; with no tags on either side, the same PID) -- but only where
+  the two describe the component's coding alike. The data component descriptor
+  (0xFD) beside that PID is the master's, so the recording's own must agree with
+  it: the data_component_id and, for the BML codings 0x0007, 0x000B and 0x000C,
+  the information after it (whether the component is the entry, whether it
+  starts on its own, the screen it is written for, the document version). The
+  cache and retrieval hints after those are not compared, since one station
+  rewrites them between programmes (`ElementaryStream::data_coding` in
+  [`si.rs`](../../rust/crates/core/src/si.rs)). A component the
   master's map has no entry for is announced in the map on the PID it came on,
   with that recording's own description of it, where that PID is free in the
-  output; where it is not, it is left out and the run says so. The packets of
+  output; where it is not, it is left out and the run says so. Where the codings
+  differ -- two stations on different profiles or BML versions -- or where the
+  recording's entry component cannot be announced, that recording's whole
+  carousel is left out, with a note, since its other components are reached
+  only through its entry; the command line lists it as `not carried: data
+  broadcast` among that recording's lines. The packets of
   each are renumbered onto their output PID before the continuity count, so the
   count runs on across every seam (`reel_carousels` in
   [`cut.rs`](../../rust/crates/core/src/cut.rs), `Graft::feeds` in

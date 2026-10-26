@@ -316,6 +316,17 @@ into the clip index as the recording's, on every disc made from such a file.
 They are now left out (`clpi` in [`bdav.rs`](../../rust/crates/core/src/bdav.rs)).
 The tool's name goes into the same block either way.
 
+A `.ts` the muxer wrote -- a broadcast copied with `ffmpeg -c copy`, or an
+`.mp4` cut into a transport stream -- carries the same three in its own tables,
+and a cut of it keeps them as the recording's. The disc's stream has no way to
+state network 0xFF01 (its table names Japan's networks only), so read back off
+the cut the network is nought and the stream and the service are still 1 and 1.
+Up to 0.8.31 that went into the clip index as a recording's ids; it is now left
+out as well. A real service that happens to sit on stream 1 is still named.
+The service name such a muxer writes, `Service01`, is not taken for the channel
+either ([a file another tool multiplexed](broadcast-ts.md#a-file-another-tool-multiplexed-does-not-name-its-channel-in-arib)):
+the playlist's channel goes out empty, as it does for a recording that names none.
+
 ### The entry point map
 
 This is what makes a disc seekable. Without it a player has to read forward
