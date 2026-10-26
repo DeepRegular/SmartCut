@@ -5040,7 +5040,10 @@ struct WaveOut {
 ///    cannot read no longer outlines its first seconds as silence.
 /// 4: the same head read where the sound starts ahead of the key picture in
 ///    that picture's own cluster (a third of a second outlined as silence).
-const WAVE_VERSION: u32 = 4;
+/// 5: the same head read where that first cluster opens with a cue, so the
+///    open never reads it (a quarter of a second to a second outlined as
+///    silence, and the rest drawn early).
+const WAVE_VERSION: u32 = 5;
 
 /// Where this recording's outline is kept: beside its flat detections.
 fn wave_path(app: &tauri::AppHandle, path: &str) -> Result<std::path::PathBuf, String> {

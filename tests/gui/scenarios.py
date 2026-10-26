@@ -4824,6 +4824,699 @@ def outline_fails_after_success(cfg, t):
                 os.remove(p)
 
 
+def outline_fails_same_recording(cfg, t):
+    """Two rows on one recording, the second renamed (its marks beside it as
+    `xcopy.keyframe`). Row 2 visited, row 1 opened, then the recording made
+    unreadable and row 2 double-clicked: the open fails and the window still
+    holds row 1. Ctrl+H must answer for row 1 beside row 1 -- not write row
+    1's marks into row 2's `xcopy.keyframe`. (The failed open put the shown
+    recording's name back only where the paths differed.)"""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    e_file = os.path.join(cfg.media, "e.keyframe")
+    x_file = os.path.join(cfg.media, "xcopy.keyframe")
+    for path, frames in ((e_file, [400, 500]), (x_file, [50, 100])):
+        with open(path, "w", newline="") as f:
+            f.write("".join(f"{n}\n" for n in frames))
+
+    def read(path):
+        with open(path, "rb") as f:
+            body = f.read()
+        return [int(x) for x in body.split()], b"\r\n" in body
+
+    try:
+        with App(cfg, "outline_fails_same_recording",
+                 [{"path": e, "name": "erow", "stem": "e"},
+                  {"path": e, "name": "xcopy", "stem": "xcopy"}]) as app:
+            app.open_row(2, "xcopy")
+            wait_for("row 2's marks", lambda: app.state()["keys"].startswith("2"), 30)
+            app.open_row(1, "erow")
+            wait_for("row 1's marks", lambda: app.state()["keys"].startswith("2"), 30)
+            time.sleep(1)
+            with open(e, "wb") as f:
+                f.write(b"\0" * (1 << 20))
+            app.open_row(2, "xcopy", wait=False)
+            app.to_editor()
+            failed = wait_for("the open to fail", lambda: (lambda s: s if (
+                "開けません" in s or "annot open" in s) else None)(app.state()["status"] or ""), 60)
+            t.check("37m-1 the open of the broken recording failed", True, repr(failed))
+            app.s.keys("Control+h")
+            asked = app.answer(True, timeout=3)
+            time.sleep(1)
+            st = app.state()
+            got_x, wrote_x = read(x_file)
+            t.check("37m-2 Ctrl+H after it leaves row 2's xcopy.keyframe",
+                    got_x == [50, 100] and not wrote_x and "xcopy" not in (st["status"] or ""),
+                    f"xcopy.keyframe {got_x} (want [50, 100]), {'rewritten' if wrote_x else 'untouched'}; "
+                    f"asked {asked}; status {st['status']!r}")
+    finally:
+        for p in (e, e_file, x_file):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def outline_fails_edits_kept(cfg, t):
+    """Row 1 up, row 2 (its recording made unreadable) double-clicked: the
+    open fails and the window goes on showing row 1. A cut made there after
+    the failure, then OK, must be on row 1 -- the window had let go of its
+    row (`editId` null), so every edit after the failure was sent under no
+    row and OK closed with it gone. Then the same again with Escape and
+    破棄: row 1 goes back to what it was before that visit, row 2 is
+    untouched both times."""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+
+    def fail_row2(app):
+        app.s.js("document.getElementById('status').innerText = ''; return 0")
+        app.open_row(2, "e.ts", wait=False)
+        app.to_editor()
+        return wait_for("the open to fail", lambda: (lambda s: s if (
+            "開けません" in s or "annot open" in s) else None)(app.state()["status"] or ""), 60)
+
+    try:
+        with App(cfg, "outline_fails_edits_kept", [{"path": cfg.a}, {"path": e}]) as app:
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            with open(e, "wb") as f:
+                f.write(b"\0" * (1 << 20))
+            failed = fail_row2(app)
+            t.check("37g-1 the open of the broken recording failed", True, repr(failed))
+            left = app.cut(100, 150)
+            time.sleep(0.5)
+            app.ok()
+            app.gone()
+            p = app.save()
+            c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+            t.check("37g-2 a cut made after the failed open is kept on row 1 by OK",
+                    len(c1) == 1 and c2 == [],
+                    f"row 1 cuts {fmt(c1)}, row 2 cuts {fmt(c2)} ({left} pictures shown)")
+            app.open_row(1, "a.ts")
+            wait_for("row 1 with its cut", lambda: app.state()["frames"] == left, 30)
+            time.sleep(1)
+            fail_row2(app)
+            app.cut(300, 350)
+            time.sleep(0.5)
+            app.escape(discard=True)
+            app.gone()
+            p = app.save()
+            d1, d2 = cuts_of(p, 1), cuts_of(p, 2)
+            t.check("37g-3 Escape+破棄 after the failed open puts row 1 back as the visit found it",
+                    d1 == c1 and d2 == [],
+                    f"row 1 cuts {fmt(d1)} (want {fmt(c1)}), row 2 cuts {fmt(d2)}")
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+# -- 37th pass, stage 3 (p3gui): the window after a failed open ---------------
+def _break(path):
+    with open(path, "wb") as f:
+        f.write(b"\0" * (1 << 20))
+
+
+def _fail_row(app, n, name):
+    """Double-click row `n`, whose recording is no longer one, and wait for
+    the editor to say the open failed. Returns the status line."""
+    app.to_editor()
+    app.s.js("document.getElementById('status').innerText = ''; return 0")
+    app.open_row(n, name, wait=False)
+    app.to_editor()
+    return wait_for("the open to fail", lambda: (lambda s: s if (
+        "開けません" in s or "annot open" in s) else None)(app.state()["status"] or ""), 60)
+
+
+def _editing_rows(app):
+    """Which rows of the list wear 編集中 (1-based)."""
+    app.to_list()
+    flags = app.s.js("return [...document.querySelectorAll('#cliplist > li')]"
+                     ".map((li) => li.querySelector('.badge').classList.contains('editing'))")
+    return [i + 1 for i, f in enumerate(flags) if f]
+
+
+def _editor_os_title(app):
+    """The editor's title bar, as the window manager has it."""
+    pid = app.gui_pid()
+    for line in sh("wmctrl -lp", app.env).splitlines():
+        f = line.split(None, 4)
+        if len(f) == 5 and f[2] == str(pid) and ("カット編集" in f[4] or "Cut editor" in f[4]):
+            return f[4]
+    return None
+
+
+def outline_fails_shows_row(cfg, t):
+    """Row 1 up, row 2's recording broken, row 2 double-clicked: the open
+    fails and the window goes on as row 1. The list then has row 1 as the
+    one being edited, the title bar names row 1 (it was retitled for row 2
+    on the press), and the header says row 1's recording rather than being
+    left blank. Then Ctrl+Z after the failure undoes row 1's own cut, and
+    OK hands that over: row 1 ends with no cut."""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    try:
+        with App(cfg, "outline_fails_shows_row", [{"path": cfg.a}, {"path": e}]) as app:
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.cut(100, 150)
+            time.sleep(0.5)
+            _break(e)
+            _fail_row(app, 2, "e.ts")
+            time.sleep(1)
+            rows = _editing_rows(app)
+            os_title = _editor_os_title(app)
+            app.to_editor()
+            st = app.state()
+            t.check("37q-1 after the failed open the list edits row 1", rows == [1], f"編集中 on {rows}")
+            t.check("37q-2 the title bar names row 1", bool(os_title) and "a" in os_title and "e" not in
+                    os_title.split("—")[-1], f"title bar {os_title!r}")
+            t.check("37q-3 the header names row 1's recording", "a.ts" in st["title"], f"header {st['title']!r}")
+            app.s.keys("Control+z")
+            wait_for("the cut undone", lambda: app.state()["frames"] == FRAMES, 10)
+            time.sleep(0.5)
+            app.ok()
+            app.gone()
+            p = app.save()
+            c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+            t.check("37q-4 Ctrl+Z after the failed open, then OK: row 1 has no cut",
+                    c1 == [] and c2 == [], f"row 1 cuts {fmt(c1)}, row 2 cuts {fmt(c2)}")
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def outline_fails_quick_switch(cfg, t):
+    """Row 1 up and cut; row 2 (a good recording) and row 3 (broken) double-
+    clicked one straight after the other. Row 3 fails, and the window is on
+    whichever of rows 1 and 2 got up (row 2's open may be overtaken before
+    its outline). A cut made then and OK land on that row and nowhere else;
+    the second round does the same with Escape+破棄, which puts that row back
+    as its visit found it and leaves the others as they were."""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    try:
+        with App(cfg, "outline_fails_quick_switch",
+                 [{"path": cfg.a}, {"path": cfg.b}, {"path": e}]) as app:
+            wait_for("rows read", lambda: app.rows() == 3, 30)
+            time.sleep(2)
+            _break(e)
+            prev = {1: [], 2: [], 3: []}
+            for rnd, (lo, hi) in enumerate(((100, 150), (300, 330))):
+                app.open_row(1, "a.ts")
+                wait_for("row 1 as left", lambda: app.state()["frames"] is not None, 30)
+                time.sleep(1)
+                row1 = app.cut(lo, hi)
+                time.sleep(0.5)
+                app.to_list()
+                app.s.double_click("#cliplist > li:nth-child(2) .nm")
+                app.s.double_click("#cliplist > li:nth-child(3) .nm")
+                app.to_editor()
+                wait_for("the open to fail", lambda: (lambda s: s if (
+                    "開けません" in s or "annot open" in s) else None)(app.state()["status"] or ""), 60)
+                time.sleep(1.5)
+                st = app.state()
+                # Row 2 is b.mkv, a picture size and a length of its own.
+                shown = 1 if st["frames"] == row1 and "a.ts" in st["title"] else 2
+                rows = _editing_rows(app)
+                app.to_editor()
+                at_start = {k: list(v) for k, v in prev.items()}
+                before_cut = app.state()["frames"]
+                app.cut(400, 420)
+                time.sleep(0.5)
+                if rnd == 0:
+                    app.ok()
+                else:
+                    app.escape(discard=True)
+                app.gone()
+                p = app.save()
+                got = {k: cuts_of(p, k) for k in (1, 2, 3)}
+                n1 = len(at_start[1]) + 1 + (1 if shown == 1 and rnd == 0 else 0)
+                want_n = {1: n1 if not (shown == 1 and rnd == 1) else len(at_start[1]),
+                          2: len(at_start[2]) + (1 if shown == 2 and rnd == 0 else 0),
+                          3: 0}
+                ok = all(len(got[k]) == want_n[k] for k in (1, 2, 3))
+                what = "OK" if rnd == 0 else "Escape+破棄"
+                t.check(f"37r-{rnd + 1} quick switch, row 3 fails, {what}: the window's row (row {shown}) "
+                        "takes it, no other row",
+                        ok and rows == [shown],
+                        f"編集中 {rows}; {before_cut} pictures shown; cuts {{1: {fmt(got[1])}, "
+                        f"2: {fmt(got[2])}, 3: {fmt(got[3])}}}; want counts {want_n}")
+                prev = got
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def outline_fails_then_fixed(cfg, t):
+    """Row 1 up, row 2 broken: the open fails twice running. Then row 2's
+    recording is put back and row 2 double-clicked a third time: it opens (a
+    failed row sent again is another attempt), and a cut there is row 2's.
+    Escape+破棄 after the two failures (on the way) put row 1 back as its
+    visit found it, and removing row 2 from the list while the window was
+    back on row 1 left the window up and its edits row 1's."""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    try:
+        with App(cfg, "outline_fails_then_fixed", [{"path": cfg.a}, {"path": e}, {"path": e}]) as app:
+            wait_for("rows read", lambda: app.rows() == 3, 30)
+            time.sleep(2)
+            # Round 1: two failures, then Escape+破棄.
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.cut(100, 150)
+            time.sleep(0.5)
+            app.ok()
+            app.gone()
+            p0 = app.save()
+            app.open_row(1, "a.ts")
+            wait_for("row 1 with its cut", lambda: app.state()["frames"] == FRAMES - 51, 30)
+            time.sleep(1)
+            app.cut(200, 220)
+            _break(e)
+            _fail_row(app, 2, "e.ts")
+            app.cut(300, 320)
+            _fail_row(app, 2, "e.ts")
+            app.cut(400, 420)
+            time.sleep(0.5)
+            app.escape(discard=True)
+            app.gone()
+            p1 = app.save()
+            t.check("37s-1 two failed opens, then Escape+破棄: row 1 as the visit found it",
+                    cuts_of(p1, 1) == cuts_of(p0, 1) and cuts_of(p1, 2) == [],
+                    f"row 1 {fmt(cuts_of(p1, 1))} (want {fmt(cuts_of(p0, 1))}), row 2 {fmt(cuts_of(p1, 2))}")
+            # Round 2: fail, take row 3 out of the list (the failed recording's
+            # other row), cut, OK.
+            app.open_row(1, "a.ts")
+            wait_for("row 1 with its cut", lambda: app.state()["frames"] == FRAMES - 51, 30)
+            time.sleep(1)
+            _fail_row(app, 3, "e.ts")
+            app.to_list()
+            app.s.click("#cliplist > li:nth-child(3) .nm")
+            time.sleep(0.3)
+            app.s.click("#remove-clip")
+            wait_for("the row out", lambda: app.rows() == 2, 10)
+            time.sleep(0.5)
+            still = app.editor() is not None
+            app.to_editor()
+            app.cut(200, 220)
+            time.sleep(0.5)
+            app.ok()
+            app.gone()
+            p2 = app.save()
+            t.check("37s-2 the failed row taken out: the window stays, its cut is row 1's",
+                    still and len(cuts_of(p2, 1)) == 2 and cuts_of(p2, 2) == [],
+                    f"window {'up' if still else 'closed'}; row 1 {fmt(cuts_of(p2, 1))}, row 2 {fmt(cuts_of(p2, 2))}")
+            # Round 3: the recording put back, row 2 opens after its failures.
+            shutil.copyfile(cfg.a, e)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.open_row(2, "e.ts")
+            st = app.state()
+            app.cut(10, 20)
+            time.sleep(0.5)
+            app.ok()
+            app.gone()
+            p3 = app.save()
+            t.check("37s-3 the recording put back: row 2 opens and takes its own cut",
+                    st["frames"] == FRAMES and len(cuts_of(p3, 2)) == 1 and cuts_of(p3, 1) == cuts_of(p2, 1),
+                    f"{st['frames']} pictures on arrival; row 1 {fmt(cuts_of(p3, 1))}, row 2 {fmt(cuts_of(p3, 2))}")
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def outline_fails_during_walk(cfg, t):
+    """Row 2 (a longer recording, never read by the editor) double-clicked
+    and, as soon as its counter is up -- its walk still reading -- row 1,
+    broken, double-clicked: the open fails and overtakes row 2's walk, and
+    the window goes on as row 2, unwalked, its plan reading for good. A
+    second double-click on row 2 must bring it back (it did while the window
+    let go of its row on a failure), and a cut made then is row 2's."""
+    e = os.path.join(cfg.media, "e.ts")
+    big = os.path.join(cfg.media, "big.ts")
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc2=size=1280x720:rate=30000/1001:duration=120", "-c:v", "mpeg2video",
+                    "-g", "15", "-bf", "2", "-b:v", "25M", "-f", "mpegts", big], check=True)
+    shutil.copyfile(cfg.a, e)
+    reading = "読み込んでいます"
+    try:
+        with App(cfg, "outline_fails_during_walk", [{"path": e}, {"path": big}]) as app:
+            app.to_list()
+            wait_for("row 1 read", lambda: "ready" in (app.s.js(
+                "return document.querySelector('#cliplist > li .badge').className") or ""), 30)
+            _break(e)
+            app.open_row(2, "big.ts")
+            _fail_row(app, 1, "e.ts")
+            time.sleep(3)
+            stuck = reading in app.state()["plan"]
+            # Cut there, before the second press: the row's own edit, which
+            # the reopen has to bring back.
+            left = app.cut(100, 150)
+            time.sleep(0.5)
+            app.open_row(2, "big.ts", wait=False)
+            app.to_editor()
+            try:
+                wait_for("row 2's plan", lambda: reading not in app.state()["plan"]
+                         and app.state()["frames"] is not None, 30, 0.25)
+                settled = True
+            except Failure:
+                settled = False
+            st = app.state()
+            t.check("37w-1 a second double-click on the row brings its walk back", settled,
+                    f"plan {st['plan'][:50]!r}" + ("" if stuck else
+                                                   "; NOT REACHED: the walk landed before the failed open"))
+            again = app.cut(300, 320)
+            time.sleep(0.5)
+            app.ok()
+            app.gone()
+            p = app.save()
+            c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+            t.check("37w-2 the cut made before it comes back, and one made after is row 2's too",
+                    c1 == [] and len(c2) == 2 and st["frames"] == left,
+                    f"row 1 {fmt(c1)}, row 2 {fmt(c2)}; {st['frames']} pictures after the reopen "
+                    f"(want {left}), {again} after")
+    finally:
+        for p in (e, big):
+            if os.path.exists(p):
+                os.remove(p)
+
+def _fail_pipe(path):
+    """Something that is not a recording down the pipe at `path`, to every
+    reader waiting on it, then the pipe closed."""
+    for _ in range(3):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            break
+        try:
+            os.write(fd, b"\0" * 65536)
+        except OSError:
+            pass
+        os.close(fd)
+        time.sleep(0.3)
+
+
+def outline_hangs_divide(cfg, t):
+    """Row 1 up and cut; row 2's recording replaced by a pipe nothing writes
+    to yet, and row 2 double-clicked: its open hangs on the read (a share
+    that stopped answering). Meanwhile row 1 -- no longer the row being
+    edited -- is divided in two in the list. Then the open fails. The window
+    must not go back to row 1 and hand the whole recording's edit over the
+    first part's: the parts stay parts. Then the same with the division put
+    back together (分割を元に戻す) while part 1's next row hangs: row 1 must
+    come back whole, not as the part the window still shows."""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+
+    def hang(app, n):
+        if os.path.exists(e):
+            os.remove(e)
+        os.mkfifo(e)
+        app.open_row(n, "e.ts", wait=False)
+        time.sleep(1.5)
+        app.to_list()
+
+    def after_failure(app):
+        _fail_pipe(e)
+        time.sleep(3)
+        up = app.editor() is not None
+        if up:
+            app.to_editor()
+            app.ok()
+            app.gone()
+        return up
+
+    try:
+        with App(cfg, "outline_hangs_divide", [{"path": cfg.a}, {"path": e}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.cut(100, 150)
+            time.sleep(0.5)
+            hang(app, 2)
+            app.s.click("#cliplist > li:nth-child(1) .nm")
+            wait_for("分割 to be offered", lambda: app.s.js(
+                "return !document.getElementById('divide-clip').disabled"), 20)
+            app.s.click("#divide-clip")
+            wait_for("the divide box", lambda: app.s.js(
+                "return !document.getElementById('divide').hidden"), 5)
+            app.s.js("const f = document.getElementById('divide-rule'); f.value = 'parts';"
+                     "f.dispatchEvent(new Event('change'));"
+                     "const v = document.getElementById('divide-value'); v.value = '2';"
+                     "v.dispatchEvent(new Event('input'));")
+            wait_for("分割 to be pressable", lambda: app.s.js(
+                "return !document.getElementById('divide-ok').disabled"), 30)
+            app.s.click("#divide-ok")
+            wait_for("three rows", lambda: app.rows() == 3, 10)
+            parts = app.save()
+            up = after_failure(app)
+            p = app.save()
+            c1, w1 = cuts_of(p, 1), cuts_of(parts, 1)
+            t.check("37d-1 a row divided while the next row's open hung keeps its part",
+                    c1 == w1, f"row 1 {fmt(c1)} (divided as {fmt(w1)}); "
+                    f"window {'up' if up else 'closed'} after the failure")
+            whole = [(a, b) for a, b in c1 if a > 0.5 and b < 10]
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            hang(app, 3)
+            app.s.click("#undo-remove")
+            wait_for("two rows", lambda: app.rows() == 2, 10)
+            up = after_failure(app)
+            p = app.save()
+            c1 = cuts_of(p, 1)
+            t.check("37d-2 a division put back together while the next row's open hung stays whole",
+                    c1 == whole and app.rows() == 2,
+                    f"row 1 {fmt(c1)} (want {fmt(whole)}); window {'up' if up else 'closed'} after the failure")
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+def outline_hangs_cut_ok(cfg, t):
+    """Row 1 up; row 2's open hangs (a pipe); a cut made in the window, which
+    still shows row 1, then OK while row 2 is still hanging. The cut is row
+    1's and is kept. It was dropped (37th pass, S2, pre-existing):
+    `captureEdit` sent nothing while `swapping`, and OK closed the window
+    before the open failed. See outline_hangs_cut_escape for Escape."""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    try:
+        with App(cfg, "outline_hangs_cut_ok", [{"path": cfg.a}, {"path": e}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            os.remove(e)
+            os.mkfifo(e)
+            app.open_row(2, "e.ts", wait=False)
+            time.sleep(1.5)
+            app.to_editor()
+            st = app.state()
+            try:
+                left = app.cut(100, 150)
+            except Failure as x:
+                left = f"cut refused: {x}"
+            time.sleep(0.5)
+            app.ok()
+            app.gone()
+            _fail_pipe(e)
+            time.sleep(2)
+            p = app.save()
+            c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+            t.check("37h-1 a cut on the row shown while the next one hangs, then OK, is kept",
+                    len(c1) == 1 and c2 == [],
+                    f"title {st['title']!r}; {left} pictures; row 1 {fmt(c1)}, row 2 {fmt(c2)}")
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def outline_hangs_cut_escape(cfg, t):
+    """outline_hangs_cut_ok with Escape and 破棄 instead of OK: row 1 cut,
+    row 2's open hanging (a pipe), another cut on row 1 -- still what the
+    window shows -- then Escape, 破棄. What is thrown away is what is on
+    screen: row 1 goes back to how its visit found it (no cut at all, the
+    one made before the hang included), and row 2 has nothing. Before the
+    decision of the 37th pass the cancel named only row 2, and row 1 kept
+    the cut made before the hang."""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    try:
+        with App(cfg, "outline_hangs_cut_escape", [{"path": cfg.a}, {"path": e}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.cut(100, 150)
+            time.sleep(0.5)
+            os.remove(e)
+            os.mkfifo(e)
+            app.open_row(2, "e.ts", wait=False)
+            time.sleep(1.5)
+            app.to_editor()
+            st = app.state()
+            try:
+                left = app.cut(300, 320)
+            except Failure as x:
+                left = f"cut refused: {x}"
+            time.sleep(0.5)
+            asked = app.escape(discard=True, expect_dialog=False)
+            app.gone()
+            _fail_pipe(e)
+            time.sleep(2)
+            p = app.save()
+            c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+            t.check("37h-2 Escape+破棄 while the next row hangs puts the shown row back as its visit found it",
+                    asked and c1 == [] and c2 == [],
+                    f"title {st['title']!r}; {left} pictures; asked {asked}; row 1 {fmt(c1)}, row 2 {fmt(c2)}")
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def outline_hangs_divide_cut(cfg, t):
+    """Row 1 up and cut; row 2's open hangs (a pipe); meanwhile row 1 is
+    divided in two in the list, and then a cut is made in the window, which
+    still shows the whole of row 1. Twice: once left by OK, once by Escape
+    and 破棄. The window sends that cut under row 1 (`showingLeft`, 37th
+    pass), and the list must pass over it: row 1 is now the first part, and
+    the whole recording's edit written over it would make that part the
+    whole recording again (outline_hangs_divide's S2, by way of a cut). Escape
+    must not put the first part back to the undivided row either: the
+    division took that visit away (`leftVisits`)."""
+    e = os.path.join(cfg.media, "e.ts")
+
+    def run(name, leave):
+        shutil.copyfile(cfg.a, e)
+        with App(cfg, name, [{"path": cfg.a}, {"path": e}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.cut(100, 150)
+            time.sleep(0.5)
+            os.remove(e)
+            os.mkfifo(e)
+            app.open_row(2, "e.ts", wait=False)
+            time.sleep(1.5)
+            app.to_list()
+            app.s.click("#cliplist > li:nth-child(1) .nm")
+            wait_for("分割 to be offered", lambda: app.s.js(
+                "return !document.getElementById('divide-clip').disabled"), 20)
+            app.s.click("#divide-clip")
+            wait_for("the divide box", lambda: app.s.js(
+                "return !document.getElementById('divide').hidden"), 5)
+            app.s.js("const f = document.getElementById('divide-rule'); f.value = 'parts';"
+                     "f.dispatchEvent(new Event('change'));"
+                     "const v = document.getElementById('divide-value'); v.value = '2';"
+                     "v.dispatchEvent(new Event('input'));")
+            wait_for("分割 to be pressable", lambda: app.s.js(
+                "return !document.getElementById('divide-ok').disabled"), 30)
+            app.s.click("#divide-ok")
+            wait_for("three rows", lambda: app.rows() == 3, 10)
+            parts = app.save()
+            app.to_editor()
+            try:
+                left = app.cut(300, 320)
+            except Failure as x:
+                left = f"cut refused: {x}"
+            time.sleep(0.5)
+            if leave == "ok":
+                asked = None
+                app.ok()
+            else:
+                asked = app.escape(discard=True, expect_dialog=False)
+            app.gone()
+            _fail_pipe(e)
+            time.sleep(2)
+            p = app.save()
+            got = [cuts_of(p, n) for n in (1, 2, 3)]
+            want = [cuts_of(parts, n) for n in (1, 2, 3)]
+            return got, want, left, asked, app.rows()
+
+    try:
+        for leave, tag in (("ok", "37x-1"), ("escape", "37x-2")):
+            got, want, left, asked, rows = run(f"outline_hangs_divide_cut_{leave}", leave)
+            t.check(f"{tag} a cut in the window after its row was divided while the next row's open hung "
+                    f"leaves the parts as divided ({'OK' if leave == 'ok' else 'Escape+破棄'})",
+                    got == want and rows == 3 and got[0] != [] and got[2] == [],
+                    f"{left} pictures; asked {asked}; rows {rows}; "
+                    + "; ".join(f"row {n + 1} {fmt(g)} (divided as {fmt(w)})"
+                                for n, (g, w) in enumerate(zip(got, want))))
+            if os.path.exists(e):
+                os.remove(e)
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def outline_hangs_cut_then_fails(cfg, t):
+    """Row 1 up and cut; row 2's open hangs (a pipe); another cut on row 1,
+    which the window still shows; then row 2's open fails and the window goes
+    back to row 1 (`editor-back`). Left by OK, row 1 keeps both cuts; left by
+    Escape and 破棄, row 1 goes back to how its visit found it (no cut) --
+    the cut made during the hang is that visit's like the one before it."""
+    e = os.path.join(cfg.media, "e.ts")
+
+    def run(name, leave):
+        shutil.copyfile(cfg.a, e)
+        with App(cfg, name, [{"path": cfg.a}, {"path": e}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.cut(100, 150)
+            time.sleep(0.5)
+            os.remove(e)
+            os.mkfifo(e)
+            app.open_row(2, "e.ts", wait=False)
+            time.sleep(1.5)
+            app.to_editor()
+            try:
+                left = app.cut(300, 320)
+            except Failure as x:
+                left = f"cut refused: {x}"
+            time.sleep(0.5)
+            _fail_pipe(e)
+            time.sleep(3)
+            up = app.editor() is not None
+            asked = None
+            if up:
+                app.to_editor()
+                st = app.state()["title"]
+                if leave == "ok":
+                    app.ok()
+                else:
+                    asked = app.escape(discard=True, expect_dialog=False)
+                app.gone()
+            else:
+                st = None
+            p = app.save()
+            return [cuts_of(p, 1), cuts_of(p, 2)], left, asked, up, st
+
+    try:
+        for leave, tag in (("ok", "37y-1"), ("escape", "37y-2")):
+            (c1, c2), left, asked, up, st = run(f"outline_hangs_cut_then_fails_{leave}", leave)
+            good = (len(c1) == 2 if leave == "ok" else c1 == []) and c2 == [] and up
+            t.check(f"{tag} a cut on the shown row while the next row's open hangs, the open failing, then "
+                    f"{'OK keeps it' if leave == 'ok' else 'Escape+破棄 drops the visit'}",
+                    good, f"{left} pictures; window {'up' if up else 'closed'} after the failure, title {st!r}; "
+                    f"asked {asked}; row 1 {fmt(c1)}, row 2 {fmt(c2)}")
+            if os.path.exists(e):
+                os.remove(e)
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
 def sound_join_named_by_master(cfg, t):
     """全部を 1 本に with 音声のみ: the file is named by the sound written,
     which is the master's (a reel unlike it is made over into it). a.ts has
@@ -4965,6 +5658,17 @@ SCENARIOS = [
     outline_fails_ctrl_h,
     outline_fails_first_visit,
     outline_fails_after_success,
+    outline_fails_same_recording,
+    outline_fails_edits_kept,
+    outline_fails_shows_row,
+    outline_fails_quick_switch,
+    outline_fails_then_fixed,
+    outline_fails_during_walk,
+    outline_hangs_divide,
+    outline_hangs_cut_ok,
+    outline_hangs_cut_escape,
+    outline_hangs_divide_cut,
+    outline_hangs_cut_then_fails,
     sound_join_named_by_master,
 ]
 

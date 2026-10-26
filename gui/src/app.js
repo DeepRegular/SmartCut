@@ -474,6 +474,11 @@ let editedBefore = false;
 /// would neither offer it again nor detect again. See `editor-state` and
 /// `editor-cancel`.
 let owedBack = null;
+/// What `before`, `editedBefore` and `owedBack` were for each row the window
+/// has left since it was opened, for an open that fails and leaves the row
+/// before it on screen: the window goes back to that row (`editor-back`),
+/// and so does what キャンセル puts back. Emptied when the window goes.
+const leftVisits = new Map();
 
 /// Whether an editor window is being built right now.
 ///
@@ -552,6 +557,7 @@ async function edit(clip) {
     owedBack = null;
   };
   const left = again ? null : editing;
+  if (left) leftVisits.set(left.id, { before, editedBefore, owedBack });
   editing = clip;
   if (!again) arrived();
   // The row the window is leaving, where its last report came while it was
@@ -719,9 +725,16 @@ if (listen) {
 
   // The editor as it works, not only when it is done.
   listen("editor-state", (ev) => {
-    const state = ev.payload;
+    const { shown, ...state } = ev.payload;
     const clip = byId(state.id);
     if (!clip) return;
+    // Sent for the row on screen while the next row's open has yet to put
+    // its own recording up (`showingLeft` in main.js) -- one that hangs
+    // leaves the window there to be worked in. Not onto a row divided or put
+    // back together since the window left it (`leftVisits` no longer holds
+    // it): that edit is of the row as it was, and written over the first
+    // part it made that part the whole recording again.
+    if (shown && clip !== editing && editing !== null && !leftVisits.has(clip.id)) return;
     // A detection landing on the timeline: either the marks this window
     // handed over at `editor-open` (`cmPending`), or one run from inside the
     // editor, which comes back with a note the clip did not have before.
@@ -859,34 +872,56 @@ if (listen) {
     if (screen === "out") renderOutScreen();
   });
 
-  listen("editor-cancel", (ev) => {
-    // What is put back is what the row being edited had: a cancel naming
-    // another row -- the one the window was on before a double-click moved
-    // it along -- would write this row's cuts over that one's.
-    const named = byId(ev.payload);
-    const clip = named && named !== editing ? null : named || editing;
-    if (clip) clip.edit = before;
+  // A row put back as a visit found it: its edit, its commercial answer where
+  // a finding had taken it, and the mark that says it has been edited.
+  const putBack = (clip, was, wasEdited, owed) => {
+    clip.edit = was;
     // Not over a detection booked since, which is the newer question.
-    const rebooked = clip && (clip.cmState === "queued" || clip.cmState === "running");
-    if (clip && !before && owedBack && owedBack.id === clip.id && !rebooked) {
-      clip.cmState = owedBack.state;
-      clip.cmPhase = owedBack.phase;
-      clip.cmInserts = owedBack.inserts;
-      clip.cmPending = owedBack.pending;
-      clip.cmNothingOwed = owedBack.nothing;
-      clip.cmSource = owedBack.source;
+    const rebooked = clip.cmState === "queued" || clip.cmState === "running";
+    if (!was && owed && owed.id === clip.id && !rebooked) {
+      clip.cmState = owed.state;
+      clip.cmPhase = owed.phase;
+      clip.cmInserts = owed.inserts;
+      clip.cmPending = owed.pending;
+      clip.cmNothingOwed = owed.nothing;
+      clip.cmSource = owed.source;
       paintButtons();
       // The booking handed back, to the lane that was to answer it.
       if (clip.cmState === "queued") pump();
     }
-    owedBack = null;
     // Along with the mark that says the row has been edited: what is being
     // put back is the row as the window found it, and a row cancelled out of
     // has not been edited unless it had been before.
-    if (clip) clip.edited = editedBefore;
+    clip.edited = wasEdited;
+  };
+
+  listen("editor-cancel", (ev) => {
+    const said = ev.payload !== null && typeof ev.payload === "object" ? ev.payload : { id: ev.payload };
+    // What is put back is what the row being edited had: a cancel naming
+    // another row -- the one the window was on before a double-click moved
+    // it along -- would write this row's cuts over that one's.
+    const named = byId(said.id);
+    const clip = named && named !== editing ? null : named || editing;
+    // And the row whose recording was on screen, where the next row's open
+    // had not put its own up yet (an open that hangs): what was thrown away
+    // is that row's visit, cut there or before. It goes back to how the
+    // visit found it -- not where the list has divided it, put it back
+    // together or taken it out since (`leftVisits` no longer holds it).
+    const shown = said.shown !== undefined && said.shown !== null ? byId(said.shown) : null;
+    const visit = shown && shown !== clip ? leftVisits.get(shown.id) : null;
+    if (clip) putBack(clip, before, editedBefore, owedBack);
+    owedBack = null;
+    if (visit) {
+      putBack(shown, visit.before, visit.editedBefore, visit.owedBack);
+      leftVisits.delete(shown.id);
+      // As `editor-closed` does for the row the window was on: the
+      // playlist's cuts, where the visit is being let go of without them.
+      takePlays(shown);
+    }
     paintList();
     // Put back the picture the cuts being put back are of.
     if (clip) refreshPoster(clip);
+    if (visit) refreshPoster(shown);
   });
 
   // The editor window has gone -- by OK, by キャンセル, or by its own cross.
@@ -934,12 +969,51 @@ if (listen) {
     // the cache, and this is where the row goes and reads them.
     editing = null;
     before = null;
+    leftVisits.clear();
     // The playlist's cuts, where the visit ended without the editor having
     // its say (キャンセル) and the walk landed while it was up.
     if (was) takePlays(was);
     paintList();
     pump();
     if (was) restoreFlat(was);
+  });
+
+  // An open that failed before its recording came up: the window is still
+  // on the row before it, its recording and its cuts on screen, and goes on
+  // as that row. So does this window -- which row is being edited, what
+  // キャンセル puts back -- or OK and キャンセル there were about the row
+  // that failed. Not where another row has been asked for since.
+  //
+  // Nor to a row the list has taken out, divided or put back together while
+  // the open was on its way (`leftVisits` no longer holds it): what is on
+  // screen is that row's edit from before, and handed back -- the window
+  // reports as it goes -- it was written over the first part of the
+  // division, which then held the whole recording again. The window goes
+  // instead, as it does when the row it is on is taken out (`remove`).
+  listen("editor-back", async (ev) => {
+    const { id, failed } = ev.payload || {};
+    if (!editing || editing.id !== failed) return;
+    const clip = byId(id);
+    const visit = clip ? leftVisits.get(id) : null;
+    const was = editing;
+    if (!visit) {
+      editing = null;
+      before = null;
+      if (clips.includes(was)) takePlays(was);
+      paintList();
+      await invoke("close_editor");
+      pump();
+      return;
+    }
+    editing = clip;
+    ({ before, editedBefore, owedBack } = visit);
+    // The title bar was given the failed row's name on the press.
+    invoke("retitle_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
+    // The row that failed is left as `editor-closed` would leave it.
+    if (clips.includes(was)) takePlays(was);
+    tellFold();
+    paintList();
+    pump();
   });
 
   // 継ぎ目の編集's own three. It asks for the joins when its page is up, hands
@@ -3505,6 +3579,8 @@ function divideRows(found) {
     const owed = was && was.fresh && Array.isArray(was.partCuts) ? was.partCuts : [];
     const rows = [clip];
     for (let k = 1; k <= d.at.length; k++) rows.push(copyRow(clip));
+    // Not a row the editor can go back to any more; see `editor-back`.
+    leftVisits.delete(clip.id);
     rows.forEach((row, k) => {
       const away = [];
       if (k > 0) away.push({ a: 0, b: d.at[k - 1] });
@@ -3586,6 +3662,8 @@ async function undivide(taken) {
     return;
   }
   const gone = new Set(taken.divided.flatMap((m) => m.rows));
+  // Nor are these; see `editor-back`.
+  for (const c of all) leftVisits.delete(c.id);
   // A part being read or detected has a pass behind it that would go on
   // with nothing listed against it, holding its lane: stopped as `remove`
   // stops one.
@@ -7213,8 +7291,8 @@ function discGiB(bytes, digits = 1) {
 /// from the recording's average: a busy stretch costs more than its seconds
 /// at the average, and was said to fit when it did not (`disc_room`). The CLI's
 /// --fit prices the same way, so the two give one answer for the same keeps.
-function discCosts() {
-  return ready()
+function discCosts(list = ready()) {
+  return list
     .filter((c) => c.info && c.info.video_rate > 0)
     .map((c) => {
       const keeps = keepsOf(c);
@@ -7305,9 +7383,9 @@ async function discHolds(named, access = settings.image ? settings.imageAccess :
 /// already on it included, and a list priced against all of it was said to
 /// fit, had nothing taken off by 収める, and came out over the disc. The
 /// answer is about the room left; `disc` and `used` say what it was left of.
-async function askRoom(access = undefined) {
+async function askRoom(access = undefined, list = undefined) {
   const used = await discUsed();
-  const costs = discCosts();
+  const costs = discCosts(list);
   const disc = await discHolds(Number(settings.disc) || 25025314816, access);
   const capacity = Math.max(disc - used, 0);
   // The stretches kept are part of the question: a range moved without
@@ -7333,9 +7411,14 @@ async function askRoom(access = undefined) {
 ///
 /// Asked afresh rather than read off the gauge: the list can be edited
 /// between looking at the screen and pressing the button.
-async function fitShare(access = undefined) {
+///
+/// `list` is the rows a run is writing, where a run asks: taken before the
+/// waits that come ahead of this (the disc's names, the lanes stopping), the
+/// list on screen can have gained a row whose walk landed in them or lost one
+/// taken out, and the share was worked out for rows the run does not write.
+async function fitShare(access = undefined, list = undefined) {
   if (!writesDisc() || !settings.fit) return null;
-  const { room: r } = await askRoom(access);
+  const { room: r } = await askRoom(access, list);
   if (!r || r.fits) return null;
   // A list that cannot be reached is still written -- as small as this goes,
   // which is the best answer available to somebody who has pressed the
@@ -9532,7 +9615,7 @@ async function startExport() {
   // its control shows when the image is made.
   const runImaged = !!settings.image;
   const runAccess = runImaged ? settings.imageAccess : "";
-  const share = await fitShare(runAccess);
+  const share = await fitShare(runAccess, list);
   if (share !== null) note(t("out.shrinking", { share: sharePct(share) }));
   // Stopped before a byte was written. The disc's numbers were taken, as
   // empty streams, and are given back.

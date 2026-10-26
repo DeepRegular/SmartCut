@@ -440,6 +440,24 @@ function editSignature() {
 /// be in the list twice, cut two different ways, and what comes back out of
 /// here has to land on the row it came from.
 let editId = null;
+/// The row whose recording is up (`src`): set where an open puts its own
+/// recording up. Not always `editId`'s row -- an open that fails before its
+/// outline leaves the last row's recording on screen, and that is the row
+/// the window goes back to (see the `editor-open` handler).
+let shownId = null;
+/// The row whose open failed last, so that being sent it again is another
+/// attempt rather than a window that thinks it is already on that recording
+/// (the window can go on as that row: see the `editor-open` handler).
+let failedId = null;
+/// The row on screen, where its own open was overtaken after its recording
+/// came up and never got to the end (its walk cut short, most often): a
+/// failed open that leaves the window on it leaves it unwalked, its plan
+/// reading for good, and being sent it again is then another attempt too.
+let stalledId = null;
+/// Which open put the recording on screen up (`shownId`), and which open last
+/// ran to its end, by `openGen`. See `stalledId`.
+let shownGen = 0;
+let wholeGen = 0;
 /// Whether the list has named a recording yet. See `announceReady`.
 let answered = false;
 /// The row being loaded, if one is. See the `editor-open` handler.
@@ -459,6 +477,14 @@ let lateFlat = [];
 /// -- and a cut placed during the walk, which is allowed, has to be sent.
 /// See `captureEdit`.
 let swapping = false;
+/// Whether what is on screen is still wholly the row before the one coming
+/// up: `swapping`, and that open has not put its own recording up yet
+/// (`shownId` is still the other row). An open that hangs -- a share that
+/// stopped answering -- leaves the window here for as long as it hangs, and
+/// what is done in it then is done to the row on screen: sent under that
+/// row (`captureEdit`), kept by OK, and dropped by Escape with the rest of
+/// that row's visit (`cancelEdit`).
+const showingLeft = () => swapping && src !== null && shownId !== null && shownId !== editId;
 /// Whether the row up is a first visit whose mark files (`.keyframe`, Trim,
 /// `.cm.json`) have not been read yet. A recording whose head the outline
 /// could not find reads them only after the walk, and a Ctrl+H in that wait
@@ -545,7 +571,10 @@ function remember(state = snapshot()) {
   // marked as edited and asking before Escape for the rest of the session.
   // The edit follows this call in the same handler, so it is done by the
   // time a microtask runs.
-  if (opening !== null || settling) {
+  // Not one made on the row before it while that is still all the screen
+  // holds (`showingLeft`): that edit is sent as that row's, and is not the
+  // arriving row's.
+  if ((opening !== null || settling) && !showingLeft()) {
     const before = editSignature();
     queueMicrotask(() => {
       if (editSignature() !== before) editedWhileArriving = true;
@@ -6671,9 +6700,14 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
   // first's outline -- these are already that row's, not the recording's
   // that is up, and that open's own snapshot is the one to put back.
   const left = outlineLeft || {
-    sideBase, discChapters, chaptersDue, marksDue, playsDue, unplayedCuts, walkFailed,
+    sideBase, discChapters, chaptersDue, marksDue, playsDue, unplayedCuts, walkFailed, recountHead,
   };
   outlineLeft = left;
+  // Whether this open has put its own recording up (`src = outline` below).
+  // Asked by the `catch` rather than whether `src` is on this path: two rows
+  // can be the one recording under two names, and a failed open of the
+  // second kept the second's name over the first's marks.
+  let replaced = false;
   marksDue = first;
   // The playlist's cuts, where the list still owes them: on a first visit,
   // or on one after a first visit left before its walk had landed.
@@ -6767,6 +6801,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
       if (overtaken()) return;
     }
     src = outline;
+    replaced = true;
+    shownId = editId;
+    shownGen = gen;
     outlineLeft = null;
     // A recording that did not come off a disc brings its own chapters, if
     // its container has any, and they are owed on the same terms a disc's
@@ -7057,10 +7094,28 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // came down to whether that decode beat a 120 ms timer, and on a 1440x1080
     // recording in a wide window it did not.
     schedulePlan();
+    wholeGen = gen;
   } catch (e) {
     if (overtaken()) return;
-    el("title").textContent = "";
-    el("title").removeAttribute("title");
+    // The header names the recording still up, where one is: the one before
+    // this, if the outline never came (the window goes on as its row; see the
+    // `editor-open` handler), or this one, if the walk is what failed. Left
+    // blank, the window showed a recording under no name beside a line about
+    // another one.
+    if (src) paintTitle();
+    else {
+      el("title").textContent = "";
+      el("title").removeAttribute("title");
+    }
+    // And the timeline and the counter, which are drawn for a recording once
+    // its open gets past reading the files beside it: one overtaken in that
+    // wait -- a first visit, the next row double-clicked straight after --
+    // left the recording up under the last one's picture count until
+    // something else drew them.
+    if (src) {
+      draw();
+      updateReadouts();
+    }
     el("status").textContent = tr("editor.openFailed", { e });
     // Nothing is being read any more; the band says what is open, if anything.
     // Not by asking for a plan where this recording is up and was never
@@ -7074,8 +7129,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // recording that is up, and so does what was owed it: a first visit that
     // failed left Ctrl+H refused on the last recording as 「まだ読み込んでいない」,
     // and a last recording whose own walk had failed lost that failure.
-    if (!src || src.path !== picked) {
-      ({ sideBase, discChapters, chaptersDue, marksDue, playsDue, unplayedCuts, walkFailed } = left);
+    if (!replaced) {
+      ({ sideBase, discChapters, chaptersDue, marksDue, playsDue, unplayedCuts, walkFailed, recountHead } =
+        left);
     }
     outlineLeft = null;
     if (src && src.path === picked && !walked()) {
@@ -8215,7 +8271,7 @@ function setPoster(at) {
   // track list and the mark files after it has put the arriving row's cover
   // in place, and a P in that wait is on the new row. One pressed before it
   // is replaced, and only makes Escape ask.
-  if (opening !== null || settling) editedWhileArriving = true;
+  if ((opening !== null || settling) && !showingLeft()) editedWhileArriving = true;
   el("status").textContent =
     at === null ? tr("poster.cleared") : tr("poster.set", { t: fmt(srcToOutSeam(at)) });
   sync();
@@ -8394,7 +8450,7 @@ function renderTracks() {
       // Somebody's choice even while the row is still settling, as a cover
       // set then is (see `setPoster`): counted as what the row arrived with,
       // Escape dropped it without asking.
-      if (opening !== null || settling) editedWhileArriving = true;
+      if ((opening !== null || settling) && !showingLeft()) editedWhileArriving = true;
       paintTrackButton();
       // Switching the wider track off makes the narrower one the track the
       // line speaks for.
@@ -8950,7 +9006,15 @@ function captureEdit() {
   // from the start of that, and `src` and the cuts are the old one's until
   // they are replaced -- sent in between, the old row's edit landed on the
   // new row.
-  if (!src || swapping) return null;
+  //
+  // Except before that open has replaced anything (`showingLeft`): the
+  // screen is then the row before it, cuts and all, and an open that hangs
+  // left it there for as long as somebody cared to work on it -- a cut made
+  // then and OK pressed went nowhere. It is sent as that row's, with what
+  // that row was owed, which the open on its way has already set for itself
+  // and keeps the row's own of in `outlineLeft`.
+  const left = showingLeft() ? outlineLeft : null;
+  if (!src || (swapping && !left)) return null;
   // Before the walk of a recording with no length has landed, what the row
   // came back with rather than its clamped image (`heldSel`).
   const held =
@@ -8961,8 +9025,8 @@ function captureEdit() {
       ? heldSel
       : null;
   const heldAt = heldSel !== null && heldSel.playhead !== null && playhead === heldSel.at;
-  return {
-    id: editId,
+  const state = {
+    id: left ? shownId : editId,
     path: src.path,
     cuts: cuts.map((c) => ({ a: c.a, b: c.b })),
     keyframes: keyframes.slice(),
@@ -8986,12 +9050,12 @@ function captureEdit() {
     // detection the list has not handed over yet arrives at whichever visit
     // it is run before; see `markFileKind`.
     markFileKind,
-    chaptersDue,
+    chaptersDue: left ? left.chaptersDue : chaptersDue,
     // Which cuts the disc's playlist made, and whether its cuts are still
     // owed because this visit's walk has not landed. See `unplayedCuts` and
     // `playsDue`.
-    unplayed: unplayedCuts.map((c) => ({ a: c.a, b: c.b })),
-    playsDue,
+    unplayed: (left ? left.unplayedCuts : unplayedCuts).map((c) => ({ a: c.a, b: c.b })),
+    playsDue: left ? left.playsDue : playsDue,
     // Whether anything in here was done by the hand rather than arrived with
     // the recording. The list marks its row with it, which is what tells the
     // rows that have been settled from the rows that have only been read; the
@@ -9011,6 +9075,11 @@ function captureEdit() {
     selB: held ? held.selB : selB,
     selGone: held ? held.selGone : selGone,
   };
+  // Said, so that the list can pass over one for a row it has divided or put
+  // back together since the window left it (see `editor-state` in app.js).
+  // Not kept with the edit.
+  if (left) state.shown = true;
+  return state;
 }
 
 let syncTimer = null;
@@ -9064,14 +9133,19 @@ el("editor-ok").addEventListener("click", () => {
 /// Leave without what was done in here. The list is told to drop it -- `sync`
 /// has been reporting every cut as it happened -- and the window goes. Both
 /// the button and Escape.
-function cancelEdit() {
+///
+/// `shown` is the row whose recording is on screen where it is not the row
+/// being edited -- the next row's open has not put its own up (`showingLeft`)
+/// -- and what is being thrown away is then that row's visit as well: its
+/// cuts are the ones in front of whoever pressed it.
+function cancelEdit(shown = showingLeft() ? shownId : null) {
   clearTimeout(syncTimer);
   syncTimer = null;
   // And nothing after it: a report sent once the list has put the row back
   // -- a `sync` asked for in the moment before the window goes -- would hand
   // it the edit that was just dropped.
   leaving = true;
-  if (emit) emit("editor-cancel", editId);
+  if (emit) emit("editor-cancel", { id: editId, shown });
   setTimeout(() => invoke("close_editor"), 80);
 }
 
@@ -9101,16 +9175,21 @@ async function askCancelEdit() {
   // row being left has had its edit sent on under its own id by then: a yes
   // here dropped nothing of it, and cancelled the row that had just arrived.
   const about = editId;
+  // And the row whose recording the question was asked over, where that is
+  // still the row before (`cancelEdit`). Its visit is what a yes throws
+  // away, whether the open on its way has come up meanwhile or failed and
+  // left the window on it.
+  const shown = showingLeft() ? shownId : null;
   try {
     const go = await dialog.ask(tr("editor.dropBody"), {
       title: tr("editor.dropTitle"),
       kind: "warning",
     });
-    if (!go || editId !== about) return;
+    if (!go || (editId !== about && (shown === null || editId !== shown))) return;
   } finally {
     asking = false;
   }
-  cancelEdit();
+  cancelEdit(shown);
 }
 
 if (listen) {
@@ -9142,7 +9221,7 @@ if (listen) {
     }
     // Whether this open is what put the recording up, which decides whether
     // the blocks below are part of it arriving or something done to it.
-    const arriving = editId !== id;
+    const arriving = editId !== id || failedId === id || stalledId === id;
     // Reloaded when the *row* changes, not merely the recording: two rows can
     // be the same file cut two different ways, and coming from one to the
     // other has to bring the other one's cuts with it.
@@ -9163,14 +9242,33 @@ if (listen) {
       paintDetectCm();
       paintDetectFlat();
       editId = id;
+      failedId = null;
+      stalledId = null;
       editedWhileArriving = false;
       try {
         await openPath(path, saved, side, name, chapters, dropPids, ev.payload.detected, plays);
       } catch (e) {
-        // `openPath` has put the reason on the status line already. The row
-        // is let go of here so that being sent it again is another attempt
-        // rather than a window that thinks it is already on that recording.
-        if (editId === id) editId = null;
+        // `openPath` has put the reason on the status line already. Being
+        // sent this row again is then another attempt (`failedId`).
+        //
+        // The window goes on as the row whose recording is up: this one,
+        // where its outline came and the walk failed, and otherwise the row
+        // before it, whose recording, cuts and marks are still on screen
+        // (`openPath` puts its mark-file name back). It used to let go of
+        // the row altogether, and every edit made after the failure was sent
+        // under no row and dropped: a cut made on the recording still up,
+        // then OK, closed with the cut gone and nothing said. The list is
+        // told it is back on that row, so the two agree on what OK and
+        // キャンセル are about.
+        if (editId === id) {
+          editId = shownId;
+          failedId = id;
+          // Where the row on screen never finished arriving -- this open
+          // overtook its walk -- a second double-click on it is what brings
+          // it back, as it did when the window let go of its row here.
+          stalledId = shownId !== null && shownId !== id && shownGen !== wholeGen ? shownId : null;
+          if (shownId !== null && shownId !== id && emit) emit("editor-back", { id: shownId, failed: id });
+        }
         return;
       } finally {
         // Not when another row has been sent since: that open is still
