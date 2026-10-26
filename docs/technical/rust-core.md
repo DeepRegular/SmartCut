@@ -602,6 +602,71 @@ before holds every time on the old zero and no entry point for the first GOP,
 so `seek_index::VERSION` went up to 16 with this, and every saved index is
 made again once.
 
+**The sound in that lost cluster is found by the open that lost nothing.**
+The sound's own first index entry, which the seek to the sound's head goes by
+(above), comes from what the open read -- and on such a file the open never
+read the first cluster, so the track's index starts in the cluster after it,
+past the pictures' own. The seek to the head then skipped every sound block
+ahead of the key picture: a test file whose sound leads its first key picture by a
+third of a second wrote a `--sound-only` file of 709 frames where its readable
+twin wrote 721, and a VP9 and Opus `.webm` whose first cluster also opens with a cue 400 where its
+twin wrote 402. The open that discards the WebVTT before it looks ahead reads
+the first cluster whole, so it also notes the cluster each sound track's
+first block is in, and that block's instant (`head_unlost` in
+[`input.rs`](../../rust/crates/core/src/input.rs)). Where that comes before
+the track's own first entry, it is put into the track's index and sought as
+the track's first entry would be. Every reader that takes the sound from the
+head goes through the same step, so the waveform, the detections, a join's
+fade-in and `--verify` are read as the sound-only file is.
+
+**And a first cluster that holds no key picture.** Where the sound leads by
+more -- from about 0.6 s with one AAC track in the test files tried, already at
+0.4 s with two -- the muxer starts a cluster at the key picture, and the first one
+holds the cue and the sound alone. The seek to the head then lands on the key
+picture's cluster, past the first, just where the open picked up: both reads
+started in the same place, and `open_lost` had nothing to tell them apart by.
+The file kept libavformat's zero (1.231 s on a file whose readable twin starts
+at 0), so every `--keep` was counted from it, and a `--sound-only` file of the
+whole recording wrote 510 frames where the twin wrote 564, its first 1.15 s
+gone; the waveform and the commercial detector's sound lost the same stretch,
+and `--verify` called the short file OK. So where the Cues the seek read put
+the first cue in a cluster ahead of the key picture's, and the open handed
+over nothing from ahead of the key picture's cluster, `open_lost` reads the
+file a third time, through the open that switches the WebVTT off before it
+looks ahead (`demux_unlost` in
+[`input.rs`](../../rust/crates/core/src/input.rs)): a packet from before
+everything the open handed over is one the open lost. `true_start` and the
+seek to the sound's head then do the rest: the zero, the cuts, the
+sound-only file, `--verify` and the commercial detection of such a file now
+come out as its twin's do. Only a file meeting both conditions is opened
+more often than before. An index saved before holds every time on the zero of
+the cluster after, so `seek_index::VERSION` went up to 17, and every saved
+index is made again once; the saved waveform's number went up to 5 for this
+and the case before it.
+
+The look backs for the subtitles up at a range's opening -- a broadcast's
+captions, a DVD's subpictures, PGS -- left a range within the
+first few seconds to read on from the open, since the open is already at the
+top. On such a file the open is not: a look back read from it started after
+the rest of the first cluster, and a subtitle up at the opening was left out
+of the cut while the preview showed it. They now leave the head to the seek
+every other reader uses, which reads on from the open except where the open
+lost part of the head.
+
+Only an answer that is known is kept for the rest of the run. A check that
+could not be made, or a loss whose start could not be read, is asked again the
+next time the file is opened, rather than leaving the file on libavformat's
+zero until the program is closed.
+
+A Matroska file with WebVTT and no Cues at all -- written to a pipe -- whose
+open lost part of its head cannot be read again from the head: there is
+nothing to seek by. It is refused rather than cut from the open, which would
+lose the first cluster without a word (38 pictures of 240 and 57 frames of
+sound of 376 on the file that showed it). The refusal now says why: `seek to
+the head failed: … (the open could not read a WebVTT block at the head of
+this Matroska file, and the file has no index (Cues) to read the head again
+from)`.
+
 [`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
 [`Grid`]: ../../rust/crates/core/src/cut.rs
 

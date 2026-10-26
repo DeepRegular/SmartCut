@@ -529,7 +529,28 @@ something that is not a recording -- says so on the info bar, and the window
 goes on showing the recording that was up before, with everything that belongs
 to it: its marks, its chapters, and the mark file `Ctrl+H` writes them to.
 Up to 0.8.31 the name beside it was already the failed row's, so `Ctrl+H`
-wrote the recording on screen's marks over that row's `.keyframe`.
+wrote the recording on screen's marks over that row's `.keyframe`; up to
+0.8.32 it still did where the failed row was the same file as the one on
+screen, on a second row renamed to a name of its own.
+
+**The window also stays that row's editor.** What you cut there after the
+failure is that recording's, and **OK** keeps it on its row; **Cancel** (or
+`Esc` and discarding) puts that row back as it was when you opened it, and
+the row that failed is left as it was. The list's **Editing** badge is on the
+row on screen, not on the one that failed. Where that row was divided, put
+back together or taken out of the list while the next one was being opened,
+and that one then fails, the window closes instead. Up to 0.8.32 the window belonged to no row once an
+open had failed: every cut made after it went nowhere, **OK** closed the
+window with them gone, and nothing was said.
+
+**The same goes while the next row is still being opened.** An open that
+takes long -- a recording on a share that has stopped answering -- leaves the
+window showing the row before it for as long as it takes, and a cut made there
+meanwhile is that row's: **OK** keeps it on its row, and **Cancel** (or `Esc`
+and discarding) puts that row back as it was when you opened it, cuts made
+before the next row was asked for included. The row still being opened is
+left as it was. Up to 0.8.32 **OK** lost a cut made then, and **Cancel** left
+the row on screen with the cuts it had before.
 
 ### What is where on the screen
 
@@ -1501,7 +1522,7 @@ Writing a disc adds these fields:
 | **Disc kind** | Under the image, and only there when one is being made. What the image says may be done to the disc it is burned onto. *Nothing writes to it again* is the default and is the truth about a BD-R, or a BD-RE you only play. *The recorder may go on editing it* is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off — pick it if the disc is going back into the recorder. The image is then laid out as a recorder lays out a BD-RE, and is the size of the whole disc (25 or 50 GB); the part with nothing in it takes no room where the image is saved. Laid out that way, a single-layer disc holds 24.12 GB of files and a dual-layer one 48.34 GB, and that is what **Disc used** and **Transcode** weigh the list against (a single layer reads 22.5 GiB); an XL disc holds what a dual layer does. The kind set when the run starts is the one the run uses throughout, for **Transcode**, the check after the cutting and the image; changed during the run, it applies to the next one. An image turned on only during the run is still made, of the kind shown here when it is made; **Transcode** priced that run's disc without one |
 | **Remove the folder once the image is written** | Under the image, and only there when one is being made: the same thirty gigabytes twice over is not what most runs want to be left with. The folder is still written and the image still made of it — this happens afterwards, and only where the image was written. `BDAV` goes, and the folder above it only where that leaves it empty, so a disc written into a folder of your own leaves the rest of it alone. Where a `.iso` of that name is already there and the subfolder holds no disc to add to, the run is refused before it starts, since the old image would be replaced by the new disc's: move it away or choose another subfolder to keep it, or delete it if it is no longer wanted |
 | **Disc** | The disc this is going to be burned onto (25GB / DL 50GB / XL 100GB / XL 128GB). The gauge below is drawn against it |
-| **Transcode** | Where the list does not fit the disc chosen above, the pictures are transcoded smaller until it does. **Where it fits, nothing is done to them.** The sound, the subtitles and the programme information are untouched; only the pictures give anything up. Turning it on adds a second row to the gauge -- "before" and "after" -- showing what the disc comes to afterwards and what share the pictures are written at. MPEG-2 recordings only; anything else takes its full room. What happens inside is in [Fitting a disc](../technical/transrate.md) |
+| **Transcode** | Where the list does not fit the disc chosen above, the pictures are transcoded smaller until it does. **Where it fits, nothing is done to them.** The sound, the subtitles and the programme information are untouched; only the pictures give anything up. Turning it on adds a second row to the gauge -- "before" and "after" -- showing what the disc comes to afterwards and what share the pictures are written at. MPEG-2 recordings only; anything else takes its full room. The pictures do not always go as small as they are asked to -- short ranges at a hard share can stay several points above it -- and where they do not, the [run log](#the-run-log) says so, with how much larger the cut is than was planned; once the disc is written, the output screen says what the disc came to, and by how much it is over where it is. What happens inside is in [Fitting a disc](../technical/transrate.md) |
 | **Disc used** | What the list comes to against the disc, a band per recording. The white line is the edge of the disc and the faint one before it is the hundredth held back; anything past the line is drawn in red. The figures are an estimate made before anything is written, and on whole recordings it lands within about one per cent. What a cut keeps is priced from the bytes the recording holds over those stretches, read off its index, so a busy stretch counts as busy and a quiet one as quiet; a list of many very short ranges can still come out a little larger than drawn, since the pictures re-encoded at each range's ends are not in the estimate. They are counted in GiB, the way the file manager beside the window counts, which is why a single-layer disc reads 23.3 GiB here and "25GB" on the control above -- that one is the name on the box. Where the disc folder already holds a disc, the list is added to it: what is already written there is measured rather than estimated, drawn first as a grey hatched band, and the list is weighed against the room left, by **Transcode** too |
 | **Disc folder** | Replaces "Output folder", and **cannot be left empty** — a disc is one place, and the recordings in a list can have come from four. SmartCut makes one more folder under it, named by "Subfolder", and writes `BDAV` in there |
 

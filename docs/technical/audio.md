@@ -376,7 +376,15 @@ written as 9.15 s was called OK. Each track's head is now read with
 Matroska file](rust-core.md#a-rate-with-nothing-round-in-it-and-the-ticks-a-container-can-state)),
 and only what is really missing is allowed for: 0.06 to 0.15 s on the same
 files, and none on the remuxed one. The verdicts on correct outputs did not
-change; that 9.15-second file now reads as off.
+change; that 9.15-second file now reads as off. Reading the head as the writer
+does means sharing what the writer gets wrong, though: on a `.mkv` whose open
+lost its whole first cluster to an unreadable WebVTT cue, both lost the same
+0.26 s, and the short file was called OK. Both now find that cluster's sound
+through the open that lost nothing ([the sound in that lost
+cluster](rust-core.md#a-rate-with-nothing-round-in-it-and-the-ticks-a-container-can-state)).
+Where that first cluster holds nothing but the cue and the sound, the
+sought read missed it as the open did, and a file 1.15 s short was called OK;
+that shape is now found too.
 
 **Nothing may finish having written a declared track and no frames of it.**
 Every other way of losing one ends in an error: a codec the container has no

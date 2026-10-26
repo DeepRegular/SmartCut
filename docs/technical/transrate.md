@@ -274,6 +274,19 @@ the room it was fitted to:
   says whether it fits as it is, and into a `.ts` the file's own rate stands in
   for what it carries: a phone's H.264 recording came out 4% above that.
 
+**And where it does, the run says so.** The first of those is the one that can
+go furthest: pictures that are mostly macroblock headers and motion vectors
+have a floor of their own, and thirty seconds of one broadcast asked for 48.8%
+went no smaller than 60.1%, so the disc came out 15% over the size `--fit`
+named -- and the run ended with `wrote` and nothing else. The rewrite now says
+when it lands more than two points above the share asked for, and how much
+larger that makes the cut than planned (`Shrink::say` in
+[`cut.rs`](../../rust/crates/core/src/cut.rs)). And once the run is over, the
+CLI weighs what it wrote against the size `--fit` priced against -- with
+`--bdav`, the whole disc folder, counted as the image will hold it -- and says
+by how much it came out over, as the window's check after a run already did.
+Nothing written is changed by either: they are messages.
+
 **A recorder's title is measured over clock that no cut writes.** At a seam,
 from where the pictures before it stop to the first entry point after it,
 nothing is written
