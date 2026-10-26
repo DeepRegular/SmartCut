@@ -149,8 +149,16 @@ pub fn walk(
     };
     if url.is_some_and(|u| crate::sound::sought_at_head(&ictx, &u)) {
         let target = i64::MIN / 2;
-        ictx.seek(target, ..target)
-            .map_err(|e| anyhow!("seek to the head failed: {e}"))?;
+        // Refused where the file has no index (Cues) -- one written to a
+        // pipe: the head the open lost cannot be read again, and a cut read
+        // on from the open would lose it without a word.
+        ictx.seek(target, ..target).map_err(|e| {
+            anyhow!(
+                "seek to the head failed: {e} (the open could not read a WebVTT block at the \
+                 head of this Matroska file, and the file has no index (Cues) to read the head \
+                 again from)"
+            )
+        })?;
     }
     // Only the pictures are counted here, and on some recordings a stream
     // left switched on costs the pictures. After the one seek above, for

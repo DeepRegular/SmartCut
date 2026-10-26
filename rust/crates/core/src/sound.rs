@@ -1034,8 +1034,10 @@ pub(crate) fn sound_from_head(
         let target = i64::MIN / 2;
         ictx.seek(target, ..target)?;
         // Sought to the first key picture: from the cluster before it, where
-        // the sound starts ahead of it.
-        if seek_to_sound_head(ictx, track) == SoundHead::Failed {
+        // the sound starts ahead of it -- where the open lost that cluster,
+        // as the open that lost nothing found it.
+        let head = crate::input::head_unlost(url, ictx, track);
+        if seek_to_sound_head(ictx, track, head) == SoundHead::Failed {
             *ictx = crate::input::demux(url)?;
             ictx.seek(target, ..target)?;
         }
@@ -1044,7 +1046,7 @@ pub(crate) fn sound_from_head(
     // Read on from the open, the sound ahead of the first key picture is
     // lost where the open lost it.
     if matroska_with_webvtt(ictx) && sound_lost(url, track).unwrap_or(false) {
-        match seek_to_sound_head(ictx, track) {
+        match seek_to_sound_head(ictx, track, None) {
             SoundHead::Sought => return Ok(true),
             SoundHead::Failed => *ictx = crate::input::demux(url)?,
             SoundHead::Same => {}
@@ -1083,7 +1085,23 @@ enum SoundHead {
 /// look ahead included. Sought by the track, the read starts on that cluster
 /// with the subtitles about to be switched off, and the cluster is read
 /// whole.
-fn seek_to_sound_head(ictx: &mut ff::format::context::Input, track: usize) -> SoundHead {
+///
+/// `head` is where the track starts as an open that lost nothing read it
+/// ([`crate::input::head_unlost`]): the cluster and the instant of its first
+/// block. **Where the open lost the cluster the sound starts in**, a cue
+/// opening the first cluster ahead of every sound and picture block of it
+/// (the start [`crate::input::demux`] puts right), libavformat's index of
+/// the track starts in the cluster after it, past the pictures' own; the
+/// seek to the head skipped every sound block ahead of the key picture, and
+/// a remux whose sound leads it by a third of a second lost 0.26 s of its
+/// sound-only head (709 frames for the readable twin's 721). An earlier
+/// `head` is put into the track's index and sought as the track's own first
+/// entry would be.
+fn seek_to_sound_head(
+    ictx: &mut ff::format::context::Input,
+    track: usize,
+    head: Option<(i64, i64)>,
+) -> SoundHead {
     // SAFETY: the streams belong to a context still open, and the entries
     // are read before anything else uses it.
     let first = |s: &ff::format::stream::Stream| unsafe {
@@ -1097,8 +1115,12 @@ fn seek_to_sound_head(ictx: &mut ff::format::context::Input, track: usize) -> So
     let Some(sound) = ictx.stream(track) else {
         return SoundHead::Same;
     };
-    let Some((at, when)) = first(&sound) else {
-        return SoundHead::Same;
+    let own = first(&sound);
+    let (at, when, borrowed) = match (own, head) {
+        (Some((a, w)), Some((p, t))) if p >= 0 && (p < a || (p == a && t < w)) => (p, t, true),
+        (Some((a, w)), _) => (a, w, false),
+        (None, Some((p, t))) if p >= 0 => (p, t, true),
+        (None, _) => return SoundHead::Same,
     };
     let starts = when as f64 * f64::from(sound.time_base());
     // The cluster each picture stream is first indexed in, and the instant
@@ -1124,6 +1146,16 @@ fn seek_to_sound_head(ictx: &mut ff::format::context::Input, track: usize) -> So
     let Ok(index) = std::os::raw::c_int::try_from(track) else {
         return SoundHead::Same;
     };
+    if borrowed {
+        // SAFETY: the stream belongs to the context, open and not being read.
+        let added = unsafe {
+            let st = sound.as_ptr() as *mut ff::ffi::AVStream;
+            ff::ffi::av_add_index_entry(st, at, when, 0, 0, ff::ffi::AVINDEX_KEYFRAME as _)
+        };
+        if added < 0 {
+            return SoundHead::Same;
+        }
+    }
     // SAFETY: the context is open and nothing else is reading it.
     let done = unsafe {
         ff::ffi::av_seek_frame(ictx.as_mut_ptr(), index, when, ff::ffi::AVSEEK_FLAG_BACKWARD)
@@ -1177,7 +1209,7 @@ fn sound_lost(url: &str, track: usize) -> Result<bool> {
     }
     drop(open);
     let mut sought = crate::input::demux_as_opened(url)?;
-    if seek_to_sound_head(&mut sought, track) != SoundHead::Sought {
+    if seek_to_sound_head(&mut sought, track, None) != SoundHead::Sought {
         return Ok(false);
     }
     crate::input::keep_only(&mut sought, &[track]);
@@ -1216,7 +1248,8 @@ fn sound_lost(url: &str, track: usize) -> Result<bool> {
 ///
 /// Both reads open as libavformat leaves the file
 /// ([`crate::input::demux_as_opened`]): the clock [`crate::input::demux`]
-/// puts right is worked out from this answer.
+/// puts right is worked out from this answer. Where the seek lands past a
+/// cluster the open lost too, a third read tells -- see the end.
 pub(crate) fn open_lost(url: &str) -> Result<bool> {
     // How far past the bound each read goes on: a parser can hand a packet
     // from before it over after one from beyond.
@@ -1292,6 +1325,77 @@ pub(crate) fn open_lost(url: &str) -> Result<bool> {
             }
         } else if !had.contains(&(stream.index(), at)) {
             return Ok(true);
+        }
+    }
+    // SAFETY: the context is open; its streams' indexes are only read.
+    let first_entry = |s: &ff::format::stream::Stream| unsafe {
+        let st = s.as_ptr() as *mut ff::ffi::AVStream;
+        if ff::ffi::avformat_index_get_entries_count(st) <= 0 {
+            return None;
+        }
+        let e = ff::ffi::avformat_index_get_entry(st, 0);
+        (!e.is_null() && (*e).pos >= 0).then(|| (*e).pos)
+    };
+    // The cluster of the first key picture and of the first cue, as the
+    // Cues the seek read name them.
+    let key = sought
+        .streams()
+        .filter(|s| keep.contains(&s.index()) && s.parameters().medium() == ff::media::Type::Video)
+        .filter_map(|s| first_entry(&s))
+        .min();
+    let cue = sought
+        .streams()
+        .filter(|s| {
+            let par = s.parameters();
+            par.medium() == ff::media::Type::Subtitle && par.id() == ff::codec::Id::WEBVTT
+        })
+        .filter_map(|s| first_entry(&s))
+        .min();
+    let streams = sought.streams().count();
+    drop(sought);
+    // **A cluster the seek skips as well.** A cue opening a first cluster
+    // that holds no key picture -- the sound a remux leads its pictures with
+    // by half a second or more, alone in the cluster with the cue -- takes
+    // the whole cluster from the open, and a seek to the head lands on the
+    // key picture's cluster after it: both reads start there, so nothing
+    // above told them apart, and the recording kept the zero of the cluster
+    // after (1.231 s on a file whose twin with readable cues starts at 0),
+    // and a sound-only file of it lost 1.15 s of its head. Where the Cues put
+    // a cue in a cluster ahead of the key picture's and the open handed over
+    // nothing ahead of that one, the open that switched the WebVTT off
+    // before looking ahead is asked as well: a block of it from ahead of
+    // everything the open handed over was lost. Every other file -- one
+    // whose open read the first cluster, or whose first cue is in the key
+    // picture's cluster -- costs no more opens than before.
+    let (Some(key), Some(cue)) = (key, cue) else {
+        return Ok(false);
+    };
+    let ahead = had.iter().map(|&(_, at)| at).min().unwrap_or(bound).min(bound);
+    if cue >= key || ahead < key {
+        return Ok(false);
+    }
+    let Some(mut whole) = crate::input::demux_unlost(url) else {
+        return Ok(false);
+    };
+    if whole.streams().count() != streams {
+        return Ok(false);
+    }
+    crate::input::keep_only(&mut whole, &keep);
+    let mut past = 0;
+    for (stream, packet) in whole.read_packets() {
+        if !keep.contains(&stream.index()) {
+            continue;
+        }
+        let at = packet.position() as i64;
+        if at < 0 {
+            return Ok(false);
+        }
+        if at < ahead {
+            return Ok(true);
+        }
+        past += 1;
+        if past > PAST {
+            break;
         }
     }
     Ok(false)

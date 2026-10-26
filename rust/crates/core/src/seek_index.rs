@@ -130,7 +130,14 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// every time on the old zero, two seconds off, and no entry point for the
 /// first GOP: read against the new zero, every range would cut another
 /// stretch.
-pub const VERSION: u32 = 16;
+///
+/// 17: the same, where that first cluster holds no key picture -- a cue and
+/// the sound a remux leads its pictures with by half a second or more. A
+/// seek to the head skipped that cluster as well, so the open was not seen
+/// to have lost it, and the file kept the zero of the cluster after
+/// ([`crate::sound::open_lost`]). An index written before holds every time
+/// on that zero, more than a second off.
+pub const VERSION: u32 = 17;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

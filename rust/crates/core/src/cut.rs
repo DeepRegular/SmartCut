@@ -783,6 +783,24 @@ impl Shrink {
             tally.written_bytes / 1_000_000,
             tally.source_bytes / 1_000_000,
         ));
+        // Short ranges of pictures that are mostly macroblock headers and
+        // motion vectors have a floor of their own, well above the share a
+        // run can ask for: asked 48.8%, a broadcast's 30 s went no smaller
+        // than 60.1%, and the disc came out 15% over the size `--fit` named
+        // with only the line above to say anything about it. What is
+        // written stays as it is; the run says how far it fell short.
+        let reached = tally.share();
+        if reached > self.share + 0.02 {
+            let planned = tally.source_bytes as f64 * self.share;
+            crate::note_once(format!(
+                "note: the pictures could not be made as small as asked: {:.1}% of their own \
+                 size was asked for and {:.1}% is as small as they went, so the cut is about \
+                 {:.1} MB larger than it was planned to be",
+                self.share * 100.0,
+                reached * 100.0,
+                (tally.written_bytes as f64 - planned).max(0.0) / 1e6,
+            ));
+        }
         if let Some((why, n)) = &self.declined {
             crate::note_once(format!(
                 "note: {n} picture(s) were written through as they arrived rather than made \
@@ -2952,8 +2970,10 @@ fn read_caption_before(
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Failing to look back costs the line, not the cut: see
     // [`read_subpictures_before`].
-    let from = until - CAPTION_LOOKBACK - src.seek_margin;
-    if from > 0.0 && seek_to(&mut ictx, src, until - CAPTION_LOOKBACK).is_err() {
+    // Near the head `seek_to` decides: it leaves the open where it is,
+    // except on the files whose open lost part of the head (see
+    // [`read_subpictures_before`]).
+    if seek_to(&mut ictx, src, until - CAPTION_LOOKBACK).is_err() {
         return Ok(Vec::new());
     }
     crate::input::keep_with_pictures(&mut ictx, &[caption.in_index]);
@@ -3751,14 +3771,16 @@ fn read_subpictures_before(src: &Source, until: f64) -> Result<Vec<(i32, f64, Ve
     // to read from at all, so the discards go on afterwards. And a range
     // that opens inside the first few seconds has nothing behind it to seek
     // to: a fresh context is already at the top, which is where the look
-    // back wants to start.
+    // back wants to start -- which `seek_to` knows, and decides there: it
+    // reads on from the open, except on a Matroska file with WebVTT whose
+    // open lost part of the head (`sound::sought_at_head`). Read from that
+    // open, the look back of a range within the first few seconds started
+    // after the rest of the first cluster, and the subtitle up at the range's
+    // opening was not carried -- while the preview showed it.
     //
     // Failing to look back is not a reason to fail a cut. What it costs is
     // one subtitle at one boundary.
-    let from = until - crate::pgs::LOOKBACK - src.seek_margin;
-    if from > 0.0 {
-        let _ = seek_to(&mut ictx, src, until - crate::pgs::LOOKBACK);
-    }
+    let _ = seek_to(&mut ictx, src, until - crate::pgs::LOOKBACK);
     // The sound is walked past rather than assembled. The pictures are kept,
     // though never decoded: they are the clock that says the look back is
     // over. A range after the last subtitle of a title has no subtitle packet
@@ -3833,10 +3855,9 @@ fn read_graphics_before(
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Seeked first, and only where there is somewhere to seek to. See
     // [`read_subpictures_before`], where both halves of that were learnt.
-    let from = until - crate::pgs::LOOKBACK - src.seek_margin;
     // Nor is failing to look back a reason to fail the cut here: what it
     // costs is the subtitle up at the opening.
-    if from > 0.0 && seek_to(&mut ictx, src, until - crate::pgs::LOOKBACK).is_err() {
+    if seek_to(&mut ictx, src, until - crate::pgs::LOOKBACK).is_err() {
         return Ok(Vec::new());
     }
     // The graphics, and the pictures as the clock: a track with no display

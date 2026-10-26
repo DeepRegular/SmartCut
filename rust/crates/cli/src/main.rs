@@ -1356,6 +1356,14 @@ fn run() -> Result<()> {
     };
     let mut output = written_to(output)?;
     let bdav = written_to(bdav)?;
+    // A disc's folder is a place on this machine as `-o` is. Named as a URL
+    // (`--bdav http://host/disc`), the disc's folders were made under an
+    // `http:` folder where the run stood, the first recording was read and
+    // planned, and only the stream's name was refused, by the cut -- while
+    // `--analyze` with the same line ended well.
+    if let Some(at) = &bdav {
+        smartcut_core::input::refuse_url_output(at)?;
+    }
     let seek_index = written_to(seek_index)?;
     // The still laid over a crossing is read the same way, and only once the
     // first crossing is written: a name that was mistyped, or a share named
@@ -1382,7 +1390,17 @@ fn run() -> Result<()> {
             // `VIDEO_TS/VTS_01_1.VOB` -- which opens, without a word, as the
             // first gigabyte of the title set rather than as a title.
             let base = j.trim_end_matches(['/', '\\']);
-            let first = smartcut_core::disc::read(&at)
+            let read = smartcut_core::disc::read(&at);
+            // An image is a disc by its name only (`looks_like_disc`): one
+            // that holds no disc this can read was told to name "one of its
+            // recordings", of which it has none.
+            if let (Err(e), false) = (&read, at.is_dir()) {
+                bail!(
+                    "--join {j} is not a recording, and not a disc that can be read either \
+                     ({e:#}): --join takes one recording"
+                );
+            }
+            let first = read
                 .ok()
                 .and_then(|d| d.entries.first().map(|e| e.path.clone()))
                 .map(|p| format!(" -- the first one's is {p}"))
@@ -2445,6 +2463,10 @@ fn run() -> Result<()> {
     // from the ranges actually being kept rather than from the recording, and
     // said out loud: a run that is about to rewrite every picture of a
     // four-hour recording should say so before it starts.
+    // The size `--fit` priced against, and whether the pictures were to be
+    // written smaller for it: checked against what the run came to once it
+    // is over (`said_over_the_fit`).
+    let mut fit_room: Option<(u64, bool)> = None;
     let video_share = match fit {
         Some(named) => {
             // What the disc holds of a disc of recordings, which an
@@ -2553,6 +2575,7 @@ fn run() -> Result<()> {
             );
             if f.fits {
                 tell!("        it fits as it is");
+                fit_room = Some((capacity, false));
                 video_share
             } else if !f.reachable && f.video_bytes == 0 {
                 bail!(
@@ -2572,6 +2595,7 @@ fn run() -> Result<()> {
                     "        the pictures will be written at {:.1}% of their own size",
                     f.share * 100.0
                 );
+                fit_room = Some((capacity, true));
                 Some(f.share)
             }
         }
@@ -3572,6 +3596,14 @@ fn run() -> Result<()> {
         )?;
         tell!("wrote {} -- {}", at.join("BDAV").display(), shown(&name));
         check_cut()?;
+        // The whole disc against the whole disc, as the window's check after a
+        // run has it: what was on it already is part of what has to fit.
+        if let Some((capacity, shrunk)) = fit_room {
+            let overwritable =
+                iso.is_some() && iso_access == smartcut_core::udfw::Access::Overwritable;
+            let came = disc_bytes(&smartcut_core::bdav::root(&at), overwritable);
+            said_over_the_fit("disc", came, capacity, shrunk);
+        }
         if let Some(revision) = iso {
             // Beside the folder and named after it. The folder stays unless
             // `--iso-only` says otherwise: it is what the image was made of,
@@ -3601,8 +3633,63 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
+    if let Some((capacity, shrunk)) = fit_room {
+        if let Ok(meta) = std::fs::metadata(&out) {
+            said_over_the_fit("cut", meta.len(), capacity, shrunk);
+        }
+    }
     tell!("wrote {out}");
     Ok(())
+}
+
+/// What a disc folder holds, as the image it becomes will hold it: an
+/// overwritable image keeps every file in whole clusters
+/// (`udfw::overwritable_cost`). The window's check after a run counts it the
+/// same way.
+fn disc_bytes(at: &std::path::Path, overwritable: bool) -> u64 {
+    let Ok(entries) = std::fs::read_dir(at) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.file_type() {
+            // Not through a link, as `fit::already_on`.
+            Ok(t) if t.is_dir() => disc_bytes(&e.path(), overwritable),
+            _ => {
+                let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+                if overwritable {
+                    smartcut_core::udfw::overwritable_cost(len)
+                } else {
+                    len
+                }
+            }
+        })
+        .fold(0u64, u64::saturating_add)
+}
+
+/// Say so where a run `--fit` priced to fit came out larger than the size it
+/// names. The line before the run said what was expected; this is what
+/// happened, and they part company where the pictures would not shrink as
+/// far as they were asked to -- which can only be found out by trying, and
+/// was not said at all: a disc 15% over its size ended with "wrote".
+/// Nothing is changed or refused; the output is what it is.
+fn said_over_the_fit(what: &str, came: u64, capacity: u64, shrunk: bool) {
+    if came <= capacity {
+        return;
+    }
+    let why = if shrunk {
+        "the pictures would not shrink as far as they were asked to"
+    } else {
+        "it was priced to fit as it was, so the pictures were left as they were \
+         (--video-share writes them smaller)"
+    };
+    smartcut_core::say!(
+        "note: the {what} came to {:.1} MB, which is {:.2} MB more than the {:.1} MB --fit \
+         names: {why}",
+        came as f64 / 1e6,
+        (came - capacity) as f64 / 1e6,
+        capacity as f64 / 1e6,
+    );
 }
 
 /// What a sound track is written as, by libav's name for the codec (as

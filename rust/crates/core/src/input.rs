@@ -532,6 +532,37 @@ pub(crate) fn lost_at_open(url: &str) -> Option<bool> {
     known(url).lost
 }
 
+/// Where the sound track `track` of `url` starts, read by the open that lost
+/// nothing ([`starts_unlost`]): the cluster of its first block and that
+/// block's instant, on `ictx`'s clock for the track. `None` unless the open
+/// of `url` lost part of its head and the starts were read, or where
+/// `ictx` is not the same header's.
+///
+/// For [`crate::sound`]'s seek to the sound's head: where the open lost the
+/// first cluster, libavformat's own index of the track starts in the
+/// cluster after it.
+pub(crate) fn head_unlost(url: &str, ictx: &Demux, track: usize) -> Option<(i64, i64)> {
+    let clock = known(url).clock?;
+    // SAFETY: the context is open; its streams are only read.
+    unsafe {
+        let ctx = ictx.as_ptr();
+        let n = (*ctx).nb_streams as usize;
+        if n != clock.streams.len() || n != clock.heads.len() || track >= n {
+            return None;
+        }
+        let same = clock.streams.iter().enumerate().all(|(i, (kind, _))| {
+            let st = *(*ctx).streams.add(i);
+            !st.is_null() && !(*st).codecpar.is_null() && (*(*st).codecpar).codec_type == *kind
+        });
+        if !same {
+            return None;
+        }
+        let (pos, ts, tb) = clock.heads[track]?;
+        let st = *(*ctx).streams.add(track);
+        ((*st).time_base.num == tb.num && (*st).time_base.den == tb.den).then_some((pos, ts))
+    }
+}
+
 /// What [`true_start`] finds out about one file, worked out once.
 fn known(url: &str) -> Known {
     remembered(url, |url| {
@@ -550,11 +581,15 @@ struct Known {
 
 /// The starts of a recording, read where the open lost them: its own in
 /// libavformat's microseconds, and each stream's kind and start on its own
-/// clock.
+/// clock; and where each sound track's first block was read from.
 #[derive(Clone)]
 struct Clock {
     start: i64,
     streams: Vec<(ff::ffi::AVMediaType, i64)>,
+    /// Per stream, for a sound track: the cluster its first indexed block is
+    /// in and that block's instant on the stream's clock, with the clock's
+    /// time base. See [`head_unlost`].
+    heads: Vec<Option<(i64, i64, ff::ffi::AVRational)>>,
 }
 
 /// [`Known`] of a Matroska file with WebVTT in it, worked out by `find` the
@@ -585,6 +620,18 @@ fn remembered(url: &str, find: impl FnOnce(&str) -> Known) -> Known {
         }
     }
     let known = find(url);
+    // Only a definite answer is kept: a check that could not be made, or a
+    // loss whose clock could not be read, is asked again next time rather
+    // than leaving the file on libavformat's zero for as long as the program
+    // runs, while the next run counts from the true one.
+    let definite = match known.lost {
+        Some(false) => true,
+        Some(true) => known.clock.is_some(),
+        None => false,
+    };
+    if !definite {
+        return known;
+    }
     if let Ok(mut seen) = SEEN.lock() {
         seen.retain(|(u, _, _)| u != url);
         if seen.len() >= KEPT {
@@ -595,11 +642,14 @@ fn remembered(url: &str, find: impl FnOnce(&str) -> Known) -> Known {
     known
 }
 
-/// The starts of `url` read by an open whose WebVTT is switched off before it
-/// looks ahead, and so cannot lose a cluster to a block it cannot parse. See
-/// [`true_start`]. `None` where that open fails.
-fn starts_unlost(url: &str) -> Option<Clock> {
-    use ff::ffi::{AVMediaType, AV_NOPTS_VALUE, AV_TIME_BASE};
+/// `url` opened with its WebVTT switched off before the open looks ahead, so
+/// that it cannot lose a cluster to a block it cannot parse: what the open
+/// hands over is the file's head whole. As libavformat leaves it otherwise,
+/// without [`true_start`]. `None` where that open fails.
+///
+/// For [`starts_unlost`], and for [`crate::sound::open_lost`]'s check of the
+/// one loss a sought read cannot see.
+pub(crate) fn demux_unlost(url: &str) -> Option<Demux> {
     no_nul(url).ok()?;
     let name = CString::new(as_local(url).as_bytes()).ok()?;
     let mut opts = ff::Dictionary::new();
@@ -614,29 +664,50 @@ fn starts_unlost(url: &str) -> Option<Clock> {
         if opened < 0 || ps.is_null() {
             return None;
         }
-        let mut ictx = ff::format::context::Input::wrap(ps);
-        let webvtt = |st: *mut ff::ffi::AVStream| {
-            let par = (*st).codecpar;
-            !par.is_null()
-                && (*par).codec_type == AVMediaType::AVMEDIA_TYPE_SUBTITLE
-                && (*par).codec_id == ff::ffi::AVCodecID::AV_CODEC_ID_WEBVTT
-        };
-        let streams = |ps: *mut ff::ffi::AVFormatContext| {
-            (0..(*ps).nb_streams as usize)
-                .map(|i| *(*ps).streams.add(i))
-                .filter(|st| !st.is_null())
-                .collect::<Vec<_>>()
-        };
+        let ictx = Demux::plain(ff::format::context::Input::wrap(ps));
         // A block of a stream switched off is passed over before it is
         // parsed.
-        for st in streams(ps) {
-            if webvtt(st) {
+        for i in 0..(*ps).nb_streams as usize {
+            let st = *(*ps).streams.add(i);
+            if !st.is_null() && webvtt_stream(st) {
                 (*st).discard = ff::ffi::AVDiscard::AVDISCARD_ALL;
             }
         }
         if ff::ffi::avformat_find_stream_info(ps, ptr::null_mut()) < 0 {
             return None;
         }
+        Some(ictx)
+    }
+}
+
+/// Whether `st` is a WebVTT stream.
+///
+/// # Safety
+/// `st` points at a stream of a context still open.
+unsafe fn webvtt_stream(st: *mut ff::ffi::AVStream) -> bool {
+    let par = (*st).codecpar;
+    !par.is_null()
+        && (*par).codec_type == ff::ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE
+        && (*par).codec_id == ff::ffi::AVCodecID::AV_CODEC_ID_WEBVTT
+}
+
+/// The starts of `url` read by an open whose WebVTT is switched off before it
+/// looks ahead, and so cannot lose a cluster to a block it cannot parse
+/// ([`demux_unlost`]). See [`true_start`]. `None` where that open fails.
+fn starts_unlost(url: &str) -> Option<Clock> {
+    use ff::ffi::{AVMediaType, AV_NOPTS_VALUE, AV_TIME_BASE};
+    let mut ictx = demux_unlost(url)?;
+    // SAFETY: the context is open and held here; its streams are read while
+    // it is.
+    unsafe {
+        let ps = ictx.as_mut_ptr();
+        let webvtt = |st: *mut ff::ffi::AVStream| webvtt_stream(st);
+        let streams = |ps: *mut ff::ffi::AVFormatContext| {
+            (0..(*ps).nb_streams as usize)
+                .map(|i| *(*ps).streams.add(i))
+                .filter(|st| !st.is_null())
+                .collect::<Vec<_>>()
+        };
         // The Cues are read on the first seek, and name the WebVTT's blocks
         // as well as the pictures'.
         let target = i64::MIN / 2;
@@ -646,6 +717,7 @@ fn starts_unlost(url: &str) -> Option<Clock> {
             return None;
         }
         let mut kept = Vec::with_capacity(all.len());
+        let mut heads = Vec::with_capacity(all.len());
         let (mut start, mut text) = (i64::MAX, i64::MAX);
         let micro = ff::ffi::AVRational { num: 1, den: AV_TIME_BASE };
         for st in all {
@@ -658,6 +730,17 @@ fn starts_unlost(url: &str) -> Option<Clock> {
             }
             let kind = (*(*st).codecpar).codec_type;
             kept.push((kind, at));
+            // Where the sound starts: libavformat indexes the cluster of
+            // every sound block it reads, and this open read the first
+            // cluster whole.
+            heads.push(
+                (kind == AVMediaType::AVMEDIA_TYPE_AUDIO
+                    && ff::ffi::avformat_index_get_entries_count(st) > 0)
+                    .then(|| ff::ffi::avformat_index_get_entry(st, 0))
+                    .filter(|e| !e.is_null())
+                    .map(|e| ((*e).pos, (*e).timestamp, (*st).time_base))
+                    .filter(|e| e.0 >= 0 && e.1 != AV_NOPTS_VALUE),
+            );
             // As libavformat's update_stream_timings.
             if at != AV_NOPTS_VALUE && (*st).time_base.den != 0 {
                 let at = ff::ffi::av_rescale_q(at, (*st).time_base, micro);
@@ -673,7 +756,7 @@ fn starts_unlost(url: &str) -> Option<Clock> {
         {
             start = text;
         }
-        (start != i64::MAX).then_some(Clock { start, streams: kept })
+        (start != i64::MAX).then_some(Clock { start, streams: kept, heads })
     }
 }
 
