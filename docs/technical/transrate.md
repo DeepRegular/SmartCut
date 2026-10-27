@@ -279,13 +279,28 @@ go furthest: pictures that are mostly macroblock headers and motion vectors
 have a floor of their own, and thirty seconds of one broadcast asked for 48.8%
 went no smaller than 60.1%, so the disc came out 15% over the size `--fit`
 named -- and the run ended with `wrote` and nothing else. The rewrite now says
-when it lands more than two points above the share asked for, and how much
-larger that makes the cut than planned (`Shrink::say` in
-[`cut.rs`](../../rust/crates/core/src/cut.rs)). And once the run is over, the
-CLI weighs what it wrote against the size `--fit` priced against -- with
-`--bdav`, the whole disc folder, counted as the image will hold it -- and says
-by how much it came out over, as the window's check after a run already did.
-Nothing written is changed by either: they are messages.
+when it lands more than two points above the share asked for, and how many
+megabytes more than planned the pictures it rewrote came to (`Shrink::say` in
+[`cut.rs`](../../rust/crates/core/src/cut.rs)). That figure is of those
+pictures alone, so the note adds that the cut as a whole may still fit; up to
+0.8.33 it called the figure how much larger the cut was than planned, and a
+cut that still fitted was told so. And once the run is over, the CLI weighs
+what it wrote against the size `--fit` priced against, and says by how much
+it came out over, as the window's check after a run already did. With
+`--bdav` that is the whole disc folder; with an overwritable image, the folder
+counted in the whole clusters the image lays its files out in; with a
+read-only image, the image itself, once it is written -- each file takes
+whole extents in it and the file system has structures of its own, so a
+folder under the size can make an image over it, and up to 0.8.33 such an
+image was weighed by its folder and said nothing. The note also says why:
+the pictures would not shrink as far as they were asked to; or the run was
+priced to fit as it was, so they were left as they were (with
+`--video-share` to write them smaller, or, for anything but MPEG-2, the
+reminder that only MPEG-2 can be -- up to 0.8.33 an H.264 cut was told to
+try `--video-share` too); or, for an image whose files alone come to less
+than the size, that the rest is the image's own file system, which `--fit`
+does not price. Nothing written is changed by any of this: they are
+messages.
 
 **A recorder's title is measured over clock that no cut writes.** At a seam,
 from where the pictures before it stop to the first entry point after it,

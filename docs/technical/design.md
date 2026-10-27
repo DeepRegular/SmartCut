@@ -1913,8 +1913,8 @@ It is material-dependent, hence "sometimes". Counting directly in the bitstream:
 
 | Material | Entry points | Of which field-coded |
 |---|---|---|
-| BS Fuji (Thunder 3 #2, 28 min) | 3371 | **350 (10.4%)** |
-| BS Fuji (Anime Guild #8, 24 min) | 2879 | **669 (23.2%)** |
+| BS Fuji (a series episode, 28 min) | 3371 | **350 (10.4%)** |
+| BS Fuji (another series episode, 24 min) | 2879 | **669 (23.2%)** |
 | BS11 | 422 | 1 (0.2%) |
 | Terrestrial NHK E-Tele / AT-X | 776 / 487 | 0 |
 

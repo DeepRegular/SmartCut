@@ -533,8 +533,10 @@ that cluster, and read whole once the subtitles are switched off
 (`sound_from_head` and `seek_to_sound_head` in
 [`sound.rs`](../../rust/crates/core/src/sound.rs)). Where the open was not sought,
 the same check as `open_lost`, made on the sound track alone, decides whether
-it lost any. Only a Matroska file with WebVTT ever reaches this; the cut with
-pictures, which starts on the first picture, is not touched by it. The readers
+it lost any. Only a Matroska file with WebVTT ever reaches this. The cut with
+pictures starts on the first picture, so neither its pictures nor its sound
+are changed by it (its head seek goes the same way where the open lost part
+of the head, for the subtitles: see below). The readers
 that take the sound from the head of the whole recording use it as well: the
 waveform, the commercial detector's sound and the quiet detection, the fade-in
 of a join (which reads the head again from a fresh open), and `--verify`, which
@@ -557,7 +559,8 @@ WebVTT track wrote 721, its first 0.26 s gone and the rest that much early;
 first entry is in the pictures' first cluster but its first instant comes before
 the first picture's, the read is sought on the sound track as well, and the
 cluster is read from the sound's first block. Every reader named above takes the
-same rule; the cut with pictures is still not touched by it. The saved
+same rule; the cut with pictures, which leaves out the sound ahead of its
+first picture, writes the same either way. The saved
 waveform's number went up to 4 with this, as it had to 3.
 
 Every other read that runs on from the head of the whole recording now asks
@@ -653,6 +656,21 @@ of the cut while the preview showed it. They now leave the head to the seek
 every other reader uses, which reads on from the open except where the open
 lost part of the head.
 
+**And that seek starts where the sound does.** Sought to the head, the read
+lands on the first key picture's cluster, since a Matroska file's Cues name key
+pictures only. On a remux whose first cluster has no picture in it -- only the
+sound a broadcast sends ahead of its pictures, and whatever else falls there --
+the seek passed over that cluster and everything in it: a PGS display set up at 0, beside a WebVTT track the open could
+not read, was in the open's packets, and was carried neither by the look back
+nor by a cut from 0 -- 13 display sets where the readable twin had 14, and
+where the cut of 0.8.32, read from the open, had them all. Where the open lost
+part of the head, the cut's head seek now goes through `sound_from_head` on the
+first sound track, as the sound-only file's does, so the read starts on the
+cluster the sound starts in; a file with no sound is sought to the head as
+before. The preview's subtitles open their first window the same way, and show
+what the cut writes. The cut's pictures and sound come out as they did: it
+starts on the first picture either way.
+
 Only an answer that is known is kept for the rest of the run. A check that
 could not be made, or a loss whose start could not be read, is asked again the
 next time the file is opened, rather than leaving the file on libavformat's
@@ -663,9 +681,12 @@ open lost part of its head cannot be read again from the head: there is
 nothing to seek by. It is refused rather than cut from the open, which would
 lose the first cluster without a word (38 pictures of 240 and 57 frames of
 sound of 376 on the file that showed it). The refusal now says why: `seek to
-the head failed: … (the open could not read a WebVTT block at the head of
-this Matroska file, and the file has no index (Cues) to read the head again
-from)`.
+the head failed: … (the head of this Matroska file with WebVTT has to be read
+again, as its open can lose part of it to a WebVTT block it cannot read, and
+the seek there failed -- as it does in a file with no index (Cues), one
+written to a pipe)`. It says no more than is known: the same seek is made
+where the check of the open could not be made, and a seek can fail for other
+reasons than a missing index.
 
 [`held_to_the_end`]: ../../rust/crates/core/src/cut.rs
 [`Grid`]: ../../rust/crates/core/src/cut.rs

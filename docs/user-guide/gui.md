@@ -142,7 +142,9 @@ pictures, and a cut written without opening the editor keeps what the disc
 plays and no more. They put no chapter where they are, and no mark. **Undo** in the cut
 editor brings them back, as one step. A row duplicated, put back with **Undo
 remove**, or left in the cut editor for another row before it had been read
-through keeps them too. A `.keyframe` and a `Trim` file beside the recording
+through keeps them too, and so does one put back with **Cancel** after the
+window had been asked for another row that had not come up yet or would not
+open (up to 0.8.33 that row lost them, and was written whole without a word). A `.keyframe` and a `Trim` file beside the recording
 are read as soon as the editor opens, before the recording has been read
 through, and when those cuts arrive a mark or a cut end within half a picture
 of one of their edges is put onto it. A pressed disc, a DVD and a disc made
@@ -549,7 +551,19 @@ window showing the row before it for as long as it takes, and a cut made there
 meanwhile is that row's: **OK** keeps it on its row, and **Cancel** (or `Esc`
 and discarding) puts that row back as it was when you opened it, cuts made
 before the next row was asked for included. The row still being opened is
-left as it was. Up to 0.8.32 **OK** lost a cut made then, and **Cancel** left
+left as it was. Everything else on screen stays that row's as well:
+**Turn the chapters into keyframes** puts down its chapters, not those of the
+row being opened, a cut made there puts no mark at the edges of its
+playlist's cuts, and **Cancel** deals with a commercial detection that
+finished on it just before the next row was asked for as it would have had the
+next row not been asked for. No commercial detection can
+be started from the window meanwhile, and the answer of one still running when
+the next row was asked for is not used. One the list finishes on that row
+meanwhile is kept for the row, and the window shows it the next time the row
+is opened. Up to 0.8.33 the first two went by the row being opened, a
+detection that had finished in the last moment before the next row was asked
+for could go with the cuts thrown away, and the list's finding could be replaced by
+the window's earlier one. Up to 0.8.32 **OK** lost a cut made then, and **Cancel** left
 the row on screen with the cuts it had before.
 
 ### What is where on the screen
@@ -1316,7 +1330,10 @@ with their sound. Like the cut editor, it is left with OK or Cancel.
 **It follows the list while it is open.** Move a row, add one or take one out,
 and the joins it offers change with it; a setting not yet confirmed stays with
 the join it was made on. A join that is no longer in the list when OK is
-pressed is not written onto whichever join now stands in its place.
+pressed is not written onto whichever join now stands in its place. It
+follows the cut editor the same way: a cut made there moves the clip's end
+in this window as soon as it is made. Up to 0.8.33, unless the list was on
+**Output settings**, it could show the old ends until the editor was left.
 
 | Field | |
 |---|---|
@@ -1522,7 +1539,7 @@ Writing a disc adds these fields:
 | **Disc kind** | Under the image, and only there when one is being made. What the image says may be done to the disc it is burned onto. *Nothing writes to it again* is the default and is the truth about a BD-R, or a BD-RE you only play. *The recorder may go on editing it* is what a recorder writes on a BD-RE, and what it wants to see before it will add a recording to the disc or take one off — pick it if the disc is going back into the recorder. The image is then laid out as a recorder lays out a BD-RE, and is the size of the whole disc (25 or 50 GB); the part with nothing in it takes no room where the image is saved. Laid out that way, a single-layer disc holds 24.12 GB of files and a dual-layer one 48.34 GB, and that is what **Disc used** and **Transcode** weigh the list against (a single layer reads 22.5 GiB); an XL disc holds what a dual layer does. The kind set when the run starts is the one the run uses throughout, for **Transcode**, the check after the cutting and the image; changed during the run, it applies to the next one. An image turned on only during the run is still made, of the kind shown here when it is made; **Transcode** priced that run's disc without one |
 | **Remove the folder once the image is written** | Under the image, and only there when one is being made: the same thirty gigabytes twice over is not what most runs want to be left with. The folder is still written and the image still made of it — this happens afterwards, and only where the image was written. `BDAV` goes, and the folder above it only where that leaves it empty, so a disc written into a folder of your own leaves the rest of it alone. Where a `.iso` of that name is already there and the subfolder holds no disc to add to, the run is refused before it starts, since the old image would be replaced by the new disc's: move it away or choose another subfolder to keep it, or delete it if it is no longer wanted |
 | **Disc** | The disc this is going to be burned onto (25GB / DL 50GB / XL 100GB / XL 128GB). The gauge below is drawn against it |
-| **Transcode** | Where the list does not fit the disc chosen above, the pictures are transcoded smaller until it does. **Where it fits, nothing is done to them.** The sound, the subtitles and the programme information are untouched; only the pictures give anything up. Turning it on adds a second row to the gauge -- "before" and "after" -- showing what the disc comes to afterwards and what share the pictures are written at. MPEG-2 recordings only; anything else takes its full room. The pictures do not always go as small as they are asked to -- short ranges at a hard share can stay several points above it -- and where they do not, the [run log](#the-run-log) says so, with how much larger the cut is than was planned; once the disc is written, the output screen says what the disc came to, and by how much it is over where it is. What happens inside is in [Fitting a disc](../technical/transrate.md) |
+| **Transcode** | Where the list does not fit the disc chosen above, the pictures are transcoded smaller until it does. **Where it fits, nothing is done to them.** The sound, the subtitles and the programme information are untouched; only the pictures give anything up. Turning it on adds a second row to the gauge -- "before" and "after" -- showing what the disc comes to afterwards and what share the pictures are written at. MPEG-2 recordings only; anything else takes its full room. The pictures do not always go as small as they are asked to -- short ranges at a hard share can stay several points above it -- and where they do not, the [run log](#the-run-log) says so, with how many MB more than planned the pictures it rewrote came to (the disc as a whole may still fit); once the disc is written, the output screen says what the disc came to, and by how much it is over where it is. What happens inside is in [Fitting a disc](../technical/transrate.md) |
 | **Disc used** | What the list comes to against the disc, a band per recording. The white line is the edge of the disc and the faint one before it is the hundredth held back; anything past the line is drawn in red. The figures are an estimate made before anything is written, and on whole recordings it lands within about one per cent. What a cut keeps is priced from the bytes the recording holds over those stretches, read off its index, so a busy stretch counts as busy and a quiet one as quiet; a list of many very short ranges can still come out a little larger than drawn, since the pictures re-encoded at each range's ends are not in the estimate. They are counted in GiB, the way the file manager beside the window counts, which is why a single-layer disc reads 23.3 GiB here and "25GB" on the control above -- that one is the name on the box. Where the disc folder already holds a disc, the list is added to it: what is already written there is measured rather than estimated, drawn first as a grey hatched band, and the list is weighed against the room left, by **Transcode** too |
 | **Disc folder** | Replaces "Output folder", and **cannot be left empty** — a disc is one place, and the recordings in a list can have come from four. SmartCut makes one more folder under it, named by "Subfolder", and writes `BDAV` in there |
 
