@@ -1351,6 +1351,65 @@ def seam_all_untouched_join(cfg, t):
         t.check("31c OK writes the crossing applied to all onto both joins put back",
                 len(saved) == 3 and afters[:2] == ["dissolve", "dissolve"], f"after {afters}")
 
+def seam_follows_editor(cfg, t):
+    """継ぎ目の編集 open on a -> b while the list is on 入力設定, and row a
+    cut in the cut editor so that its last kept range starts later. The
+    window has to be told the join again as the cut lands (`followCross`),
+    not only when the editor closes: it previewed and played the seam on the
+    old bounds for the whole visit, and with the next row's open hanging the
+    visit can go on for as long as somebody works in it. (38th pass)"""
+    with App(cfg, "seam_follows_editor", clips(cfg), {"joinAll": True}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled;"), 60)
+        before = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+        app.s.switch(seam)
+        wait_for("the join loaded", lambda: app.s.js(
+            "return document.getElementById('out-clip-time').textContent") not in
+            ("--:--:--.--", "00:00:00.00"), 60)
+        app.s.js("window.__seen = [];"
+                 "window.__TAURI__.event.listen('cross-open', (e) => window.__seen.push("
+                 "(e.payload.joins || []).map((j) => [j.beforeIn, j.beforeOut])));")
+        time.sleep(0.5)
+        app.s.switch(app.main)
+        app.s.click('button.tab[data-screen="input"]')
+        up = set(app.s.handles())
+        app.s.double_click("#cliplist > li:nth-child(1) .nm")
+        editor = wait_for("the editor window", lambda: (
+            [h for h in app.s.handles() if h not in up] or [None])[0], 60)
+        app.s.switch(editor)
+        wait_for("the editor on a.ts", lambda: (lambda st: st and "a.ts" in st["title"]
+                                                and st["frames"] is not None)(app.state()), 120, 0.2)
+        n = app.state()["frames"]
+        app.cut(n - 200, n - 101)
+        # Past the editor's report debounce and the list's repaint.
+        time.sleep(2)
+        app.s.switch(seam)
+        during = app.s.js("return window.__seen")
+        moved = [j for j in during if j and j[0][0] > 0]
+        t.check("38s the seam window follows a cut made in the editor while it is open",
+                bool(moved), f"told {during}")
+        app.s.switch(editor)
+        app.ok()
+        wait_for("the editor to close", lambda: editor not in app.s.handles(), 15)
+        time.sleep(1.5)
+        app.s.switch(seam)
+        after = app.s.js("return window.__seen")
+        t.check("38s ... and once the editor has closed", any(j and j[0][0] > 0 for j in after),
+                f"told {after}")
+        try:
+            app.s.click("#cross-cancel")
+        except WebDriverError:
+            pass
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+
+
 # -- 29 --------------------------------------------------------------------
 def disc_refuses_opus(cfg, t):
     """A BDAV run of three rows whose second has Opus sound (an H.264 + Opus
@@ -5517,6 +5576,325 @@ def outline_hangs_cut_then_fails(cfg, t):
             os.remove(e)
 
 
+def _hang_next(app, e, n):
+    """Row `n`'s recording (`e`) replaced by a pipe nothing writes to, and the
+    row double-clicked: its open hangs while the window still shows the row
+    before. Leaves the driver on the editor."""
+    if os.path.exists(e):
+        os.remove(e)
+    os.mkfifo(e)
+    app.open_row(n, os.path.basename(e), wait=False)
+    time.sleep(1.5)
+    app.to_editor()
+
+
+def outline_hangs_marks(cfg, t):
+    """What is done in the window while the next row's open hangs is the
+    shown row's (37th pass, decided), so it has to be done with the shown
+    row's facts, not the ones the hanging open has already set for itself.
+    (1) 録画のチャプター on row 1 put row 2's chapters onto row 1, and OK kept
+    them. (2) Row 1 carries a cut the disc's playlist made (`unplayed`), which
+    makes no mark at its join; a cut made during the hang put a mark there
+    (the playlist's cut judged against row 2's, none), and a mark there is a
+    chapter in the output. (38th pass)"""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    keys = lambda p, n: (p["clips"][n - 1].get("edit") or {}).get("keyframes") or []
+    try:
+        with App(cfg, "outline_hangs_marks", [{"path": cfg.a}, {"path": e, "chapters": [6.4, 13.4]}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            _hang_next(app, e, 2)
+            app.s.js("document.getElementById('chapter-keys').click();")
+            time.sleep(0.5)
+            st = app.state()
+            app.ok()
+            app.gone()
+            _fail_pipe(e)
+            time.sleep(2)
+            p = app.save()
+            k1 = keys(p, 1)
+            t.check("38m-1 録画のチャプター while the next row hangs puts no other row's chapters down",
+                    k1 == [], f"row 1 marks {k1}; status {st['status']!r}")
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+    shutil.copyfile(cfg.a, e)
+    saved = {"path": cfg.a, "cuts": [{"a": 5.0, "b": 7.0}], "unplayed": [{"a": 5.0, "b": 7.0}],
+             "keyframes": [], "activeKey": None, "playhead": 0.0, "selA": 0.0, "selB": 0.0,
+             "selGone": True}
+    try:
+        with App(cfg, "outline_hangs_marks_plays", [{"path": cfg.a, "edit": saved}, {"path": e}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            _hang_next(app, e, 2)
+            try:
+                left = app.cut(300, 320)
+            except Failure as x:
+                left = f"cut refused: {x}"
+            time.sleep(0.5)
+            app.ok()
+            app.gone()
+            _fail_pipe(e)
+            time.sleep(2)
+            p = app.save()
+            k1, c1 = keys(p, 1), cuts_of(p, 1)
+            at_plays = [k for k in k1 if abs(k - 7.0) < 0.02]
+            t.check("38m-2 a cut while the next row hangs puts no mark on the playlist's cut",
+                    len(c1) == 2 and not at_plays and len(k1) == 1,
+                    f"{left} pictures; row 1 cuts {fmt(c1)}, marks {k1}")
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def outline_fails_plays_escape(cfg, t):
+    """A row carrying a playlist (`plays`, as a disc title's row does; here on
+    a.ts) opened before the list's walk reached it: the visit cuts what the
+    playlist leaves out. Row 3 double-clicked next and its open fails (its
+    file no longer a recording) or hangs (a pipe), and Escape: row 2 goes
+    back to how the visit found it -- no edit, the playlist's cuts still owed
+    -- and takes them once the list reads it. Leaving the row for row 3 had
+    already marked them taken (`takePlays` on an opened edit), and the row
+    put back to no edit was written whole, the stretches the playlist leaves
+    out included. (38th pass, app.js leftVisits / editor-back.) Row 1 is the
+    large recording, so the list's walk is busy on it until the lanes are
+    stopped."""
+    make_late_head(cfg)
+    e = os.path.join(cfg.media, "e.ts")
+    st = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=start_time",
+                               "-of", "csv=p=0", cfg.a], capture_output=True, text=True).stdout.strip())
+    plays = [[st + 2.0, st + 12.0]]
+    for leave in ("fails", "hangs", "fails, then OK"):
+        shutil.copyfile(cfg.a, e)
+        rows = [{"path": cfg.d}, {"path": cfg.a, "plays": plays, "playsOwed": True}, {"path": e}]
+        try:
+            with App(cfg, f"outline_fails_plays_escape_{leave.split(',')[0]}", rows) as app:
+                app.to_list()
+                wait_for("解析を中止", lambda: app.s.js(
+                    "const b = document.getElementById('stop-batch'); return !!b && !b.disabled;"), 30, 0.1)
+                app.s.click("#stop-batch")
+                time.sleep(1)
+                reached = not _walked(app, 2)
+                app.open_row(2, "a.ts")
+                wait_for("the walk", lambda: (lambda s: s["plan"] and "読み込んで" not in s["plan"]
+                                              and "Reading" not in s["plan"])(app.state()), 120, 0.3)
+                time.sleep(1.5)
+                shown = app.state()["frames"]
+                if leave != "hangs":
+                    with open(e, "wb") as f:
+                        f.write(b"\0" * (1 << 20))
+                    app.open_row(3, "e.ts", wait=False)
+                    app.to_editor()
+                    wait_for("the open to fail", lambda: (lambda s: s if (
+                        "開けません" in s or "annot open" in s) else None)(app.state()["status"] or ""), 60)
+                    time.sleep(1)
+                else:
+                    _hang_next(app, e, 3)
+                if leave == "fails, then OK":
+                    asked = None
+                    app.ok()
+                else:
+                    asked = app.escape(discard=True, expect_dialog=False)
+                app.gone()
+                if leave == "hangs":
+                    _fail_pipe(e)
+                time.sleep(1)
+                app.to_list()
+                wait_for("解析を再開", lambda: app.s.js(
+                    "const b = document.getElementById('stop-batch');"
+                    "return !!b && !b.disabled && ['解析を再開', 'Resume analysis'].includes(b.textContent);"),
+                    30, 0.3)
+                app.s.click("#stop-batch")
+                wait_for("row 2 read", lambda: _walked(app, 2), 300, 1)
+                time.sleep(2)
+                p = app.save()
+                got = cuts_of(p, 2)
+                good = len(got) == 2 and abs(got[0][1] - 2.0) < 0.05 and abs(got[1][0] - 12.0) < 0.05
+                good = good and not p["clips"][1].get("playsOwed")
+                t.check(f"38a-1 Escape after the next open {leave}: the row still takes the playlist's cuts",
+                        good and reached,
+                        f"row 2 {fmt(got)} (want 0-2, 12-end); {shown} pictures shown; asked {asked}; "
+                        f"owed {p['clips'][1].get('playsOwed')}"
+                        f"{'' if reached else ' (NOT REACHED: the list read row 2 first)'}")
+        finally:
+            if os.path.exists(e):
+                os.remove(e)
+
+
+def outline_hangs_remove_undo(cfg, t):
+    """Row 1 up and cut; row 2's open hangs (a pipe); meanwhile row 1 -- the
+    row the window still shows -- is taken out of the list and put back with
+    削除を元に戻す. The row is back as it was, and the visit on screen is still
+    its visit: (1) a cut made after that and OK are kept; (2) Escape+破棄
+    puts the row back as the visit found it (no cut); (3) the open failing,
+    the window goes back to row 1 and Escape+破棄 there does the same. (38th
+    pass, stage 3: stage 2's remove() let go of the visit, so the cut and OK
+    were dropped and 破棄 kept the visit's cuts.)"""
+    e = os.path.join(cfg.media, "e.ts")
+
+    def run(name, leave):
+        shutil.copyfile(cfg.a, e)
+        with App(cfg, name, [{"path": cfg.a}, {"path": e}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.cut(100, 150)
+            time.sleep(0.5)
+            os.remove(e)
+            os.mkfifo(e)
+            app.open_row(2, "e.ts", wait=False)
+            time.sleep(1.5)
+            app.to_list()
+            app.s.click("#cliplist > li:nth-child(1) .nm")
+            wait_for("クリップ削除", lambda: not app.s.js(
+                "return document.getElementById('remove-clip').disabled"), 15)
+            app.s.click("#remove-clip")
+            wait_for("one row", lambda: app.rows() == 1, 10)
+            wait_for("削除を元に戻す", lambda: not app.s.js(
+                "return document.getElementById('undo-remove').disabled"), 15)
+            app.s.click("#undo-remove")
+            wait_for("two rows", lambda: app.rows() == 2, 10)
+            up, asked, left = True, None, None
+            if leave == "fails":
+                _fail_pipe(e)
+                time.sleep(3)
+                up = app.editor() is not None
+                if up:
+                    app.to_editor()
+                    asked = app.escape(discard=True, expect_dialog=False)
+                    app.gone()
+            else:
+                app.to_editor()
+                try:
+                    left = app.cut(300, 320)
+                except Failure as x:
+                    left = f"cut refused: {x}"
+                time.sleep(0.5)
+                if leave == "ok":
+                    app.ok()
+                else:
+                    asked = app.escape(discard=True, expect_dialog=False)
+                app.gone()
+                _fail_pipe(e)
+                time.sleep(2)
+            p = app.save()
+            return cuts_of(p, 1), cuts_of(p, 2), up, asked, left
+
+    try:
+        for leave, tag in (("ok", "38r-1"), ("escape", "38r-2"), ("fails", "38r-3")):
+            c1, c2, up, asked, left = run(f"outline_hangs_remove_undo_{leave}", leave)
+            good = (len(c1) == 2 if leave == "ok" else c1 == []) and c2 == [] and up
+            t.check(f"{tag} the shown row taken out and put back while the next row's open hangs, then "
+                    + {"ok": "a cut and OK: kept", "escape": "Escape+破棄: the visit dropped",
+                       "fails": "the open failing and Escape+破棄: the visit dropped"}[leave],
+                    good, f"{left} pictures; window {'up' if up else 'closed'}; asked {asked}; "
+                    f"row 1 {fmt(c1)}, row 2 {fmt(c2)}")
+            if os.path.exists(e):
+                os.remove(e)
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def outline_hangs_detection(cfg, t):
+    """Row 1 up and cut, the commercial detection pressed in the editor, and
+    at once row 2 double-clicked with its recording a pipe nothing writes to
+    (its open hangs). The pass is about row 1 and the window has moved on:
+    whichever way it goes -- landed before the switch, or stopped by it --
+    row 1 must say the same thing as its timeline. Left by OK: a finding the
+    row says it has is on the row's edit, once; left by Escape+破棄: the cut
+    goes, and the row is not left saying "done" over a timeline with no
+    finding (the pass greyed with nothing to show). Reopened, the editor's
+    button and note agree with the row. (38th pass, stage 3.)"""
+    e = os.path.join(cfg.media, "e.ts")
+
+    def run(name, leave, landed_first):
+        shutil.copyfile(cfg.a, e)
+        with App(cfg, name, [{"path": cfg.a}, {"path": e}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.cut(100, 150)
+            time.sleep(0.5)
+            pre = app.s.js("return document.getElementById('cm-note').textContent")
+            app.s.js("document.getElementById('detect-cm').click();")
+            if landed_first:
+                busy = app.s.js("return document.getElementById('cm-note').textContent")
+                wait_for("the detection's answer", lambda: app.s.js(
+                    "return document.getElementById('cm-note').textContent") not in ("", busy), 180, 0.25)
+                time.sleep(0.5)
+            _hang_next(app, e, 2)
+            time.sleep(8)
+            during = app.s.js("return document.getElementById('cm-note').textContent")
+            asked = None
+            if leave == "ok":
+                app.ok()
+            else:
+                asked = app.escape(discard=True, expect_dialog=False)
+            app.gone()
+            _fail_pipe(e)
+            time.sleep(2)
+            p = app.save()
+            row = p["clips"][0]
+            edit = row.get("edit") or {}
+            app.open_row(1, "a.ts")
+            time.sleep(2)
+            note = app.s.js("return document.getElementById('cm-note').textContent")
+            greyed = app.s.js("return document.getElementById('detect-cm').disabled")
+            keys = app.state()["keys"]
+            app.escape(discard=True, expect_dialog=False)
+            app.gone()
+            return dict(cuts=cuts_of(p, 1), note=edit.get("cmNote") or "", marks=edit.get("keyframes") or [],
+                        pre=pre,
+                        pending=row.get("cmPending"), during=during, asked=asked,
+                        reopened_note=note, greyed=greyed, keys=keys)
+
+    try:
+        for leave, first, tag in (("ok", False, "38d-1"), ("escape", False, "38d-2"),
+                                  ("ok", True, "38d-3"), ("escape", True, "38d-4")):
+            r = run(f"outline_hangs_detection_{leave}{'_landed' if first else ''}", leave, first)
+            marks = r["marks"]
+            once = len(marks) == len(set(round(k, 3) for k in marks))
+            if leave == "ok":
+                cuts_ok = len(r["cuts"]) == 1
+            else:
+                cuts_ok = r["cuts"] == []
+            # Greyed on reopening means the row and the window hold an answer:
+            # then it has to be on screen.
+            agree = (not r["greyed"]) or bool(r["reopened_note"].strip())
+            # And while the open hangs, the note under the strip is the row's
+            # own sentence or the pass's answer, not the count of a pass the
+            # switch stopped ("まとめています" stood there).
+            agree = agree and (r["during"] == r["pre"] or "CM" in r["during"])
+            if first and leave == "ok":
+                # Landed before the switch and kept by OK: the row's edit
+                # carries the finding, and the reopened window shows it.
+                cuts_ok = cuts_ok and bool(r["note"]) and r["greyed"]
+            t.check(f"{tag} a detection {'landed' if first else 'pressed'} just before the next row's open hung, then "
+                    f"{'OK' if leave == 'ok' else 'Escape+破棄'}: row 1 says what its timeline holds",
+                    cuts_ok and once and agree, f"{r}")
+            if os.path.exists(e):
+                os.remove(e)
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
 def sound_join_named_by_master(cfg, t):
     """全部を 1 本に with 音声のみ: the file is named by the sound written,
     which is the master's (a reel unlike it is made over into it). a.ts has
@@ -5588,6 +5966,87 @@ def sound_join_named_by_master(cfg, t):
             shutil.rmtree(f) if os.path.isdir(f) else os.remove(f)
 
 
+def overtaken_walk_stops(cfg, t):
+    """Row 2 (a longer recording, its seek index taken away so the editor
+    has to walk it) double-clicked, and the window closed with OK while that
+    walk is still reading. The walk has nobody left to answer: it must stop
+    rather than read the rest of the recording (38th pass, tauri). The same
+    with row 1 double-clicked at once instead. Measured as the bytes the
+    program reads after the press; a walk that goes on reads the rest of
+    row 2's file. Not in the default list: on a local disc the walk of
+    row 2 takes about a second, so how far it got before the press -- and so
+    the margin -- depends on the machine. Measured on the dev VM: 233 / 283 MB
+    read before the fix, 167 / 216 MB after (row 2 185 MB)."""
+    import glob
+    big = os.path.join(cfg.media, "big.ts")
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc2=size=1280x720:rate=30000/1001:duration=120", "-c:v", "mpeg2video",
+                    "-g", "15", "-bf", "2", "-b:v", "25M", "-f", "mpegts", big], check=True)
+    size = os.path.getsize(big)
+
+    def rchar(pid):
+        with open(f"/proc/{pid}/io") as f:
+            return int(next(l for l in f if l.startswith("rchar:")).split()[1])
+
+    try:
+        with App(cfg, "overtaken_walk_stops", [{"path": cfg.a}, {"path": big}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 120)
+            time.sleep(2)
+            pid = app.gui_pid()
+
+            def forget():
+                for d in glob.glob(os.path.join(app.dir, "xdg", "cache", "*", "index")):
+                    for f in os.listdir(d):
+                        os.remove(os.path.join(d, f))
+
+            def after(since):
+                seen = []
+                for _ in range(24):
+                    time.sleep(0.25)
+                    seen.append(rchar(pid) - since)
+                return seen
+
+            forget()
+            start = rchar(pid)
+            app.open_row(2, "big.ts")
+            walking = "読み込んでいます" in app.state()["plan"]
+            before = rchar(pid)
+            app.ok()
+            app.gone()
+            seen = after(before)
+            whole = seen[-1] + before - start
+            t.check("38t-1 a walk for a window closed with OK stops",
+                    whole < size,
+                    f"{whole / 1e6:.1f} MB read from the press on, {seen[-1] / 1e6:.1f} MB of it after "
+                    f"OK; row 2 is {size / 1e6:.1f} MB; by quarter seconds {[round(x / 1e6) for x in seen[:12]]}"
+                    + ("" if walking else "; NOT REACHED: row 2's walk had landed"))
+            time.sleep(2)
+            forget()
+            start = rchar(pid)
+            app.open_row(2, "big.ts")
+            walking = "読み込んでいます" in app.state()["plan"]
+            before = rchar(pid)
+            app.open_row(1, "a.ts", wait=False)
+            seen = after(before)
+            whole = seen[-1] + before - start
+            t.check("38t-2 a walk overtaken by the next row stops",
+                    whole < size + 4 * os.path.getsize(cfg.a),
+                    f"{whole / 1e6:.1f} MB read from the first press on, {seen[-1] / 1e6:.1f} MB of it after "
+                    f"the second; row 2 is {size / 1e6:.1f} MB, "
+                    f"row 1 {os.path.getsize(cfg.a) / 1e6:.1f} MB; by quarter seconds "
+                    f"{[round(x / 1e6) for x in seen[:12]]}"
+                    + ("" if walking else "; NOT REACHED: row 2's walk had landed"))
+            app.editor_ready("a.ts")
+            app.ok()
+            app.gone()
+    finally:
+        if os.path.exists(big):
+            os.remove(big)
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -5623,6 +6082,7 @@ SCENARIOS = [
     seam_keeps_unsaved_undo,
     seam_clear_held_join,
     seam_all_untouched_join,
+    seam_follows_editor,
     disc_refuses_opus,
     disc_keeps_its_name,
     disc_gauge_appends,
@@ -5669,6 +6129,10 @@ SCENARIOS = [
     outline_hangs_cut_escape,
     outline_hangs_divide_cut,
     outline_hangs_cut_then_fails,
+    outline_hangs_marks,
+    outline_fails_plays_escape,
+    outline_hangs_remove_undo,
+    outline_hangs_detection,
     sound_join_named_by_master,
 ]
 
@@ -5677,7 +6141,8 @@ SCENARIOS = [
 EXTRA = [ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
          disc_seam_gap_chapters, disc_seam_join_chapters, disc_plays_rows, disc_plays_switch,
          disc_plays_recount, disc_plays_due, disc_plays_trim_first,
-         real_old_projects_ok_unchanged, disc_plays_trim_left]
+         real_old_projects_ok_unchanged, disc_plays_trim_left,
+         overtaken_walk_stops]
 
 
 def main():

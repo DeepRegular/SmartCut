@@ -557,7 +557,11 @@ async function edit(clip) {
     owedBack = null;
   };
   const left = again ? null : editing;
-  if (left) leftVisits.set(left.id, { before, editedBefore, owedBack });
+  // With whether the playlist's cuts were still owed to it, which leaving it
+  // settles below (`takePlays` on an edit the visit made): a visit put back
+  // to no edit at all -- キャンセル over a next open that failed or had not
+  // come up -- owes them again, or the row was written whole.
+  if (left) leftVisits.set(left.id, { before, editedBefore, owedBack, playsOwed: !!left.playsOwed });
   editing = clip;
   if (!again) arrived();
   // The row the window is leaving, where its last report came while it was
@@ -735,6 +739,19 @@ if (listen) {
     // it): that edit is of the row as it was, and written over the first
     // part it made that part the whole recording again.
     if (shown && clip !== editing && editing !== null && !leftVisits.has(clip.id)) return;
+    // The visit of a row the window has just left, for a detection that
+    // landed in there in the last moments of that visit and whose report
+    // came after the next row was asked for (`sync` waits 150 ms): it is
+    // taken onto what キャンセル puts that row back to (below), as it is for
+    // the row being edited. Not for a report sent while the next row's open
+    // has yet to come up (`shown`): nothing can land then -- the editor
+    // refuses a detection while swapping and drops the answer of one asked
+    // before (`editId !== asked`) -- so a "landing" seen there is a lane's
+    // finding on the row, which the window has not been told of.
+    const visit = !shown && clip !== editing && editing !== null ? leftVisits.get(clip.id) || null : null;
+    // That, for what such a report says about the commercial answer: the row
+    // keeps the lane's, still owed to the editor (`cmPending`).
+    const unaware = !!shown && clip !== editing;
     // A detection landing on the timeline: either the marks this window
     // handed over at `editor-open` (`cmPending`), or one run from inside the
     // editor, which comes back with a note the clip did not have before.
@@ -746,6 +763,7 @@ if (listen) {
     // detection, took the booking back and moved what キャンセル returns to.
     const booked = clip.cmState === "queued" || clip.cmState === "running";
     const landed =
+      !unaware &&
       state.cmNote &&
       (clip.cmPending ||
         (clip.cmNothingOwed && !booked) ||
@@ -767,7 +785,7 @@ if (listen) {
       if (clip !== editing) takePlays(clip);
     }
     const known = state.detectedWith || {};
-    if (state.cmNote && (landed || !booked)) {
+    if (state.cmNote && (landed || !booked) && !unaware) {
       const had = clip.cmState === "done";
       // The row's answer as it stood before the first finding to land on
       // such a visit -- the list's, or one run in there, which went the
@@ -777,8 +795,12 @@ if (listen) {
       // kept, though: the finding took it back, and the lane never reached it
       // -- cancelled out of, the row said "done" and greyed the pass over a
       // timeline with nothing on it, and nothing was left to answer.
-      if (landed && clip === editing && state.touched && !before && clip.cmState !== "running" && !owedBack) {
-        owedBack = {
+      // The same for the row on screen while the next row's open has yet to
+      // come up (`shown`): what キャンセル puts back for it is its visit's,
+      // kept in `leftVisits`.
+      const back = clip === editing ? { before, owedBack } : visit;
+      if (landed && back && state.touched && !back.before && clip.cmState !== "running" && !back.owedBack) {
+        const owed = {
           id: clip.id,
           state: clip.cmState,
           phase: clip.cmPhase,
@@ -787,6 +809,8 @@ if (listen) {
           nothing: clip.cmNothingOwed,
           source: clip.cmSource,
         };
+        if (clip === editing) owedBack = owed;
+        else visit.owedBack = owed;
       }
       clip.cmPhase = state.cmNote;
       clip.cmState = "done";
@@ -839,12 +863,18 @@ if (listen) {
     // went back to, and nothing else. A row with nothing to go back to
     // (opened for the first time) keeps nothing; the marks go with the
     // rest, as they did before a detection could land at all.
-    if (landed && clip === editing) {
+    //
+    // And onto that visit's, for the row on screen while the next row's open
+    // has yet to come up: a detection landing then went with the visit's
+    // edits on Escape+破棄.
+    if (landed && (clip === editing || visit)) {
       const now = JSON.parse(JSON.stringify(state));
-      if (!state.touched) before = now;
-      else if (before) {
-        before = {
-          ...before,
+      const was = clip === editing ? before : visit.before;
+      let next = was;
+      if (!state.touched) next = now;
+      else if (was) {
+        next = {
+          ...was,
           keyframes: now.keyframes,
           activeKey: now.activeKey,
           cmBlocks: now.cmBlocks,
@@ -854,6 +884,8 @@ if (listen) {
           flatRuns: now.flatRuns,
         };
       }
+      if (clip === editing) before = next;
+      else visit.before = next;
     }
     paintRow(clip);
     // The detect buttons down the side are about the selection, which this
@@ -870,12 +902,18 @@ if (listen) {
     touch();
     if (screen === "outset") renderOutset();
     if (screen === "out") renderOutScreen();
+    // And 継ぎ目の編集, which previews the joins on these bounds: off the
+    // output settings screen nothing else tells it until the visit ends.
+    followCross();
   });
 
   // A row put back as a visit found it: its edit, its commercial answer where
   // a finding had taken it, and the mark that says it has been edited.
-  const putBack = (clip, was, wasEdited, owed) => {
+  const putBack = (clip, was, wasEdited, owed, plays = false) => {
     clip.edit = was;
+    // And the playlist's cuts, owed again where they were when the visit
+    // began; see `leftVisits`.
+    if (plays) clip.playsOwed = true;
     // Not over a detection booked since, which is the newer question.
     const rebooked = clip.cmState === "queued" || clip.cmState === "running";
     if (!was && owed && owed.id === clip.id && !rebooked) {
@@ -912,7 +950,7 @@ if (listen) {
     if (clip) putBack(clip, before, editedBefore, owedBack);
     owedBack = null;
     if (visit) {
-      putBack(shown, visit.before, visit.editedBefore, visit.owedBack);
+      putBack(shown, visit.before, visit.editedBefore, visit.owedBack, visit.playsOwed);
       leftVisits.delete(shown.id);
       // As `editor-closed` does for the row the window was on: the
       // playlist's cuts, where the visit is being let go of without them.
@@ -1007,6 +1045,10 @@ if (listen) {
     }
     editing = clip;
     ({ before, editedBefore, owedBack } = visit);
+    // Owed again for as long as the window is back on it, as on the visit
+    // before: leaving it for the row that failed took them as handed over,
+    // and キャンセル now puts it back to what that visit found.
+    if (visit.playsOwed) clip.playsOwed = true;
     // The title bar was given the failed row's name on the press.
     invoke("retitle_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
     // The row that failed is left as `editor-closed` would leave it.
@@ -3775,6 +3817,12 @@ async function remove(doomed, { undoable = true } = {}) {
   // row out while the finger is still on the button, and every press after it
   // is about a row that is still there.
   clips = clips.filter((c) => !gone.has(c.id));
+  // The rows keep their `leftVisits` entries. One put back by 削除を元に戻す
+  // comes back as it went, so the visit still on screen -- the row before an
+  // open that hangs -- is still its visit: a cut made there after the undo and
+  // OK are kept, and Escape+破棄 puts it back as the visit found it. One not
+  // put back is not found by `byId`, which is all `editor-back` and
+  // `editor-cancel` need to pass over it.
   anchor = -1;
   renderList();
   // The line above the list named what the lanes were on, and a row taken

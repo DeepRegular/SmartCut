@@ -987,15 +987,27 @@ async fn open_source(
     plays: Option<Vec<(f64, f64)>>,
     app: tauri::AppHandle,
 ) -> Result<SourceInfo, String> {
-    let ticket = OPEN_TICKET.fetch_add(1, Ordering::SeqCst) + 1;
-    // The editor's own detections were asked about the recording it had up,
-    // and the window is now on another: the row it was handed is the one its
-    // buttons and its progress line are about. Left running, the last one's
-    // pass went on for minutes on half the machine, painting its percentage
-    // over the new row's button. Stopped as the open is asked for, so that a
-    // detection pressed once this recording is up is not caught by it.
-    app.state::<BatchStop>().editor.fetch_add(1, Ordering::SeqCst);
-    off_thread(move || open_now(&path, plays.as_deref().unwrap_or(&[]), &app, ticket)).await
+    // The ticket and the count below taken together: two opens asked for at
+    // once could otherwise take them in opposite orders, and the newer one --
+    // the open still wanted -- then found the count moved past its own and
+    // gave its walk up (see `open_now`).
+    static ASKED: Mutex<()> = Mutex::new(());
+    let (ticket, up) = {
+        let _asked = locked(&ASKED);
+        let ticket = OPEN_TICKET.fetch_add(1, Ordering::SeqCst) + 1;
+        // The editor's own detections were asked about the recording it had up,
+        // and the window is now on another: the row it was handed is the one its
+        // buttons and its progress line are about. Left running, the last one's
+        // pass went on for minutes on half the machine, painting its percentage
+        // over the new row's button. Stopped as the open is asked for, so that a
+        // detection pressed once this recording is up is not caught by it.
+        //
+        // The count this open is under, too: the window going moves it on, and
+        // a walk for a window that has gone is stopped (see `open_now`).
+        let up = app.state::<BatchStop>().editor.fetch_add(1, Ordering::SeqCst) + 1;
+        (ticket, up)
+    };
+    off_thread(move || open_now(&path, plays.as_deref().unwrap_or(&[]), &app, ticket, up)).await
 }
 
 /// What the container says about a recording, for a window that has not read
@@ -1345,18 +1357,27 @@ fn open_now(
     plays: &[(f64, f64)],
     app: &tauri::AppHandle,
     ticket: u64,
+    up: u64,
 ) -> Result<SourceInfo, String> {
+    let stale = || OPEN_TICKET.load(Ordering::SeqCst) != ticket;
+    // A walk whose answer nobody is going to take -- another row asked for
+    // since, or the window closed -- is given up rather than read to the
+    // end. Its answer was thrown away below either way, and it went on
+    // reading the whole recording, tens of seconds over a share, beside the
+    // walk of the row that overtook it: a row double-clicked and left at
+    // once, or one whose open had hung when OK was pressed.
+    let unwanted = || stale() || app.state::<BatchStop>().editor.load(Ordering::SeqCst) != up;
     // Asked for nothing but the mark a read leaves when it gives up: a walk
     // cut short by a share that went away is shown, and must not be written
     // down as the recording's index. See [`SHORT_OPEN`].
     let reads = smartcut_core::input::stop_reads_when(|| false);
-    let (src, held) = scan_cached(app, path)?;
+    let scanned = scan_cached_reporting(app, path, None, Some(&unwanted));
     let short = smartcut_core::input::reads_failed();
     drop(reads);
-    let stale = || OPEN_TICKET.load(Ordering::SeqCst) != ticket;
     if stale() {
         return Err("another recording was opened in the meantime".into());
     }
+    let (src, held) = scanned?;
     let mut info = info_of(&src);
     info.unplayed = smartcut_core::disc::unplayed_in(&src, plays);
     // All of it under the recording's own lock, because `prepare` reads the

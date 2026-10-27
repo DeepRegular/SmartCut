@@ -485,6 +485,10 @@ let swapping = false;
 /// row (`captureEdit`), kept by OK, and dropped by Escape with the rest of
 /// that row's visit (`cancelEdit`).
 const showingLeft = () => swapping && src !== null && shownId !== null && shownId !== editId;
+/// What that row was owed, while `showingLeft`: the open on its way has
+/// already set `discChapters`, `unplayedCuts` and the rest for itself, and
+/// keeps the shown row's in `outlineLeft`. Null otherwise.
+const shownFacts = () => (showingLeft() && outlineLeft ? outlineLeft : null);
 /// Whether the row up is a first visit whose mark files (`.keyframe`, Trim,
 /// `.cm.json`) have not been read yet. A recording whose head the outline
 /// could not find reads them only after the walk, and a Ctrl+H in that wait
@@ -644,9 +648,13 @@ function joinTimes() {
 /// playlist made (`unplayedCuts`). The list's own rule (`playlistCutBefore`
 /// in app.js), on the same cuts.
 function playsJoin(t) {
-  if (!unplayedCuts.length) return false;
+  // The shown row's, while the next row's open hangs: judged against that
+  // row's (`shownFacts`), a cut made then put a mark -- a chapter -- on
+  // every join the playlist made.
+  const played = (shownFacts() || { unplayedCuts }).unplayedCuts;
+  if (!played.length) return false;
   const cut = cuts.find((c) => Math.abs(c.b - t) < 1e-6);
-  return !!cut && cutsBeyond([cut], unplayedCuts).every((r) => r.b - r.a < 1e-3);
+  return !!cut && cutsBeyond([cut], played).every((r) => r.b - r.a < 1e-3);
 }
 
 /// `back` is the state being put back, when this is a step through the
@@ -6041,6 +6049,10 @@ function clearKeyframes() {
 // the name field. The shortcuts skip both steps.
 
 const moreMenu = () => el("more-menu");
+/// The chapters of the recording on screen: the row before, while the next
+/// row's open hangs (`shownFacts`). 録画のチャプター then put the hanging
+/// row's chapters onto the row shown, and OK kept them.
+const shownChapters = () => (shownFacts() || { discChapters }).discChapters;
 
 /// Put the menu up or away, and as it goes up say on each line whether it can
 /// do anything.
@@ -6058,7 +6070,7 @@ function showMore(on) {
     // Nothing to write where nothing has been detected, and the line says so
     // rather than writing a file with an empty list in it.
     el("save-as-cm").disabled = !src || !cmBlocks.length;
-    el("chapter-keys").disabled = !src || !discChapters.length;
+    el("chapter-keys").disabled = !src || !shownChapters().length;
     el("cm-keys").disabled = !src || !cmBlocks.length;
     // Nothing detected, nothing to mark -- one answer each, because either
     // pass can have run without the other. Written as well as greyed: what
@@ -6143,7 +6155,7 @@ el("save-as-cm").addEventListener("click", () => {
 });
 el("chapter-keys").addEventListener("click", () => {
   showMore(false);
-  applyDiscChapters(discChapters);
+  applyDiscChapters(shownChapters());
 });
 el("cm-keys").addEventListener("click", () => {
   showMore(false);
@@ -6799,6 +6811,16 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
         jlog(`tracks for the disc's choice: ${e}`);
       }
       if (overtaken()) return;
+    }
+    // A report of the row on screen still waiting on its debounce (`sync`):
+    // sent now, under that row, since from here `captureEdit` sends nothing
+    // until this row is up, and a cut made in the last 150 ms of a hang was
+    // lost.
+    if (syncTimer && showingLeft() && !leaving) {
+      clearTimeout(syncTimer);
+      syncTimer = null;
+      const state = captureEdit();
+      if (state && emit) emit("editor-state", state);
     }
     src = outline;
     replaced = true;
@@ -8661,6 +8683,12 @@ el("detect-cm").addEventListener("click", async () => {
     if (editId === asked) showCmNote(tr("cm.failed", { e }));
   } finally {
     cmBusy = false;
+    // An answer passed over because the window was handed the next row
+    // (`editId !== asked`) while the row it was about is still the one on
+    // screen -- that row's open hangs, or failed and the window went back:
+    // the count the pass put under the strip ("まとめています") stood there
+    // over a pass that had been stopped. That row's own sentence again.
+    if (editId !== asked && shownId === asked) showCmNote(cmSummary);
     paintDetectCm();
     detectLabel("detect-cm").textContent = tr("editor.detectCm");
     // The count is over; the note beside the counter says what it found.
