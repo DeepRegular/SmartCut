@@ -1374,8 +1374,11 @@ pub(crate) fn open_lost(url: &str) -> Result<bool> {
     if cue >= key || ahead < key {
         return Ok(false);
     }
+    // An open that fails is a check that could not be made, not an answer:
+    // kept as "not lost", the file would stay on the late zero for as long as
+    // the program runs ([`crate::input`] keeps only definite answers).
     let Some(mut whole) = crate::input::demux_unlost(url) else {
-        return Ok(false);
+        return Err(anyhow!("{url}: the open without the WebVTT failed"));
     };
     if whole.streams().count() != streams {
         return Ok(false);

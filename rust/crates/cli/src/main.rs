@@ -2463,10 +2463,10 @@ fn run() -> Result<()> {
     // from the ranges actually being kept rather than from the recording, and
     // said out loud: a run that is about to rewrite every picture of a
     // four-hour recording should say so before it starts.
-    // The size `--fit` priced against, and whether the pictures were to be
-    // written smaller for it: checked against what the run came to once it
-    // is over (`said_over_the_fit`).
-    let mut fit_room: Option<(u64, bool)> = None;
+    // The size `--fit` priced against, and why the run would come out
+    // larger than it, by what the pricing decided for the pictures: checked
+    // against what the run came to once it is over (`said_over_the_fit`).
+    let mut fit_room: Option<(u64, &'static str)> = None;
     let video_share = match fit {
         Some(named) => {
             // What the disc holds of a disc of recordings, which an
@@ -2524,6 +2524,11 @@ fn run() -> Result<()> {
                 },
             );
             let mut estimate = smartcut_core::fit::estimate_kept(rates, kept, busier, going);
+            // Whether `--video-share` could have made these pictures any
+            // smaller, for what is said once the run is over: it acts on
+            // MPEG-2 alone, and an H.264 cut that came out over its size was
+            // told to try it.
+            let can_shrink = estimate.can_shrink;
             // The file's own rate stands in for everything a cut into a file
             // carries that was never counted -- see `fit::estimate`.
             if going == smartcut_core::fit::Going::File {
@@ -2575,7 +2580,16 @@ fn run() -> Result<()> {
             );
             if f.fits {
                 tell!("        it fits as it is");
-                fit_room = Some((capacity, false));
+                fit_room = Some((
+                    capacity,
+                    if can_shrink {
+                        "it was priced to fit as it was, so the pictures were left as they were \
+                         (--video-share writes them smaller)"
+                    } else {
+                        "it was priced to fit as it was, and only MPEG-2 pictures can be written \
+                         smaller"
+                    },
+                ));
                 video_share
             } else if !f.reachable && f.video_bytes == 0 {
                 bail!(
@@ -2595,7 +2609,10 @@ fn run() -> Result<()> {
                     "        the pictures will be written at {:.1}% of their own size",
                     f.share * 100.0
                 );
-                fit_room = Some((capacity, true));
+                fit_room = Some((
+                    capacity,
+                    "the pictures would not shrink as far as they were asked to",
+                ));
                 Some(f.share)
             }
         }
@@ -2711,13 +2728,17 @@ fn run() -> Result<()> {
     // A disc's slot is taken before the cut, as an empty stream (see
     // `bdav::prepare`). A run that stops before the cut is written leaves it,
     // or half a recording, on the disc under a number nothing names.
-    let mut slot = Slot(None);
+    // And the folders `bdav::prepare` makes for it, where this run made them:
+    // a failed first run into a new folder left `BDAV/STREAM` and the rest
+    // behind, empty.
+    let mut slot = Slot::default();
     let onto = match &bdav {
         Some(at) => {
             let at = std::path::PathBuf::from(at);
+            slot.made = Slot::not_there(&at);
             let clip = smartcut_core::bdav::prepare(&at, 1)?.remove(0);
             let stream = smartcut_core::bdav::stream_of(&at, &clip);
-            slot = Slot(Some(stream.clone()));
+            slot.stream = Some(stream.clone());
             tell!("\ndisc  : {} -- recording {clip}", at.display());
             output = Some(stream.to_string_lossy().into_owned());
             Some((at, clip))
@@ -3598,11 +3619,18 @@ fn run() -> Result<()> {
         check_cut()?;
         // The whole disc against the whole disc, as the window's check after a
         // run has it: what was on it already is part of what has to fit.
-        if let Some((capacity, shrunk)) = fit_room {
-            let overwritable =
-                iso.is_some() && iso_access == smartcut_core::udfw::Access::Overwritable;
+        // A read-only image is weighed as the image, once it is written: its
+        // files each take whole extents, and the image has its own structures
+        // besides, so a folder under the size can make an image over it. An
+        // overwritable one is priced as the files a recorder's BD-RE holds
+        // (`fit::holds`), and the folder's clusters are exactly what it lays
+        // out (`udfw::overwritable_cost`).
+        let read_only =
+            iso.is_some() && iso_access != smartcut_core::udfw::Access::Overwritable;
+        if let Some((capacity, why)) = fit_room.filter(|_| !read_only) {
+            let overwritable = iso.is_some();
             let came = disc_bytes(&smartcut_core::bdav::root(&at), overwritable);
-            said_over_the_fit("disc", came, capacity, shrunk);
+            said_over_the_fit("disc", came, capacity, why);
         }
         if let Some(revision) = iso {
             // Beside the folder and named after it. The folder stays unless
@@ -3619,6 +3647,23 @@ fn run() -> Result<()> {
                 revision.as_str(),
                 iso_access.as_str()
             );
+            if let Some((capacity, why)) = fit_room.filter(|_| read_only) {
+                // Where the files alone are under the size, the pictures are
+                // not what took it over: the image's own structures (about
+                // 1.6 MB, and each file rounded up to a whole extent) are,
+                // which the 1% `--fit` holds back covers on a real disc.
+                let files = disc_bytes(&smartcut_core::bdav::root(&at), false);
+                let why = if files <= capacity {
+                    format!(
+                        "its files came to {:.1} MB, and the rest is the image's own file \
+                         system, which --fit does not price",
+                        files as f64 / 1e6
+                    )
+                } else {
+                    why.to_owned()
+                };
+                said_over_the_fit("image", bytes, capacity, &why);
+            }
             // And the folder, now that the image holds all of it. After the
             // image and never instead of it: a folder taken away before
             // there is an image is the disc lost.
@@ -3633,9 +3678,9 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
-    if let Some((capacity, shrunk)) = fit_room {
+    if let Some((capacity, why)) = fit_room {
         if let Ok(meta) = std::fs::metadata(&out) {
-            said_over_the_fit("cut", meta.len(), capacity, shrunk);
+            said_over_the_fit("cut", meta.len(), capacity, why);
         }
     }
     tell!("wrote {out}");
@@ -3672,17 +3717,12 @@ fn disc_bytes(at: &std::path::Path, overwritable: bool) -> u64 {
 /// happened, and they part company where the pictures would not shrink as
 /// far as they were asked to -- which can only be found out by trying, and
 /// was not said at all: a disc 15% over its size ended with "wrote".
-/// Nothing is changed or refused; the output is what it is.
-fn said_over_the_fit(what: &str, came: u64, capacity: u64, shrunk: bool) {
+/// Nothing is changed or refused; the output is what it is. `why` is what
+/// the pricing decided for the pictures, as `fit_room` holds it.
+fn said_over_the_fit(what: &str, came: u64, capacity: u64, why: &str) {
     if came <= capacity {
         return;
     }
-    let why = if shrunk {
-        "the pictures would not shrink as far as they were asked to"
-    } else {
-        "it was priced to fit as it was, so the pictures were left as they were \
-         (--video-share writes them smaller)"
-    };
     smartcut_core::say!(
         "note: the {what} came to {:.1} MB, which is {:.2} MB more than the {:.1} MB --fit \
          names: {why}",
@@ -3818,19 +3858,56 @@ fn drop_subpictures_named(
     Ok(())
 }
 
-/// A disc's stream taken for this run, given back unless the run keeps it.
-struct Slot(Option<std::path::PathBuf>);
+/// A disc's stream taken for this run, given back unless the run keeps it,
+/// and the folders the run made for it, taken away with it where they are
+/// still empty.
+#[derive(Default)]
+struct Slot {
+    stream: Option<std::path::PathBuf>,
+    /// Innermost first. Only folders that were not there before the run: a
+    /// disc added to keeps every folder it had, empty or not.
+    made: Vec<std::path::PathBuf>,
+}
 
 impl Slot {
     fn keep(&mut self) {
-        self.0 = None;
+        self.stream = None;
+        self.made.clear();
+    }
+
+    /// The folders `bdav::prepare` would make for a disc in `at`, innermost
+    /// first: its three, `BDAV`, and `at` with any of its parents that are
+    /// not there either (it makes them all).
+    fn not_there(at: &std::path::Path) -> Vec<std::path::PathBuf> {
+        // Not through a `..`: behind a folder that is not there, `new/../e`
+        // asks after `e` and is told it is missing because `new` is, and a
+        // folder `e` of somebody's own, empty, was taken away with the run.
+        let missing = |p: &std::path::Path| {
+            !p.as_os_str().is_empty()
+                && !p.components().any(|c| c == std::path::Component::ParentDir)
+                && std::fs::symlink_metadata(p).is_err()
+        };
+        let root = smartcut_core::bdav::root(at);
+        let mut made: Vec<std::path::PathBuf> = ["STREAM", "PLAYLIST", "CLIPINF"]
+            .iter()
+            .map(|d| root.join(d))
+            .chain(std::iter::once(root.clone()))
+            .filter(|p| missing(p))
+            .collect();
+        made.extend(at.ancestors().take_while(|p| missing(p)).map(|p| p.to_path_buf()));
+        made
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
+        if let Some(path) = self.stream.take() {
             let _ = std::fs::remove_file(path);
+        }
+        // `remove_dir` and never more: it refuses a folder with anything in
+        // it, so what another run put there meanwhile stays.
+        for dir in self.made.drain(..) {
+            let _ = std::fs::remove_dir(dir);
         }
     }
 }

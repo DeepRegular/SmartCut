@@ -788,14 +788,18 @@ impl Shrink {
         // run can ask for: asked 48.8%, a broadcast's 30 s went no smaller
         // than 60.1%, and the disc came out 15% over the size `--fit` named
         // with only the line above to say anything about it. What is
-        // written stays as it is; the run says how far it fell short.
+        // written stays as it is; the run says how far it fell short. Of the
+        // pictures it made smaller, and only those: the figure is their bytes
+        // against what was asked of them, not the cut's size against the one
+        // it was to fit -- a cut that still fitted was told it was "larger
+        // than it was planned to be", and one 3.5 MB over was told 5.3.
         let reached = tally.share();
         if reached > self.share + 0.02 {
             let planned = tally.source_bytes as f64 * self.share;
             crate::note_once(format!(
                 "note: the pictures could not be made as small as asked: {:.1}% of their own \
-                 size was asked for and {:.1}% is as small as they went, so the cut is about \
-                 {:.1} MB larger than it was planned to be",
+                 size was asked for and {:.1}% is as small as they went, about {:.1} MB more \
+                 than was planned for them (the cut as a whole may still fit)",
                 self.share * 100.0,
                 reached * 100.0,
                 (tally.written_bytes as f64 - planned).max(0.0) / 1e6,
@@ -3529,7 +3533,7 @@ fn stretch_bytes(
 /// is seeked to instead. That is where the stretch begins, so the read picks
 /// up ahead of the entry point with none of the stretch before it in the way.
 fn seek_into(
-    ictx: &mut ff::format::context::Input,
+    ictx: &mut crate::input::Demux,
     src: &Source,
     time: f64,
     floor: Option<crate::restamp::Seam>,
@@ -3606,7 +3610,7 @@ impl RunUp {
 /// approximates timestamps, so asking for exactly the target can land past
 /// it. Reading a few extra GOPs forward is cheap; overshooting is not
 /// recoverable.
-fn seek_to(ictx: &mut ff::format::context::Input, src: &Source, time: f64) -> Result<()> {
+fn seek_to(ictx: &mut crate::input::Demux, src: &Source, time: f64) -> Result<()> {
     let landing = (time - src.seek_margin).max(0.0);
     // Asking for the beginning has to mean the beginning. Aiming at the
     // container's own start time is not the same thing: a transport stream
@@ -3650,10 +3654,26 @@ fn seek_to(ictx: &mut ff::format::context::Input, src: &Source, time: f64) -> Re
     // picture (143 of 144, 10 dB) -- and so did the same recording with a
     // WebVTT track every block of which reads. The rule is the sound-only
     // writer's as well; see [`crate::sound::sought_at_head`].
+    //
+    // **And sought from the cluster the sound starts in, where that is ahead
+    // of the first key picture's** -- as the sound-only writer seeks the same
+    // head ([`crate::sound::sound_from_head`]). The file's index names key
+    // pictures only, so the head seek lands on the key picture's cluster and
+    // passes over a first cluster that holds only the sound a broadcast sends
+    // ahead of its pictures, and whatever else is in it: the subtitle up at
+    // the start of such a remux with PGS beside the WebVTT, which the open
+    // still had, was carried by neither the look back nor the cut from 0.
     let sought_anyway =
         landing <= 0.0 && crate::sound::sought_at_head(ictx, &src.input.url);
     if landing <= 0.0 && !sought_anyway {
         return Ok(());
+    }
+    if sought_anyway {
+        if let Some(sound) = src.audios.first() {
+            crate::sound::sound_from_head(ictx, &src.input.url, sound.stream_index)
+                .context("seek failed")?;
+            return Ok(());
+        }
     }
     let target = if landing <= 0.0 {
         i64::MIN / 2

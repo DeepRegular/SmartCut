@@ -2269,9 +2269,19 @@ fn first_picture(ictx: &mut input::Demux, video: &VideoInfo, start_time: f64) ->
         let u = (*ictx.as_ptr()).url;
         (!u.is_null()).then(|| std::ffi::CStr::from_ptr(u).to_string_lossy().into_owned())
     };
+    //
+    // And read so with the pictures alone, as the walk reads it: with the
+    // WebVTT left on, its block in the first cluster threw that cluster away
+    // again on the read after the seek, and where the cluster held the first
+    // key picture (a cue opening it, the sound and an open GOP behind) the
+    // head came out a GOP late -- 1.322 s where the walk says 0.321 -- and
+    // the editor counted its frames and a mark file's numbers from there
+    // until the walk landed. Only on that branch: the demuxer is dropped
+    // after this, and every other recording is read as before.
     if url.is_some_and(|u| crate::sound::sought_at_head(ictx, &u)) {
         let target = i64::MIN / 2;
         ictx.seek(target, ..target).ok()?;
+        input::keep_only(ictx, &[video.stream_index]);
     }
     let mut head: Option<f64> = None;
     let mut seen: u64 = 0;

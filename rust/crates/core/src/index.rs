@@ -149,14 +149,18 @@ pub fn walk(
     };
     if url.is_some_and(|u| crate::sound::sought_at_head(&ictx, &u)) {
         let target = i64::MIN / 2;
-        // Refused where the file has no index (Cues) -- one written to a
-        // pipe: the head the open lost cannot be read again, and a cut read
-        // on from the open would lose it without a word.
+        // Refused where the seek fails -- a file with no index (Cues), one
+        // written to a pipe, above all: the head the open lost cannot be
+        // read again, and a cut read on from the open would lose it without
+        // a word. Said as no more than is known: the branch is also taken
+        // where the check of the open could not be made, and a seek can fail
+        // for other reasons.
         ictx.seek(target, ..target).map_err(|e| {
             anyhow!(
-                "seek to the head failed: {e} (the open could not read a WebVTT block at the \
-                 head of this Matroska file, and the file has no index (Cues) to read the head \
-                 again from)"
+                "seek to the head failed: {e} (the head of this Matroska file with WebVTT has \
+                 to be read again, as its open can lose part of it to a WebVTT block it cannot \
+                 read, and the seek there failed -- as it does in a file with no index (Cues), \
+                 one written to a pipe)"
             )
         })?;
     }
@@ -1974,7 +1978,8 @@ pub fn sample_bit_rate(
             }
         }
         let (mut took, mut read_at) = (0u64, from.pos);
-        for (s, p) in ictx.read_packets() {
+        let mut reading = ictx.read_packets();
+        for (s, p) in reading.by_ref() {
             if p.position() >= 0 {
                 read_at = p.position() as i64;
             }
@@ -1985,7 +1990,10 @@ pub fn sample_bit_rate(
                 took += p.size() as u64;
             }
         }
-        if took == 0 {
+        // A read that stopped at errors -- a share that went away -- weighed
+        // part of the window against the whole of it, and the low share it
+        // gave is kept in the seek index with the disc's points.
+        if took == 0 || reading.finished().is_err() {
             continue;
         }
         pictures += took;

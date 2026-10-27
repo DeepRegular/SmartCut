@@ -259,6 +259,8 @@ pub struct Reader {
     /// Which stream the pictures are on. See [`Reader::fill`]: they are the
     /// clock a window is read against.
     video: usize,
+    /// The sound track the cut seeks the head by. See [`Reader::fill`].
+    sound: Option<usize>,
     ictx: Option<crate::input::Demux>,
     /// The stretch [`Reader::events`] answers for, which starts a little
     /// after where the read did; see [`Reader::fill`]. Empty until the first
@@ -309,6 +311,7 @@ impl Reader {
             screen: (src.video.width as u16, src.video.height as u16),
             palette,
             video: src.video.stream_index,
+            sound: src.audios.first().map(|a| a.stream_index),
             ictx: None,
             window: None,
             events: Vec::new(),
@@ -365,10 +368,42 @@ impl Reader {
         };
         let base = self.base;
         let video = self.video;
+        let sound = self.sound;
+        // A window from the very front is read from a demuxer just opened,
+        // as the cut reads it (`cut::seek_to`): a seek to the head of a
+        // Matroska file lands on the first key picture's cluster, and a
+        // display set in a cluster of its own ahead of that one -- up before
+        // the first picture -- was never shown here, while a range opening
+        // there carried it. So a demuxer that has read elsewhere is opened
+        // afresh for it.
+        if from <= 0.0 {
+            self.ictx = None;
+        }
         let ictx = match self.ictx.as_mut() {
             Some(c) => c,
             None => {
-                let c = crate::input::demux(&self.url)?;
+                let mut c = crate::input::demux(&self.url)?;
+                // From the very front, sought only where the open lost part
+                // of the head (`sound::sought_at_head`), and then as the cut
+                // seeks it (`cut::seek_to`): from the cluster the first sound
+                // track starts in where that is ahead of the first key
+                // picture's ([`crate::sound::sound_from_head`]), so a display
+                // set in that cluster is shown where the cut carries it.
+                // Before the discards, as there.
+                if from <= 0.0 && crate::sound::sought_at_head(&c, &self.url) {
+                    let target = i64::MIN / 2;
+                    match sound {
+                        Some(track) => {
+                            if crate::sound::sound_from_head(&mut c, &self.url, track).is_err() {
+                                c = crate::input::demux(&self.url)?;
+                                let _ = c.seek(target, ..target);
+                            }
+                        }
+                        None => {
+                            let _ = c.seek(target, ..target);
+                        }
+                    }
+                }
                 // The pictures and the sound are the whole file; nothing
                 // here reads a byte of either, so the demuxer is told not
                 // to hand them over. Without this a window costs the file.
@@ -407,12 +442,11 @@ impl Reader {
         // `cut::seek_to` does it: aimed at the container's own start, a
         // transport stream's seek lands past its first entry point, and a
         // subtitle up in the opening second of the recording was not there.
-        let target = if from > 0.0 {
-            ((from + self.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
-        } else {
-            i64::MIN / 2
-        };
-        let _ = ictx.seek(target, ..target);
+        // There the open is read on, or sought as the cut seeks it (above).
+        if from > 0.0 {
+            let target = ((from + self.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+            let _ = ictx.seek(target, ..target);
+        }
 
         let mut events: Vec<Event> = Vec::new();
         let mut layout = caption::Layout::default();

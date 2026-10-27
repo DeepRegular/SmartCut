@@ -619,16 +619,23 @@ fn remembered(url: &str, find: impl FnOnce(&str) -> Known) -> Known {
             return known.clone();
         }
     }
+    let cut = READS_CUT.with(|c| c.get());
     let known = find(url);
     // Only a definite answer is kept: a check that could not be made, or a
     // loss whose clock could not be read, is asked again next time rather
     // than leaving the file on libavformat's zero for as long as the program
-    // runs, while the next run counts from the true one.
-    let definite = match known.lost {
-        Some(false) => true,
-        Some(true) => known.clock.is_some(),
-        None => false,
-    };
+    // runs, while the next run counts from the true one. Nor one whose reads
+    // were ended short -- a pass stopped while it asked (the list's walk
+    // stopped as the row was added), or a share that went away: with
+    // nothing read, the check finds nothing lost, and the file was cut from
+    // libavformat's zero, its head lost, until the program closed.
+    let whole = READS_CUT.with(|c| c.get()) == cut;
+    let definite = whole
+        && match known.lost {
+            Some(false) => true,
+            Some(true) => known.clock.is_some(),
+            None => false,
+        };
     if !definite {
         return known;
     }
@@ -1088,6 +1095,14 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static READS_STOPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static READS_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many reads on this thread a stop or a run of errors has ended,
+    /// inside a pass or not. See [`remembered`].
+    static READS_CUT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count a read on this thread ended short. See [`READS_CUT`].
+fn read_cut() {
+    READS_CUT.with(|c| c.set(c.get().wrapping_add(1)));
 }
 
 /// Stop every read on this thread once `stop` says so, until the answer is
@@ -1177,6 +1192,7 @@ impl<'a> Iterator for Packets<'a> {
                     self.read = self.read.wrapping_add(1);
                     if self.read % STOP_EVERY == 1 && asked_to_stop() {
                         READS_STOPPED.with(|s| s.set(true));
+                        read_cut();
                         self.failed = Some("stopped".to_string());
                         return None;
                     }
@@ -1201,6 +1217,7 @@ impl<'a> Iterator for Packets<'a> {
                     self.failures += if again { 1 } else { EAGAIN_WORTH };
                     if self.failures >= MOST_FAILURES * EAGAIN_WORTH {
                         self.failed = Some(e.to_string());
+                        read_cut();
                         // Only inside a pass that asks: a thread from a pool
                         // with no pass on it would keep the mark for the next.
                         if STOP_READS.with(|s| s.borrow().is_some()) {
