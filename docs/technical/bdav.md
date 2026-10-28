@@ -686,7 +686,17 @@ are removed at the end of the run. Only the numbers the run itself was given
 are ever named, so nothing another run put on the disc is touched. The same
 goes for the index: a recording that cannot be indexed — the disk filled
 while its arrival times were rewritten, say — is taken off the disc with those
-after it, and the ones before it are still put in the table.
+after it, and the ones before it are still put in the table. Where that is
+the run's first recording, so that the run adds nothing, `info.bdav` is left
+as it was. Up to 0.8.34 it was written again all the same, in this program's
+own form, so a failed run onto a recorder's disc still replaced the
+recorder's table, and a failed run into a new folder left a table naming the
+disc after the recording that failed, a name the next run then kept. The
+command line also takes away the folders it made for the disc, as long as
+they are empty and no other run's recording is in `STREAM`, so a run into a
+new folder that fails at the index leaves nothing behind; up to 0.8.34 it
+left `BDAV` with its three folders, empty
+([`--bdav`](../user-guide/cli.md#writing-a-disc-bdav)).
 
 ## The image
 

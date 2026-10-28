@@ -300,7 +300,13 @@ reminder that only MPEG-2 can be -- up to 0.8.33 an H.264 cut was told to
 try `--video-share` too); or, for an image whose files alone come to less
 than the size, that the rest is the image's own file system, which `--fit`
 does not price. Nothing written is changed by any of this: they are
-messages.
+messages. The window's check after a run weighs the same things and, with
+**Transcode** on, gives the same reasons -- where none of the recordings written is MPEG-2, that only MPEG-2 can be
+transcoded. Up to 0.8.34 it weighed a read-only image by its folder too, and
+chose its sentence by whether the pictures had been transcoded, so a list
+priced to fit with **Transcode** on, or one with no MPEG-2 in it, was told to
+turn **Transcode** on (`startExport` in
+[`app.js`](../../gui/src/app.js)).
 
 **A recorder's title is measured over clock that no cut writes.** At a seam,
 from where the pictures before it stop to the first entry point after it,

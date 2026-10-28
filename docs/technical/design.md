@@ -787,6 +787,29 @@ frame it was moved to, the stage carries the nearest picture there is, and the o
 which it is (「I フレーム — 近くの絵（解析中）」). `pointsArrived` asks again for the frame the
 pointer is really on, and from there the two agree exactly.
 
+**A glimpse that comes back past the instant is asked once more.** A
+transport stream is sought by decoding time, and an entry picture is decoded a
+few pictures before it is shown, so a seek aimed at one lands on the pictures
+decoded after it and the first entry picture from there is the next GOP's.
+That is how a landing came out past its frame, and the first picture the stage
+opens on did too: on 12 of 19 broadcast and disc recordings it
+was the second GOP's, under a counter on frame 0, for the whole walk.
+`glance_now` in [`preview.rs`](../../rust/crates/core/src/preview.rs) now
+reads once more from a quarter of a second earlier, stopping at the first
+packet decoded after the instant (`Glancer::at_until`), and takes that answer
+where it is at or before the instant and is an entry picture, or the first
+answer was not one either. The stage opens on the recording's first picture
+(one VC-1 disc title still opens 0.2 s in), and elsewhere during the walk it
+carries the entry picture at or before the frame rather than the one after
+it -- except where that picture is one a cut took, as it can be on the first frame
+after a cut: there `showFrame` in [`main.js`](../../gui/src/main.js) asks the
+film strip's way (`glimpses`, which does not look back) and carries the kept
+picture after the frame. Up to 0.8.34 it carried the one after. The second read costs a seek:
+about a megabyte and a half more a glimpse on broadcast material, and a few
+per cent on a pressed disc whose entry pictures stand seconds apart, since it
+reads no further than the instant. Only the stage's `glimpse` does this; the
+film strip's cards (`glance_run`) and the list's pictures are read as before.
+
 **The film strip fills in stage one as well, and its own shape says how far to trust it.**
 There are no access points to divide the reel on yet, so it is cut on an even grid
 (`evenCells`) and every cell is filled by the seek the stage is already using — one open
