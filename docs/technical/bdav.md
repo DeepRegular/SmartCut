@@ -695,7 +695,8 @@ disc after the recording that failed, a name the next run then kept. The
 command line also takes away the folders it made for the disc, as long as
 they are empty and no other run's recording is in `STREAM`, so a run into a
 new folder that fails at the index leaves nothing behind; up to 0.8.34 it
-left `BDAV` with its three folders, empty
+left `BDAV` with its three folders empty, an `info.bdav` that listed
+nothing, and the parent folders the run had made
 ([`--bdav`](../user-guide/cli.md#writing-a-disc-bdav)).
 
 ## The image
