@@ -4130,8 +4130,12 @@ function endRename(keep) {
   // out for itself.
   if (clip === editing) {
     invoke("retitle_editor", { title: t("editor.windowTitle", { clip: clipLabel(clip) }) });
-    if (emit) emit("clip-renamed", { id: clip.id, name: clipName(clip) });
   }
+  // Its header names the row whose recording is up, which while the next
+  // row's open is still waiting (a hang over a share) is the row before it,
+  // not `editing`: only the editor knows which (`shownId`), and it takes the
+  // name for the row it shows or the one on its way in and nothing else.
+  if (editing !== null && emit) emit("clip-renamed", { id: clip.id, name: clipName(clip) });
   touch();
 }
 
@@ -9663,6 +9667,12 @@ async function startExport() {
   // its control shows when the image is made.
   const runImaged = !!settings.image;
   const runAccess = runImaged ? settings.imageAccess : "";
+  // What the pricing decided, for the check after a disc run to say why the
+  // disc came out over (`sayDisc`): 収める as it was when the share below was
+  // worked out, and whether any of the pictures can be transcoded at all (the
+  // rows `discCosts` prices, by the same test).
+  const runFit = !!settings.fit;
+  const runShrinks = list.some((c) => c.info && c.info.video_rate > 0 && !!c.info.can_shrink);
   const share = await fitShare(runAccess, list);
   if (share !== null) note(t("out.shrinking", { share: sharePct(share) }));
   // Stopped before a byte was written. The disc's numbers were taken, as
@@ -10021,23 +10031,48 @@ async function startExport() {
         // indexing, and a change of it in them priced the disc one way and
         // measured it the other.
         const capacity = await discHolds(Number(settings.disc) || 0, overwritable ? "overwritable" : "");
-        if (wroteBytes > 0 && capacity > 0) {
-          // A disc that came out too large says so either way, but only a
-          // run that was asked to make the pictures smaller can say they
-          // would go no smaller. Where nothing was asked of them, what is
-          // worth saying is that asking is there to be done.
+        // A read-only image is weighed as the image, once it is written, as
+        // the CLI weighs it: its files each take whole extents and the image
+        // has its own file system besides, so a folder under the size can
+        // make an image over it. Said by the folder only where no image came
+        // of it after all (turned off in the meantime, or it failed).
+        const imageWeighed = !!settings.image && !overwritable;
+        let discSaid = false;
+        const sayDisc = (bytes, files = null) => {
+          if (discSaid || !(bytes > 0) || !(capacity > 0)) return;
+          discSaid = true;
+          // A disc that came out too large says so either way, with the
+          // reason the pricing gives it, as the CLI's `said_over_the_fit`
+          // does: only a run that was asked to make the pictures smaller
+          // can say they would go no smaller, one priced to fit was left as
+          // it was, and pictures that are not MPEG-2 cannot be transcoded at
+          // all. Where nothing was asked of pictures that could have been,
+          // what is worth saying is that asking is there to be done. An
+          // image whose files alone fit was taken over by its own file
+          // system, which 収める does not price.
           let said = "out.discSize";
-          if (wroteBytes > capacity) {
-            said = share !== null ? "out.discTooBig" : "out.discOver";
+          if (bytes > capacity) {
+            said =
+              files !== null && files <= capacity
+                ? "out.imageOver"
+                : !runShrinks
+                  ? "out.discNotMpeg2"
+                  : share !== null
+                    ? "out.discTooBig"
+                    : runFit
+                      ? "out.discPriced"
+                      : "out.discOver";
           }
           note(
             t(said, {
-              used: discGiB(wroteBytes, 2),
+              used: discGiB(bytes, 2),
               disc: discGiB(capacity),
-              over: discGiB(wroteBytes - capacity, 2),
+              over: discGiB(Math.max(bytes - capacity, 0), 2),
+              files: discGiB(files || 0, 2),
             })
           );
-        }
+        };
+        if (!imageWeighed) sayDisc(wroteBytes);
         // The image, if one was asked for. After the index and not instead
         // of it: the image is made of the folder, which has to be finished
         // before there is anything to wrap.
@@ -10051,7 +10086,7 @@ async function startExport() {
             paintOutProgress(0, phaseBegan);
             el("out-state").textContent = t("out.imaging", { udf: settings.image, pct: 0 });
             renderOutScreen();
-            const path = await invoke("bdav_image", {
+            const made = await invoke("bdav_image", {
               dir: discDir(),
               // The name the index was just written under, not the field as
               // it stands now: the screen stays editable through the run,
@@ -10065,8 +10100,10 @@ async function startExport() {
               // row left out of it can still be the image. See `bdav_image`.
               reading: clips.map((c) => c.path),
             });
+            const path = made.path;
             finishStep("image", "done");
             note(t("out.imageDone", { path }));
+            if (imageWeighed && access !== "overwritable") sayDisc(Number(made.bytes), wroteBytes);
             // And the folder, if that was asked for. After the image and
             // never instead of it -- the image is made of the folder, so a
             // folder taken away before there is an image is the disc lost --
@@ -10087,6 +10124,7 @@ async function startExport() {
             note(t("out.imageFailed", { e: String(e) }));
           }
         }
+        if (imageWeighed) sayDisc(wroteBytes);
       } catch (e) {
         finishStep("index", "error");
         note(t("out.bdavFailed", { e: String(e) }));

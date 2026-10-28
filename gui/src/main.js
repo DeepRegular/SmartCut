@@ -420,11 +420,18 @@ let settling = 0;
 /// Put a recording's own marks down without writing them into the history.
 async function settle(fn) {
   settling += 1;
+  // The open this settle is part of. One that ends after the next row has
+  // been sent is no news about what is on screen: the switch has let go of
+  // the edits made during this row's arrival (`editedWhileArriving`), and
+  // settled then it took them for what the row arrived with -- an Escape
+  // while the next row was still coming in threw that row's cuts away
+  // without asking.
+  const gen = openGen;
   try {
     return await fn();
   } finally {
     settling -= 1;
-    settleMark();
+    if (gen === openGen) settleMark();
   }
 }
 
@@ -1915,6 +1922,20 @@ async function showFrame(t) {
       shot = await stagePicture(ask);
       if (token !== previewToken) return;
       if (srcToOut(shot.time) !== null) break;
+      // Before the walk a glimpse answers with the entry picture at or
+      // before the instant where one is near (`glance_now`), and asked for
+      // the first frame after a cut that one is in the stretch the cut took:
+      // a frame earlier only goes further into it. The entry picture after
+      // the instant is the kept one, and `glimpses` (the strip's, which does
+      // not look back) answers with that.
+      if (!walked() && shot.time < ask && srcToOut(ask) !== null) {
+        const [after] = await invoke("glimpses", { path: src.path, times: [ask], width: stageWidth() });
+        if (token !== previewToken) return;
+        if (after && srcToOut(after.time) !== null) {
+          shot = after;
+          break;
+        }
+      }
     }
     // Snap to the picture that actually came back, so the frame counter and
     // the picture never disagree. They would under 2:3 pulldown, where the
@@ -6493,6 +6514,24 @@ async function recountEarly(before) {
   }
   const kind = markFileKind;
   const gen = openGen;
+  // What the timeline holds now, the file's marks on the outline's head, for
+  // an open that overtakes this one while the file is read again: the read's
+  // answer is then dropped, and the timeline was left as it was before the
+  // file -- without the marks, and no longer what the row arrived with (the
+  // settle does not mark it once overtaken), so that an Escape on the row
+  // still shown asked about edits nobody had made, and OK sent the row
+  // without its Trim line. Put back where nothing was done in between.
+  const held = {
+    cuts: cuts.map((c) => ({ a: c.a, b: c.b })),
+    keyframes: keyframes.slice(),
+    activeKey,
+    pickedKeys: pickedKeys.slice(),
+    selGone,
+    selA,
+    selB,
+  };
+  const shown = src;
+  let reset = null;
   await settle(async () => {
     // As `pointsArrived` moves what it finds: a cut to the old end runs to
     // the end the walk found.
@@ -6510,10 +6549,28 @@ async function recountEarly(before) {
     selGone = before.selGone;
     selA = Math.min(before.selA, outDur);
     selB = before.selB >= before.outDur - 1e-9 ? outDur : Math.min(before.selB, outDur);
+    reset = editSignature();
     if (kind === "trim") await readTrimFile(markPath("trim"));
     else await readKeyframeFile(markPath("keyframe"));
   });
-  if (gen !== openGen) return;
+  if (gen !== openGen) {
+    // Only onto the recording it was taken from, still up: the next row's
+    // own timeline once its outline is in is that row's.
+    if (reset !== null && src === shown && editSignature() === reset) {
+      cuts = held.cuts;
+      keyframes = held.keyframes;
+      activeKey = held.activeKey;
+      pickedKeys = held.pickedKeys;
+      rebuildTimeline();
+      selGone = held.selGone;
+      selA = held.selA;
+      selB = held.selB;
+      renderKeyframes();
+      updateReadouts();
+      draw();
+    }
+    return;
+  }
   rebuildTimeline();
   renderKeyframes();
   updateReadouts();
@@ -6696,6 +6753,11 @@ let recountHead = null;
 /// started (`openPath`), until that open has replaced `src` or failed; null
 /// otherwise.
 let outlineLeft = null;
+/// The name the list gives the row on its way in, put in the header once its
+/// recording is up. Kept here rather than in `openPath`'s own hands so that a
+/// rename in the list while that open is still waiting reaches it (see
+/// `clip-renamed`).
+let arrivingName = null;
 
 async function openPath(picked, saved, side, name, chapters, dropPids, detected, plays) {
   jlog(`openPath ${picked}`);
@@ -6756,6 +6818,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
   // a language switch during the open wrote this row's name in front of the
   // last recording's path.
   const named = name || null;
+  arrivingName = named;
   sideBase = side || picked.replace(/\.[^./\\]*$/, "");
   // Held for the menu, which can put them down again after they have been
   // cleared -- and for the ordinary way in, a few lines below, where they
@@ -6834,7 +6897,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
       discChapters = src.chapters.filter((c) => Number.isFinite(c));
       chaptersDue = (!saved || !!saved.chaptersDue) && discChapters.length > 0;
     }
-    shownName = named;
+    shownName = arrivingName;
     inbound = false;
     tailSrc = null;
     // Nothing the pass over the last recording made is this one's. Its held
@@ -8627,6 +8690,8 @@ el("tracks-modal").addEventListener("mousedown", (ev) => {
 /// The last count the commercial pass put on the status line, to take down
 /// when it is over.
 let cmCounting = null;
+/// The row the commercial pass running now was asked of. See `cm-progress`.
+let cmAsked = null;
 
 el("detect-cm").addEventListener("click", async () => {
   // Nor while another row is coming in: `src` is still the row being left,
@@ -8642,6 +8707,11 @@ el("detect-cm").addEventListener("click", async () => {
   // The recording this was asked of. The window can be handed another row
   // while the pass runs, and its answer is not that row's.
   const asked = editId;
+  // And the open it was asked under: the next open stops the pass, and the
+  // "cancelled" that comes back is no news about the row if the window has
+  // come round to it again by then.
+  const gen = openGen;
+  cmAsked = asked;
   try {
     const res = await invoke("detect_cm", {
       path: src.path,
@@ -8680,7 +8750,7 @@ el("detect-cm").addEventListener("click", async () => {
     // later visit to this clip does not have to detect it again.
     sync();
   } catch (e) {
-    if (editId === asked) showCmNote(tr("cm.failed", { e }));
+    if (editId === asked && gen === openGen) showCmNote(tr("cm.failed", { e }));
   } finally {
     cmBusy = false;
     // An answer passed over because the window was handed the next row
@@ -8688,7 +8758,7 @@ el("detect-cm").addEventListener("click", async () => {
     // screen -- that row's open hangs, or failed and the window went back:
     // the count the pass put under the strip ("まとめています") stood there
     // over a pass that had been stopped. That row's own sentence again.
-    if (editId !== asked && shownId === asked) showCmNote(cmSummary);
+    if ((editId !== asked || gen !== openGen) && shownId === asked) showCmNote(cmSummary);
     paintDetectCm();
     detectLabel("detect-cm").textContent = tr("editor.detectCm");
     // The count is over; the note beside the counter says what it found.
@@ -8813,8 +8883,12 @@ async function runFlat(id, label, which, kinds, call) {
   flatBusy.add(id);
   btn.disabled = true;
   el("status").textContent = tr("flat.detecting");
-  // As with the commercial detection: an answer for the row that was open.
+  // As with the commercial detection: an answer for the row that was open,
+  // under the open it was asked in.
   const asked = editId;
+  const gen = openGen;
+  flatAskedOf.set(id, asked);
+  flatCounting.set(id, el("status").textContent);
   // The question as it was put, which is what the answer is to: 環境設定 can
   // move while the pass runs.
   const question = prefs.flatAsked(which);
@@ -8828,9 +8902,17 @@ async function runFlat(id, label, which, kinds, call) {
     putDetected(() => applyFlatRuns(kinds, runs, flatMarks(which)));
     el("status").textContent = flatSaid(which, runs.length);
   } catch (e) {
-    if (editId === asked) el("status").textContent = tr("flat.failed", { e });
+    if (editId === asked && gen === openGen) el("status").textContent = tr("flat.failed", { e });
   } finally {
     flatBusy.delete(id);
+    // A pass stopped by the next row's open, over the row still on screen
+    // (that open hangs, or failed and the window went back): its count stood
+    // on the status line for good. As the commercial pass does below.
+    if ((editId !== asked || gen !== openGen) && flatCounting.get(id) === el("status").textContent) {
+      el("status").textContent = "";
+    }
+    flatCounting.delete(id);
+    flatAskedOf.delete(id);
     // Greyed again where the pass has just answered the question in force:
     // left live, a menu opened while it ran offered a line that did nothing.
     paintDetectFlat();
@@ -8844,6 +8926,10 @@ async function runFlat(id, label, which, kinds, call) {
 /// needed -- a menu opened while a pass runs must offer that pass's line
 /// greyed and the other one ready.
 const flatBusy = new Set();
+/// For each of those, the row it was asked of, and the count it last put on
+/// the status line. See `runFlat` and `flat-progress`.
+const flatAskedOf = new Map();
+const flatCounting = new Map();
 
 /// Where one of the three detections writes its word: the span inside the menu
 /// line, so that the shortcut beside it is left standing while a pass counts
@@ -8927,6 +9013,8 @@ if (listen) {
     // has answered left the menu line counting and the status line saying
     // 検出中 over the answer, for good.
     if (!flatBusy.has(id)) return;
+    // Nor one about a row no longer on screen; see `cm-progress`.
+    if (shownId !== flatAskedOf.get(id)) return;
     const pct = Math.round(done * 100);
     detectLabel(id).textContent = tr("editor.detectingPct", { pct });
     // And on the status line, because the line that counts itself up is
@@ -8937,12 +9025,17 @@ if (listen) {
       what: tr(what === "quiet" ? "flat.what.quiet" : blankKey("flat.what.blank")),
       pct,
     });
+    flatCounting.set(id, el("status").textContent);
   });
   hear("cm-progress", (ev) => {
     // A tick that arrives after the pass has answered -- the event and the
     // answer come back on different channels -- would put the count back
     // up for good.
     if (!cmBusy) return;
+    // Nor a tick of a pass about a row no longer on screen: the next row's
+    // open stops it, and what it counts until it has stopped was written
+    // over that row's own sentence.
+    if (shownId !== cmAsked) return;
     const [phase, done] = ev.payload;
     const pct = Math.round(done * 100);
     detectLabel("detect-cm").textContent = tr("editor.detectingPct", { pct });
@@ -9473,7 +9566,13 @@ if (listen) {
   // window is actually on.
   hear("clip-renamed", (ev) => {
     const said = ev.payload || {};
-    if (said.id !== editId) return;
+    // The row on its way in keeps the name for when its recording is up.
+    if (said.id === editId) arrivingName = said.name || null;
+    // The header names the recording on screen: while the next row's open
+    // is still waiting (`showingLeft`), the row before it. Renaming the row
+    // being opened put its name over the other recording, and renaming the
+    // row on screen did nothing.
+    if (said.id !== (showingLeft() ? shownId : editId)) return;
     shownName = said.name || null;
     paintSourceInfo();
   });

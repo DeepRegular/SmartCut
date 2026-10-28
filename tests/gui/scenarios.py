@@ -1410,6 +1410,153 @@ def seam_follows_editor(cfg, t):
         wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
 
 
+def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit"):
+    """継ぎ目の編集 up on a -> b of a three-row join (a, b, e), a dissolve set
+    in it and not OK'd, while row a is worked in the cut editor: a mark (no
+    join moves, so nothing is said again), a cut at a's tail, Ctrl+Z, a cut
+    again, then e double-clicked with its open hanging (a pipe) and another
+    cut on a -- still the row shown -- and Escape+破棄. Since the 38th pass
+    the list tells the window the joins on every editor report
+    (`followCross`): each telling has to put the preview on what the list
+    holds at that moment, keep the dissolve set in the window, and say
+    nothing where the join has not moved; OK then writes the dissolve onto a,
+    and a has no cut. (39th pass)"""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    try:
+        rows = [{"path": cfg.a}, {"path": cfg.b}, {"path": e}]
+        with App(cfg, name, rows, {"joinAll": True}) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 90)
+            app.s.click('button.tab[data-screen="outset"]')
+            wait_for("the seam button", lambda: app.s.js(
+                "const r = document.getElementById('row-cross');"
+                "const b = document.getElementById('open-cross');"
+                "return !!r && !r.hidden && !!b && !b.disabled;"), 90)
+            before = set(app.s.handles())
+            app.s.click("#open-cross")
+            seam = wait_for("the seam window", lambda: (
+                [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+            app.s.switch(seam)
+            loaded = lambda: app.s.js(  # noqa: E731
+                "return document.getElementById('out-clip-time').textContent") not in ("--:--:--.--", "00:00:00.00")
+            wait_for("the join loaded", loaded, 60)
+            app.s.js(
+                "window.__seen = [];"
+                "window.__TAURI__.event.listen('cross-open', (e) => window.__seen.push("
+                "(e.payload.joins || []).slice(0, 1).map((j) => [j.beforeIn, j.beforeOut])[0]));"
+                "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+                "k.dispatchEvent(new Event('change', {bubbles: true}));")
+            time.sleep(1)
+            whole = None
+
+            def look(label):
+                app.s.switch(seam)
+                wait_for("the join loaded again", loaded, 30)
+                time.sleep(0.5)
+                v = app.s.js(
+                    "return [window.__seen.slice(), document.getElementById('x-kind').value,"
+                    " document.getElementById('note').textContent,"
+                    " document.getElementById('name-before').textContent]")
+                app.s.switch(editor)
+                return {"seen": v[0], "kind": v[1], "note": v[2], "name": v[3], "at": label}
+
+            app.s.switch(app.main)
+            app.s.click('button.tab[data-screen="input"]')
+            up = set(app.s.handles())
+            app.s.double_click("#cliplist > li:nth-child(1) .nm")
+            editor = wait_for("the editor window", lambda: (
+                [h for h in app.s.handles() if h not in up] or [None])[0], 60)
+            app.s.switch(editor)
+            wait_for("the editor on a.ts", lambda: (lambda st: st and "a.ts" in st["title"]
+                                                    and st["frames"] is not None)(app.state()), 120, 0.2)
+            n = app.state()["frames"]
+            app.goto(50)
+            app.s.keys("k")
+            time.sleep(2)
+            r0 = look("mark")
+            t.check("39s a mark made in the editor tells the seam window nothing",
+                    r0["seen"] == [] and r0["kind"] == "dissolve", str(r0))
+            app.cut(n - 200, n - 101)
+            time.sleep(2)
+            r1 = look("cut")
+            moved = r1["seen"][-1] if r1["seen"] else None
+            t.check("39s a cut at a's tail moves the seam window's join, the dissolve kept",
+                    bool(moved) and moved[0] > 1 and r1["kind"] == "dissolve" and "a.ts" in r1["name"],
+                    str(r1))
+            app.s.keys("Control+z")
+            time.sleep(2)
+            r2 = look("undo")
+            whole = r2["seen"][-1] if len(r2["seen"]) > len(r1["seen"]) else None
+            t.check("39s Ctrl+Z puts the seam window's join back, the dissolve kept",
+                    bool(whole) and whole[0] < 0.5 and r2["kind"] == "dissolve", str(r2))
+            app.cut(n - 200, n - 101)
+            time.sleep(1)
+            if os.path.exists(e):
+                os.remove(e)
+            os.mkfifo(e)
+            app.s.switch(app.main)
+            app.s.double_click("#cliplist > li:nth-child(3) .nm")
+            time.sleep(1.5)
+            app.s.switch(editor)
+            st = app.state()
+            k = app.state()["frames"]
+            try:
+                app.cut(k - 60, k - 41)
+                cut3 = "made"
+            except Failure as x:
+                cut3 = f"refused: {x}"
+            time.sleep(2)
+            r3 = look("hang cut")
+            last = r3["seen"][-1] if r3["seen"] else None
+            t.check("39s during a hanging open, a cut on the shown row moves the join, the dissolve kept",
+                    bool(last) and moved and last[0] > moved[0] + 0.3 and r3["kind"] == "dissolve",
+                    f"title {st['title']!r}; cut {cut3}; {r3}")
+            if fail_first:
+                # The hanging open fails instead: the window goes back to a
+                # (`editor-back`), with the cuts it showed.
+                _fail_pipe(e)
+                time.sleep(3)
+                wait_for("the editor back on a.ts", lambda: (lambda st: st and "a.ts" in st["title"]
+                                                             and st["frames"] is not None)(app.state()), 60, 0.2)
+                r4 = look("failed open")
+                t.check("39s the next row's open failing leaves the seam window on the shown row's join",
+                        r4["seen"][-1] == last and r4["kind"] == "dissolve", str(r4))
+            asked = app.escape(discard=True, expect_dialog=False)
+            wait_for("the editor to close", lambda: editor not in app.s.handles(), 15)
+            if not fail_first:
+                _fail_pipe(e)
+            time.sleep(2)
+            app.s.switch(seam)
+            v = app.s.js("return [window.__seen.slice(), document.getElementById('x-kind').value]")
+            back = v[0][-1] if v[0] else None
+            t.check("39s Escape+破棄 puts the seam window's join back as the list holds it, the dissolve kept",
+                    asked and bool(back) and back[0] < 0.5 and v[1] == "dissolve",
+                    f"asked {asked}; told {v[0]}; kind {v[1]!r}")
+            try:
+                app.s.click("#cross-ok")
+            except WebDriverError:
+                pass
+            wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+            app.s.switch(app.main)
+            p = app.save()
+            afters = [(c.get("after") or {}).get("kind") for c in p["clips"]]
+            t.check("39s OK writes the dissolve onto a, and a has no cut",
+                    afters[0] == "dissolve" and not afters[1] and cuts_of(p, 1) == [],
+                    f"after {afters}; row 1 {fmt(cuts_of(p, 1))}")
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def seam_editor_visit_failed(cfg, t):
+    """seam_editor_visit with the hanging open failing before Escape+破棄
+    (the window goes back to row a, `editor-back`). (39th pass)"""
+    seam_editor_visit(cfg, t, fail_first=True, name="seam_editor_visit_failed")
+
+
 # -- 29 --------------------------------------------------------------------
 def disc_refuses_opus(cfg, t):
     """A BDAV run of three rows whose second has Opus sound (an H.264 + Opus
@@ -2040,6 +2187,177 @@ def image_turned_on_during_run(cfg, t):
                     "22.5 GiB のディスクに収まります" in said
                     and os.path.exists(os.path.join(at, "night.iso")), repr(said[:300]))
     shutil.rmtree(at, ignore_errors=True)
+
+
+def _st_of(path):
+    """A recording's container start, which a disc's playlist counts from."""
+    return float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=start_time",
+                                 "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip())
+
+
+def _walk_done(app):
+    wait_for("the walk", lambda: (lambda s: s["plan"] and "読み込んで" not in s["plan"]
+                                  and "Reading" not in s["plan"])(app.state()), 120, 0.3)
+
+
+def _plays_ok(got):
+    return len(got) >= 2 and abs(got[0][0]) < 0.05 and abs(got[0][1] - 2.0) < 0.05 and \
+        any(abs(a - 12.0) < 0.05 for a, b in got)
+
+
+def plays_chain_ordinary(cfg, t):
+    """(39th pass, appjs.) Two rows carrying playlists (a disc's titles), opened one after the
+    other before the list's walk reached them, every open succeeding, then
+    Escape / OK / Escape+破棄 / back to the first; each must end with the
+    playlist's cuts once (0-2, 12-end) and nothing owed."""
+    make_late_head(cfg)
+    a2 = os.path.join(cfg.media, "a2.ts")
+    shutil.copyfile(cfg.a, a2)
+    pa = [[_st_of(cfg.a) + 2.0, _st_of(cfg.a) + 12.0]]
+    pb = [[_st_of(a2) + 2.0, _st_of(a2) + 12.0]]
+    for case in ("esc", "ok", "discard", "back_esc", "quick_esc", "quick_ok", "back_ok"):
+        rows = [{"path": cfg.d}, {"path": cfg.a, "plays": pa, "playsOwed": True},
+                {"path": a2, "plays": pb, "playsOwed": True}]
+        with App(cfg, f"plays_chain_{case}", rows) as app:
+            app.to_list()
+            wait_for("解析を中止", lambda: app.s.js(
+                "const b = document.getElementById('stop-batch'); return !!b && !b.disabled;"), 30, 0.1)
+            app.s.click("#stop-batch")
+            time.sleep(1)
+            reached = not _walked(app, 2) and not _walked(app, 3)
+            app.open_row(2, "a.ts")
+            if not case.startswith("quick"):
+                _walk_done(app)
+                time.sleep(1)
+                if case == "discard":
+                    app.cut(100, 120)
+                    time.sleep(0.5)
+            app.open_row(3, "a2.ts")
+            _walk_done(app)
+            time.sleep(1)
+            asked = None
+            if case == "discard":
+                app.cut(200, 220)
+                time.sleep(0.5)
+                asked = app.escape(discard=True, expect_dialog=True)
+            elif case in ("back_esc", "back_ok"):
+                app.open_row(2, "a.ts")
+                _walk_done(app)
+                time.sleep(1)
+                if case == "back_ok":
+                    app.ok()
+                else:
+                    asked = app.escape(discard=True, expect_dialog=False)
+            elif case in ("ok", "quick_ok"):
+                app.ok()
+            else:
+                asked = app.escape(discard=True, expect_dialog=False)
+            app.gone()
+            time.sleep(1)
+            mid = app.save()
+            app.to_list()
+            wait_for("解析を再開", lambda: app.s.js(
+                "const b = document.getElementById('stop-batch');"
+                "return !!b && !b.disabled && ['解析を再開', 'Resume analysis'].includes(b.textContent);"),
+                30, 0.3)
+            app.s.click("#stop-batch")
+            wait_for("rows read", lambda: _walked(app, 2) and _walked(app, 3), 300, 1)
+            time.sleep(2)
+            p = app.save()
+            g2, g3 = cuts_of(p, 2), cuts_of(p, 3)
+            o2, o3 = p["clips"][1].get("playsOwed"), p["clips"][2].get("playsOwed")
+            extra2 = case == "discard"
+            good = _plays_ok(g2) and _plays_ok(g3) and not o2 and not o3
+            good = good and len(g2) == (3 if extra2 else 2) and len(g3) == 2
+            t.check(f"rev39 chain {case}: both titles take the playlist's cuts once",
+                    good and reached,
+                    f"row2 {fmt(g2)} row3 {fmt(g3)} owed {o2}/{o3}; asked {asked}; "
+                    f"mid row2 {fmt(cuts_of(mid, 2))} row3 {fmt(cuts_of(mid, 3))} "
+                    f"owed {mid['clips'][1].get('playsOwed')}/{mid['clips'][2].get('playsOwed')}"
+                    f"{'' if reached else ' NOT REACHED'}")
+    os.remove(a2)
+
+
+def disc_after_run_reasons(cfg, t):
+    """The check after a disc run, against what the CLI says since 2037b72.
+    A READ-ONLY image is weighed as the image (its own file system and whole
+    extents on top of the files): a disc whose files just fit and whose image
+    does not says so, naming the file system, where it used to say the folder
+    fitted. And the reason for a disc that came out over follows what could
+    have been done: a list with no MPEG-2 pictures is not told to turn
+    トランスコードする on; an MPEG-2 one still is. (39th pass.)"""
+    base = os.path.join(cfg.work, "disc_after_run_reasons")
+    shutil.rmtree(base, ignore_errors=True)
+    dirs = {k: os.path.join(base, k) for k in ("plain", "image", "mpeg2", "h264")}
+    for d in dirs.values():
+        os.makedirs(d)
+
+    def pick(app, id, value):
+        app.s.js("const s = document.getElementById(arguments[0]); s.value = arguments[1];"
+                 " s.dispatchEvent(new Event('input', {bubbles: true}));", id, value)
+
+    def to(app, d, disc=None):
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        app.s.js("const i = document.getElementById('out-dir'); i.value = arguments[0];"
+                 " i.dispatchEvent(new Event('input', {bubbles: true}));", d)
+        if disc is not None:
+            app.s.js("const s = document.getElementById('out-disc'); const o = document.createElement('option');"
+                     " o.value = String(arguments[0]); o.textContent = 'test'; s.appendChild(o); s.value = o.value;"
+                     " s.dispatchEvent(new Event('input', {bubbles: true}));", disc)
+        time.sleep(1.0)
+
+    def said(app):
+        text = ""
+        for root, _, files in os.walk(app.dir):
+            for f in files:
+                if f.endswith(".log") or f.endswith(".txt"):
+                    with open(os.path.join(root, f), "rb") as fh:
+                        text += fh.read().decode("utf-8", "replace")
+        return [l for l in text.splitlines() if "出力サイズ" in l or "イメージのサイズ" in l]
+
+    settings = {"mode": "bdav", "dir": dirs["plain"], "subfolder": "", "discTitle": "R",
+                "image": "", "imageAccess": "read-only", "fit": False}
+    with App(cfg, "disc_after_run_reasons", [{"path": cfg.a}], settings) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.export()
+        files = _bdav_bytes(dirs["plain"])
+        # Room for the files and not for the image's own structures (about
+        # 1.6 MB of them).
+        to(app, dirs["image"], files + 400_000)
+        pick(app, "out-image", "2.50")
+        pick(app, "out-image-access", "read-only")
+        time.sleep(0.5)
+        app.export()
+        iso = os.path.join(base, "image.iso")
+        lines = said(app)
+        image_bytes = os.path.getsize(iso) if os.path.exists(iso) else 0
+        # The run before this one's "fits" is the only one (the run logs are
+        # not read back in order).
+        t.check("39p-2 a read-only image is weighed as the image",
+                image_bytes > files + 400_000 and _bdav_bytes(dirs["image"]) == files
+                and any("イメージのサイズ" in l and "ファイルシステム" in l for l in lines)
+                and sum("収まります" in l for l in lines) == 1,
+                f"files {files} image {image_bytes}; {lines}")
+        seen = set(lines)
+        pick(app, "out-image", "")
+        to(app, dirs["mpeg2"], 1_000_000)
+        app.export()
+        lines = [l for l in said(app) if l not in seen]
+        t.check("39p-3 MPEG-2 over a tiny disc, 収める off: told to turn it on",
+                any("トランスコードする」を有効にすると" in l for l in lines), f"{lines}")
+    settings = dict(settings, dir=dirs["h264"])
+    with App(cfg, "disc_after_run_reasons_h264", [{"path": cfg.b}], settings) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        to(app, dirs["h264"], 1_000_000)
+        app.export()
+        lines = said(app)
+        t.check("39p-4 H.264 over a tiny disc: not told to turn 収める on",
+                any("MPEG-2 の映像がありません" in l for l in lines)
+                and not any("有効にすると" in l for l in lines), f"{lines}")
+    shutil.rmtree(base, ignore_errors=True)
 
 
 def _export_or_refused(app, timeout=300):
@@ -6047,6 +6365,233 @@ def overtaken_walk_stops(cfg, t):
             os.remove(big)
 
 
+def walk_switch_back(cfg, t):
+    """Row 1 (its seek index taken away, so the editor walks it), row 2
+    double-clicked while that walk reads, row 1 straight back after 0, 300
+    and 1000 ms -- every open succeeding. The walk of the row the window
+    ends on must run and land (39th pass, tauri: open_now stops a walk
+    whose open was overtaken or whose window went; the row come back to
+    has an open of its own that must not be caught by that). Not in the
+    default list: two 120 s recordings of 12 Mbit/s are made for it."""
+    import glob
+    import shutil
+    big1 = os.path.join(cfg.media, "big1.ts")
+    big2 = os.path.join(cfg.media, "big2.ts")
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc2=size=1280x720:rate=30000/1001:duration=120", "-c:v", "mpeg2video",
+                    "-g", "15", "-bf", "2", "-b:v", "12M", "-f", "mpegts", big1], check=True)
+    shutil.copyfile(big1, big2)
+    try:
+        with App(cfg, "walk_switch_back", [{"path": big1}, {"path": big2}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 180)
+            time.sleep(2)
+
+            def index_files():
+                n = 0
+                for d in glob.glob(os.path.join(app.dir, "xdg", "cache", "*", "index")):
+                    n += len(os.listdir(d))
+                return n
+
+            def forget():
+                for d in glob.glob(os.path.join(app.dir, "xdg", "cache", "*", "index")):
+                    for f in os.listdir(d):
+                        os.remove(os.path.join(d, f))
+
+            for delay in (0.0, 0.3, 1.0):
+                forget()
+                app.open_row(1, "big1.ts")
+                walking = "読み込んでいます" in app.state()["plan"]
+                app.open_row(2, "big2.ts", wait=False)
+                time.sleep(delay)
+                app.open_row(1, "big1.ts", wait=False)
+                app.editor_ready("big1.ts")
+                try:
+                    wait_for("row 1's walk to land",
+                             lambda: "読み込んでいます" not in app.state()["plan"], 90, 0.5)
+                    landed = True
+                except Failure:
+                    landed = False
+                st = app.state()
+                # Written once the thumbnail track is made (prepare), a few
+                # seconds after the walk lands.
+                try:
+                    wait_for("row 1's index to be kept", lambda: index_files() >= 1, 60, 0.5)
+                except Failure:
+                    pass
+                kept = index_files()
+                t.check(f"39t-1 row 2 then row 1 again after {int(delay * 1000)} ms: row 1 is walked",
+                        landed and "big1.ts" in st["title"] and kept >= 1,
+                        f"on {st['title']!r}, plan {st['plan'][:60]!r}, {kept} index file(s) kept"
+                        + ("" if walking else "; NOT REACHED: row 1's first walk had landed"))
+                app.ok()
+                app.gone()
+                time.sleep(1)
+    finally:
+        for p in (big1, big2):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def outline_hangs_rename_flat(cfg, t):
+    """Row 1 up, the black detection pressed in the editor (Ctrl+B), and at
+    once row 2 double-clicked with its recording a pipe nothing writes to:
+    its open hangs and stops the pass, and the window still shows row 1. The
+    status line must not go on saying the pass is counting over a pass that
+    has stopped. Then row 2 is renamed in the list: the header must not put
+    row 2's new name in front of row 1's recording. (39th pass.)"""
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    ren = ("const ren = (n, name) => {"
+           "  const li = document.querySelector(`#cliplist > li:nth-child(${n})`);"
+           "  li.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, button: 0}));"
+           "  window.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, button: 0}));"
+           "  document.getElementById('rename-clip').click();"
+           "  const f = document.querySelector('#cliplist input.rename');"
+           "  f.value = name;"
+           "  f.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));"
+           "};")
+    try:
+        with App(cfg, "outline_hangs_rename_flat", [{"path": cfg.a}, {"path": e}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            time.sleep(1)
+            app.s.keys("Control+b")
+            time.sleep(0.2)
+            _hang_next(app, e, 2)
+            time.sleep(4)
+            status = app.state()["status"]
+            t.check("39m-1 a pass stopped by the hanging open does not go on counting on the status line",
+                    "検出中" not in status, f"status {status!r}")
+            app.to_list()
+            app.s.js(ren + "ren(2, 'zz_second');")
+            time.sleep(1)
+            app.to_editor()
+            title2 = app.state()["title"]
+            t.check("39m-2 renaming the hanging row does not put its name over the recording shown",
+                    "zz_second" not in title2, f"header after renaming row 2 {title2!r}")
+            # And the row on screen renamed while the next one hangs: its
+            # header follows (app.js sent the rename only for `editing`).
+            app.to_list()
+            app.s.js(ren + "ren(1, 'zz_first');")
+            time.sleep(1)
+            app.to_editor()
+            title1 = app.state()["title"]
+            t.check("39p-1 renaming the row shown during the hang reaches its header",
+                    "zz_first" in title1 and "zz_second" not in title1, f"header after renaming row 1 {title1!r}")
+            app.escape(discard=True, expect_dialog=False)
+            app.gone()
+            _fail_pipe(e)
+            time.sleep(1)
+    finally:
+        if os.path.exists(e):
+            os.remove(e)
+
+
+def _colour_head(cfg):
+    """Blue up to 21.37 s and green from 21.41 s (rebased), 25 fps, with an
+    entry picture every 0.96 s: the one at 21.25 is blue, the next (22.21)
+    green. A cut ending at 21.39 leaves that blue entry picture four frames
+    before the first kept one, within the quarter of a second `glance_now`
+    looks back, for all three of the stage's tries. An hour long and small
+    (160x96), about 60 MB. Made for `glimpse_after_cut`, and kept."""
+    at = os.path.join(cfg.work, "colourmedia", "c4.ts")
+    if os.path.exists(at):
+        return at
+    os.makedirs(os.path.dirname(at), exist_ok=True)
+    subprocess.run([
+        "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=c=blue:s=160x96:r=25:d=21.40",
+        "-f", "lavfi", "-i", "color=c=green:s=160x96:r=25:d=3578.60",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=3600:sample_rate=48000",
+        "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-map", "2:a",
+        "-c:v", "mpeg2video", "-g", "25", "-bf", "2", "-sc_threshold", "1000000000",
+        "-q:v", "4", "-c:a", "mp2", "-b:a", "64k", "-f", "mpegts", at + ".part"], check=True)
+    os.replace(at + ".part", at)
+    return at
+
+
+def _png_centre(png):
+    """The colour at the middle of a PNG (8-bit RGB or RGBA, as WebDriver's
+    screenshots are), by the standard library alone."""
+    import struct
+    import zlib
+    w = h = 0
+    kind = 6
+    data = b""
+    i = 8
+    while i < len(png):
+        n, tag = struct.unpack(">I4s", png[i:i + 8])
+        body = png[i + 8:i + 8 + n]
+        if tag == b"IHDR":
+            w, h, _, kind = struct.unpack(">IIBB", body[:10])
+        elif tag == b"IDAT":
+            data += body
+        i += 12 + n
+    px = 4 if kind == 6 else 3
+    raw = zlib.decompress(data)
+    stride = w * px
+    prev = bytearray(stride)
+    row = None
+    for y in range(h // 2 + 1):
+        f = raw[y * (stride + 1)]
+        line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for x in range(stride):
+            left = line[x - px] if x >= px else 0
+            up = prev[x]
+            ul = prev[x - px] if x >= px else 0
+            if f == 1:
+                line[x] = (line[x] + left) & 255
+            elif f == 2:
+                line[x] = (line[x] + up) & 255
+            elif f == 3:
+                line[x] = (line[x] + (left + up) // 2) & 255
+            elif f == 4:
+                pa, pb, pc = abs(up - ul), abs(left - ul), abs(left + up - 2 * ul)
+                line[x] = (line[x] + (left if pa <= pb and pa <= pc else up if pb <= pc else ul)) & 255
+        prev = row = line
+    x = (w // 2) * px
+    return list(row[x:x + 3])
+
+
+def glimpse_after_cut(cfg, t):
+    """Before the walk lands the stage is filled by `glimpse`, which answers
+    with the entry picture at or before the instant where there is one
+    (preview.rs `glance_now`, 39th pass). Standing on the first frame after
+    a cut, that picture is in the stretch the cut took (here blue), and the
+    stage's three tries a frame earlier only went further into it. The stage
+    must show a kept picture (green). Says NOT REACHED if the walk landed
+    before the picture was looked at -- which on the dev VM it always does
+    (this file's walk takes a fifth of a second; it takes seconds over a
+    share or on a recording of gigabytes), so it is not in the default list:
+    run it with GUITEST_WORK on slow storage."""
+    import base64
+    c = _colour_head(cfg)
+    row = {"path": c, "edit": {"cuts": [{"a": 10.0, "b": 21.39}], "keyframes": []}}
+    reading = lambda s: "読み込んで" in (s["plan"] or "") or "Reading" in (s["plan"] or "")
+    with App(cfg, "glimpse_after_cut", [row]) as app:
+        app.open_row(1, "c4.ts", wait=False)
+        app.to_editor()
+        wait_for("the counter", lambda: app.state()["frames"] is not None, 60, 0.05)
+        app.goto(250)
+        time.sleep(1.5)
+        early = reading(app.state())
+        shot = app.s._("GET", f"/element/{app.s.find('#preview')}/screenshot")
+        rgb = _png_centre(base64.b64decode(shot))
+        early = early and reading(app.state())
+        green = rgb[1] > 100 and rgb[2] < 100
+        t.check("39q the first frame after a cut shows a kept picture before the walk",
+                green or not early,
+                f"centre {rgb}" + ("" if early else " (NOT REACHED: the walk landed first)"))
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -6083,6 +6628,8 @@ SCENARIOS = [
     seam_clear_held_join,
     seam_all_untouched_join,
     seam_follows_editor,
+    seam_editor_visit,
+    seam_editor_visit_failed,
     disc_refuses_opus,
     disc_keeps_its_name,
     disc_gauge_appends,
@@ -6133,7 +6680,10 @@ SCENARIOS = [
     outline_fails_plays_escape,
     outline_hangs_remove_undo,
     outline_hangs_detection,
+    outline_hangs_rename_flat,
     sound_join_named_by_master,
+    disc_after_run_reasons,
+    plays_chain_ordinary,
 ]
 
 
@@ -6142,7 +6692,7 @@ EXTRA = [ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
          disc_seam_gap_chapters, disc_seam_join_chapters, disc_plays_rows, disc_plays_switch,
          disc_plays_recount, disc_plays_due, disc_plays_trim_first,
          real_old_projects_ok_unchanged, disc_plays_trim_left,
-         overtaken_walk_stops]
+         overtaken_walk_stops, walk_switch_back, glimpse_after_cut]
 
 
 def main():

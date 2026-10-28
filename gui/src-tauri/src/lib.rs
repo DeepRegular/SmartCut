@@ -7002,6 +7002,17 @@ async fn bdav_discard(dir: String, clips: Vec<String>) -> Result<usize, String> 
     .map_err(|e| e.to_string())?
 }
 
+/// The image [`bdav_image`] wrote, and how large it came out.
+#[derive(serde::Serialize)]
+struct ImageMade {
+    path: String,
+    /// Its length in bytes, as `udfw::write` wrote it. A read-only image is
+    /// what the check after the run weighs (as the CLI does): its files each
+    /// take whole extents and it has its own file system besides, so a
+    /// folder under the size can make an image over it.
+    bytes: u64,
+}
+
 /// Wrap the finished disc in an image a burner can take.
 ///
 /// The folder is what was written and it stays unless the run asks for it to
@@ -7017,7 +7028,7 @@ async fn bdav_image(
     revision: String,
     access: String,
     reading: Option<Vec<String>>,
-) -> Result<String, String> {
+) -> Result<ImageMade, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
         // Beside the folder, under its name -- which a drive or the root has
@@ -7071,7 +7082,7 @@ async fn bdav_image(
         // gets what a burned disc is.
         let access = smartcut_core::udfw::Access::parse(&access).unwrap_or_default();
         let reporter = app.clone();
-        smartcut_core::udfw::write(
+        let bytes = smartcut_core::udfw::write(
             &at,
             &image,
             revision,
@@ -7082,7 +7093,7 @@ async fn bdav_image(
             }),
         )
         .map_err(|e| e.to_string())?;
-        Ok(image.to_string_lossy().into_owned())
+        Ok(ImageMade { path: image.to_string_lossy().into_owned(), bytes })
     })
     .await
     .map_err(|e| e.to_string())?
