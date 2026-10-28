@@ -406,6 +406,14 @@ in front of the range — and its time stays its own. One sent no further ahead 
 is decided by its `begin` as before, so every other cut is what it was: two ranges cut
 from each of the twenty titles are byte for byte the same.
 
+**At a join with a dissolve, a wipe or a slide, the recording after it reads back from
+where its pictures start to show** (`cut::read_ttml_crossing`), and the documents of the
+recording before are cut short where the recording after's first one goes up. Up to
+0.8.35 the recording after was read back from where its own range begins: its line came
+up at the crossing's end, and a line it put up and took down inside a crossing of three
+seconds was lost. See
+[The captions at a crossing are the clip after's](joining.md#the-captions-at-a-crossing-are-the-clip-afters).
+
 ## What a row is
 
 **One clip, one row** — not one playlist, one row.

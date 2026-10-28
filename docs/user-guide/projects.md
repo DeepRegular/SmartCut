@@ -38,6 +38,11 @@ the command line.
 smartcut friday.scproj
 ```
 
+What is opened has to be a file, and one of no more than 64 MB; anything else —
+a named pipe or a device chosen by mistake — is refused as `not a project file`.
+Up to 0.8.35 the window waited on such a thing for good, or read it until memory
+ran out.
+
 ## What is saved, and what is not
 
 A project saves **the things you decided**:

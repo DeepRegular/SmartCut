@@ -827,6 +827,12 @@ nothing and comes out as it did.
 
 **The end of a range is as it was.** A line still up there is not taken down at it.
 
+**A join with a dissolve, a wipe or a slide hands the captions over where the crossing
+begins.** The recording after it reads back from where its pictures start to show, not
+from where its range does: the line it has up there goes up on the crossing's first frame,
+and it replaces the line of the recording before. See
+[The captions at a crossing are the clip after's](joining.md#the-captions-at-a-crossing-are-the-clip-afters).
+
 The look back is a read of its own at every range of a recording that carries captions,
 up to 30 seconds of the stream: one to three seconds more over a cut of ten ranges.
 

@@ -391,6 +391,46 @@ every sound track in the file one this program writes rather than one it
 copies — for a second of crossfade in an hour of programme. What softens the
 change instead is a fade, which costs nothing that is not already being spent.
 
+### The captions at a crossing are the clip after's
+
+The captions do not change over where the sound does. A caption plane shows
+one recording's lines, and what a dissolve, a wipe or a slide leads the eye to
+is the clip after, so **from the instant the crossing begins — the instant the
+clip after's pictures start to show — the captions are the clip after's**. A
+broadcast's ARIB captions and a 4K recording's TTML subtitles follow the same
+rule (`cut::take_caption`, `cut::read_ttml_crossing`):
+
+- The line the clip after has up where its pictures start goes up on the
+  crossing's first frame. What it puts up or takes down inside the crossing
+  goes out at its own time.
+- The clip before is carried up to the clip after's first word inside the
+  crossing, and no further: a broadcast's first caption statement, a line or
+  a clear, or a 4K recording's first document. A line the clip before has up
+  then is replaced there — a 4K document is cut short at that instant — and
+  what it would send from then on is left out. Where the clip after has a
+  line up at the start, that is the crossing's first frame.
+- Where the clip after has nothing up and says nothing inside the crossing,
+  the clip before is carried to the end of its range, as any range is: what
+  it sends inside the crossing, a clear among it, goes out at its own time,
+  and a line still up at the end stands until the clip after's first. The
+  same where the clip after has no caption track in that place.
+
+Up to 0.8.35 the clip after's captions were read back only from where its own
+range begins, which is the crossing's end. Its opening line came up a
+crossing late, a line it put up and took down inside the crossing was lost,
+and the clip before's last line stood over the clip after's pictures for the
+whole crossing. A captioned recording joined to a cut of itself with a
+one-second dissolve had the clip after's opening line at 11.02 seconds rather
+than 10.00; with three seconds, two of its lines and a clear were lost, and
+the clip before's line stood from 9.58 to 14.22. A 4K title joined to a cut
+of itself with a three-second dissolve lost the clip after's first line whole.
+
+A fade is not a crossing. The two clips' pictures follow one another through
+the colour, and their captions follow one another with them, as they always
+have. A join with no transition or a fade is written byte for byte as before;
+at a dissolve or a wipe, only the caption stream differs. The seam window's
+preview (`crossview.rs`) draws no captions at all.
+
 ### A join's fade is asked for at each end
 
 The fade at a cut inside one recording is `CutOptions::audio_fade`, one number

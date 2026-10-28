@@ -580,6 +580,18 @@ not have reads, in a recorder's list, exactly like a disc of six episodes of
 that one. Either way it is a filled-in field like the others, and typing over
 it is what settles it.
 
+What counts as a mark is a matter of where it stands. A `【…】` goes wherever it
+is found -- it holds a block's name or an episode's -- except one of three
+characters or more written between two letters, which is the title's own:
+`雨の日は【青い傘】で出かける` keeps its brackets. Where what follows it begins an
+episode -- a number, `第`, `最終…`, `前編` -- it is a mark after all, and
+`硝子の塔【最終回】第12話` is still `硝子の塔`. So is one with the episode inside
+it: `硝子の塔【第1話】決戦` loses its brackets as it always did, since keeping
+them would leave half a bracket once the episode is cut off. And a `▼` left
+hanging at the end once the episode after it is gone is taken off with it. Up to
+0.8.35 the first lost its bracketed words and the second stayed on the disc's
+name.
+
 **A disc that already has a name keeps it.** The series names a new disc only.
 A run that adds to a disc with no title given, `--disc-title` on the command
 line or typed on the settings screen, writes the name `info.bdav` already
@@ -698,6 +710,11 @@ new folder that fails at the index leaves nothing behind; up to 0.8.34 it
 left `BDAV` with its three folders empty, an `info.bdav` that listed
 nothing, and the parent folders the run had made
 ([`--bdav`](../user-guide/cli.md#writing-a-disc-bdav)).
+The window marks the rows of the recordings taken off as failed. The error
+names only the first, so it asks the folder which of the run's numbers still
+have both a stream and a clip index (`bdav_indexed` in
+[`lib.rs`](../../gui/src-tauri/src/lib.rs)); up to 0.8.35 those rows said they
+were done and the summary counted them as written.
 
 ## The image
 

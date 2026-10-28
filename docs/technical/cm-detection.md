@@ -490,6 +490,19 @@ the recording. Only that direction is mended: the other way round would mean the
 recording's own start time had been read past a wrap its packets had not, which was
 not measured, and a mark with no reading is better dropped than guessed at.
 
+### Two lone marks at one end
+
+A mark with no partner on the grid is read as a break only within fifteen seconds
+of either end of the recording (`RESET_EDGE`), where the recording's own start or
+end stands in for the junction it is missing. A station that marks every junction
+can leave two such marks in the last fifteen seconds -- on one recording of the
+survey, at 1793.7 and 1803.7 of 1805.4 -- and each made a block to the end, one
+inside the other. The break was counted twice (six blocks where there are five),
+and the window, putting a mark at both ends of each block, put one in the middle
+of the break. `blocks_from_resets` now keeps only the block that covers the
+other, at the head as at the tail. Up to 0.8.35 both were kept. A cut was never
+affected: the two blocks remove the same stretch.
+
 ### When the fallback is not good enough
 
 That fix goes as far as "nothing at all comes out"; whether what does come out is

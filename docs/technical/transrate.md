@@ -140,6 +140,17 @@ coded against neighbours that would have to be decoded to be read, and their
 entropy coding is adaptive. A recording in either is written at its full size
 and the run says so.
 
+That includes the few pictures re-encoded at the ends of each range. Those are
+encoded afresh whatever the format, and where the pictures around them are being
+written smaller they are given the same share of their bit rate, so that they are
+not the only fine pictures on the disc. Where the pictures around them are copied
+at their full size, they are encoded at the full rate too (`open_encoder_as` in
+[`cut.rs`](../../rust/crates/core/src/cut.rs)): the share is applied only where
+what is written is MPEG-2. Up to 0.8.35 it was applied to every seam, so an H.264
+cut given `--video-share`, or written onto a disc with **Transcode** on, had its
+seams re-encoded at the share: 39 dB beside copied pictures at 48, the only
+pictures in the cut that were made worse.
+
 **4:2:2 and 4:4:4**, which no broadcast or Blu-ray recording is; **MPEG-1**,
 which has no picture coding extension and a stuffing code in the macroblock
 layer; and the **scalable profiles**, which put fields in a slice that are not
@@ -351,4 +362,15 @@ room on the disc and gives none of it back, and the share is worked out
 against the ones that can.
 
 Below 35% the pictures stop being a smaller version of themselves, and a list
-that cannot fit without going under that is told so rather than written.
+that cannot fit without going under that is told so: the command line stops
+before writing anything. The window says so under **Disc used** -- the share the
+pictures would have had to come to, and that 35% is as far as they go -- and
+asked to write the list anyway, writes its pictures at 35%. Up to 0.8.35 it named
+the floor in both places ("would have to come to 35.0%, and 35% is as far as
+this goes"), whatever the list needed.
+
+A list with no MPEG-2 in it has nothing to write at a share. Where it does not
+fit, the window says by how much and that what is not MPEG-2 cannot be
+transcoded, and the run writes it as it is. Up to 0.8.35 such a list was told it
+would not fit even at 35%, the run began by saying it would write the pictures
+at 35% of their size, and that share reached its seams (above).

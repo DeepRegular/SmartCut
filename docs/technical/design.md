@@ -810,6 +810,26 @@ per cent on a pressed disc whose entry pictures stand seconds apart, since it
 reads no further than the instant. Only the stage's `glimpse` does this; the
 film strip's cards (`glance_run`) and the list's pictures are read as before.
 
+**An entry picture is one that stands on its own: typed I, or flagged a key frame
+by the decoder** (`stands`). The second is an interlaced VC-1 disc's entry
+picture, an I field and a P field, which libavcodec types P. Waiting for an I
+there read on to the next picture that was I in both fields: on a 1080i clip,
+asks at two entry points were answered up to 10 s past them, and on a pressed
+disc's interlaced title each glimpse took 2 to 13 seconds. Every other decoder
+flags a key frame only on an I picture or a recovery point, so nothing else
+changes. This one holds wherever a glance
+waits for an entry picture -- the stage, the film strip's cards found by seeking
+(`glance_run`) and the list's pictures.
+
+**And where no entry picture has been found by then, one more read starts two
+seconds earlier.** The last second or so of a transport stream lies past its last entry
+picture, and a seek into it has nothing to decode from: End before the walk left
+the stage on the picture it had and said the preview failed, on 9 of 16
+recordings and disc titles tried, or showed a grey field. That read stops
+at the instant too and is taken only where it found an entry picture, so the
+stage shows an entry picture at or before the last frame -- not always the
+nearest one, but never one past it. Up to 0.8.35 neither of these was done.
+
 **The film strip fills in stage one as well, and its own shape says how far to trust it.**
 There are no access points to divide the reel on yet, so it is cut on an even grid
 (`evenCells`) and every cell is filled by the seek the stage is already using — one open
