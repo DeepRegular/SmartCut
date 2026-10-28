@@ -653,8 +653,10 @@ pub fn glance(spec: &str, into: f64, width: u32) -> Result<Vec<u8>> {
 /// by, so this asks libavformat for its own approximate seek and takes the
 /// first picture that decodes after it -- which on a transport stream lands
 /// near the instant asked for rather than on it, and can be a second or two
-/// out. The time that comes back is the picture's own, so the frame counter
-/// says where the picture really is rather than where it was asked for.
+/// out; where that is past the instant and an entry picture stands a little
+/// before it, that one is taken instead (see `glance_now`). The time that
+/// comes back is the picture's own, so the frame counter says where the
+/// picture really is rather than where it was asked for.
 ///
 /// Costs one open, one seek and one GOP: tens of milliseconds, against the
 /// second a gigabyte the walk takes to make an exact answer possible.
@@ -665,6 +667,7 @@ pub fn glance_at(spec: &str, at: f64, width: u32) -> Result<Shot> {
 /// Where a glance is to land: a fraction of the way in, for a picture that
 /// only has to stand for the recording, or a given instant in rebased
 /// seconds, for one that has to stand for a moment in it.
+#[derive(Clone, Copy)]
 enum Landing {
     Fraction(f64),
     At(f64),
@@ -743,7 +746,48 @@ pub fn glance_sweep(
 }
 
 fn glance_now(spec: &str, landing: Landing, width: u32) -> Result<Shot> {
-    Glancer::open(spec)?.at(landing, width)
+    /// How much earlier the second try aims. A transport stream is sought by
+    /// decoding time, and an entry picture decodes a few pictures before it
+    /// is shown: aimed at its own instant, the seek lands on the pictures
+    /// decoded after it and the first entry picture from there is the next
+    /// GOP's. A quarter of a second is more than the reordering of any of
+    /// the broadcast or disc material measured.
+    const BACK: f64 = 0.25;
+    let mut g = Glancer::open(spec)?;
+    let shot = g.at(landing, width)?;
+    // **Asked for an instant and answered with a picture past it**, once
+    // more from a little earlier. Aimed at the first picture of a broadcast
+    // recording -- which is where the cut editor's stage opens, before the
+    // walk has found any entry points -- the glimpse came back a GOP late on
+    // 12 of 19 test recordings (0.949 asked, 1.616 shown), and the frame
+    // counter stood on the first frame under the second GOP's picture until
+    // the walk landed. The second answer is taken only where it is no later than the
+    // instant asked for: a landing at or before its ask is what the window
+    // places pictures by. Only here, for the stage's single picture: the
+    // film strip's cards (`glance_run`) are left as they were.
+    //
+    // **Read no further than the instant asked for.** An answer past it is
+    // not taken, so the second read stops at the first packet decoded after
+    // it rather than going on to the next entry picture: on a pressed disc
+    // whose entry pictures stand seconds apart that was the whole of the
+    // first read over again, for the same picture (2.2 s a glance became
+    // 4.6). And only an entry picture replaces an entry picture: a read
+    // stopped short answers with whatever it decoded, which is no better than
+    // the first answer and may be a picture that leans on ones it skipped.
+    if let Landing::At(at) = landing {
+        if shot.time > at + 1e-3 {
+            let back = g.at_until(Landing::At((at - BACK).max(0.0)), width, Some(at + 1e-3));
+            if let Ok(back) = back {
+                if back.time < shot.time
+                    && back.time <= at + 1e-3
+                    && (back.kind == "I" || shot.kind != "I")
+                {
+                    return Ok(back);
+                }
+            }
+        }
+    }
+    Ok(shot)
 }
 
 /// A recording nothing has been read of, open and ready to be asked for a
@@ -816,6 +860,14 @@ impl Glancer {
     /// Seek, decode the first picture that stands on its own, and answer with
     /// it and the instant it turned out to be at.
     fn at(&mut self, landing: Landing, width: u32) -> Result<Shot> {
+        self.at_until(landing, width, None)
+    }
+
+    /// As [`Self::at`], reading no packet that is decoded after `until`
+    /// (rebased seconds): what the decoder holds by then is all the answer
+    /// there is. A picture decoded after an instant is shown after it too, so
+    /// nothing at or before `until` is missed by stopping there.
+    fn at_until(&mut self, landing: Landing, width: u32, until: Option<f64>) -> Result<Shot> {
         // Field by field, so that the packet loop can hold the demuxer while
         // the decoder is fed: they are separate places and the borrow checker
         // will only see that if it is told them separately.
@@ -884,6 +936,11 @@ impl Glancer {
         for (s, packet) in ictx.read_packets() {
             if s.index() != idx {
                 continue;
+            }
+            if until.is_some_and(|until| {
+                packet.dts().is_some_and(|dts| dts as f64 * time_base - start > until)
+            }) {
+                break;
             }
             started = started || packet.is_key();
             if !started {

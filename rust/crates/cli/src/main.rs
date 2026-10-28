@@ -2738,6 +2738,7 @@ fn run() -> Result<()> {
             slot.made = Slot::not_there(&at);
             let clip = smartcut_core::bdav::prepare(&at, 1)?.remove(0);
             let stream = smartcut_core::bdav::stream_of(&at, &clip);
+            slot.streams = stream.parent().map(|p| p.to_path_buf());
             slot.stream = Some(stream.clone());
             tell!("\ndisc  : {} -- recording {clip}", at.display());
             output = Some(stream.to_string_lossy().into_owned());
@@ -3491,6 +3492,8 @@ fn run() -> Result<()> {
         },
     );
     written?;
+    // The stream is the run's now; the folders it made stay the run's to
+    // take away until the disc's index is written (see `Slot::indexed`).
     slot.keep();
     // Read back once the output is whole, which for a disc is once its index
     // is written: a check that stopped the run before that left the
@@ -3615,6 +3618,7 @@ fn run() -> Result<()> {
             }],
             None,
         )?;
+        slot.indexed();
         tell!("wrote {} -- {}", at.join("BDAV").display(), shown(&name));
         check_cut()?;
         // The whole disc against the whole disc, as the window's check after a
@@ -3864,14 +3868,24 @@ fn drop_subpictures_named(
 #[derive(Default)]
 struct Slot {
     stream: Option<std::path::PathBuf>,
+    /// The disc's STREAM folder, still known once the stream is kept.
+    streams: Option<std::path::PathBuf>,
     /// Innermost first. Only folders that were not there before the run: a
     /// disc added to keeps every folder it had, empty or not.
     made: Vec<std::path::PathBuf>,
 }
 
 impl Slot {
+    /// The cut is written: the stream is not given back. The folders still
+    /// go where the disc's index then fails on the run's one recording --
+    /// `bdav::write` takes it off the disc and, adding nothing, leaves no
+    /// table either, so a new folder was left as three empty ones.
     fn keep(&mut self) {
         self.stream = None;
+    }
+
+    /// The disc's index is written: the folders are the disc's.
+    fn indexed(&mut self) {
         self.made.clear();
     }
 
@@ -3885,7 +3899,10 @@ impl Slot {
         let missing = |p: &std::path::Path| {
             !p.as_os_str().is_empty()
                 && !p.components().any(|c| c == std::path::Component::ParentDir)
-                && std::fs::symlink_metadata(p).is_err()
+                // Missing, and not merely unanswered: a share that did not
+                // answer once was taken for a folder that is not there.
+                && std::fs::symlink_metadata(p)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
         };
         let root = smartcut_core::bdav::root(at);
         let mut made: Vec<std::path::PathBuf> = ["STREAM", "PLAYLIST", "CLIPINF"]
@@ -3901,13 +3918,29 @@ impl Slot {
 
 impl Drop for Slot {
     fn drop(&mut self) {
+        // The disc's STREAM folder, which another run into the same folder
+        // reserves its own number in (`bdav::prepare`).
+        let streams = self.streams.take();
         if let Some(path) = self.stream.take() {
             let _ = std::fs::remove_file(path);
         }
+        // Another run's stream is there: the disc is in use, and its empty
+        // PLAYLIST and CLIPINF are where that run writes its index once its
+        // cut is done -- taken away, its recording was taken off the disc
+        // with "No such file or directory" at the end of the cut.
+        let in_use = streams.is_some_and(|at| {
+            std::fs::read_dir(at).is_ok_and(|mut d| d.next().is_some())
+        });
+        if in_use {
+            self.made.clear();
+        }
         // `remove_dir` and never more: it refuses a folder with anything in
-        // it, so what another run put there meanwhile stays.
+        // it, so what another run put there meanwhile stays. Innermost first,
+        // and none outside one that stays.
         for dir in self.made.drain(..) {
-            let _ = std::fs::remove_dir(dir);
+            if std::fs::remove_dir(dir).is_err() {
+                break;
+            }
         }
     }
 }

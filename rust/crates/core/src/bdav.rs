@@ -536,7 +536,13 @@ pub fn write(
             let _ = std::fs::remove_file(root.join("PLAYLIST").join(format!("{}.rpls", rec.clip)));
         }
     }
-    let table = write_table(&root, title);
+    // Not where none of them was: the disc then holds what it held, and its
+    // table was rewritten all the same -- on a recorder's disc, in this
+    // program's own form, so a run that added nothing still changed the disc.
+    let table = match &failed {
+        Some((0, _)) => Ok(()),
+        _ => write_table(&root, title),
+    };
     if let Some((k, e)) = failed {
         return Err(e.context(format!(
             "recording {} could not be indexed; it and any after it were taken off the disc",
@@ -584,6 +590,15 @@ fn index_one(
             &timing,
             scanning.as_ref().map(|f| f as &(dyn Fn(f64) + Sync)),
         )?;
+        // Made again if they are gone: another run into the same new folder
+        // that failed takes away the empty folders it made (the CLI's `Slot`),
+        // and between its STREAM and the other two a `prepare` of this run's
+        // can have put the stream back -- the folders this run then writes
+        // into were taken away under it and its recording off the disc.
+        for dir in ["CLIPINF", "PLAYLIST"] {
+            std::fs::create_dir_all(root.join(dir))
+                .with_context(|| format!("making {}", root.join(dir).display()))?;
+        }
         std::fs::write(
             root.join("CLIPINF").join(format!("{}.clpi", rec.clip)),
             clpi(&clip),
