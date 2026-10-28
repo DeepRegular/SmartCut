@@ -279,8 +279,15 @@ fn run(
     }
     // What the track becomes. Settled by the picture writer's own planner, so
     // that an audio-only run and an ordinary one cannot disagree about it.
-    let mut setup =
-        crate::cut::plan_audio(&shape.src.input.url, &info, opts, false, shape.src.on_a_ts, many)?;
+    let mut setup = crate::cut::plan_audio(
+        &shape.src.input.url,
+        &info,
+        opts,
+        false,
+        shape.src.on_a_ts,
+        many,
+        file_pcm(output),
+    )?;
     // A recording joined on whose sound is written another way cannot be
     // copied into a stream declared as the master's. The picture writer
     // re-encodes just those reels to the master's shape; with one track and
@@ -382,25 +389,7 @@ fn run(
         && crate::audio::uncompressed(guess)
         && guess != setup.target
     {
-        // The muxer names its sixteen-bit default; a track that is wider
-        // keeps its width and changes only its byte order.
-        use ff::codec::Id;
-        let wanted = match (guess, setup.target) {
-            (Id::PCM_S16LE, Id::PCM_S24BE | Id::PCM_S24LE) => Id::PCM_S24LE,
-            (Id::PCM_S16LE, Id::PCM_S32BE | Id::PCM_S32LE) => Id::PCM_S32LE,
-            // And the containers whose default is big-endian (.aiff, .au,
-            // .caf): named sixteen bits, they took a 24-bit track down to 16.
-            (Id::PCM_S16BE, Id::PCM_S24BE | Id::PCM_S24LE) => Id::PCM_S24BE,
-            (Id::PCM_S16BE, Id::PCM_S32BE | Id::PCM_S32LE) => Id::PCM_S32BE,
-            // And floats, which they hold as floats (AIFF-C's `fl32`):
-            // named sixteen bits, a float track came out 16 bit even with
-            // 24 asked for.
-            (Id::PCM_S16BE, Id::PCM_F32BE | Id::PCM_F32LE) => Id::PCM_F32BE,
-            (Id::PCM_S16BE, Id::PCM_F64BE | Id::PCM_F64LE) => Id::PCM_F64BE,
-            (Id::PCM_F32LE | Id::PCM_S16LE, Id::PCM_F32BE | Id::PCM_F32LE) => Id::PCM_F32LE,
-            (Id::PCM_F64LE | Id::PCM_S16LE, Id::PCM_F64BE | Id::PCM_F64LE) => Id::PCM_F64LE,
-            _ => guess,
-        };
+        let wanted = pcm_in(guess, setup.target);
         // A different byte order is a different codec, and copied frames
         // are still in the old one: they have to go through the encoder,
         // which for PCM is a rearrangement and loses nothing. Declared the
@@ -1886,6 +1875,55 @@ fn write_encoded(
     packet.set_position(-1);
     packet.write_interleaved(octx)?;
     Ok(seconds)
+}
+
+/// What a container writes linear PCM as, given the PCM settled for the
+/// track: the byte order is the container's, the width the track's.
+///
+/// `file` is the muxer's own sixteen-bit default (what `av_guess_codec`
+/// names); a track that is wider keeps its width and changes only its byte
+/// order. Read by the writer below, which goes by it, and by
+/// [`crate::cut::plan_audio`], so that its note names what the file holds.
+pub(crate) fn pcm_in(file: ff::codec::Id, target: ff::codec::Id) -> ff::codec::Id {
+    use ff::codec::Id;
+    match (file, target) {
+        (Id::PCM_S16LE, Id::PCM_S24BE | Id::PCM_S24LE) => Id::PCM_S24LE,
+        (Id::PCM_S16LE, Id::PCM_S32BE | Id::PCM_S32LE) => Id::PCM_S32LE,
+        // And the containers whose default is big-endian (.aiff, .au,
+        // .caf): named sixteen bits, they took a 24-bit track down to 16.
+        (Id::PCM_S16BE, Id::PCM_S24BE | Id::PCM_S24LE) => Id::PCM_S24BE,
+        (Id::PCM_S16BE, Id::PCM_S32BE | Id::PCM_S32LE) => Id::PCM_S32BE,
+        // And floats, which they hold as floats (AIFF-C's `fl32`): named
+        // sixteen bits, a float track came out 16 bit even with 24 asked for.
+        (Id::PCM_S16BE, Id::PCM_F32BE | Id::PCM_F32LE) => Id::PCM_F32BE,
+        (Id::PCM_S16BE, Id::PCM_F64BE | Id::PCM_F64LE) => Id::PCM_F64BE,
+        (Id::PCM_F32LE | Id::PCM_S16LE, Id::PCM_F32BE | Id::PCM_F32LE) => Id::PCM_F32LE,
+        (Id::PCM_F64LE | Id::PCM_S16LE, Id::PCM_F64BE | Id::PCM_F64LE) => Id::PCM_F64LE,
+        _ => file,
+    }
+}
+
+/// The linear PCM the output's container names for itself, asked of its
+/// name alone and before the file is created: the same two questions the
+/// writer asks of the opened file (`av_guess_format`, then
+/// `av_guess_codec`). `None` where the container's answer is not PCM.
+fn file_pcm(output: &str) -> Option<ff::codec::Id> {
+    let named = std::ffi::CString::new(crate::input::as_output(output).as_bytes()).ok()?;
+    let plain = std::ffi::CString::new(output).ok()?;
+    let id = unsafe {
+        let fmt = ff::ffi::av_guess_format(std::ptr::null(), named.as_ptr(), std::ptr::null());
+        if fmt.is_null() {
+            return None;
+        }
+        ff::codec::Id::from(ff::ffi::av_guess_codec(
+            fmt,
+            std::ptr::null(),
+            plain.as_ptr(),
+            std::ptr::null(),
+            ff::ffi::AVMediaType::AVMEDIA_TYPE_AUDIO,
+        ))
+    };
+    crate::audio::uncompressed(id).then_some(id)
 }
 
 #[cfg(test)]

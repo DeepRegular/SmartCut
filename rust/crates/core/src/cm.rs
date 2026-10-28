@@ -899,7 +899,20 @@ pub fn blocks_from_resets(resets: &[f64], duration: f64) -> Vec<Block> {
                 None
             }
         })
-        .collect()
+        // Two lone marks near the same end each stand in for the same missing
+        // junction, and each made a block running to that end: one inside the
+        // other. A station that marks a sponsor card and the spot after it in
+        // the last fifteen seconds gave two tail blocks, so the break was
+        // counted twice and a mark was put down in the middle of it. The one
+        // that covers the other is kept.
+        .fold(Vec::new(), |mut out: Vec<Block>, b| {
+            match out.last_mut() {
+                Some(p) if b.start >= p.start && b.end <= p.end => {}
+                Some(p) if p.start >= b.start && p.end <= b.end => *p = b,
+                _ => out.push(b),
+            }
+            out
+        })
 }
 
 #[cfg(test)]
@@ -1018,6 +1031,18 @@ mod tests {
         let blocks =
             blocks_from_logo(&[at(2.0), at(65.0)], &[(0.3, 2.3)], &[], &opts, 3.0, 100.0, None);
         assert_eq!((blocks[0].start, blocks[0].end), (0.0, 2.0));
+    }
+
+    /// Two lone marks in the last (or first) fifteen seconds are one break
+    /// that runs off that end, not two.
+    #[test]
+    fn two_lone_marks_at_an_end_are_one_block() {
+        let tail = blocks_from_resets(&[1773.7, 1788.7, 1793.7, 1803.7], 1805.4);
+        let tail: Vec<(f64, f64)> = tail.iter().map(|b| (b.start, b.end)).collect();
+        assert_eq!(tail, vec![(1773.7, 1788.7), (1793.7, 1805.4)]);
+        let head = blocks_from_resets(&[3.7, 9.0, 300.0, 315.0], 1800.0);
+        let head: Vec<(f64, f64)> = head.iter().map(|b| (b.start, b.end)).collect();
+        assert_eq!(head, vec![(0.0, 9.0), (300.0, 315.0)]);
     }
 
     /// An interleaved frame's element index is not its sample position.

@@ -753,17 +753,20 @@ fn glance_now(spec: &str, landing: Landing, width: u32) -> Result<Shot> {
     /// GOP's. A quarter of a second is more than the reordering of any of
     /// the broadcast or disc material measured.
     const BACK: f64 = 0.25;
+    /// How much earlier a landing that found no picture standing on its own
+    /// is asked again: more than the GOP of any disc or broadcast material.
+    const AGAIN: f64 = 2.0;
     let mut g = Glancer::open(spec)?;
-    let shot = g.at(landing, width)?;
+    let first = g.at_until(landing, width, None);
     // **Asked for an instant and answered with a picture past it**, once
     // more from a little earlier. Aimed at the first picture of a broadcast
     // recording -- which is where the cut editor's stage opens, before the
     // walk has found any entry points -- the glimpse came back a GOP late on
     // 12 of 19 test recordings (0.949 asked, 1.616 shown), and the frame
     // counter stood on the first frame under the second GOP's picture until
-    // the walk landed. The second answer is taken only where it is no later than the
-    // instant asked for: a landing at or before its ask is what the window
-    // places pictures by. Only here, for the stage's single picture: the
+    // the walk landed. The second answer is taken only where it is no later
+    // than the instant asked for: a landing at or before its ask is what the
+    // window places pictures by. Only here, for the stage's single picture: the
     // film strip's cards (`glance_run`) are left as they were.
     //
     // **Read no further than the instant asked for.** An answer past it is
@@ -774,20 +777,48 @@ fn glance_now(spec: &str, landing: Landing, width: u32) -> Result<Shot> {
     // 4.6). And only an entry picture replaces an entry picture: a read
     // stopped short answers with whatever it decoded, which is no better than
     // the first answer and may be a picture that leans on ones it skipped.
-    if let Landing::At(at) = landing {
+    let Landing::At(at) = landing else {
+        return first.map(|(shot, _)| shot);
+    };
+    if let Ok((shot, whole)) = &first {
         if shot.time > at + 1e-3 {
             let back = g.at_until(Landing::At((at - BACK).max(0.0)), width, Some(at + 1e-3));
-            if let Ok(back) = back {
-                if back.time < shot.time
-                    && back.time <= at + 1e-3
-                    && (back.kind == "I" || shot.kind != "I")
-                {
+            if let Ok((back, stood)) = back {
+                if back.time < shot.time && back.time <= at + 1e-3 && (stood || !whole) {
                     return Ok(back);
                 }
             }
         }
     }
-    Ok(shot)
+    // **Asked for an instant and answered with nothing that stands on its
+    // own**, which is what the last second or so of a transport stream gives:
+    // the seek lands past the last entry picture, and from there to the end
+    // there is nothing to decode from. Asked for the last frame before the
+    // walk (End), the stage kept the picture it had and the status line said
+    // the preview failed, on 9 of 16 recordings and disc titles tried, or
+    // showed a grey field (a pressed disc's last half second). Once more from
+    // further back, for an entry picture before the instant -- and only one
+    // that stands on its own.
+    if !matches!(first, Ok((_, true))) && at > 0.0 {
+        let back = g.at_until(Landing::At((at - AGAIN).max(0.0)), width, Some(at + 1e-3));
+        if let Ok((back, true)) = back {
+            if back.time <= at + 1e-3 {
+                return Ok(back);
+            }
+        }
+    }
+    first.map(|(shot, _)| shot)
+}
+
+/// Whether a decoded picture stands on its own, which is what a glance
+/// answers with: an I picture, or one the decoder flags as a key frame. The
+/// second is an interlaced VC-1 disc's entry picture -- an I field and a P
+/// field, which libavcodec types P, after the field it decoded last -- and
+/// waiting for an I picture there read on to the next all-I picture, up to
+/// 10 s past the instant and 3 s a glance on a 1080i clip. Every other decoder
+/// flags a key frame only on an I picture or a recovery point.
+fn stands(frame: &ff::frame::Video) -> bool {
+    kind_of(frame) == "I" || unsafe { (*frame.as_ptr()).flags & ff::ffi::AV_FRAME_FLAG_KEY != 0 }
 }
 
 /// A recording nothing has been read of, open and ready to be asked for a
@@ -860,14 +891,21 @@ impl Glancer {
     /// Seek, decode the first picture that stands on its own, and answer with
     /// it and the instant it turned out to be at.
     fn at(&mut self, landing: Landing, width: u32) -> Result<Shot> {
-        self.at_until(landing, width, None)
+        self.at_until(landing, width, None).map(|(shot, _)| shot)
     }
 
     /// As [`Self::at`], reading no packet that is decoded after `until`
     /// (rebased seconds): what the decoder holds by then is all the answer
     /// there is. A picture decoded after an instant is shown after it too, so
-    /// nothing at or before `until` is missed by stopping there.
-    fn at_until(&mut self, landing: Landing, width: u32, until: Option<f64>) -> Result<Shot> {
+    /// nothing at or before `until` is missed by stopping there. Says too
+    /// whether the picture stands on its own (see [`stands`]) or is the
+    /// answer of last resort.
+    fn at_until(
+        &mut self,
+        landing: Landing,
+        width: u32,
+        until: Option<f64>,
+    ) -> Result<(Shot, bool)> {
         // Field by field, so that the packet loop can hold the demuxer while
         // the decoder is fed: they are separate places and the borrow checker
         // will only see that if it is told them separately.
@@ -909,10 +947,11 @@ impl Glancer {
         }
 
         let mut frame = ff::frame::Video::empty();
-        // The picture to answer with, which is the first I picture: what comes
-        // out before it references pictures the seek skipped past, and decodes
-        // to a grey field with the corner of a logo in it. Nothing is fed to
-        // the decoder until a key packet has arrived for the same reason --
+        // The picture to answer with, which is the first I picture (or key
+        // frame; see [`stands`]): what comes out before it references pictures
+        // the seek skipped past, and decodes to a grey field with the corner of
+        // a logo in it. Nothing is fed to the decoder until a key packet has
+        // arrived for the same reason --
         // the seek lands near the entry point on a transport stream rather
         // than on it.
         //
@@ -962,12 +1001,15 @@ impl Glancer {
             }
             while decoder.receive_frame(&mut frame).is_ok() {
                 let kind = kind_of(&frame);
-                if kind == "I" {
-                    return Ok(Shot {
-                        jpeg: encode_jpeg(&frame, sar, width)?,
-                        time: when(&frame),
-                        kind,
-                    });
+                if stands(&frame) {
+                    return Ok((
+                        Shot {
+                            jpeg: encode_jpeg(&frame, sar, width)?,
+                            time: when(&frame),
+                            kind,
+                        },
+                        true,
+                    ));
                 }
                 if spare.is_none() {
                     spare = Some(Shot {
@@ -983,12 +1025,15 @@ impl Glancer {
         let _ = decoder.send_eof();
         while decoder.receive_frame(&mut frame).is_ok() {
             let kind = kind_of(&frame);
-            if kind == "I" {
-                return Ok(Shot {
-                    jpeg: encode_jpeg(&frame, sar, width)?,
-                    time: when(&frame),
-                    kind,
-                });
+            if stands(&frame) {
+                return Ok((
+                    Shot {
+                        jpeg: encode_jpeg(&frame, sar, width)?,
+                        time: when(&frame),
+                        kind,
+                    },
+                    true,
+                ));
             }
             if spare.is_none() {
                 spare = Some(Shot {
@@ -998,7 +1043,7 @@ impl Glancer {
                 });
             }
         }
-        spare.ok_or_else(|| match landing {
+        spare.map(|s| (s, false)).ok_or_else(|| match landing {
             Landing::Fraction(into) => anyhow!("no picture {:.0}% into {spec}", into * 100.0),
             Landing::At(at) => anyhow!("no picture at {at:.3}s in {spec}"),
         })

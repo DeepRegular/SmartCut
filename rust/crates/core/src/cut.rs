@@ -507,6 +507,7 @@ struct AudioCtx<'a> {
 /// nothing to splice and nothing that can straddle a boundary. Each packet
 /// either falls inside a kept range or it does not, and the ones that do are
 /// moved by the same offset the pictures were.
+#[derive(Clone, Copy)]
 struct CaptionCtx {
     track: usize,
     in_index: usize,
@@ -519,6 +520,11 @@ struct CaptionCtx {
     /// clipped to -- a caption may straddle either end of one, and what it
     /// says is shown for as much of it as the cut keeps.
     range: (f64, f64),
+    /// From where on the recording's clock the statements of an ARIB caption
+    /// stream belong to the reel after this one rather than to this one:
+    /// where a dissolve or a wipe into it begins, on this reel's last range.
+    /// Infinite everywhere else. See [`take_caption`].
+    yields_from: f64,
 }
 
 /// Where a graphics stream sits on the output timeline.
@@ -943,6 +949,11 @@ struct CaptionTrack {
     /// ([`Writer::push_audio`]) and a disc's graphics
     /// ([`Writer::push_graphics`]) each answer this in their own way.
     last_out: Option<i64>,
+    /// What the outgoing reel sent inside a dissolve or a wipe, at the output
+    /// times it would go out at, held until the incoming reel's first range
+    /// shows when that reel's own first statement comes: what comes before
+    /// it is carried, the rest is not. See [`take_caption`].
+    yielded: Vec<(f64, ff::Packet)>,
 }
 
 /// The subtitles going beside the cut, gathered as it is written.
@@ -2691,6 +2702,26 @@ fn opens_a_truehd_track(data: Option<&[u8]>) -> bool {
 /// caption plane, so the statement that opens the next range is the clear
 /// itself. Where the marks are absent, a caption can outlive its scene by a
 /// line.
+///
+/// **At a dissolve or a wipe between two reels the caption plane is the
+/// incoming reel's from the instant the crossing begins** -- the instant its
+/// pictures start to show. One plane cannot show two recordings' lines, and
+/// what the crossing leads into is the incoming reel; its statements are
+/// carried at their own times from there on, the line it has up at that
+/// instant included (see [`read_caption_before`] and where each range opens
+/// in [`cut_into`]). So what the outgoing reel sends inside the crossing
+/// (`yields_from` on) is not carried: written too, it went out after the
+/// incoming reel's earlier statements and pushed them back to its own time
+/// -- up to the length of the crossing late, with the outgoing line standing
+/// through it. The line the outgoing reel had up when the crossing began
+/// stands until the incoming reel's first statement replaces it, as a line
+/// up at any range's end does -- and so does what the outgoing reel sends
+/// before that statement, its clear among it: held aside here and written
+/// where the incoming reel's first range opens. Dropped whole, a line the
+/// outgoing reel took down inside the crossing stood until the incoming
+/// reel's first line, seconds on where it opens on a silence. A fade to a
+/// colour is not a crossing: the two reels' pictures follow one another, and
+/// so do their captions.
 fn take_caption(
     caption: &CaptionCtx,
     src: &Source,
@@ -2710,7 +2741,11 @@ fn take_caption(
         return Ok(true);
     }
     if t >= seg.start {
-        writer.push_caption(caption.track, packet, t + caption.offset)?;
+        if t < caption.yields_from {
+            writer.push_caption(caption.track, packet, t + caption.offset)?;
+        } else if let Some(track) = writer.captions.get_mut(caption.track) {
+            track.yielded.push((t + caption.offset, packet));
+        }
     }
     Ok(false)
 }
@@ -2728,6 +2763,13 @@ fn take_caption(
 /// output's clock and clipped to the range. A caption that would have run
 /// past the end of a range ends with it; a caption that belongs to no kept
 /// range is not carried at all.
+///
+/// At a dissolve or a wipe between two reels the subtitles are the incoming
+/// reel's from the instant the crossing begins, as a broadcast's captions are
+/// ([`take_caption`]): the outgoing reel's range is cut short, for its
+/// documents, where the incoming reel's first one goes up inside the
+/// crossing (`range.1`), and the incoming reel's are read from where its
+/// pictures start to show ([`read_ttml_crossing`]).
 fn take_ttml(
     caption: &CaptionCtx,
     src: &Source,
@@ -2873,6 +2915,37 @@ fn read_ttml_before(
         .collect())
 }
 
+/// The TTML documents a reel that a dissolve or a wipe opens has to show
+/// inside the crossing: the ones on screen at `theirs`, where its pictures
+/// start to show, and the ones decided from there to `until`, where its first
+/// range begins claiming them ([`take_ttml`]). In the order they go up, by
+/// `begin` -- clipped to `caption.range.0`, as [`write_ttml`] places them.
+///
+/// The same rule as a broadcast's captions at a crossing (see
+/// [`take_caption`]): the subtitles are the incoming reel's from the instant
+/// the crossing begins. Looked back from where its first range begins
+/// instead, its line was held to the crossing's end and a line it put up and
+/// took down inside the crossing was lost.
+fn read_ttml_crossing(
+    src: &Source,
+    caption: &CaptionCtx,
+    theirs: f64,
+    until: f64,
+) -> Result<Vec<(f64, f64, Vec<u8>)>> {
+    let mut docs = read_ttml_before(src, caption, theirs)?;
+    let mut read: Vec<TtmlRead> = Vec::new();
+    read_ttml_span(src, caption, theirs, until, false, &mut read)?;
+    docs.extend(
+        read.into_iter()
+            .filter(|d| d.decided >= theirs && d.decided < until)
+            .filter(|d| d.end > caption.range.0 && d.begin < caption.range.1)
+            .map(|d| (d.begin, d.shift, d.data)),
+    );
+    let from = caption.range.0;
+    docs.sort_by(|a, b| a.0.max(from).total_cmp(&b.0.max(from)));
+    Ok(docs)
+}
+
 /// Read the TTML documents from `from` (less the seek margin) to `stop`
 /// into the front of `read`, leaving out any it holds already. Whether the
 /// read happened: a step further back that cannot seek is not read from the
@@ -2938,6 +3011,10 @@ fn read_ttml_span(
     Ok(true)
 }
 
+/// Caption packets with the times they were sent at, on the recording's
+/// clock. See [`read_caption_before`].
+type Sent = Vec<(f64, ff::Packet)>;
+
 /// How far in front of a range to look for an ARIB caption still on screen
 /// when it opens. A broadcaster's line stands for a few seconds; a minute's
 /// look back would cost a minute's read at every range for the rare line
@@ -2966,11 +3043,19 @@ const CAPTION_LOOKBACK: f64 = 30.0;
 /// With a statement goes the last management data before it, which is what
 /// tells a receiver the languages; the next one may be seconds into the
 /// range.
+///
+/// And, second, every packet of the stream sent from `until` up to
+/// `through`, with its time, as [`take_caption`] would have carried it: the
+/// statements a reel sends inside the crossing that opens it, which no
+/// segment of its own reads (see [`take_caption`]). Nothing where `through`
+/// is `until`, which is every range but a reel's first after a dissolve or a
+/// wipe.
 fn read_caption_before(
     src: &Source,
     caption: &CaptionCtx,
     until: f64,
-) -> Result<Vec<ff::Packet>> {
+    through: f64,
+) -> Result<(Vec<ff::Packet>, Sent)> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Failing to look back costs the line, not the cut: see
     // [`read_subpictures_before`].
@@ -2978,9 +3063,11 @@ fn read_caption_before(
     // except on the files whose open lost part of the head (see
     // [`read_subpictures_before`]).
     if seek_to(&mut ictx, src, until - CAPTION_LOOKBACK).is_err() {
-        return Ok(Vec::new());
+        return Ok(Default::default());
     }
     crate::input::keep_with_pictures(&mut ictx, &[caption.in_index]);
+    let through = through.max(until);
+    let mut sent: Sent = Vec::new();
     // One reader of the format per language, as a receiver keeps one.
     let mut layouts: std::collections::HashMap<u8, crate::caption::Layout> =
         std::collections::HashMap::new();
@@ -2990,7 +3077,7 @@ fn read_caption_before(
     for (stream, packet) in ictx.read_packets() {
         if stream.index() != caption.in_index {
             if crate::input::packet_time(&stream, &packet, src.start_time)
-                .is_some_and(|t| t >= until + PAST_UNTIL)
+                .is_some_and(|t| t >= through + PAST_UNTIL)
             {
                 break;
             }
@@ -3000,8 +3087,12 @@ fn read_caption_before(
         // is not carried there either.
         let Some(pts) = packet.pts() else { continue };
         let t = pts as f64 * caption.in_tb - src.start_time;
-        if t >= until {
+        if t >= through {
             break;
+        }
+        if t >= until {
+            sent.push((t, packet));
+            continue;
         }
         let Some(data) = packet.data() else { continue };
         let mut said: Vec<(u8, Option<crate::caption::Left>)> = Vec::new();
@@ -3058,13 +3149,13 @@ fn read_caption_before(
         }
     }
     if carried.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), sent));
     }
     carried.sort_by(|a, b| a.0.total_cmp(&b.0));
     if let Some(m) = management {
         carried.insert(0, m);
     }
-    Ok(carried.into_iter().map(|(_, p)| p).collect())
+    Ok((carried.into_iter().map(|(_, p)| p).collect(), sent))
 }
 
 /// Take one packet of a graphics stream: give it to the plane, and carry the
@@ -4938,10 +5029,18 @@ fn open_encoder_as(
     // and where the run is being made smaller those pictures are worth less.
     // Otherwise the few frames this program writes at a seam would be the
     // only fine ones on the disc, and paid for by the rest.
-    let bit_rate = opts.bit_rate.unwrap_or_else(|| {
-        let plain = plain_bit_rate as f64;
-        (plain * opts.video_share.unwrap_or(1.0).clamp(0.05, 1.0)) as usize
-    });
+    //
+    // **Only where the pictures around it are being made smaller,** which is
+    // MPEG-2 alone (see [`shrink_for`]). Anything else is copied at its full
+    // size and said to be, and its seams written at the share were the only
+    // pictures in the cut that were worse: an H.264 seam of a run asked to
+    // fit came out at 39 dB beside copied pictures at 48.
+    let share = if v.codec == "mpeg2video" {
+        opts.video_share.unwrap_or(1.0).clamp(0.05, 1.0)
+    } else {
+        1.0
+    };
+    let bit_rate = opts.bit_rate.unwrap_or((plain_bit_rate as f64 * share) as usize);
     enc.set_bit_rate(bit_rate);
     // And what the re-encoded pictures are to *say* about the rate, which is
     // not the same question as what to spend.
@@ -6509,6 +6608,11 @@ pub(crate) fn lossless_master_refusal(
 /// mono, and folding one of them says nothing about the other.
 ///
 /// `many` only decides whether the notes name which track they are about.
+///
+/// `pcm_file` is for [`crate::sound`] alone: the linear PCM its output file
+/// names for itself (a `.wav`'s little-endian, an `.aiff`'s big-endian),
+/// which [`crate::sound::pcm_in`] turns the PCM settled here into once the
+/// file is open. Only the notes read it; what is settled is the same.
 pub(crate) fn plan_audio(
     path: &str,
     info: &crate::AudioInfo,
@@ -6516,6 +6620,7 @@ pub(crate) fn plan_audio(
     to_ts: bool,
     on_a_ts: bool,
     many: bool,
+    pcm_file: Option<ff::codec::Id>,
 ) -> Result<AudioSetup> {
     // Which track these notes are about, said the way the recording names its
     // tracks. See [`crate::track_name`].
@@ -6707,13 +6812,37 @@ pub(crate) fn plan_audio(
         // the caller also said -- a mode that copies frames cannot be run
         // on frames that have to be built.
         (true, true) => {
-            if opts.audio_mode != AudioMode::Reencode {
-                crate::say!(
-                    "note: {target:?} was asked for{named} and the recording carries \
-                     {source_id:?}, which no frame of can be copied through, so the whole \
-                     track is re-encoded rather than {}.",
-                    opts.audio_mode.as_str(),
-                );
+            // What the file really holds. A file of sound alone into a
+            // container with PCM of its own writes that, in its byte order:
+            // a `.wav` is PCM_S16LE, not the big-endian PCM settled above.
+            let written = match pcm_file {
+                Some(file)
+                    if crate::audio::uncompressed(target) && crate::audio::uncompressed(file) =>
+                {
+                    crate::sound::pcm_in(file, target)
+                }
+                _ => target,
+            };
+            // And a `.wav` of sound alone is PCM whether or not a codec was
+            // named: the command line asks for it on the file's behalf, so
+            // "was asked for" said of a broadcast's AAC was not true.
+            let file_decides = pcm_file.is_some() && opts.audio_codec == AudioCodec::Lpcm;
+            if opts.audio_mode != AudioMode::Reencode && written != source_id {
+                if file_decides {
+                    crate::say!(
+                        "note: the track is written as {written:?}{named} and the recording \
+                         carries {source_id:?}, which no frame of can be copied through, so \
+                         the whole track is re-encoded rather than {}.",
+                        opts.audio_mode.as_str(),
+                    );
+                } else {
+                    crate::say!(
+                        "note: {written:?} was asked for{named} and the recording carries \
+                         {source_id:?}, which no frame of can be copied through, so the whole \
+                         track is re-encoded rather than {}.",
+                        opts.audio_mode.as_str(),
+                    );
+                }
             }
             AudioMode::Reencode
         }
@@ -9143,6 +9272,7 @@ fn cut_into(
                 to_ts,
                 src.on_a_ts,
                 audios.len() > 1,
+                None,
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -10171,6 +10301,7 @@ fn cut_into(
             ttml: info.format == crate::TextFormat::Ttml,
             written: 0,
             last_out: None,
+            yielded: Vec::new(),
         })
         .collect();
 
@@ -10446,6 +10577,9 @@ fn cut_into(
     // everything that asks "is there something on the other side of this
     // edge" counts across the reels rather than within one.
     let mut nth = 0usize;
+    // Where on the output the last dissolve or wipe began, for the captions
+    // of the reel it opens. See [`take_caption`].
+    let mut crossing_began: Option<f64> = None;
     // The master's measured frame lengths, for the reels that need their own.
     let master_frames: Vec<f64> = writer.audio.iter().map(|t| t.frame_secs).collect();
     for (reel_no, reel) in reels.iter().enumerate() {
@@ -10615,6 +10749,68 @@ fn cut_into(
                 })
             })
             .collect();
+        // Where a dissolve or a wipe crosses from one reel into the next, on
+        // the clock of the reel it starts on: `(where it begins on this
+        // range, where the next reel's pictures start)`. The caption plane
+        // is the incoming reel's from the first of those; see
+        // [`take_caption`].
+        let crosses = |p: Option<&RangePlan>| match p?.segments.last()? {
+            Segment { start, retouch: Some(crate::plan::Retouch::Cross { theirs, .. }), .. } => {
+                Some((*start, *theirs))
+            }
+            _ => None,
+        };
+        let crossing_out = (plan_no + 1 == reel_plans[reel_no].len())
+            .then(|| crosses(Some(plan)))
+            .flatten();
+        let crossing_in = (plan_no == 0 && reel_no > 0)
+            .then(|| crosses(reel_plans[reel_no - 1].last()))
+            .flatten()
+            .map(|(_, theirs)| theirs);
+        let began = if crossing_in.is_some() { crossing_began.take() } else { None };
+        if let Some((start, _)) = crossing_out {
+            crossing_began = Some(start + target_start - plan.t_in);
+        }
+        // Where this range's 4K subtitles give way to the next reel's: where
+        // that reel's first one goes up inside the crossing, on this reel's
+        // clock. A document up then is clipped to it, and one this reel
+        // would put up from then on is not carried -- what [`take_caption`]
+        // does for a broadcast's. With nothing of the next reel's up in the
+        // crossing, this reel's are carried to the range's end as before.
+        let mut ttml_until = vec![plan.t_out; writer.captions.len()];
+        if let (Some((start, theirs)), Some(next), Some(next_plan)) = (
+            crossing_out,
+            reels.get(reel_no + 1),
+            reel_plans.get(reel_no + 1).and_then(|p| p.first()),
+        ) {
+            let lo = next_plan
+                .segments
+                .first()
+                .map_or(next_plan.t_in, |s| s.start)
+                .min(next_plan.t_in);
+            for (track, t) in writer.captions.iter().enumerate() {
+                let Some(info) = threads[reel_no + 1].captions[track].as_ref() else {
+                    continue;
+                };
+                if !t.ttml || theirs >= lo {
+                    continue;
+                }
+                let theirs_ctx = CaptionCtx {
+                    track,
+                    in_index: info.stream_index,
+                    in_tb: info.time_base,
+                    offset: 0.0,
+                    ttml: true,
+                    base: info.base,
+                    range: (theirs, next_plan.t_out),
+                    yields_from: f64::INFINITY,
+                };
+                let docs = read_ttml_crossing(next.src, &theirs_ctx, theirs, lo)?;
+                if let Some((begin, _, _)) = docs.first() {
+                    ttml_until[track] = plan.t_out.min(start + (begin.max(theirs) - theirs));
+                }
+            }
+        }
         let caption_ctx: Vec<CaptionCtx> = writer
             .captions
             .iter()
@@ -10628,29 +10824,111 @@ fn cut_into(
                     offset: target_start - plan.t_in,
                     ttml: t.ttml,
                     base: info.base,
-                    range: (plan.t_in, plan.t_out),
+                    range: (plan.t_in, ttml_until[track]),
+                    // Only where the next reel has a line of its own to put
+                    // up on this track: with none, what this one sends in
+                    // the crossing (a clear among it) is all there is.
+                    yields_from: match crossing_out {
+                        Some((start, _))
+                            if threads
+                                .get(reel_no + 1)
+                                .is_some_and(|next| next.captions[track].is_some()) =>
+                        {
+                            start
+                        }
+                        _ => f64::INFINITY,
+                    },
                 })
             })
             .collect();
         // A 4K recording's subtitles that are already up when the range
         // opens. See [`read_ttml_before`].
+        //
+        // A reel that a dissolve or a wipe opens shows its own from where the
+        // crossing begins, `theirs` on its clock: what is up there and what
+        // goes up inside the crossing, each at its own time and not before
+        // the crossing's first frame. See [`read_ttml_crossing`].
+        let claims_from = plan.segments.first().map_or(plan.t_in, |s| s.start);
+        let ttml_from = claims_from.min(plan.t_in);
         for caption in caption_ctx.iter().filter(|c| c.ttml) {
-            for (begin, shift, data) in read_ttml_before(rsrc, caption, plan.t_in)? {
-                write_ttml(caption, &data, begin, shift, &mut writer)?;
+            match crossing_in.filter(|&theirs| theirs < ttml_from) {
+                Some(theirs) => {
+                    let from = began.map_or(theirs, |b| theirs.max(b - caption.offset));
+                    let head = CaptionCtx {
+                        range: (from, caption.range.1),
+                        ..*caption
+                    };
+                    let docs = read_ttml_crossing(rsrc, &head, theirs, ttml_from)?;
+                    for (begin, shift, data) in docs {
+                        write_ttml(&head, &data, begin, shift, &mut writer)?;
+                    }
+                }
+                None => {
+                    for (begin, shift, data) in read_ttml_before(rsrc, caption, plan.t_in)? {
+                        write_ttml(caption, &data, begin, shift, &mut writer)?;
+                    }
+                }
             }
         }
         // And a broadcast's caption line already up. See
         // [`read_caption_before`]. Looked back from where the first segment
         // begins claiming statements, so that none is carried twice or by
         // neither.
-        let claims_from = plan.segments.first().map_or(plan.t_in, |s| s.start);
+        //
+        // A reel that a dissolve or a wipe opens has its pictures on screen
+        // from where the crossing begins, `theirs` on its own clock, which is
+        // before this range starts: the crossing is written by the reel
+        // before. Its captions go with its pictures (see [`take_caption`]):
+        // the line up at `theirs` goes up where the crossing begins, and what
+        // it sends inside the crossing at its own time. Looked back from the
+        // range's start instead, the line was held to the crossing's end and
+        // the outgoing reel's last line stood through it.
+        let crossed = crossing_in.filter(|&theirs| theirs < claims_from);
         for caption in caption_ctx.iter().filter(|c| !c.ttml) {
-            for packet in read_caption_before(rsrc, caption, claims_from)? {
-                writer.push_caption(
-                    caption.track,
-                    packet,
-                    claims_from.min(plan.t_in) + caption.offset,
-                )?;
+            let (up, sent) = read_caption_before(
+                rsrc,
+                caption,
+                crossed.unwrap_or(claims_from),
+                claims_from,
+            )?;
+            // Not before the crossing's first frame, which the reel's own
+            // seconds can miss by a fraction of one: the crossing is laid
+            // on the output's frames from where the reel before ended.
+            let began = began.unwrap_or(f64::NEG_INFINITY);
+            let at = match crossed {
+                Some(theirs) => (theirs + caption.offset).max(began),
+                None => claims_from.min(plan.t_in) + caption.offset,
+            };
+            let mut out: Vec<(f64, ff::Packet)> = up.into_iter().map(|p| (at, p)).collect();
+            out.extend(sent.into_iter().map(|(t, p)| ((t + caption.offset).max(began), p)));
+            // What the reel before sent in the crossing, up to this reel's
+            // first statement (see [`take_caption`]). Ahead of this reel's
+            // own at the same instant, which replace it.
+            let first = out
+                .iter()
+                .find(|(_, p)| {
+                    let mut says = false;
+                    if let Some(data) = p.data() {
+                        crate::caption::data_groups(data, |id, _| {
+                            says |= crate::caption::is_statement(id);
+                        });
+                    }
+                    says
+                })
+                .map_or(f64::INFINITY, |(at, _)| *at);
+            let held = std::mem::take(&mut writer.captions[caption.track].yielded);
+            let mut all: Vec<(f64, ff::Packet)> =
+                held.into_iter().filter(|(t, _)| *t < first).collect();
+            all.extend(out);
+            all.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (t, packet) in all {
+                writer.push_caption(caption.track, packet, t)?;
+            }
+        }
+        // Held for a reel that turned out to have nothing to replace it with.
+        for track in 0..writer.captions.len() {
+            for (t, packet) in std::mem::take(&mut writer.captions[track].yielded) {
+                writer.push_caption(track, packet, t)?;
             }
         }
         // Only the master's, and the reason is in [`Threads::graphics`].

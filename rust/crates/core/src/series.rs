@@ -91,9 +91,11 @@ pub fn shared<S: AsRef<str>>(names: &[S]) -> Option<String> {
 ///
 /// `[字]` and its fellows sit in front of a name as often as behind it, and
 /// `【…】` carries either a block's name or an episode's -- neither of which
-/// is the series -- so both go wherever they are found.
+/// is the series -- so both go wherever they are found, but for a `【…】`
+/// written into the middle of a word.
 fn without_marks(name: &str) -> String {
     let raw: Vec<char> = name.chars().collect();
+    let folded: Vec<char> = raw.iter().map(|c| fold(*c)).collect();
     let mut out = String::new();
     let mut i = 0;
     while i < raw.len() {
@@ -108,8 +110,28 @@ fn without_marks(name: &str) -> String {
                 .take(most.saturating_add(1))
                 .position(|c| fold(*c) == close)
             {
-                i += end + 2;
-                continue;
+                // Except a `【…】` written into the middle of a word, with a
+                // letter on both sides of it: that is the title's own
+                // (`雨の日は【青い傘】で出かける`), and taking it out
+                // leaves a name nobody gave the programme. The marks are one
+                // or two characters and never sit between two letters.
+                //
+                // Nor where the episode starts straight after it: that is
+                // a mark of three or more, `X【最終回】第12話`, and the
+                // series is `X` as it always was. Nor where the episode is
+                // inside it, `X【第1話】決戦`: [`before_episode`] would cut
+                // there and leave half a bracket on the name.
+                let inside = close == '】'
+                    && end > 2
+                    && i > 0
+                    && raw[i - 1].is_alphanumeric()
+                    && raw.get(i + end + 2).is_some_and(|c| c.is_alphanumeric())
+                    && !episode_starts(&raw, i + end + 2)
+                    && !(i + 1..i + 1 + end).any(|j| episode_at(&raw, &folded, j));
+                if !inside {
+                    i += end + 2;
+                    continue;
+                }
             }
         }
         out.push(raw[i]);
@@ -177,18 +199,40 @@ fn before_episode(name: &str) -> String {
     let raw: Vec<char> = name.chars().collect();
     let folded: Vec<char> = raw.iter().map(|c| fold(*c)).collect();
     for i in 0..raw.len() {
-        let cut = folded[i] == '#' && digit(&folded, i + 1)
-            || raw[i] == '第' && counted(&raw, i + 1)
-            || (digit(&folded, i) || raw[i] == '最')
-                && numbered(&raw, i).is_some_and(|n| raw.get(n) == Some(&'話'))
-            || folded[i] == '(' && bracketed_number(&folded, i)
-            || word(&folded, i, "ep")
-            || word(&folded, i, "episode");
-        if cut {
+        if episode_at(&raw, &folded, i) {
             return raw[..i].iter().collect();
         }
     }
     name.to_string()
+}
+
+/// Whether one of the shapes [`before_episode`] cuts at begins at `i`.
+fn episode_at(raw: &[char], folded: &[char], i: usize) -> bool {
+    folded[i] == '#' && digit(folded, i + 1)
+        || raw[i] == '第' && counted(raw, i + 1)
+        || (digit(folded, i) || raw[i] == '最')
+            && numbered(raw, i).is_some_and(|n| raw.get(n) == Some(&'話'))
+        || folded[i] == '(' && bracketed_number(folded, i)
+        || word(folded, i, "ep")
+        || word(folded, i, "episode")
+}
+
+/// Whether what begins at `i` reads as the start of an episode, for
+/// [`without_marks`] to know a `【…】` in front of it for a mark: the shapes
+/// [`before_episode`] cuts at, and the looser ones a mark is followed by --
+/// any number, any `第`, `最終…`, `前編` and its fellows. Looser on purpose:
+/// all it decides is that the bracket goes, which is what it always did.
+fn episode_starts(raw: &[char], i: usize) -> bool {
+    let Some(&c) = raw.get(i) else {
+        return false;
+    };
+    let folded: Vec<char> = raw.iter().map(|c| fold(*c)).collect();
+    episode_at(raw, &folded, i)
+        || digit(&folded, i)
+        || "一二三四五六七八九十".contains(c)
+        || c == '第'
+        || c == '最' && raw.get(i + 1) == Some(&'終')
+        || "前中後".contains(c) && raw.get(i + 1).is_some_and(|n| matches!(n, '編' | '篇'))
 }
 
 /// The name with the episode's own title taken off the end.
@@ -268,12 +312,13 @@ fn word(folded: &[char], i: usize, word: &str) -> bool {
 
 /// The spaces and the hanging separator off both ends.
 ///
-/// Whitespace of either width, and a `・` that had a label after it. A dash
+/// Whitespace of either width, and a `・` that had a label after it, or a
+/// `▼` that had the episode after it (`灯台守の休日▼第27話`). A dash
 /// is left where it is: the ones that turn up at the end of a cut name are
 /// the closing half of a pair around a subtitle, and half a pair reads worse
 /// than the whole of one.
 fn tidy(name: &str) -> String {
-    name.trim_matches(|c: char| fold(c).is_whitespace() || c == '・')
+    name.trim_matches(|c: char| fold(c).is_whitespace() || c == '・' || c == '▼')
         .to_string()
 }
 
@@ -323,6 +368,7 @@ mod tests {
         );
         assert_eq!(of("砂の音　最終話「さよなら」[終]"), "砂の音");
         assert_eq!(of("硝子の塔　ＥＰＩＳＯＤＥ　２４"), "硝子の塔");
+        assert_eq!(of("灯台守の休日▼第２７話「再会」"), "灯台守の休日");
     }
 
     /// The season is the series' name and stays; the episode inside the
@@ -349,6 +395,24 @@ mod tests {
         assert_eq!(of("アニメーションの作り方"), "アニメーションの作り方");
         assert_eq!(of("うたたねラジオ「ゲストは誰？」"), "うたたねラジオ");
         assert_eq!(of("「約束」"), "「約束」");
+        // Brackets that are part of the title, between two letters, stay;
+        // a mark in the same place, and a block's name before a space, go.
+        assert_eq!(
+            of("雨の日は【青い傘】で出かける　＃4"),
+            "雨の日は【青い傘】で出かける"
+        );
+        assert_eq!(of("硝子の塔【終】第7幕"), "硝子の塔");
+        assert_eq!(of("硝子の塔【特別編】　#2"), "硝子の塔");
+        // A mark of three or more with the episode straight after it.
+        assert_eq!(of("硝子の塔【最終回】第12話"), "硝子の塔");
+        assert_eq!(of("硝子の塔【特別編】第3話"), "硝子の塔");
+        assert_eq!(of("硝子の塔【字幕版】最終話"), "硝子の塔");
+        assert_eq!(of("硝子の塔【完全版】前編"), "硝子の塔前編");
+        assert_eq!(of("硝子の塔【完全版】１２"), "硝子の塔１２");
+        assert_eq!(of("硝子の塔【終】#12"), "硝子の塔");
+        // The episode inside it: the bracket goes, as it always did.
+        assert_eq!(of("硝子の塔【第1話】決戦"), "硝子の塔決戦");
+        assert_eq!(of("硝子の塔【EP.1】始まり"), "硝子の塔始まり");
         assert_eq!(of(""), "");
     }
 

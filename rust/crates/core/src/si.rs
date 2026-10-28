@@ -192,8 +192,27 @@ pub(crate) fn framing(buf: &[u8]) -> Option<(usize, usize)> {
             // the copy permission and the top of the arrival clock, and with
             // a permission of 01 it reads 0x47 for most of a second at a
             // time: a run found there is the header's, four bytes early.
-            if stride == M2TS_PACKET && sync_at(buf, at + 4, stride) {
-                (at + 4, stride)
+            // The second holds the clock's next eight bits, which stay put
+            // for a couple of milliseconds -- five packets and more of a
+            // broadcast -- and read 0x47 one recording in 256: a run three
+            // bytes early. So of the runs in the four bytes behind the
+            // first, the one that keeps going is the packets', and where
+            // more than one does, the last of them. Only three, four bytes
+            // on, or none: one or two bytes past a packet's sync byte is its
+            // PID, which reads 0x47 in every packet of a stream numbered
+            // 0x?47 -- a run as long as the packets' own, and the later.
+            if stride == M2TS_PACKET {
+                let held = |at: usize| {
+                    (0..64)
+                        .take_while(|k| buf.get(at + k * stride) == Some(&0x47))
+                        .count()
+                };
+                let best = [0, 3, 4]
+                    .into_iter()
+                    .filter(|d| sync_at(buf, at + d, stride))
+                    .max_by_key(|d| (held(at + d), *d))
+                    .unwrap_or(0);
+                (at + best, stride)
             } else {
                 (at, stride)
             }
@@ -4044,6 +4063,23 @@ mod tests {
         assert_eq!(framing(&buf), Some((4, M2TS_PACKET)));
         let ts: Vec<u8> = (0..PACKET * 8).map(|i| if i % PACKET == 0 { 0x47 } else { 0 }).collect();
         assert_eq!(framing(&ts), Some((0, PACKET)));
+        // The clock's second byte reading 0x47 for the first several
+        // packets, and then moving on as a clock does.
+        let mut buf = vec![0u8; M2TS_PACKET * 80];
+        for (i, p) in buf.chunks_mut(M2TS_PACKET).enumerate() {
+            p[1] = if i < 20 { 0x47 } else { 0x48 };
+            p[4] = 0x47;
+        }
+        assert_eq!(framing(&buf), Some((4, M2TS_PACKET)));
+        // Every packet of one stream, numbered 0x0147: its PID's low byte
+        // runs as long as the sync bytes do, two bytes after them.
+        let mut buf = vec![0u8; M2TS_PACKET * 80];
+        for p in buf.chunks_mut(M2TS_PACKET) {
+            p[4] = 0x47;
+            p[5] = 0x41;
+            p[6] = 0x47;
+        }
+        assert_eq!(framing(&buf), Some((4, M2TS_PACKET)));
     }
 
     #[test]
