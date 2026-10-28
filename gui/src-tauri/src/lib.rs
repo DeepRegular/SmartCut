@@ -7223,6 +7223,34 @@ async fn bdav_finish(
     .map_err(|e| e.to_string())?
 }
 
+/// Which of `clips` the disc in `dir` holds as a recording: its stream and
+/// its clip index both there.
+///
+/// Asked after a [`bdav_finish`] that failed: `bdav::write` indexes the
+/// recordings in turn and, at the first it cannot, takes that one and every
+/// one after it off the disc -- all of them where the first failed. The rows
+/// of those were left saying they were written and counted so. Asked of the
+/// folder rather than read out of the error, which says only the first.
+#[tauri::command]
+async fn bdav_indexed(dir: String, clips: Vec<String>) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let at = local_path(&dir)?;
+        let root = smartcut_core::bdav::root(&at);
+        Ok(clips
+            .into_iter()
+            .filter(|clip| {
+                // The five-digit slots and nothing else, as `bdav_discard`.
+                clip.len() == 5
+                    && clip.bytes().all(|b| b.is_ascii_digit())
+                    && smartcut_core::bdav::stream_of(&at, clip).is_file()
+                    && root.join("CLIPINF").join(format!("{clip}.clpi")).is_file()
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// What the disc in `dir` already holds, for the gauge and 収める to leave
 /// out of the room they price the list against: `fit::already_on`, 0 where
 /// there is no disc there yet or the folder cannot be read.
@@ -8112,6 +8140,19 @@ async fn write_project(path: String, body: String) -> Result<(), String> {
 #[tauri::command]
 async fn read_project(path: String) -> Result<String, String> {
     off_thread(move || {
+        // A file, and one of a size a list of recordings comes to, as
+        // `read_cue`: a named pipe or a device chosen or dropped by mistake
+        // sat on a blocked read, or read until memory ran out.
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))?;
+        if !meta.is_file() || meta.len() > 64 << 20 {
+            return Err(trf!(
+                "開けません: {} ({})",
+                "Cannot open: {} ({})",
+                path,
+                tr!("プロジェクトファイルではありません", "not a project file")
+            ));
+        }
         std::fs::read_to_string(&path)
             .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))
     })
@@ -9622,6 +9663,7 @@ pub fn run() {
             bdav_prepare,
             bdav_discard,
             bdav_finish,
+            bdav_indexed,
             bdav_used,
             bdav_image_in_way,
             disc_holds,

@@ -1926,8 +1926,12 @@ async function showFrame(t) {
       // before the instant where one is near (`glance_now`), and asked for
       // the first frame after a cut that one is in the stretch the cut took:
       // a frame earlier only goes further into it. The entry picture after
-      // the instant is the kept one, and `glimpses` (the strip's, which does
-      // not look back) answers with that.
+      // the instant is the kept one, and on a transport stream `glimpses`
+      // (the strip's, which does not look back: its byte seek lands where it
+      // lands, mostly past the instant) answers with that. A container with
+      // an index (.mp4, .mkv) seeks to the entry point at or before the
+      // instant there too and gives the same picture again, which the test
+      // below passes over; the walk's exact picture puts it right.
       if (!walked() && shot.time < ask && srcToOut(ask) !== null) {
         const [after] = await invoke("glimpses", { path: src.path, times: [ask], width: stageWidth() });
         if (token !== previewToken) return;

@@ -2334,11 +2334,12 @@ def disc_after_run_reasons(cfg, t):
         lines = said(app)
         image_bytes = os.path.getsize(iso) if os.path.exists(iso) else 0
         # The run before this one's "fits" is the only one (the run logs are
-        # not read back in order).
+        # not read back in order). Told by its closing "に収まります）": the
+        # image sentence says the files alone 収まります too (40th pass).
         t.check("39p-2 a read-only image is weighed as the image",
                 image_bytes > files + 400_000 and _bdav_bytes(dirs["image"]) == files
                 and any("イメージのサイズ" in l and "ファイルシステム" in l for l in lines)
-                and sum("収まります" in l for l in lines) == 1,
+                and sum("に収まります）" in l for l in lines) == 1,
                 f"files {files} image {image_bytes}; {lines}")
         seen = set(lines)
         pick(app, "out-image", "")
@@ -2357,6 +2358,146 @@ def disc_after_run_reasons(cfg, t):
         t.check("39p-4 H.264 over a tiny disc: not told to turn 収める on",
                 any("MPEG-2 の映像がありません" in l for l in lines)
                 and not any("有効にすると" in l for l in lines), f"{lines}")
+    shutil.rmtree(base, ignore_errors=True)
+
+
+def disc_index_fails(cfg, t):
+    """A disc run whose index fails at a recording (a stream faster than the
+    48 Mbit/s a recorder writes is refused there): `bdav::write` takes that
+    recording and every one after it off the disc, so their rows must not
+    stay "done" and counted -- at the second recording (the first is
+    written) and at the first (none is). (40th pass, an S2 of the first
+    stage: the rows said 完了 and the summary counted them.)"""
+    fast = os.path.join(cfg.media, "fast.ts")
+    if not os.path.exists(fast):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30000/1001:duration=3",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=48000",
+                        "-c:v", "mpeg2video", "-b:v", "75M", "-minrate", "75M", "-maxrate", "75M",
+                        "-bufsize", "9M", "-g", "15", "-bf", "2",
+                        "-c:a", "mp2", "-b:a", "192k", "-f", "mpegts", fast + ".part"], check=True)
+        os.replace(fast + ".part", fast)
+    base = os.path.join(cfg.work, "disc_index_fails")
+    for label, rows, kept in (("at the second", [cfg.a, fast], 1), ("at the first", [fast, cfg.a], 0)):
+        shutil.rmtree(base, ignore_errors=True)
+        os.makedirs(base)
+        settings = {"mode": "bdav", "dir": base, "subfolder": "", "discTitle": "F",
+                    "image": "", "fit": False}
+        with App(cfg, "disc_index_fails", [{"path": p} for p in rows], settings) as app:
+            app.to_list()
+            wait_for("the rows read", lambda: _walked(app, 1) and _walked(app, 2), 120, 0.5)
+            app.export()
+            # The two rows; the disc's own steps (インデックス) follow them.
+            notes = app.s.js("return [...document.querySelectorAll('#out-list > li .note')]"
+                             ".map((n) => n.innerText);")[:2]
+            said = app.s.js("return document.getElementById('out-state').textContent") or ""
+            streams = sorted(os.listdir(os.path.join(base, "BDAV", "STREAM"))) \
+                if os.path.isdir(os.path.join(base, "BDAV", "STREAM")) else []
+            off = sum("取り除きました" in n for n in notes)
+            t.check(f"40g index failed {label}: the rows taken off say so and are not counted",
+                    len(notes) == 2 and off == 2 - kept and len(streams) == kept
+                    and said.startswith(f"{kept} / 2 本を出力しました") and "失敗 " + str(2 - kept) in said,
+                    f"notes {notes}; summary {said!r}; streams {streams}")
+    # Added to a disc that already holds a recording, with an image asked
+    # for: the recording already there is not one of this run's rows and
+    # stays, the image is not made, and only the row taken off says so.
+    # (40th pass, third stage.)
+    shutil.rmtree(base, ignore_errors=True)
+    os.makedirs(base)
+    settings = {"mode": "bdav", "dir": base, "subfolder": "", "discTitle": "F",
+                "image": "", "fit": False}
+    with App(cfg, "disc_index_fails/first", [{"path": cfg.a}], settings) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.export()
+    settings = dict(settings, image="2.50")
+    with App(cfg, "disc_index_fails/append", [{"path": cfg.a}, {"path": fast}], settings) as app:
+        app.to_list()
+        wait_for("the rows read", lambda: _walked(app, 1) and _walked(app, 2), 120, 0.5)
+        app.export()
+        notes = app.s.js("return [...document.querySelectorAll('#out-list > li .note')]"
+                         ".map((n) => n.innerText);")
+        said = app.s.js("return document.getElementById('out-state').textContent") or ""
+        streams = sorted(os.listdir(os.path.join(base, "BDAV", "STREAM")))
+        clpi = sorted(os.listdir(os.path.join(base, "BDAV", "CLIPINF")))
+        images = [f for f in os.listdir(os.path.dirname(base)) if f.startswith("disc_index_fails.iso")]
+        t.check("40g index failed on an append: the old recording stays, only the row taken off says so",
+                notes[:2] == ["完了", notes[1]] and "取り除きました" in notes[1]
+                and streams == ["00001.m2ts", "00002.m2ts"] and clpi == ["00001.clpi", "00002.clpi"]
+                and said.startswith("1 / 2 本を出力しました") and "失敗 1" in said and not images,
+                f"notes {notes}; summary {said!r}; streams {streams}; clpi {clpi}; images {images}")
+    for f in images:
+        os.remove(os.path.join(os.path.dirname(base), f))
+    shutil.rmtree(base, ignore_errors=True)
+
+
+def read_project_not_a_file(cfg, t):
+    """`read_project` on a named pipe or a folder answers at once that it is
+    not a project file, as `read_cue` does, instead of sitting on a read that
+    never ends (a pipe) -- and still reads a project. (40th pass, S3.)"""
+    base = os.path.join(cfg.work, "read_project_not_a_file")
+    shutil.rmtree(base, ignore_errors=True)
+    os.makedirs(base)
+    pipe = os.path.join(base, "p.scproj")
+    os.mkfifo(pipe)
+    with App(cfg, "read_project_not_a_file", [{"path": cfg.a}]) as app:
+        app.to_list()
+        ask = lambda path: app.s.js(
+            "return window.__TAURI__.core.invoke('read_project', {path: arguments[0]})"
+            ".then((s) => 'read ' + s.length, (e) => String(e));", path)
+        said = [ask(pipe), ask(base), ask(app.project)]
+        t.check("40g read_project: a pipe and a folder refused, a project read",
+                all("プロジェクトファイルではありません" in s for s in said[:2]) and said[2].startswith("read "),
+                f"{said}")
+    shutil.rmtree(base, ignore_errors=True)
+
+
+def disc_fit_nothing_to_shrink(cfg, t):
+    """収める on, a list over the disc. An MPEG-2 list is written at a share,
+    which the run log heads with; an H.264 one has nothing to transcode, so
+    no share goes to the run (it was the floor, 35%, and the engine's seam
+    re-encoder took it as a bit rate) and the gauge says what it is over by,
+    not "would have to come to 35%, and 35% is as far as this goes". An
+    unreachable MPEG-2 list names the share it would need, under the floor.
+    (40th pass.)"""
+    base = os.path.join(cfg.work, "disc_fit_nothing_to_shrink")
+
+    def run(name, path, disc):
+        shutil.rmtree(base, ignore_errors=True)
+        os.makedirs(base)
+        settings = {"mode": "bdav", "dir": base, "subfolder": "", "discTitle": "S",
+                    "image": "", "fit": True}
+        with App(cfg, name, [{"path": path}], settings) as app:
+            app.to_list()
+            wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+            app.s.click('button.tab[data-screen="outset"]')
+            app.s.js("const s = document.getElementById('out-disc'); const o = document.createElement('option');"
+                     " o.value = String(arguments[0]); o.textContent = 'test'; s.appendChild(o); s.value = o.value;"
+                     " s.dispatchEvent(new Event('input', {bubbles: true}));", disc)
+            time.sleep(1.0)
+            g = wait_for("the gauge", lambda: (lambda g: g if "%" in g["note"] else None)(_gauge(app)), 30, 0.2)
+            app.export()
+            log = ""
+            for root, _, files in os.walk(app.dir):
+                for f in files:
+                    if f.endswith(".log") or f.endswith(".txt"):
+                        with open(os.path.join(root, f), "rb") as fh:
+                            log += fh.read().decode("utf-8", "replace")
+            return g["note"], "映像の書き直し" in log
+
+    # a.ts is about 12 MB: 9 MB is reachable at a share, 3 MB is not.
+    note, shared = run("disc_fit_nothing_to_shrink_m2", cfg.a, 9_000_000)
+    t.check("40g MPEG-2 over the disc, 収める on: written at a share",
+            shared and "トランスコードして収めます" in note, f"gauge {note!r}; share in the log {shared}")
+    note, shared = run("disc_fit_nothing_to_shrink_m2low", cfg.a, 3_000_000)
+    need = re.search(r"映像を ([0-9.]+)% まで", note)
+    t.check("40g MPEG-2 out of reach: the gauge names the share it would need, under the floor",
+            need is not None and float(need.group(1)) < 35 and "下限は 35%" in note,
+            f"gauge {note!r}")
+    note, shared = run("disc_fit_nothing_to_shrink_h264", cfg.b, 1_000_000)
+    t.check("40g H.264 over the disc, 収める on: no share, the gauge says it is over",
+            not shared and "超過しています" in note and "MPEG-2 以外" in note and "下限" not in note,
+            f"gauge {note!r}; share in the log {shared}")
     shutil.rmtree(base, ignore_errors=True)
 
 
@@ -6592,6 +6733,54 @@ def glimpse_after_cut(cfg, t):
         app.gone()
 
 
+def chain_abca_detect(cfg, t):
+    """Every open succeeding: row 1 cut and Ctrl+B pressed, row 2 double-
+    clicked at once (the pass is stopped by that open), a cut on row 2 and
+    Ctrl+B there, row 3 cut, then row 1 again. Row 2's status line must not
+    show row 1's pass counting, row 2's own pass must run, row 1 must come
+    back with its cut and Escape on it ask nothing, and every row keep its
+    cut. (40th pass: settle's openGen guard and the flat count taken down
+    on a switch, on ordinary use.)"""
+    rows = [{"path": cfg.a}, {"path": cfg.b}, {"path": cfg.c}]
+    with App(cfg, "chain_abca_detect", rows) as app:
+        app.to_list()
+        wait_for("rows read", lambda: app.s.js(
+            "return [...document.querySelectorAll('#cliplist > li .badge')]"
+            ".every((b) => b.classList.contains('ready'))"), 60)
+        app.open_row(1, "a.ts")
+        n1 = app.cut(150, 300)
+        app.s.keys("Control+b")
+        app.open_row(2, "b.mkv")
+        time.sleep(1.5)
+        st2 = app.state()
+        t.check("40m-1 row 1's stopped pass does not count on row 2's status line",
+                "検出" not in st2["status"] and "キャンセル" not in st2["status"]
+                and "cancel" not in st2["status"].lower(), f"status {st2['status']!r}")
+        n2 = app.cut(100, 199)
+        app.s.keys("Control+b")
+        try:
+            wait_for("row 2's own pass to answer", lambda: "検出中" not in app.state()["status"]
+                     and app.state()["status"] != "", 60, 0.3)
+            said = app.state()["status"]
+        except Failure:
+            said = app.state()["status"]
+        t.check("40m-2 row 2's own black pass runs after row 1's was stopped",
+                "検出中" not in said and "失敗" not in said and said != "", f"status {said!r}")
+        app.open_row(3, "c.ts")
+        app.cut(50, 100)
+        app.open_row(1, "a.ts")
+        time.sleep(1.0)
+        st1 = app.state()
+        asked = app.escape(discard=True, expect_dialog=False)
+        app.gone()
+        p = app.save()
+        c1, c2, c3 = cuts_of(p, 1), cuts_of(p, 2), cuts_of(p, 3)
+        t.check("40m-3 A->B->C->A: row 1 back with its cut, Escape asks nothing, every cut kept",
+                st1["frames"] == n1 and not asked and len(c1) == 1 and len(c2) == 1 and len(c3) == 1,
+                f"row 1 {st1['frames']} pictures (want {n1}), {'asked' if asked else 'did not ask'}; "
+                f"rows {fmt(c1)} {fmt(c2)} {fmt(c3)}; row 2 had {n2}")
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -6684,6 +6873,10 @@ SCENARIOS = [
     sound_join_named_by_master,
     disc_after_run_reasons,
     plays_chain_ordinary,
+    chain_abca_detect,
+    disc_index_fails,
+    read_project_not_a_file,
+    disc_fit_nothing_to_shrink,
 ]
 
 

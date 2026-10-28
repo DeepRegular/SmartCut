@@ -7472,6 +7472,10 @@ async function fitShare(access = undefined, list = undefined) {
   if (!writesDisc() || !settings.fit) return null;
   const { room: r } = await askRoom(access, list);
   if (!r || r.fits) return null;
+  // Nor where none of the pictures can be transcoded (no MPEG-2 among
+  // them): there is no share to write anything at, and the floor handed on
+  // was taken by the engine's seam re-encoder as a bit rate for H.264.
+  if (!(r.video_bytes > 0)) return null;
   // A list that cannot be reached is still written -- as small as this goes,
   // which is the best answer available to somebody who has pressed the
   // button. The gauge said so before they pressed it, and the output screen
@@ -7592,14 +7596,18 @@ async function renderGauge() {
     n: costs.length,
     dur: coarse(seconds),
     over: discGiB(Math.max(0, bytes - usable)),
-    share: (Math.max(r.share, r.floor) * 100).toFixed(1),
+    // Out of reach, what the pictures would have had to come to, not the
+    // floor: "would have to come to 35%, and 35% is as far as this goes".
+    share: ((r.reachable ? Math.max(r.share, r.floor) : r.share) * 100).toFixed(1),
     floor: (r.floor * 100).toFixed(0),
   };
   let note;
   let tone;
   if (r.fits) {
     [note, tone] = [t("gauge.fits", words), "good"];
-  } else if (!settings.fit) {
+  } else if (!settings.fit || !(r.video_bytes > 0)) {
+    // Nothing to transcode is the same answer as not being asked to: what
+    // it is over by, and (below) that what is not MPEG-2 stays as it is.
     [note, tone] = [t("gauge.over", words), "over"];
   } else if (r.reachable) {
     [note, tone] = [t("gauge.willFit", words), ""];
@@ -9673,8 +9681,15 @@ async function startExport() {
   // rows `discCosts` prices, by the same test).
   const runFit = !!settings.fit;
   const runShrinks = list.some((c) => c.info && c.info.video_rate > 0 && !!c.info.can_shrink);
+  // And the disc it was priced for: the screen stays editable through the
+  // run, and a disc chosen in the meantime measured the run against one it
+  // was not priced for -- "would go no smaller" said of a disc it fits.
+  const runNamed = Number(settings.disc) || 0;
   const share = await fitShare(runAccess, list);
-  if (share !== null) note(t("out.shrinking", { share: sharePct(share) }));
+  // Not where none of the pictures can be transcoded: a list that cannot be
+  // made to fit is still given the floor (`fitShare`), and "transcoded to
+  // 35%" was said over H.264 that is copied as it is.
+  if (share !== null && runShrinks) note(t("out.shrinking", { share: sharePct(share) }));
   // Stopped before a byte was written. The disc's numbers were taken, as
   // empty streams, and are given back.
   if (abort) {
@@ -10030,7 +10045,7 @@ async function startExport() {
         // on screen now: the screen stays editable through the minutes of
         // indexing, and a change of it in them priced the disc one way and
         // measured it the other.
-        const capacity = await discHolds(Number(settings.disc) || 0, overwritable ? "overwritable" : "");
+        const capacity = await discHolds(runNamed, overwritable ? "overwritable" : "");
         // A read-only image is weighed as the image, once it is written, as
         // the CLI weighs it: its files each take whole extents and the image
         // has its own file system besides, so a folder under the size can
@@ -10038,6 +10053,10 @@ async function startExport() {
         // of it after all (turned off in the meantime, or it failed).
         const imageWeighed = !!settings.image && !overwritable;
         let discSaid = false;
+        // Of the recordings this run put on the disc: an MPEG-2 row whose
+        // cut failed is not one the sentence can point at, and "turn
+        // トランスコードする on" over the H.264 left was no help.
+        const wroteShrinks = runShrinks && wrote.some(({ clip }) => clip.info && clip.info.video_rate > 0 && !!clip.info.can_shrink);
         const sayDisc = (bytes, files = null) => {
           if (discSaid || !(bytes > 0) || !(capacity > 0)) return;
           discSaid = true;
@@ -10055,7 +10074,7 @@ async function startExport() {
             said =
               files !== null && files <= capacity
                 ? "out.imageOver"
-                : !runShrinks
+                : !wroteShrinks
                   ? "out.discNotMpeg2"
                   : share !== null
                     ? "out.discTooBig"
@@ -10128,6 +10147,24 @@ async function startExport() {
       } catch (e) {
         finishStep("index", "error");
         note(t("out.bdavFailed", { e: String(e) }));
+        // And the rows whose recordings it took off the disc: the one that
+        // could not be indexed and every one after it (`bdav::write`) -- all
+        // of them where the first failed. Left as they were, they said they
+        // were written and the summary counted them. Which ones, the folder
+        // says (`bdav_indexed`); a folder that cannot be asked leaves the
+        // rows as they are.
+        const held = await invoke("bdav_indexed", {
+          dir: discDir(),
+          clips: wrote.map(({ slot }) => slot.clip),
+        }).catch(() => null);
+        if (Array.isArray(held)) {
+          for (const { clip, slot } of wrote) {
+            if (held.includes(slot.clip)) continue;
+            if (clip.out.state === "done") done--;
+            clip.out = { state: "error", progress: 0, note: t("out.notIndexed") };
+          }
+          renderOutScreen();
+        }
         // A recording that could not be indexed still leaves the table
         // written, under the name given (`bdav::write`); a failure before it
         // leaves the old one. Which, only the folder knows.
