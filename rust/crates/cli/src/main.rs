@@ -1470,16 +1470,75 @@ fn run() -> Result<()> {
         if let (Some(at), Some(_)) = (&bdav, iso) {
             taken.extend(image_beside(std::path::Path::new(at)));
         }
+        // And a disc's own folders, which the names above leave out: a disc
+        // opened by its folder is read through its index and its clips, and a
+        // clip on one through the index beside it. Named as the log, the
+        // recording on the disc (or its clip information) had the run's lines
+        // added onto its end. The disc a `--bdav` run adds to as well: its
+        // recordings and its index are the user's, and what else is in its
+        // folder goes into the image.
+        let discs: Vec<std::path::PathBuf> = std::iter::once(&input)
+            .chain(&joined)
+            .flat_map(|at| {
+                let at = smartcut_core::netpath::resolve(at).unwrap_or_else(|_| at.into());
+                if let Some((root, _)) = smartcut_core::disc::clip_on_a_disc(&at.to_string_lossy()) {
+                    return vec![std::path::PathBuf::from(root)];
+                }
+                if at.is_dir() && smartcut_core::disc::looks_like_disc(&at) {
+                    return disc_folders(&at);
+                }
+                Vec::new()
+            })
+            .chain(bdav.as_deref().map(|at| smartcut_core::bdav::root(std::path::Path::new(at))))
+            .collect();
         let existed = log.exists();
+        // A link to nothing yet: opening the log makes the file it names, so
+        // a refused log takes that file away and leaves the user's link.
+        let dangling = !existed && log.symlink_metadata().is_ok();
+        // The folders opening the log makes for it, the deepest first, so
+        // that a log refused below takes them away again: one named into a
+        // disc's folder that is not there yet left an empty one inside it.
+        let made: Vec<std::path::PathBuf> = log
+            .ancestors()
+            .skip(1)
+            .filter(|d| !d.as_os_str().is_empty())
+            .take_while(|d| !d.exists())
+            .map(std::path::Path::to_path_buf)
+            .collect();
+        let refused = || {
+            smartcut_core::log::close();
+            if dangling {
+                if let Ok(file) = std::fs::canonicalize(log) {
+                    let _ = std::fs::remove_file(file);
+                }
+            } else if !existed {
+                let _ = std::fs::remove_file(log);
+                for d in &made {
+                    let _ = std::fs::remove_dir(d);
+                }
+            }
+        };
         smartcut_core::log::open(log).with_context(|| format!("cannot write the log {at}"))?;
         if let Some(clash) = taken.iter().find(|t| smartcut_core::input::same_file(log, t)) {
-            smartcut_core::log::close();
-            if !existed {
-                let _ = std::fs::remove_file(log);
-            }
+            refused();
             bail!(
                 "--log {at} is {}, which this run reads or writes: name another file",
                 clash.display()
+            );
+        }
+        // Asked of where the log really is, now that it exists: through a
+        // link as well, and into a disc folder opening the log has made.
+        let real = std::fs::canonicalize(log).ok();
+        let inside = |d: &std::path::PathBuf| {
+            let d = std::fs::canonicalize(d).ok();
+            real.as_ref().zip(d).is_some_and(|(r, d)| r.starts_with(d))
+        };
+        if let Some(disc) = discs.iter().find(|d| inside(d)) {
+            refused();
+            bail!(
+                "--log {at} is inside the disc {}, which this run reads or writes: name a file \
+                 outside it",
+                disc.display()
             );
         }
         smartcut_core::log::write_only(&format!(
@@ -4156,6 +4215,24 @@ fn one_place(a: &str, b: &str) -> bool {
         }
         (Some(x), Some(y)) => x == y,
         _ => false,
+    }
+}
+
+/// The folders of a disc named by its own folder that hold the disc: its
+/// `BDMV`, `BDAV` or `VIDEO_TS` (and `AUDIO_TS`), or the folder itself where
+/// it is one of those -- a disc copied under somebody's own name. What else
+/// the folder holds is not the disc's.
+fn disc_folders(at: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let inner: Vec<std::path::PathBuf> =
+        ["BDMV", "bdmv", "BDAV", "bdav", "VIDEO_TS", "video_ts", "AUDIO_TS", "audio_ts"]
+            .iter()
+            .map(|n| at.join(n))
+            .filter(|p| p.is_dir())
+            .collect();
+    if inner.is_empty() {
+        vec![at.to_path_buf()]
+    } else {
+        inner
     }
 }
 

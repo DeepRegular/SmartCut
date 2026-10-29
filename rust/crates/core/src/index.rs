@@ -1170,9 +1170,28 @@ pub fn refine_leading(
         let half = video.frame_duration() / 2.0;
         // Match on either clock: a walk reports presentation time, a
         // container's seek table reports decode time.
-        let hit = window.iter().position(|p| {
-            p.key && ((p.pts - slot.time).abs() < half || (p.dts - slot.time).abs() < half)
-        });
+        //
+        // **And where neither clock finds it, by the byte the index gave.** A
+        // seek table's times are put on the pictures' clock by one measured
+        // shift ([`table_shift`]), and where the pictures do not come at one
+        // rate the shift is a frame out at some entries: a variable-rate
+        // H.264 MP4 with B pictures (a phone's recording through an encoder
+        // that keeps its timing) had 8 of 61 points a 60th of a second off,
+        // nothing here put them back, and a cut whose copy began on one
+        // stopped with "passed without being met". The window holds the
+        // picture all the same, and an MP4 hands each packet over at the byte
+        // its table names. Only where the clocks found nothing, so a point
+        // they do find is read as it always was.
+        let hit = window
+            .iter()
+            .position(|p| {
+                p.key && ((p.pts - slot.time).abs() < half || (p.dts - slot.time).abs() < half)
+            })
+            .or_else(|| {
+                (slot.pos >= 0)
+                    .then(|| window.iter().position(|p| p.key && p.pos == slot.pos))
+                    .flatten()
+            });
         if let Some(i) = hit {
             let found = point_at(&window, i, always_droppable);
             // The same floor [`crate::scan_with`] gives the walk's points: a

@@ -462,8 +462,16 @@ impl<'a> Picture<'a> {
             self.emit_mb(sink, mb, &pen, spread, scratch);
         }
         sink.align();
-        for _ in 0..slice.stuffing() {
-            sink.u(0, 8);
+        // **The padding only where nothing is pressed.** A picture asked to
+        // come back as itself comes back with it; one being made smaller has
+        // no use for zeroes that are there to keep a constant rate. A stream
+        // padded to a constant rate is mostly padding -- three quarters of
+        // the bytes of one measured here -- and written back with it, a run
+        // asked for 40% came out at 91.5%.
+        if press.is_nothing() {
+            for _ in 0..slice.stuffing() {
+                sink.u(0, 8);
+            }
         }
     }
 

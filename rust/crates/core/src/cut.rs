@@ -694,6 +694,11 @@ struct Writer {
     pending: std::collections::VecDeque<Emitted>,
     /// Display positions seen so far, smallest first.
     seen: std::collections::BinaryHeap<std::cmp::Reverse<i64>>,
+    /// The last `depth` positions taken off `seen`, oldest first, and the
+    /// very first one taken: where a picture `depth` places back in display
+    /// order was shown. See [`Writer::emit_one`].
+    shown: std::collections::VecDeque<i64>,
+    first_shown: Option<i64>,
     /// The decode time given to the last picture written. A muxer refuses a
     /// packet whose decode time does not come after the one before it, so
     /// each has to be told about its predecessor.
@@ -1386,13 +1391,58 @@ impl Writer {
         // belongs to, the muxer refuses `pts < dts` outright, and the whole
         // cut stopped over it. A picture is never decoded after it is shown,
         // so that is the ceiling.
-        let mut dts = (next_in_display - self.depth * 3 * self.sub).min(e.display);
+        let lead = next_in_display - self.depth * 3 * self.sub;
         // And never behind the picture before it. The value above is the
         // smallest display position still waiting, which climbs while the
         // pictures arrive in one of the orders a coder produces and does not
         // where a damaged stretch hands them over out of any order at all.
-        if let Some(prev) = self.last_dts {
-            dts = dts.max(prev + 1);
+        let last_dts = self.last_dts;
+        let settle = |c: i64| {
+            let dts = c.min(e.display);
+            last_dts.map_or(dts, |prev| dts.max(prev + 1))
+        };
+        let mut dts = settle(lead);
+        // **Three fields per level is a guess at how far apart the pictures
+        // are, and a variable-rate recording that holds some of them breaks
+        // it.** What the depth really bounds is a count of pictures: none is
+        // shown more than `depth` places before where it is decoded. Count it
+        // in ticks and a B pyramid reaching across a picture held for two
+        // slots wants more lead-in than three fields a level gives; the decode
+        // time settled here then runs past a B picture still waiting in the
+        // queue, every one after it is pushed up a tick at a time, and that B
+        // has nowhere to go -- a phone recording re-encoded with B pictures
+        // lost one at a hold, and the cut said it was damaged.
+        //
+        // So where the waiting pictures say this one's decode time would
+        // leave one of them no room, it goes back to where the picture
+        // `depth` places back in display order was shown. That is always
+        // early enough -- this picture and every one still to come are shown
+        // at or after it, each a tick or more later than the one before --
+        // and it is taken only there, so a recording the lead-in already
+        // suited is written exactly as it was.
+        let past = match self.first_shown {
+            _ if self.depth <= 0 => next_in_display,
+            _ if self.shown.len() as i64 >= self.depth => self.shown[0],
+            // Before `depth` pictures have gone, as many ticks before the
+            // first as are missing: still climbing, still early.
+            Some(first) => first - (self.depth - self.shown.len() as i64),
+            None => next_in_display - self.depth,
+        };
+        if self.first_shown.is_none() {
+            self.first_shown = Some(next_in_display);
+        }
+        self.shown.push_back(next_in_display);
+        while self.shown.len() as i64 > self.depth.max(0) {
+            self.shown.pop_front();
+        }
+        let crowds = |dts: i64| {
+            self.pending
+                .iter()
+                .zip(1..)
+                .any(|(p, k): (&Emitted, i64)| dts + k > p.display)
+        };
+        if crowds(dts) {
+            dts = settle(lead.min(past));
         }
         // Where the two cannot both be met the picture has nowhere to go: its
         // display position is behind one already written, which is what a
@@ -3873,7 +3923,12 @@ const PAST_UNTIL: f64 = 2.0;
 /// existing. What comes back is the last unit each stream sent before the
 /// range, with the time it was shown at, and whether it had already taken
 /// itself down by the time the range begins is decided by the caller.
-fn read_subpictures_before(src: &Source, until: f64) -> Result<Vec<(i32, f64, Vec<u8>)>> {
+///
+/// And, where `through` is past `until`, every unit shown from `until` up to
+/// `through`: a reel a dissolve or a wipe opens shows from `until` and its
+/// first segment takes units only from `through`. See
+/// [`read_graphics_before`].
+fn read_subpictures_before(src: &Source, until: f64, through: f64) -> Result<SubpicturesBefore> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Seeked before anything is discarded, and only where there is somewhere
     // to seek to. **Both halves of that are load-bearing.** A recording is
@@ -3905,12 +3960,14 @@ fn read_subpictures_before(src: &Source, until: f64) -> Result<Vec<(i32, f64, Ve
             }
         }
     }
+    let through = through.max(until);
     let mut last: Vec<(i32, f64, Vec<u8>)> = Vec::new();
+    let mut sent: Vec<(i32, f64, Vec<u8>)> = Vec::new();
     for (stream, packet) in ictx.read_packets() {
         if stream.parameters().id() != ff::codec::Id::DVD_SUBTITLE {
             if stream.index() == src.video.stream_index
                 && crate::input::packet_time(&stream, &packet, src.start_time)
-                    .is_some_and(|t| t >= until + PAST_UNTIL)
+                    .is_some_and(|t| t >= through + PAST_UNTIL)
             {
                 break;
             }
@@ -3918,14 +3975,27 @@ fn read_subpictures_before(src: &Source, until: f64) -> Result<Vec<(i32, f64, Ve
         }
         let Some(pts) = packet.pts() else { continue };
         let t = pts as f64 * f64::from(stream.time_base()) - src.start_time;
-        if t >= until {
+        if t >= through {
             break;
         }
         let id = stream.id();
-        last.retain(|(other, _, _)| *other != id);
-        last.push((id, t, packet.data().unwrap_or(&[]).to_vec()));
+        let unit = (id, t, packet.data().unwrap_or(&[]).to_vec());
+        if t >= until {
+            sent.push(unit);
+        } else {
+            last.retain(|(other, _, _)| *other != id);
+            last.push(unit);
+        }
     }
-    Ok(last)
+    Ok(SubpicturesBefore { up: last, sent })
+}
+
+/// What [`read_subpictures_before`] hands back: the last unit of each stream
+/// in front of `until`, and the units from there to `through` in the order
+/// they were read.
+struct SubpicturesBefore {
+    up: Vec<(i32, f64, Vec<u8>)>,
+    sent: Vec<(i32, f64, Vec<u8>)>,
 }
 
 /// Read the graphics of the stretch in front of a kept range, so that
@@ -3951,11 +4021,20 @@ fn read_subpictures_before(src: &Source, until: f64) -> Result<Vec<(i32, f64, Ve
 /// the range was carried by nobody. They are finished here, left off the
 /// plane (what is on screen at the opening is what was up before them), and
 /// written at their own time by the caller.
+///
+/// `through` past `until` reads on to there, for a reel a dissolve or a wipe
+/// opens: its pictures show from `until` (where the crossing begins, on its
+/// own clock) and its first segment claims sets only from `through`. The sets
+/// begun in between are handed back with the late ones, and the plane at
+/// `until` -- what the crossing opens on -- comes back beside them; the
+/// writer's plane is left at `through`, where the segment carries on. With
+/// `through == until` the read is the one it always was.
 fn read_graphics_before(
     src: &Source,
     until: f64,
+    through: f64,
     writer: &mut Writer,
-) -> Result<Vec<(usize, Vec<crate::pgs::Held>)>> {
+) -> Result<GraphicsBefore> {
     for t in writer.graphics.iter_mut() {
         t.plane.reset();
         // A previous range's: `take_graphics` puts it back only for the set
@@ -3969,20 +4048,22 @@ fn read_graphics_before(
     // Nor is failing to look back a reason to fail the cut here: what it
     // costs is the subtitle up at the opening.
     if seek_to(&mut ictx, src, until - crate::pgs::LOOKBACK).is_err() {
-        return Ok(Vec::new());
+        return Ok(GraphicsBefore { late: Vec::new(), opening: vec![None; writer.graphics.len()] });
     }
     // The graphics, and the pictures as the clock: a track with no display
     // set after the range begins -- forced subtitles only, or a range past
     // the last line -- never says it is done, and the read went on to the
     // end of the clip once per range. See [`read_subpictures_before`].
     crate::input::keep_with_pictures(&mut ictx, &wanted);
+    let through = through.max(until);
     let mut done = vec![false; writer.graphics.len()];
     let mut before: Vec<Option<crate::pgs::Plane>> = vec![None; writer.graphics.len()];
+    let mut opening: Vec<Option<crate::pgs::Plane>> = vec![None; writer.graphics.len()];
     let mut late = Vec::new();
     for (stream, packet) in ictx.read_packets() {
         let Some(k) = wanted.iter().position(|i| *i == stream.index()) else {
             if crate::input::packet_time(&stream, &packet, src.start_time)
-                .is_some_and(|t| t >= until + PAST_UNTIL)
+                .is_some_and(|t| t >= through + PAST_UNTIL)
             {
                 break;
             }
@@ -4000,7 +4081,11 @@ fn read_graphics_before(
         // is part read is finished first, within reason.
         let arrives = t.min(dts);
         let plane = &mut writer.graphics[k].plane;
-        if arrives >= until && (!plane.building() || arrives >= until + TRAIL) {
+        let settled = |bound: f64| arrives >= bound && (!plane.building() || arrives >= bound + TRAIL);
+        if opening[k].is_none() && settled(until) {
+            opening[k] = Some(plane.clone());
+        }
+        if settled(through) {
             done[k] = true;
             if done.iter().all(|&d| d) {
                 break;
@@ -4016,16 +4101,34 @@ fn read_graphics_before(
             data: packet.data().unwrap_or(&[]).to_vec(),
         });
         if let Some(set) = set {
+            let opened = set.iter().map(|h| h.pts.min(h.dts)).fold(f64::INFINITY, f64::min);
             let shown = set.iter().map(|h| h.pts).fold(f64::NEG_INFINITY, f64::max);
-            if shown >= until {
-                if let Some(was) = before[k].take() {
-                    *plane = was;
+            if shown >= until || opened >= until {
+                // One begun in front of `until` is not what the crossing
+                // opens on, whether or not it is still up at `through`.
+                if opened < until && opening[k].is_none() {
+                    opening[k] = before[k].clone();
+                }
+                if shown >= through {
+                    if let Some(was) = before[k].take() {
+                        *plane = was;
+                    }
                 }
                 late.push((k, set));
             }
         }
     }
-    Ok(late)
+    Ok(GraphicsBefore { late, opening })
+}
+
+/// What [`read_graphics_before`] hands back.
+struct GraphicsBefore {
+    /// The sets to write at their own time, in the order they were read.
+    late: Vec<(usize, Vec<crate::pgs::Held>)>,
+    /// Per track, the plane as it stood at `until`, where the read went on
+    /// past it; `None` where it never got there, and the writer's plane is
+    /// the answer.
+    opening: Vec<Option<crate::pgs::Plane>>,
 }
 
 // Writing one reel's pictures into another's shape. A submodule rather than
@@ -6806,23 +6909,21 @@ pub(crate) fn plan_audio(
     };
     // Where the codec on the way out is not the codec on the way in there is
     // nothing to copy: every frame is written afresh, whatever was asked for.
+    // What the file really holds. A file of sound alone into a container
+    // with PCM of its own writes that, in its byte order: a `.wav` is
+    // PCM_S16LE, not the big-endian PCM settled above.
+    let written = match pcm_file {
+        Some(file) if crate::audio::uncompressed(target) && crate::audio::uncompressed(file) => {
+            crate::sound::pcm_in(file, target)
+        }
+        _ => target,
+    };
     let mode = match (recoded, asked_for) {
         (false, _) => mode,
         // Asked for by name. Worth a note only where it overrules something
         // the caller also said -- a mode that copies frames cannot be run
         // on frames that have to be built.
         (true, true) => {
-            // What the file really holds. A file of sound alone into a
-            // container with PCM of its own writes that, in its byte order:
-            // a `.wav` is PCM_S16LE, not the big-endian PCM settled above.
-            let written = match pcm_file {
-                Some(file)
-                    if crate::audio::uncompressed(target) && crate::audio::uncompressed(file) =>
-                {
-                    crate::sound::pcm_in(file, target)
-                }
-                _ => target,
-            };
             // And a `.wav` of sound alone is PCM whether or not a codec was
             // named: the command line asks for it on the file's behalf, so
             // "was asked for" said of a broadcast's AAC was not true.
@@ -6857,13 +6958,14 @@ pub(crate) fn plan_audio(
             // the Blu-ray's on the way into a transport stream and plain PCM
             // anywhere else; there is no container that keeps that one, and
             // saying otherwise would send someone to write a `.ts` for it.
-            let keep = if source_id == ff::codec::Id::PCM_BLURAY {
+            // Nor to a file of sound alone, which no `.ts` would be.
+            let keep = if source_id == ff::codec::Id::PCM_BLURAY && pcm_file.is_none() {
                 " Write a .ts to keep it as it was."
             } else {
                 ""
             };
             crate::say!(
-                "note: {source_id:?}{named} is written as {target:?}, which is the box this \
+                "note: {source_id:?}{named} is written as {written:?}, which is the box this \
                  container has for linear PCM. The samples are the recording's own; what \
                  changes is what is written around them.{keep}"
             );
@@ -10191,6 +10293,28 @@ fn cut_into(
                 reel.src.path,
             ));
         }
+        // And captions the same way, counted among their own kind and
+        // format as `Threads::captions` places them: a reel with a caption
+        // track joined onto a master with none had it left out unsaid.
+        let spare: usize = [crate::TextKind::Caption, crate::TextKind::Superimpose]
+            .into_iter()
+            .flat_map(|kind| {
+                [crate::TextFormat::Arib, crate::TextFormat::Ttml].map(|format| (kind, format))
+            })
+            .map(|(kind, format)| {
+                let count = |of: &[crate::CaptionInfo]| {
+                    of.iter().filter(|c| c.kind == kind && c.format == format).count()
+                };
+                count(&reel.src.captions).saturating_sub(count(&src.captions))
+            })
+            .sum();
+        if spare > 0 {
+            crate::note_once(format!(
+                "note: {} carries {spare} more caption stream(s) than the master does, and the \
+                 file has only the master's. They are not written.",
+                reel.src.path,
+            ));
+        }
         if !reel.src.graphics.is_empty() || !reel.src.subpictures.is_empty() {
             crate::note_once(format!(
                 "note: the subtitles a disc draws are carried from the master only, so {}'s \
@@ -10533,6 +10657,8 @@ fn cut_into(
         ),
         pending: Default::default(),
         seen: Default::default(),
+        shown: Default::default(),
+        first_shown: None,
         last_dts: None,
         written: 0,
         skipped: 0,
@@ -10948,6 +11074,20 @@ fn cut_into(
         } else {
             Vec::new()
         };
+        // A disc's subtitles go with the pictures too, as the captions do
+        // above: a reel a dissolve or a wipe opens (the master, whose
+        // subtitles are the only ones carried) shows what is up at `theirs`
+        // from the crossing's first frame, and what goes up inside the
+        // crossing at its own time. Looked back from the range's start
+        // instead, a subtitle shown and gone inside a 3 s crossing was lost
+        // and the next one went up late. `look` is where the look back
+        // stands on the reel's clock, `head` where that goes on the output.
+        let shift = target_start - plan.t_in;
+        let not_before = began.unwrap_or(f64::NEG_INFINITY);
+        let (look, head) = match crossed {
+            Some(theirs) => (theirs, (theirs + shift).max(not_before)),
+            None => (plan.t_in, target_start),
+        };
         // The same, for a DVD's subtitles: what was on screen when the range
         // opens is written again at its first frame. A unit that had already
         // taken itself down before the cut is not on screen and is not
@@ -10956,30 +11096,39 @@ fn cut_into(
             && !rsrc.subpictures.is_empty()
             && (writer.subpictures.is_some() || !writer.converted.is_empty())
         {
-            for (id, shown, unit) in read_subpictures_before(rsrc, plan.t_in)? {
+            let before = read_subpictures_before(rsrc, look, crossed.map_or(look, |_| claims_from))?;
+            for (id, shown, unit) in before.up {
                 let stops = crate::vobsub::stops_after(&unit);
-                if stops.is_some_and(|after| shown + after <= plan.t_in) {
+                if stops.is_some_and(|after| shown + after <= look) {
                     continue;
                 }
                 // A stop is counted from when the unit is shown, which is
                 // now the range's first frame: left as it was, the line
                 // stood for as long again as it had already been up.
                 let unit = match stops {
-                    Some(after) => {
-                        crate::vobsub::stopped_after(&unit, shown + after - plan.t_in)
-                    }
+                    Some(after) => crate::vobsub::stopped_after(&unit, shown + after - look),
                     None => unit,
                 };
                 if let Some(subs) = writer.subpictures.as_mut() {
-                    subs.take(id, target_start, &unit);
+                    subs.take(id, head, &unit);
                 }
                 // As inside a segment (see `take_subpicture`): one unit the
                 // decoder turns away costs that subtitle, not the cut.
-                if let Err(e) = convert_subpicture(id, target_start, &unit, true, &mut writer) {
+                if let Err(e) = convert_subpicture(id, head, &unit, true, &mut writer) {
                     crate::say!(
                         "note: a subtitle on screen at {:.3}s could not be converted: {e}",
-                        plan.t_in
+                        look
                     );
+                }
+            }
+            // Shown inside the crossing: carried as a segment carries them.
+            for (id, t, unit) in before.sent {
+                let at = (t + shift).max(not_before);
+                if let Some(subs) = writer.subpictures.as_mut() {
+                    subs.take(id, at, &unit);
+                }
+                if let Err(e) = convert_subpicture(id, at, &unit, false, &mut writer) {
+                    crate::say!("note: a subtitle at {t:.3}s could not be converted: {e}");
                 }
             }
         }
@@ -10987,21 +11136,38 @@ fn cut_into(
         // was put there by a display set the cut left behind, so it is put
         // up again here. See [`crate::pgs`].
         if thread.graphics && !writer.graphics.is_empty() {
-            let late = read_graphics_before(rsrc, plan.t_in, &mut writer)?;
+            let GraphicsBefore { late, opening } = read_graphics_before(
+                rsrc,
+                look,
+                crossed.map_or(look, |_| claims_from),
+                &mut writer,
+            )?;
+            // How far each set moves: the range's shift, and not before the
+            // crossing's first frame (see the captions above), the set kept
+            // whole with its own spacing.
+            let moved = |set: &[crate::pgs::Held]| {
+                let first = set.iter().map(|h| h.pts.min(h.dts)).fold(f64::INFINITY, f64::min);
+                if first.is_finite() { shift.max(not_before - first) } else { shift }
+            };
             // When the first of the late sets goes up, on each track. A
             // replay is placed a few milliseconds into the range, and a late
             // set that goes up sooner than that would have the older line
             // drawn over it; that track's replay is left out, since the late
             // set replaces what it would have shown within a frame or two.
-            let shift = target_start - plan.t_in;
             let mut late_from = vec![f64::INFINITY; writer.graphics.len()];
             for (track, set) in &late {
                 if let (Some(first), Some(at)) = (set.first(), late_from.get_mut(*track)) {
-                    *at = at.min(first.pts + shift);
+                    *at = at.min(first.pts + moved(set));
                 }
             }
             for track in 0..writer.graphics.len() {
-                let replay = writer.graphics[track].plane.replay(target_start);
+                // At a crossing the read went on past `look`; what the
+                // crossing opens on is the plane as it stood there.
+                let plane = match opening.get(track) {
+                    Some(Some(p)) if crossed.is_some() => p,
+                    _ => &writer.graphics[track].plane,
+                };
+                let replay = plane.replay(head);
                 if replay.iter().any(|h| h.pts >= late_from[track]) {
                     continue;
                 }
@@ -11010,8 +11176,9 @@ fn cut_into(
                 }
             }
             for (track, set) in late {
+                let by = moved(&set);
                 for held in &set {
-                    writer.push_graphics(track, held, shift, true)?;
+                    writer.push_graphics(track, held, by, true)?;
                 }
             }
         }
