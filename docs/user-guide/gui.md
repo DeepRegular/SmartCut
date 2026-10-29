@@ -1416,7 +1416,9 @@ before's line goes when the clip after's first one comes. Where the clip after
 says nothing during the effect, the clip before's lines run on as they would.
 Through a **fade** the two follow one another, as the pictures do. Up to 0.8.35
 the clip after's lines waited for the effect to end, and one said and gone
-during it was lost. The preview in this window shows no captions; play the
+during it was lost. A disc's subtitles, which only the master carries, do the
+same where the master is the clip after; up to 0.8.36 they too waited for the
+effect to end. The preview in this window shows no captions; play the
 written file to see them.
 
 If the change is abrupt, **The sound** takes it down into the join and brings it

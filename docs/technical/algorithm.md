@@ -405,3 +405,17 @@ timestamp. The two are always next to each other in decode order, so the first i
 always the one just seen; a recording that gives a pair one timestamp between them —
 or two close enough to round together — would otherwise put both fields in the same
 place, and one of them would have nowhere to go.
+
+**The reorder depth counts pictures; the lead-in counted fields.** The queue gave
+each picture a decode time three fields per level of depth before the smallest
+display position still waiting, which assumes a picture lasts about two fields. A
+variable-rate recording re-encoded with a B pyramid breaks that: across a picture
+held for two frames the pyramid wants more lead-in, the decode time runs past a B
+picture still in the queue, and that B is left out with a note blaming damage. A
+phone's recording re-encoded that way lost one at `--keep 0-5` (277 pictures of
+278) and two at `--cut 60-70` until 0.8.36. What the depth does bound is that no
+picture is shown more than `depth` places before it is decoded. So where the
+waiting pictures show that one of them would have no room, the decode time goes
+back to where the picture `depth` places earlier in display order was shown, which
+is always early enough (`Writer::emit_one`). A recording the old lead-in suited
+never gets there, and is written byte for byte as before.

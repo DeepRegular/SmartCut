@@ -79,6 +79,12 @@ A reel with fewer tracks than the master leaves a gap in the ones it has not
 got, and a reel with more has the spare ones left out. Both are said once,
 before anything is written.
 
+A reel with more caption streams of a kind and format than the master has
+them — a captioned recording joined onto a master with none, say — has the
+spare ones left out the same way, and that is said once too: `note: <reel>
+carries N more caption stream(s) than the master does`. Up to 0.8.36 they
+were left out unsaid.
+
 **The subtitles a disc draws are carried from the master only.** Not a limit
 that saves work — a limit that keeps an answer honest. What a graphics track
 carries is not packets but the state of a plane: a display set puts something
@@ -425,10 +431,27 @@ than 10.00; with three seconds, two of its lines and a clear were lost, and
 the clip before's line stood from 9.58 to 14.22. A 4K title joined to a cut
 of itself with a three-second dissolve lost the clip after's first line whole.
 
+**A disc's subtitles go with the pictures the same way**, where there is
+anything to go: they are carried from the master only, so a crossing changes
+them only when the clip after is the master. Then its PGS or DVD subtitle up
+where its pictures start goes up on the crossing's first frame — a DVD
+subtitle still comes down when it did in the recording — and what it puts up
+inside the crossing goes up at its own time (`cut::read_graphics_before` and
+`cut::read_subpictures_before`, read on to where the range begins). The clip
+before has none in the file to give way. Where the master is the clip before,
+its subtitles run to the end of its range, through the crossing, as they
+always have. Up to 0.8.36 the master after a crossing had its subtitles read
+back from the crossing's end: a disc title joined onto a cut of itself with a
+three-second dissolve lost a subtitle that was up for 2.1 seconds inside the
+crossing and put the next one up 0.78 seconds late; a one-second wipe put the
+first one up a second late. The same holds for `.sup` and `.idx`/`.sub` side
+files.
+
 A fade is not a crossing. The two clips' pictures follow one another through
 the colour, and their captions follow one another with them, as they always
 have. A join with no transition or a fade is written byte for byte as before;
-at a dissolve or a wipe, only the caption stream differs. The seam window's
+at a dissolve or a wipe, only the caption stream differs, and the disc's
+subtitle stream where the master is the clip after. The seam window's
 preview (`crossview.rs`) draws no captions at all.
 
 ### A join's fade is asked for at each end

@@ -190,6 +190,16 @@ is the same picture every time: a recording that starts in the middle of one
 has a first picture that is not a whole picture. It is written through as it
 arrived and the run says so.
 
+**The stuffing after a slice is written back only at no pressure.** A picture
+being made smaller leaves it out: those zeroes are there to hold a stream at a
+constant rate and are no part of the picture. Some broadcasters pad that way —
+a quarter of one recording's bytes, and two fifths in its first twenty
+seconds — and a recording off a DVD recorder a few per cent. Up to 0.8.36 the
+padding was kept at every pressure, so a padded recording could not come down
+to the share asked: a minute asked for 35% came out at 55%, and a disc asked
+to fit 130 MB came to 144.5 MB (the run said so). The same disc now comes to
+125.8 MB, and a recording that pads nothing is written as before.
+
 `tests/run_transrate_tests.sh` checks the identity on whatever material is in
 `~/media`, that a cut asked to fit a size fits it, that what it cost is still
 above 32 dB, and that a recording that cannot be rewritten says so.

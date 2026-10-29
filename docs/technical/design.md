@@ -2957,6 +2957,16 @@ a whole number of pictures and this measures it in seconds — where four entry
 points of 1467 end up more than half a frame from their picture, against all
 1467 of them before.
 
+Those few are found again where a cut can land on them. `index::refine_leading`,
+which reads the points around each boundary, matches a point to a picture by
+either clock, and where neither finds one within half a frame, by the byte the
+table names for it: an MP4 hands each packet over at the byte its table gives.
+Until 0.8.36 it matched by time alone. A variable-rate H.264 MP4 with B
+pictures — a phone's recording re-encoded with its timing kept — had 4 of its
+22 points a sixtieth of a second off, and of five cuts near them four stopped
+with "passed without being met" and one wrote 654 frames for 653. A point either
+clock finds is read as it always was.
+
 #### A cell could not be shorter than one GOP
 
 The strip draws one picture per cell and cuts the cells on the recording's own

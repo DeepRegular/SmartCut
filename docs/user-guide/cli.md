@@ -113,7 +113,9 @@ before's line goes when the clip after's first one comes. Where the clip after
 says nothing inside the crossing, the clip before's lines run on as they would.
 Through a fade the two follow one another, as the pictures do. Up to 0.8.35
 the clip after's lines waited for the crossing to end, and one said and gone
-inside it was lost. See
+inside it was lost. A disc's subtitles, which only the master carries, do the
+same where the master is the clip after (up to 0.8.36 they waited for the
+crossing to end as well). See
 [The captions at a crossing are the clip after's](../technical/joining.md#the-captions-at-a-crossing-are-the-clip-afters).
 
 ## Audio
@@ -208,7 +210,7 @@ refused rather than quietly ignored.
 | `--still TIME` | Save the frame at `TIME` at the size the recording is shown at, as the PNG, JPEG or BMP that `-o` names (`still.png` without one). An interlaced recording is saved from one field. A time past the end is an error, as for `--cut-near`. The same as **Save this frame as an image** in the cut editor |
 | `--cut-near TIME` | Print where the nearest picture-to-picture change is to `TIME`, in windows of ±0.5, ±1 and ±2 seconds. A time past the end of the recording is an error (exit code 1); the length the `input` line prints is the end, and typed back it is answered. On a recorder's title, a change found at a seam is the first picture after it |
 | `--verify` | Once the cut is written, decode it from end to end and line it up against the recording frame by frame: the frame count, that every copied frame is the recording's own bit for bit, the re-encoded frames' quality, decode errors and the length of the sound. Each finding is a line starting `verify:`. A file whose pictures do not match ends the run with exit code 1; sound that runs long or short, or is laid out more than half a second past the last picture, is only reported. Not with anything that writes no cut, such as `--analyze`, and refused when there is neither `-o` nor `--bdav`. It is the same check as [the GUI's](gui.md#checking-what-was-written) |
-| `--log FILE` | Also write what the run prints into FILE, headed by a line giving the version and the command line. An existing file is added to. FFmpeg's lines go in as `SMARTCUT_FFMPEG_LOG` lets them. A file the run reads or writes — the recording, `-o` and so on — is refused |
+| `--log FILE` | Also write what the run prints into FILE, headed by a line giving the version and the command line. An existing file is added to. FFmpeg's lines go in as `SMARTCUT_FFMPEG_LOG` lets them. A file the run reads or writes — the recording, `-o` and so on — is refused, and so is a file inside the folders of a disc it reads or adds to (the `BDMV`, `BDAV` or `VIDEO_TS` of a disc opened by its folder, the `BDMV` or `BDAV` holding a disc clip given as the input or to `--join`, and the `--bdav` target's `BDAV`); folders made for a refused log are taken away again |
 
 ## Index and proxy
 
