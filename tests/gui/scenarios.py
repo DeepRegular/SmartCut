@@ -1659,7 +1659,8 @@ def _gauge(app):
         "return {note: n ? n.textContent : b.textContent, tone: n ? n.className : '',"
         " segs: bar ? [...bar.children].filter((e) => e.classList.contains('gauge-seg'))"
         "   .map((e) => [e.className, e.style.flexGrow, e.title]) : [],"
-        " sizes: [...b.querySelectorAll('.gauge-size')].map((e) => e.textContent)};")
+        " sizes: [...b.querySelectorAll('.gauge-size')].map((e) => e.textContent),"
+        " whats: [...b.querySelectorAll('.gauge-what')].map((e) => e.textContent)};")
 
 
 def disc_gauge_appends(cfg, t):
@@ -2449,6 +2450,19 @@ def read_project_not_a_file(cfg, t):
         t.check("40g read_project: a pipe and a folder refused, a project read",
                 all("プロジェクトファイルではありません" in s for s in said[:2]) and said[2].startswith("read "),
                 f"{said}")
+        # ジョブ追加's copy, the same way (41st pass): the pipe sat on a read
+        # for good. Given 5 s each; a missing file says why, as the copy did.
+        copy = lambda path: app.s.js(
+            "return Promise.race([window.__TAURI__.core.invoke('queue_copy', {path: arguments[0]})"
+            ".then((s) => 'copied ' + s, (e) => String(e)),"
+            " new Promise((r) => setTimeout(() => r('hung'), 5000))]);", path)
+        gone = os.path.join(base, "gone.scproj")
+        took = [copy(pipe), copy(base), copy(gone), copy(app.project)]
+        t.check("41g queue_copy: a pipe and a folder refused, a missing file named, a project copied",
+                all("プロジェクトファイルではありません" in s for s in took[:2])
+                and took[2].startswith("開けません") and "プロジェクトファイルではありません" not in took[2]
+                and took[3].startswith("copied ") and os.path.isfile(took[3][len("copied "):]),
+                f"{took}")
     shutil.rmtree(base, ignore_errors=True)
 
 
@@ -2483,21 +2497,26 @@ def disc_fit_nothing_to_shrink(cfg, t):
                     if f.endswith(".log") or f.endswith(".txt"):
                         with open(os.path.join(root, f), "rb") as fh:
                             log += fh.read().decode("utf-8", "replace")
-            return g["note"], "映像の書き直し" in log
+            return g["note"], "映像の書き直し" in log, g["whats"]
 
     # a.ts is about 12 MB: 9 MB is reachable at a share, 3 MB is not.
-    note, shared = run("disc_fit_nothing_to_shrink_m2", cfg.a, 9_000_000)
+    # The bars: a before and an after where there is MPEG-2 to transcode,
+    # one total where there is not (41st pass: two bars of one length).
+    note, shared, whats = run("disc_fit_nothing_to_shrink_m2", cfg.a, 9_000_000)
     t.check("40g MPEG-2 over the disc, 収める on: written at a share",
-            shared and "トランスコードして収めます" in note, f"gauge {note!r}; share in the log {shared}")
-    note, shared = run("disc_fit_nothing_to_shrink_m2low", cfg.a, 3_000_000)
+            shared and "トランスコードして収めます" in note and whats == ["変換前", "変換後"],
+            f"gauge {note!r} bars {whats}; share in the log {shared}")
+    note, shared, whats = run("disc_fit_nothing_to_shrink_m2low", cfg.a, 3_000_000)
     need = re.search(r"映像を ([0-9.]+)% まで", note)
     t.check("40g MPEG-2 out of reach: the gauge names the share it would need, under the floor",
-            need is not None and float(need.group(1)) < 35 and "下限は 35%" in note,
-            f"gauge {note!r}")
-    note, shared = run("disc_fit_nothing_to_shrink_h264", cfg.b, 1_000_000)
-    t.check("40g H.264 over the disc, 収める on: no share, the gauge says it is over",
-            not shared and "超過しています" in note and "MPEG-2 以外" in note and "下限" not in note,
-            f"gauge {note!r}; share in the log {shared}")
+            need is not None and float(need.group(1)) < 35 and "下限は 35%" in note
+            and whats == ["変換前", "変換後"],
+            f"gauge {note!r} bars {whats}")
+    note, shared, whats = run("disc_fit_nothing_to_shrink_h264", cfg.b, 1_000_000)
+    t.check("40g H.264 over the disc, 収める on: no share, the gauge says it is over, one bar",
+            not shared and "超過しています" in note and "MPEG-2 以外" in note and "下限" not in note
+            and whats == ["合計"],
+            f"gauge {note!r} bars {whats}; share in the log {shared}")
     shutil.rmtree(base, ignore_errors=True)
 
 
@@ -6781,6 +6800,61 @@ def chain_abca_detect(cfg, t):
                 f"rows {fmt(c1)} {fmt(c2)} {fmt(c3)}; row 2 had {n2}")
 
 
+def chain_fast_double_switch(cfg, t):
+    """Every open succeeding, the switches fast: row 1 cut, then rows 2 and 3
+    double-clicked one straight after the other (row 2's open overtaken),
+    a cut on row 3; then rows 2 and 1 the same way (A->B->A at speed) and a
+    second cut on row 1, undone and redone; then Escape with 破棄. Row 2,
+    passed over twice, must come up uncut with nothing to ask; row 1's
+    Escape throws away only that visit (the redone cut), not the cut its
+    first visit made; row 3 keeps its cut. (41st pass.)"""
+    rows = [{"path": cfg.a}, {"path": cfg.b}, {"path": cfg.c}]
+    with App(cfg, "chain_fast_double_switch", rows) as app:
+        app.to_list()
+        wait_for("rows read", lambda: app.s.js(
+            "return [...document.querySelectorAll('#cliplist > li .badge')]"
+            ".every((b) => b.classList.contains('ready'))"), 60)
+        app.open_row(1, "a.ts")
+        n1 = app.cut(150, 300)
+        app.open_row(2, "b.mkv", wait=False)
+        app.open_row(3, "c.ts")
+        time.sleep(1.0)
+        st3 = app.state()
+        undo3 = app.s.js("return document.getElementById('undo-cut').disabled")
+        n3 = app.cut(50, 100)
+        app.open_row(2, "b.mkv", wait=False)
+        app.open_row(1, "a.ts")
+        time.sleep(1.0)
+        st1 = app.state()
+        undo1 = app.s.js("return document.getElementById('undo-cut').disabled")
+        n1b = app.cut(10, 20)
+        app.s.keys("Control+z")
+        wait_for("the undo", lambda: app.state()["frames"] == n1, 10)
+        app.s.keys("Control+y")
+        wait_for("the redo", lambda: app.state()["frames"] == n1b, 10)
+        time.sleep(0.5)
+        asked = app.escape(discard=True, expect_dialog=False)
+        app.gone()
+        time.sleep(1.0)
+        app.open_row(2, "b.mkv")
+        time.sleep(1.0)
+        st2 = app.state()
+        asked2 = app.escape(discard=True, expect_dialog=False)
+        app.gone()
+        p = app.save()
+        c1, c2, c3 = cuts_of(p, 1), cuts_of(p, 2), cuts_of(p, 3)
+        t.check("41m-1 rows 2 then 3 at once: row 3 up whole, nothing to undo",
+                "c.ts" in st3["title"] and undo3 and n3 == st3["frames"] - 51,
+                f"row 3 {st3}; undo disabled {undo3}; after the cut {n3}")
+        t.check("41m-2 rows 2 then 1 at once: row 1 back with its cut, nothing to undo",
+                "a.ts" in st1["title"] and st1["frames"] == n1 and undo1,
+                f"row 1 {st1} (want {n1} pictures); undo disabled {undo1}")
+        t.check("41m-3 Escape on row 1 asks and drops only that visit's cut; row 2 untouched; row 3 kept",
+                asked and not asked2 and len(c1) == 1 and c2 == [] and len(c3) == 1
+                and st2["frames"] is not None and "b.mkv" in st2["title"],
+                f"asked {asked}/{asked2}; rows {fmt(c1)} {fmt(c2)} {fmt(c3)}; row 2 {st2}")
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -6874,6 +6948,7 @@ SCENARIOS = [
     disc_after_run_reasons,
     plays_chain_ordinary,
     chain_abca_detect,
+    chain_fast_double_switch,
     disc_index_fails,
     read_project_not_a_file,
     disc_fit_nothing_to_shrink,

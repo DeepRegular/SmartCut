@@ -5041,7 +5041,9 @@ async function toScene(dir, from = playhead) {
       from = t;
     }
   } catch (e) {
-    el("status").textContent = tr("editor.sceneFailed", { e });
+    // Another row sent while the search ran: its open takes the scene index
+    // down, and "not built yet" is no news about that row.
+    if (gen === openGen) el("status").textContent = tr("editor.sceneFailed", { e });
   }
 }
 
@@ -5907,11 +5909,14 @@ async function saveMarks(kind, ask) {
       await invoke("write_sidecar", { path: to, body: trimBody(), recording: src.path });
       n = keptRanges.length;
     }
+    // Written; another row sent meanwhile has a status line of its own.
+    if (gen !== openGen) return;
     el("status").textContent = tr(
       kind === "keyframe" ? "marks.saved" : kind === "cm" ? "cm.saved" : "trim.saved",
       { n, file: leaf(to) }
     );
   } catch (e) {
+    if (gen !== openGen) return;
     // The name picked is the recording itself: refused by the backend,
     // which says so in a word for this line to put in a sentence.
     el("status").textContent =
@@ -8725,7 +8730,11 @@ el("detect-cm").addEventListener("click", async () => {
       // and the list's own lane never asks it.
       inserts,
     });
-    if (editId !== asked) return;
+    // Under the open it was asked in, as the failure below: a pass that had
+    // answered just as the next row's open went to stop it, its answer
+    // arriving after the window was sent back to this row, landed while the
+    // timeline up was still the other row's.
+    if (editId !== asked || gen !== openGen) return;
     // What the timeline now holds is this pass's answer, whatever was known
     // before: a read a share cut short is shown and is nobody's answer, so
     // it leaves the button live rather than greyed for an earlier finding
@@ -8899,7 +8908,8 @@ async function runFlat(id, label, which, kinds, call) {
   try {
     const found = await call();
     const runs = found.runs;
-    if (editId !== asked) return;
+    // Under the open it was asked in; see the commercial pass.
+    if (editId !== asked || gen !== openGen) return;
     // Not for a read a share cut short: that is shown, and asking again is
     // how to get the rest of it -- nor the answer it replaces on the timeline.
     detectedWith[which] = found.partial ? null : question;

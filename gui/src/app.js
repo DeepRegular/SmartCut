@@ -7515,6 +7515,10 @@ async function renderGauge() {
   const scale = Math.max(bytes, disc, 1);
   const seconds = costs.reduce((n, c) => n + c.seconds, 0);
   const shrinking = settings.fit && !r.fits;
+  // A before and an after only where there is something to transcode: a list
+  // with no MPEG-2 in it drew two bars of one length, the second labelled as
+  // what transcoding would come to, under a note saying nothing would be.
+  const transcoding = shrinking && r.video_bytes > 0;
 
   // A share of the bar, handed to the flex algorithm rather than written as a
   // width. A thousandth of the bar is finer than a pixel at any width this
@@ -7586,8 +7590,8 @@ async function renderGauge() {
   const after = bytes - r.video_bytes * (1 - Math.max(r.share, r.floor));
   // The first bar is labelled as the "before" of a pair only while there is
   // an "after" beside it; on its own it is simply what the list comes to.
-  const shown = [line(t(shrinking ? "gauge.asIs" : "gauge.total"), 1, bytes)];
-  if (shrinking) shown.push(line(t("gauge.fitted"), Math.max(r.share, r.floor), after));
+  const shown = [line(t(transcoding ? "gauge.asIs" : "gauge.total"), 1, bytes)];
+  if (transcoding) shown.push(line(t("gauge.fitted"), Math.max(r.share, r.floor), after));
 
   const words = {
     used: discGiB(bytes),

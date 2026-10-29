@@ -8357,6 +8357,19 @@ fn queue_copy_now(app: &tauri::AppHandle, path: &str) -> Result<String, String> 
         .extension()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "scproj".into());
+    // A file, as `read_project` asks: a named pipe picked by mistake sat on
+    // a blocked read for good, a pooled thread with it.
+    // One gone since it was picked is said as the copy below said it.
+    let meta = std::fs::metadata(from)
+        .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))?;
+    if !meta.is_file() {
+        return Err(trf!(
+            "開けません: {} ({})",
+            "Cannot open: {} ({})",
+            path,
+            tr!("プロジェクトファイルではありません", "not a project file")
+        ));
+    }
     let at = free_in(&queue_dir(app)?, &stem, &ext)?;
     std::fs::copy(from, &at)
         .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))?;
