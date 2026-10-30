@@ -279,6 +279,7 @@ fn run(
     }
     // What the track becomes. Settled by the picture writer's own planner, so
     // that an audio-only run and an ordinary one cannot disagree about it.
+    let holds = |id: ff::codec::Id| file_holds(output, id);
     let mut setup = crate::cut::plan_audio(
         &shape.src.input.url,
         &info,
@@ -286,7 +287,7 @@ fn run(
         false,
         shape.src.on_a_ts,
         many,
-        file_pcm(output),
+        Some(&crate::cut::SoundFile { pcm: file_pcm(output), holds: &holds }),
     )?;
     // A recording joined on whose sound is written another way cannot be
     // copied into a stream declared as the master's. The picture writer
@@ -428,36 +429,11 @@ fn run(
     } else {
         setup.target
     };
+    let fmt = unsafe { (*octx.as_ptr()).oformat };
     let query = |id: ff::codec::Id| unsafe {
-        ff::ffi::avformat_query_codec(
-            (*octx.as_ptr()).oformat,
-            id.into(),
-            ff::ffi::FF_COMPLIANCE_NORMAL,
-        )
+        ff::ffi::avformat_query_codec(fmt, id.into(), ff::ffi::FF_COMPLIANCE_NORMAL)
     };
-    let mut holds = query(declared);
-    // A muxer with no table of its own answers "cannot say" (below nought)
-    // for anything but its own codec, and the FLAC and Opus ones then turn
-    // the rest away at the header as "Invalid argument" -- AC-3 asked for as
-    // `.flac` or AAC as `.opus` ended on that and nothing else. They take
-    // their own codec and only that. `.ogg`, `.oga` and `.spx` answer the
-    // same and take Vorbis, Speex, FLAC and Opus alike (libavformat's
-    // `ogg_init`), and turned MP2 or AAC away just as bare; the LATM muxer
-    // takes AAC either way it is framed, and AMR's its two kinds.
-    let own = unsafe { (*(*octx.as_ptr()).oformat).audio_codec };
-    if holds < 0 {
-        use ff::codec::Id;
-        let takes: Option<&[Id]> = match octx.format().name() {
-            "flac" | "opus" => Some(&[]),
-            "ogg" | "oga" | "spx" => Some(&[Id::VORBIS, Id::SPEEX, Id::FLAC, Id::OPUS]),
-            "latm" => Some(&[Id::AAC, Id::AAC_LATM]),
-            "amr" => Some(&[Id::AMR_NB, Id::AMR_WB]),
-            _ => None,
-        };
-        if let Some(takes) = takes {
-            holds = i32::from(Id::from(own) == declared || takes.contains(&declared));
-        }
-    }
+    let mut holds = answer(fmt, octx.format().name(), declared);
     // LATM is a framing and has no file of its own that anything plays:
     // a 4K recording's sound asked for as `.aac`, `.m4a` or `.mp4` -- the
     // names the window gives it -- was refused with advice to name the file
@@ -511,6 +487,16 @@ fn run(
         } else {
             ""
         };
+        // Linear PCM has no file named for it the way a codec has, and a
+        // recording's PCM nobody asked to change is refused here with no
+        // note before it (see `plan_audio`): the files that do hold it.
+        if crate::audio::uncompressed(setup.target) && wide.is_empty() {
+            return Err(anyhow!(
+                "{output} cannot hold linear PCM ({:?}). Name the file .wav, .aiff or .mka \
+                 for it, or ask for another codec with --audio-codec",
+                setup.target
+            ));
+        }
         return Err(anyhow!(
             "{output} cannot hold {:?} sound. Name the file for that codec (.mp2, .ac3, \
              .aac and so on), or ask for another with --audio-codec{wide}",
@@ -1901,6 +1887,59 @@ pub(crate) fn pcm_in(file: ff::codec::Id, target: ff::codec::Id) -> ff::codec::I
         (Id::PCM_F64LE | Id::PCM_S16LE, Id::PCM_F64BE | Id::PCM_F64LE) => Id::PCM_F64LE,
         _ => file,
     }
+}
+
+/// Whether the container `fmt` (named `name`) takes a track declared as
+/// `id`: above nought it does, nought it does not, below nought it cannot
+/// say.
+///
+/// A muxer with no table of its own answers "cannot say" (below nought)
+/// for anything but its own codec, and the FLAC and Opus ones then turn
+/// the rest away at the header as "Invalid argument" -- AC-3 asked for as
+/// `.flac` or AAC as `.opus` ended on that and nothing else. They take
+/// their own codec and only that. `.ogg`, `.oga` and `.spx` answer the
+/// same and take Vorbis, Speex, FLAC and Opus alike (libavformat's
+/// `ogg_init`), and turned MP2 or AAC away just as bare; the LATM muxer
+/// takes AAC either way it is framed, and AMR's its two kinds.
+fn answer(fmt: *const ff::ffi::AVOutputFormat, name: &str, id: ff::codec::Id) -> i32 {
+    use ff::codec::Id;
+    let holds =
+        unsafe { ff::ffi::avformat_query_codec(fmt, id.into(), ff::ffi::FF_COMPLIANCE_NORMAL) };
+    if holds >= 0 {
+        return holds;
+    }
+    let own = unsafe { (*fmt).audio_codec };
+    let takes: Option<&[Id]> = match name {
+        "flac" | "opus" => Some(&[]),
+        "ogg" | "oga" | "spx" => Some(&[Id::VORBIS, Id::SPEEX, Id::FLAC, Id::OPUS]),
+        "latm" => Some(&[Id::AAC, Id::AAC_LATM]),
+        "amr" => Some(&[Id::AMR_NB, Id::AMR_WB]),
+        _ => None,
+    };
+    match takes {
+        Some(takes) => i32::from(Id::from(own) == id || takes.contains(&id)),
+        None => holds,
+    }
+}
+
+/// Whether the file named `output` can hold a track written as `id`, asked
+/// of its name before it is created: the container [`run`] opens for it
+/// (`av_guess_format`, as `avformat_alloc_output_context2` picks it), and
+/// the two refusals [`run`] makes of a codec it has no box for -- the
+/// container's own answer and a transport stream's private data. Where the
+/// name settles nothing, yes: [`run`] says what is wrong when it opens it.
+fn file_holds(output: &str, id: ff::codec::Id) -> bool {
+    let Ok(named) = std::ffi::CString::new(crate::input::as_output(output).as_bytes()) else {
+        return true;
+    };
+    let fmt = unsafe { ff::ffi::av_guess_format(std::ptr::null(), named.as_ptr(), std::ptr::null()) };
+    if fmt.is_null() {
+        return true;
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr((*fmt).name) }.to_str().unwrap_or("");
+    let family = crate::carry::family(output);
+    answer(fmt, name, id) != 0
+        && !(family == "ts" && !crate::carry::holds(family, &crate::carry::name_of(id)))
 }
 
 /// The linear PCM the output's container names for itself, asked of its

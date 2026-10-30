@@ -193,13 +193,36 @@ pub fn rates(src: &Source) -> Rates {
 /// came out 14% over on each of them: eight percent of a disc handed back for
 /// nothing. So what a codec is worth at this many channels stands in
 /// instead, which is what a re-encode of the track would spend.
+///
+/// **An AAC track's stated rate is not always a statement.** ADTS and LATM
+/// frames carry no rate, so what libav states for one on a transport stream
+/// is the average of the few frames its probe read -- and where those were
+/// the quiet opening of a recording, it is a fraction of the track's: 29
+/// kbit/s for a recorder title's stereo track carried at 190. Priced at that,
+/// a 300 s cut fitted to 400 MB came out 8.5 MB past the price on the sound
+/// alone. So a stated AAC rate below half of what the codec is worth at
+/// that many channels is taken for that and not believed.
+///
+/// Only there: an MP4 or a Matroska file states what the track holds, and
+/// AAC-LC at 64 kbit/s or HE-AAC at 48 is common and true -- distrusted
+/// everywhere, an MPEG-2 cut with a 64k stereo and a 40k mono track fitted
+/// to 30 MB came to 26.0 MB at 51% where 57% had made 28.9, and the window
+/// priced the track at three times its rate. What libav read off frames is
+/// told by the clock: a program or transport stream counts in 90 kHz, an
+/// MP4's sound in its own samples and Matroska in milliseconds. LATM is
+/// carried in nothing else. (A transport stream really carried that low is
+/// still priced high: none of 35 broadcast services states one; a recording
+/// that opens quiet does.)
 pub fn audio_rate(a: &crate::AudioInfo) -> f64 {
-    if let Some(stated) = a.bit_rate.filter(|r| *r > 0) {
-        return stated as f64;
-    }
     let derived = ff::decoder::find_by_name(&a.codec)
         .map(|c| crate::cut::derived_bit_rate(c.id(), a.channels))
         .unwrap_or(0);
+    let probed = a.codec == "aac_latm"
+        || (a.codec.starts_with("aac") && (a.time_base * 90_000.0 - 1.0).abs() < 1e-6);
+    let unlikely = if probed { derived / 2 } else { 0 };
+    if let Some(stated) = a.bit_rate.filter(|r| *r > 0 && *r >= unlikely) {
+        return stated as f64;
+    }
     if derived > 0 {
         return derived as f64;
     }
@@ -334,9 +357,17 @@ pub fn estimate_kept(rates: Rates, seconds: f64, busier: f64, going: Going) -> E
     let video_es = (video_rate / 8.0 * seconds + busier).max(0.0);
     let audio_es = audio_rate / 8.0 * seconds;
     let video_bytes = (video_es * framing) as u64;
+    let streams = video_es * framing + audio_es * sound;
+    // The tables: by the second on a disc, whose own are sent at a fixed
+    // rate ([`DISC_TABLES`]); as a share of the rest in a file, which
+    // carries the recording's own at the recording's rate.
+    let whole = match going {
+        Going::Disc => streams + DISC_TABLES * seconds.max(0.0),
+        Going::File => streams * TABLES,
+    };
     // Saturating: a float past the end of a u64 casts to u64::MAX, and the
     // numbers here come from the window (`disc_room`) as well as from a file.
-    let bytes = (((video_es * framing + audio_es * sound) * TABLES) as u64).saturating_add(extras);
+    let bytes = (whole as u64).saturating_add(extras);
     Estimate {
         seconds,
         bytes,
@@ -483,10 +514,28 @@ pub const TS_FRAMING: f64 = FRAMING * 188.0 / 192.0;
 /// a far larger share of it. Measured on the same disc: a fifth again.
 const SOUND_FRAMING: f64 = 1.4;
 
-/// And what the recording's own account of itself costs on top: the tables
-/// that describe the streams, written every frame, and the clock in a packet
-/// of its own. See `docs/technical/bdav.md`.
+/// And what the recording's own account of itself costs on top, in a file:
+/// the tables that describe the streams. A `.ts` cut carries the broadcast's
+/// own as the broadcast sent them, and [`estimate`] holds a file to the
+/// recording's own rate besides.
 const TABLES: f64 = 1.007;
+
+/// What a disc's tables cost, in bytes a second.
+///
+/// **A disc's are sent at a rate of their own, not as a share of the
+/// pictures.** The list of programmes and the map go out every frame
+/// (`pat_period` in `cut.rs`), the clock in a packet of its own on 0x1001
+/// (`si::graft`), and a partial stream's SIT, its SDT and the odd empty
+/// packet besides -- whatever the pictures are doing, so the fewer bytes
+/// `--fit` leaves the pictures, the larger a share of the disc the tables
+/// are. Priced as 0.7% of the content, they came to 1.4% of a recorder
+/// title cut to 300 s at 75% (5.5 MB against 3.7 priced), and a run fitted
+/// to 400 MB came out over it. Counted on three cuts written to a disc: a
+/// broadcast recorder title 99 packets a second (PAT, PMT and clock 30
+/// each, SIT 5), a broadcast `.ts` 104 (SIT 11), a DVD title with linear
+/// PCM 103 (no clock packet, but the map 50 times a second, between sound
+/// packets as often as that). 104 packets of 192 bytes.
+const DISC_TABLES: f64 = 104.0 * 192.0;
 
 /// The file's own rate, for a recording whose pictures were never counted.
 fn file_rate(src: &Source) -> f64 {
@@ -695,6 +744,26 @@ mod tests {
         );
     }
 
+    /// The probe's average over a quiet opening: a fraction of the track.
+    #[test]
+    fn an_aac_rate_read_off_a_quiet_opening_is_not_believed() {
+        assert_eq!(audio_rate(&track("aac", 2, Some(29_021))), 192_000.0);
+        assert_eq!(audio_rate(&track("aac", 2, Some(96_000))), 96_000.0);
+        assert_eq!(audio_rate(&track("aac", 6, Some(150_000))), 384_000.0);
+        // A frame that says its own rate says it truly.
+        assert_eq!(audio_rate(&track("ac3", 2, Some(64_000))), 64_000.0);
+        // And so does an MP4 (the sound's own samples) or Matroska
+        // (milliseconds): AAC-LC at 64k and HE-AAC at 48 are common there.
+        let mut mp4 = track("aac", 2, Some(64_000));
+        mp4.time_base = 1.0 / 48_000.0;
+        assert_eq!(audio_rate(&mp4), 64_000.0);
+        let mut mkv = track("aac", 2, Some(48_000));
+        mkv.time_base = 1.0 / 1_000.0;
+        assert_eq!(audio_rate(&mkv), 48_000.0);
+        // LATM is only ever in a transport stream.
+        assert_eq!(audio_rate(&track("aac_latm", 2, Some(30_000))), 192_000.0);
+    }
+
     /// A rate of nought is a container saying it does not know, which is the
     /// same as saying nothing.
     #[test]
@@ -778,6 +847,32 @@ mod tests {
         assert_eq!(estimate_kept(r, 10.0, 0.0, Going::Disc).bytes, estimate_at(r, 10.0, Going::Disc).bytes);
         // Never below nothing.
         assert_eq!(estimate_kept(r, 10.0, -1e9, Going::File).video_bytes, 0);
+    }
+
+    /// A disc's tables go out by the second: pictures written at a quarter
+    /// of the rate do not take a quarter of the tables with them.
+    #[test]
+    fn a_discs_tables_are_paid_by_the_second() {
+        let r = |video: f64| Rates {
+            video,
+            audio: 192_000.0,
+            can_shrink: true,
+        };
+        let full = estimate_at(r(12e6), 300.0, Going::Disc);
+        let quarter = estimate_at(r(3e6), 300.0, Going::Disc);
+        let less = (full.bytes - quarter.bytes) as f64;
+        let pictures = (full.video_bytes - quarter.video_bytes) as f64;
+        assert!((less - pictures).abs() < 2.0, "{less} vs {pictures}");
+        // Nothing but tables and the disc's own files.
+        let none = estimate_at(r(0.0), 300.0, Going::Disc);
+        let sound = 192_000.0 / 8.0 * 300.0 * SOUND_FRAMING;
+        let left = none.bytes as f64 - sound - (disc_files(300.0) + PADDING) as f64;
+        assert!((left - DISC_TABLES * 300.0).abs() < 2.0, "{left}");
+        // A file keeps its share, as before.
+        let file = estimate_at(r(12e6), 300.0, Going::File);
+        let streams = 12e6 / 8.0 * 300.0 * FRAMING * 188.0 / 192.0
+            + 192_000.0 / 8.0 * 300.0 * SOUND_FRAMING * 188.0 / 192.0;
+        assert_eq!(file.bytes, (streams * TABLES) as u64);
     }
 
     fn clip(bytes: u64, video: u64) -> Estimate {

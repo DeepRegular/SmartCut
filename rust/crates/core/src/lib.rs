@@ -1691,18 +1691,29 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     // ceiling below already. And only where there is no average either,
     // which is the one case it decided anything: beside an average it is
     // kept as it was.
-    let base_rate = {
-        let (rate, tick, avg) = (stream.rate(), stream.time_base(), stream.avg_frame_rate());
-        let turned_over = tick.numerator() == 1
+    let turned_over = {
+        let (rate, tick) = (stream.rate(), stream.time_base());
+        tick.numerator() == 1
             && tick.denominator() == 1000
             && rate.numerator() == tick.denominator()
-            && rate.denominator() == 1;
+            && rate.denominator() == 1
+    };
+    let base_rate = {
+        let avg = stream.avg_frame_rate();
         if turned_over && !(avg.numerator() > 0 && avg.denominator() > 0) {
             0.0
         } else {
-            f64::from(rate)
+            f64::from(stream.rate())
         }
     };
+    // Whether the container is one that can keep a seek table of its own:
+    // anything but MPEG's program and transport streams. See
+    // `variable_rate`, which asks.
+    let kept_table = !ictx
+        .format()
+        .name()
+        .split(',')
+        .any(|n| matches!(n.trim(), "mpeg" | "mpegts"));
     // The average, where libavformat worked one out. Where it did not -- 0/0
     // or 0/1 -- the stated rate stands in: left as it was, the cut was
     // planned on a grid of one picture a second and all but one picture in
@@ -2179,7 +2190,29 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         // taking an interlaced recording's field rate for its frame rate,
         // and that cannot arrive here: there the declared rate is twice the
         // average, not below it.
-        variable_rate: base_rate > 0.0 && frame_rate > base_rate * 1.0001,
+        //
+        // **Nor is the other half always out of its reach.** A screen
+        // recording holds a picture for as long as nothing on the screen
+        // moved and sends thirty a second while something does: one made
+        // here declares 30 and averages 4.7. Opened off an MP4's own table,
+        // which never reads the pictures, it was not called variable, and
+        // the output was divided into fields of the average -- 106 ms --
+        // so the pictures of every stretch where the screen moved, 33 ms
+        // apart, fell three to a field: 17 of 42 written, the rest "could
+        // not be placed". Where the declared rate is more than twice the
+        // average, some picture is closer to the next than a field of the
+        // average, so that is called variable too. Not at twice: there the
+        // declared rate is an interlaced recording's fields, and the margin
+        // covers an average a container worked out a little short. Not where
+        // the declared rate is the Matroska clock turned over (see
+        // `base_rate`), which is a thousand whatever the pictures do. And
+        // not on a program or transport stream: off the air one is walked,
+        // which asks the pictures themselves, a disc's clip does not hold
+        // pictures for seconds, and there a stream with 2:3 pulldown can
+        // declare its fields beside an average of its film frames.
+        variable_rate: base_rate > 0.0
+            && (frame_rate > base_rate * 1.0001
+                || (kept_table && !turned_over && base_rate > frame_rate * 2.02)),
         bit_rate: None,       // and this, when it read the pictures to find out
         // Read once, here, rather than hunted for in every packet: a
         // transport stream restates these in front of each entry point, so

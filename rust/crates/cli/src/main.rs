@@ -1468,7 +1468,15 @@ fn run() -> Result<()> {
             }
         }
         if let (Some(at), Some(_)) = (&bdav, iso) {
-            taken.extend(image_beside(std::path::Path::new(at)));
+            if let Ok(image) = image_beside(std::path::Path::new(at)) {
+                // And the name the image is written under until it is whole
+                // (`udfw::write`), which is taken away and made afresh: a log
+                // there was unlinked mid-run and the rest of it went nowhere.
+                let mut part = image.clone().into_os_string();
+                part.push(".part");
+                taken.push(part.into());
+                taken.push(image);
+            }
         }
         // And a disc's own folders, which the names above leave out: a disc
         // opened by its folder is read through its index and its clips, and a
@@ -1487,24 +1495,61 @@ fn run() -> Result<()> {
                 if at.is_dir() && smartcut_core::disc::looks_like_disc(&at) {
                     return disc_folders(&at);
                 }
+                // A DVD title named by its stretch (`VTS_01_1.VOB@...`, the
+                // path the disc's own list gives, and how `--join` takes
+                // one): read through the files of its title set, and the
+                // rest of its `VIDEO_TS` is the disc's as well.
+                if let Ok(i) = smartcut_core::input::Input::parse(&at.to_string_lossy()) {
+                    if let Some(dir) = i.parts.first().and_then(|p| p.parent()) {
+                        let here = std::path::Path::new(".");
+                        return vec![if dir.as_os_str().is_empty() { here } else { dir }.to_path_buf()];
+                    }
+                }
                 Vec::new()
             })
             .chain(bdav.as_deref().map(|at| smartcut_core::bdav::root(std::path::Path::new(at))))
             .collect();
+        // The folders the log is put in, made here one at a time and kept
+        // the deepest first, so that a log refused below takes away exactly
+        // the ones this run made: one named into a disc's folder that is not
+        // there yet left an empty one inside it.
+        //
+        // Made before asking whether the log is there: through a folder that
+        // is not there yet, `new/../in.ts` is no file at all until `new` is
+        // -- and the recording it does name, taken for a log this run had
+        // created, was deleted with the refusal. And one at a time rather
+        // than guessed from which names were missing beforehand: `new/../c`
+        // was missing too until `new` was, and a folder `c` of the user's
+        // that happened to be empty went with the refusal.
+        let mut made: Vec<std::path::PathBuf> = Vec::new();
+        let take_back = |made: &[std::path::PathBuf]| {
+            // Only empty ones go, and none of them was there before.
+            for d in made {
+                let _ = std::fs::remove_dir(d);
+            }
+        };
+        if let Some(dir) = log.parent().filter(|d| !d.as_os_str().is_empty()) {
+            let wanted: Vec<&std::path::Path> =
+                dir.ancestors().filter(|d| !d.as_os_str().is_empty()).collect();
+            for d in wanted.into_iter().rev() {
+                if d.exists() {
+                    continue;
+                }
+                match std::fs::create_dir(d) {
+                    Ok(()) => made.insert(0, d.to_path_buf()),
+                    // Made meanwhile by somebody else: theirs to keep.
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && d.is_dir() => {}
+                    Err(e) => {
+                        take_back(&made);
+                        return Err(e).with_context(|| format!("cannot write the log {at}"));
+                    }
+                }
+            }
+        }
         let existed = log.exists();
         // A link to nothing yet: opening the log makes the file it names, so
         // a refused log takes that file away and leaves the user's link.
         let dangling = !existed && log.symlink_metadata().is_ok();
-        // The folders opening the log makes for it, the deepest first, so
-        // that a log refused below takes them away again: one named into a
-        // disc's folder that is not there yet left an empty one inside it.
-        let made: Vec<std::path::PathBuf> = log
-            .ancestors()
-            .skip(1)
-            .filter(|d| !d.as_os_str().is_empty())
-            .take_while(|d| !d.exists())
-            .map(std::path::Path::to_path_buf)
-            .collect();
         let refused = || {
             smartcut_core::log::close();
             if dangling {
@@ -1513,12 +1558,13 @@ fn run() -> Result<()> {
                 }
             } else if !existed {
                 let _ = std::fs::remove_file(log);
-                for d in &made {
-                    let _ = std::fs::remove_dir(d);
-                }
             }
+            take_back(&made);
         };
-        smartcut_core::log::open(log).with_context(|| format!("cannot write the log {at}"))?;
+        if let Err(e) = smartcut_core::log::open(log) {
+            refused();
+            return Err(e).with_context(|| format!("cannot write the log {at}"));
+        }
         if let Some(clash) = taken.iter().find(|t| smartcut_core::input::same_file(log, t)) {
             refused();
             bail!(
@@ -2526,6 +2572,10 @@ fn run() -> Result<()> {
     // larger than it, by what the pricing decided for the pictures: checked
     // against what the run came to once it is over (`said_over_the_fit`).
     let mut fit_room: Option<(u64, &'static str)> = None;
+    // And where the pictures were written smaller, what the run was priced
+    // at with them at that share: what it came to past that is what the
+    // pricing missed, which is what the note says.
+    let mut fit_priced: Option<(u64, f64)> = None;
     let video_share = match fit {
         Some(named) => {
             // What the disc holds of a disc of recordings, which an
@@ -2670,8 +2720,15 @@ fn run() -> Result<()> {
                 );
                 fit_room = Some((
                     capacity,
-                    "the pictures would not shrink as far as they were asked to",
+                    "--fit prices a recording from what its index measured of it, and the \
+                     pictures or what goes round them weighed more than that (where the \
+                     pictures would not shrink as far as they were asked to, a note above says \
+                     so)",
                 ));
+                // What is already on the disc is a measured size, and the
+                // margin is kept back from the rest: priced, the run came to
+                // the room usable on top of it.
+                fit_priced = Some((had.saturating_add(f.usable), f.share));
                 Some(f.share)
             }
         }
@@ -3693,7 +3750,7 @@ fn run() -> Result<()> {
         if let Some((capacity, why)) = fit_room.filter(|_| !read_only) {
             let overwritable = iso.is_some();
             let came = disc_bytes(&smartcut_core::bdav::root(&at), overwritable);
-            said_over_the_fit("disc", came, capacity, why);
+            said_over_the_fit("disc", came, capacity, fit_priced, why);
         }
         if let Some(revision) = iso {
             // Beside the folder and named after it. The folder stays unless
@@ -3725,7 +3782,7 @@ fn run() -> Result<()> {
                 } else {
                     why.to_owned()
                 };
-                said_over_the_fit("image", bytes, capacity, &why);
+                said_over_the_fit("image", bytes, capacity, fit_priced, &why);
             }
             // And the folder, now that the image holds all of it. After the
             // image and never instead of it: a folder taken away before
@@ -3743,7 +3800,7 @@ fn run() -> Result<()> {
     }
     if let Some((capacity, why)) = fit_room {
         if let Ok(meta) = std::fs::metadata(&out) {
-            said_over_the_fit("cut", meta.len(), capacity, why);
+            said_over_the_fit("cut", meta.len(), capacity, fit_priced, why);
         }
     }
     tell!("wrote {out}");
@@ -3781,14 +3838,30 @@ fn disc_bytes(at: &std::path::Path, overwritable: bool) -> u64 {
 /// far as they were asked to -- which can only be found out by trying, and
 /// was not said at all: a disc 15% over its size ended with "wrote".
 /// Nothing is changed or refused; the output is what it is. `why` is what
-/// the pricing decided for the pictures, as `fit_room` holds it.
-fn said_over_the_fit(what: &str, came: u64, capacity: u64, why: &str) {
+/// the pricing decided for the pictures, as `fit_room` holds it, and
+/// `priced` what the run was priced at with the pictures at their share,
+/// where they were written smaller: how far past that it came is what the
+/// pricing missed. Said as "the pictures would not shrink as far as they
+/// were asked to", a disc whose pictures had come to exactly the share they
+/// were asked for was blamed on them, where it was the tables a disc sends
+/// at a rate of their own that had been priced short.
+fn said_over_the_fit(what: &str, came: u64, capacity: u64, priced: Option<(u64, f64)>, why: &str) {
     if came <= capacity {
         return;
     }
+    let past = match priced {
+        Some((priced, share)) => format!(
+            "it was priced at {:.1} MB with the pictures at {:.1}% of their own size, and came \
+             to {:.2} MB more than that: ",
+            priced as f64 / 1e6,
+            share * 100.0,
+            came.saturating_sub(priced) as f64 / 1e6,
+        ),
+        None => String::new(),
+    };
     smartcut_core::say!(
         "note: the {what} came to {:.1} MB, which is {:.2} MB more than the {:.1} MB --fit \
-         names: {why}",
+         names: {past}{why}",
         came as f64 / 1e6,
         (came - capacity) as f64 / 1e6,
         capacity as f64 / 1e6,

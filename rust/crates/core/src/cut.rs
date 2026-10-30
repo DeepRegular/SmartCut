@@ -5314,14 +5314,14 @@ impl Grid {
         // interlaced recording `r_frame_rate` is the rate of its *fields*,
         // so a Blu-ray averaging 29.97 declares 59.94 -- and a timeline
         // counting fields of 59.94 makes every picture half as long as it
-        // is. It cannot arrive here by the container's own answer, which
-        // only calls a recording variable when the average runs *above* the
-        // declared rate, but the walk has an answer of its own and there is
-        // no reason to let the two of them meet in the one place it would be
-        // wrong. Where the declared rate is not usable the average stands,
-        // which is what a recording that varies by holding a picture wanted
-        // anyway: there the two agree, and all that is needed is the
-        // finer division.
+        // is. The container's own answer calls a recording variable with
+        // the declared rate above the average only past twice it (a screen
+        // recording that holds a picture for seconds; see `variable_rate`
+        // in `lib.rs`), and the walk has an answer of its own, so the two
+        // can meet here. Where the declared rate is not usable the average
+        // stands, which is what a recording that varies by holding a
+        // picture wanted anyway: there the two agree, and all that is
+        // needed is the finer division.
         let usable = base_rate > 0.0 && base_rate <= frame_rate * 1.01;
         let (num, den) = frame_rate_parts(if usable { base_rate } else { frame_rate });
         Grid::of_rate(num, den, FINE)
@@ -6703,6 +6703,19 @@ pub(crate) fn lossless_master_refusal(
     )
 }
 
+/// What a file of sound alone ([`crate::sound`]) tells [`plan_audio`] about
+/// itself, before it is created.
+pub(crate) struct SoundFile<'a> {
+    /// The linear PCM the file names for itself (a `.wav`'s little-endian,
+    /// an `.aiff`'s big-endian), which [`crate::sound::pcm_in`] turns the
+    /// PCM settled here into once the file is open. `None` where the
+    /// container's own sound is not PCM (`.mka`, `.flac`, `.m4a`).
+    pub pcm: Option<ff::codec::Id>,
+    /// Whether the file can hold a track written as this codec: the
+    /// questions the writer asks of the opened file before it refuses it.
+    pub holds: &'a dyn Fn(ff::codec::Id) -> bool,
+}
+
 /// Decide what will be done to one sound track.
 ///
 /// Every question here used to be asked once, of the one track there was.
@@ -6712,10 +6725,8 @@ pub(crate) fn lossless_master_refusal(
 ///
 /// `many` only decides whether the notes name which track they are about.
 ///
-/// `pcm_file` is for [`crate::sound`] alone: the linear PCM its output file
-/// names for itself (a `.wav`'s little-endian, an `.aiff`'s big-endian),
-/// which [`crate::sound::pcm_in`] turns the PCM settled here into once the
-/// file is open. Only the notes read it; what is settled is the same.
+/// `file` is for [`crate::sound`] alone: the file of sound it writes. See
+/// [`SoundFile`]. Only the notes read it; what is settled is the same.
 pub(crate) fn plan_audio(
     path: &str,
     info: &crate::AudioInfo,
@@ -6723,8 +6734,9 @@ pub(crate) fn plan_audio(
     to_ts: bool,
     on_a_ts: bool,
     many: bool,
-    pcm_file: Option<ff::codec::Id>,
+    file: Option<&SoundFile>,
 ) -> Result<AudioSetup> {
+    let pcm_file = file.and_then(|f| f.pcm);
     // Which track these notes are about, said the way the recording names its
     // tracks. See [`crate::track_name`].
     let named = if many {
@@ -6958,17 +6970,24 @@ pub(crate) fn plan_audio(
             // the Blu-ray's on the way into a transport stream and plain PCM
             // anywhere else; there is no container that keeps that one, and
             // saying otherwise would send someone to write a `.ts` for it.
-            // Nor to a file of sound alone, which no `.ts` would be.
-            let keep = if source_id == ff::codec::Id::PCM_BLURAY && pcm_file.is_none() {
+            // Nor to a file of sound alone, which no `.ts` would be -- one
+            // named `.mka` or `.flac` no more than a `.wav`.
+            let keep = if source_id == ff::codec::Id::PCM_BLURAY && file.is_none() {
                 " Write a .ts to keep it as it was."
             } else {
                 ""
             };
-            crate::say!(
-                "note: {source_id:?}{named} is written as {written:?}, which is the box this \
-                 container has for linear PCM. The samples are the recording's own; what \
-                 changes is what is written around them.{keep}"
-            );
+            // And not of a file of sound alone that has no box for it at
+            // all (a `.flac`, an `.m4a`): [`crate::sound`] refuses that one,
+            // and "the box this container has" said just before the refusal
+            // was the one thing the two messages disagreed on.
+            if file.is_none_or(|f| (f.holds)(written)) {
+                crate::say!(
+                    "note: {source_id:?}{named} is written as {written:?}, which is the box \
+                     this container has for linear PCM. The samples are the recording's own; \
+                     what changes is what is written around them.{keep}"
+                );
+            }
             AudioMode::Reencode
         }
     };
