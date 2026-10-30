@@ -5840,7 +5840,11 @@ async function saveMarks(kind, ask) {
   let to = markPath(kind);
   // The name above is this recording's. Another row sent while a question
   // below is up would otherwise have its marks written under this one's name.
-  const gen = openGen;
+  // Told by the recording on screen (`shownGen`) rather than by `openGen`: a
+  // row whose open failed before its recording came up leaves this one up,
+  // its name and marks put back, and the answer is still this one's. It was
+  // dropped, nothing written and nothing said.
+  const gone = visitLeft();
   if (ask) {
     if (!dialog) return;
     const picked = await dialog.save({
@@ -5874,7 +5878,7 @@ async function saveMarks(kind, ask) {
       if (!go) return;
     }
   }
-  if (gen !== openGen) return;
+  if (gone()) return;
   // And asked again: the walk can land while the question above is up, and
   // where it put the first picture somewhere else the marks are owed a read
   // on that head before they can be written (`recountEarly`). Or it has
@@ -5910,13 +5914,13 @@ async function saveMarks(kind, ask) {
       n = keptRanges.length;
     }
     // Written; another row sent meanwhile has a status line of its own.
-    if (gen !== openGen) return;
+    if (gone()) return;
     el("status").textContent = tr(
       kind === "keyframe" ? "marks.saved" : kind === "cm" ? "cm.saved" : "trim.saved",
       { n, file: leaf(to) }
     );
   } catch (e) {
-    if (gen !== openGen) return;
+    if (gone()) return;
     // The name picked is the recording itself: refused by the backend,
     // which says so in a word for this line to put in a sentence.
     el("status").textContent =
@@ -5924,6 +5928,16 @@ async function saveMarks(kind, ask) {
         ? tr("marks.isRecording", { file: leaf(to) })
         : tr("marks.saveFailed", { e });
   }
+}
+
+/// Whether the window has left the recording that was up when this was called,
+/// asked after a wait: another row is on its way in (`swapping`), or one has
+/// put its own recording up (`shownGen`). An open that failed before its
+/// recording came up has not left it -- the window is back on that row, with
+/// its name and marks (see `openPath`'s `catch`) -- though it moved `openGen`.
+function visitLeft() {
+  const shown = shownGen;
+  return () => swapping || shownGen !== shown || editId !== shownId;
 }
 
 /// The name at the end of a path, for a line that has a window's width to say
@@ -5954,7 +5968,7 @@ async function loadMarksFrom(kind) {
     el("status").textContent = owedSaid(true);
     return;
   }
-  const gen = openGen;
+  const gone = visitLeft();
   const picked = await dialog.open({
     multiple: false,
     defaultPath: markPath(kind),
@@ -5962,7 +5976,7 @@ async function loadMarksFrom(kind) {
   });
   // Picked for the recording that was up when the picker was: another row
   // sent meanwhile is not the one it was chosen for.
-  if (!picked || gen !== openGen) return;
+  if (!picked || gone()) return;
   // And again: the walk can still be running when the picker closes.
   if (timelineOwed()) {
     el("status").textContent = owedSaid(true);

@@ -1410,7 +1410,7 @@ def seam_follows_editor(cfg, t):
         wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
 
 
-def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit"):
+def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit", master=None, kind="dissolve"):
     """継ぎ目の編集 up on a -> b of a three-row join (a, b, e), a dissolve set
     in it and not OK'd, while row a is worked in the cut editor: a mark (no
     join moves, so nothing is said again), a cut at a's tail, Ctrl+Z, a cut
@@ -1425,7 +1425,8 @@ def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit"):
     shutil.copyfile(cfg.a, e)
     try:
         rows = [{"path": cfg.a}, {"path": cfg.b}, {"path": e}]
-        with App(cfg, name, rows, {"joinAll": True}) as app:
+        extra = {} if master is None else {"master": master}
+        with App(cfg, name, rows, {"joinAll": True, **extra}) as app:
             app.to_list()
             wait_for("rows read", lambda: app.s.js(
                 "return [...document.querySelectorAll('#cliplist > li .badge')]"
@@ -1447,7 +1448,7 @@ def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit"):
                 "window.__seen = [];"
                 "window.__TAURI__.event.listen('cross-open', (e) => window.__seen.push("
                 "(e.payload.joins || []).slice(0, 1).map((j) => [j.beforeIn, j.beforeOut])[0]));"
-                "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+                f"const k = document.getElementById('x-kind'); k.value = '{kind}';"
                 "k.dispatchEvent(new Event('change', {bubbles: true}));")
             time.sleep(1)
             whole = None
@@ -1478,20 +1479,20 @@ def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit"):
             time.sleep(2)
             r0 = look("mark")
             t.check("39s a mark made in the editor tells the seam window nothing",
-                    r0["seen"] == [] and r0["kind"] == "dissolve", str(r0))
+                    r0["seen"] == [] and r0["kind"] == kind, str(r0))
             app.cut(n - 200, n - 101)
             time.sleep(2)
             r1 = look("cut")
             moved = r1["seen"][-1] if r1["seen"] else None
             t.check("39s a cut at a's tail moves the seam window's join, the dissolve kept",
-                    bool(moved) and moved[0] > 1 and r1["kind"] == "dissolve" and "a.ts" in r1["name"],
+                    bool(moved) and moved[0] > 1 and r1["kind"] == kind and "a.ts" in r1["name"],
                     str(r1))
             app.s.keys("Control+z")
             time.sleep(2)
             r2 = look("undo")
             whole = r2["seen"][-1] if len(r2["seen"]) > len(r1["seen"]) else None
             t.check("39s Ctrl+Z puts the seam window's join back, the dissolve kept",
-                    bool(whole) and whole[0] < 0.5 and r2["kind"] == "dissolve", str(r2))
+                    bool(whole) and whole[0] < 0.5 and r2["kind"] == kind, str(r2))
             app.cut(n - 200, n - 101)
             time.sleep(1)
             if os.path.exists(e):
@@ -1512,7 +1513,7 @@ def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit"):
             r3 = look("hang cut")
             last = r3["seen"][-1] if r3["seen"] else None
             t.check("39s during a hanging open, a cut on the shown row moves the join, the dissolve kept",
-                    bool(last) and moved and last[0] > moved[0] + 0.3 and r3["kind"] == "dissolve",
+                    bool(last) and moved and last[0] > moved[0] + 0.3 and r3["kind"] == kind,
                     f"title {st['title']!r}; cut {cut3}; {r3}")
             if fail_first:
                 # The hanging open fails instead: the window goes back to a
@@ -1523,7 +1524,7 @@ def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit"):
                                                              and st["frames"] is not None)(app.state()), 60, 0.2)
                 r4 = look("failed open")
                 t.check("39s the next row's open failing leaves the seam window on the shown row's join",
-                        r4["seen"][-1] == last and r4["kind"] == "dissolve", str(r4))
+                        r4["seen"][-1] == last and r4["kind"] == kind, str(r4))
             asked = app.escape(discard=True, expect_dialog=False)
             wait_for("the editor to close", lambda: editor not in app.s.handles(), 15)
             if not fail_first:
@@ -1533,7 +1534,7 @@ def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit"):
             v = app.s.js("return [window.__seen.slice(), document.getElementById('x-kind').value]")
             back = v[0][-1] if v[0] else None
             t.check("39s Escape+破棄 puts the seam window's join back as the list holds it, the dissolve kept",
-                    asked and bool(back) and back[0] < 0.5 and v[1] == "dissolve",
+                    asked and bool(back) and back[0] < 0.5 and v[1] == kind,
                     f"asked {asked}; told {v[0]}; kind {v[1]!r}")
             try:
                 app.s.click("#cross-ok")
@@ -1544,8 +1545,12 @@ def seam_editor_visit(cfg, t, fail_first=False, name="seam_editor_visit"):
             p = app.save()
             afters = [(c.get("after") or {}).get("kind") for c in p["clips"]]
             t.check("39s OK writes the dissolve onto a, and a has no cut",
-                    afters[0] == "dissolve" and not afters[1] and cuts_of(p, 1) == [],
+                    afters[0] == kind and not afters[1] and cuts_of(p, 1) == [],
                     f"after {afters}; row 1 {fmt(cuts_of(p, 1))}")
+            if master is not None:
+                kept = (p.get("settings") or {}).get("master")
+                t.check("42s the master (基準クリップ) is still the incoming reel after OK",
+                        kept == master, repr(kept))
     finally:
         if os.path.exists(e):
             os.remove(e)
@@ -1556,6 +1561,110 @@ def seam_editor_visit_failed(cfg, t):
     (the window goes back to row a, `editor-back`). (39th pass)"""
     seam_editor_visit(cfg, t, fail_first=True, name="seam_editor_visit_failed")
 
+
+def seam_editor_visit_master(cfg, t):
+    """seam_editor_visit with a wipe INTO the master: b, the reel the join
+    a -> b goes into, chosen as 基準クリップ. (42nd pass)"""
+    seam_editor_visit(cfg, t, name="seam_editor_visit_master", master=1, kind="wipe-left")
+
+
+def seam_editor_visit_master_failed(cfg, t):
+    """seam_editor_visit_master with the hanging open failing before
+    Escape+破棄. (42nd pass)"""
+    seam_editor_visit(cfg, t, fail_first=True, name="seam_editor_visit_master_failed",
+                      master=1, kind="dissolve")
+
+
+def ctrl_h_after_failed_open(cfg, t):
+    """Row 1 up with its own .keyframe, Ctrl+H, and while 「上書きしますか？」
+    is up, row 2 -- a recording broken since the list read it -- double-
+    clicked in the list. Its open fails and the window goes back to row 1;
+    Yes then writes row 1's marks to row 1's file and says so. (42nd pass,
+    S3: the answer was dropped -- nothing written, nothing said -- because
+    the failed open had counted as a visit.)"""
+    a_marks = [400, 500]
+    a_file = os.path.join(cfg.media, "a.keyframe")
+    e = os.path.join(cfg.media, "e.ts")
+    shutil.copyfile(cfg.a, e)
+    # Bare line feeds: the program writes CRLF, so its write shows.
+    with open(a_file, "w", newline="") as f:
+        f.write("".join(f"{n}\n" for n in a_marks))
+    with App(cfg, "ctrl_h_after_failed_open", [{"path": cfg.a}, {"path": e}]) as app:
+        app.to_list()
+        wait_for("rows read", lambda: app.s.js(
+            "return [...document.querySelectorAll('#cliplist > li .badge')]"
+            ".every((b) => b.classList.contains('ready'))"), 60)
+        app.open_row(1, "a.ts")
+        wait_for("row 1's marks", lambda: app.state()["keys"].startswith("2"), 10)
+        with open(e, "wb") as f:
+            f.write(b"\0" * (1 << 20))
+        app.s.keys("Control+h")
+        wait_for("the overwrite question", lambda: app.dialogs(), 10, 0.2)
+        app.open_row(2, "e.ts", wait=False)
+        app.to_editor()
+        failed = wait_for("the open to fail", lambda: (lambda s: s if (
+            "開けません" in s or "annot open" in s) else None)(app.state()["status"] or ""), 60, 0.2)
+        time.sleep(1)
+        answered = app.answer(True, timeout=5)
+        time.sleep(1)
+        st = app.state()
+        with open(a_file, "rb") as f:
+            body = f.read()
+        t.check("42h Yes after a failed open of another row writes row 1's marks and says so",
+                answered and "a.ts" in st["title"] and b"\r\n" in body
+                and [int(x) for x in body.split()] == a_marks and "保存しました" in (st["status"] or ""),
+                f"answered {answered}; failed {failed!r}; title {st['title']!r}; "
+                f"status {st['status']!r}; a.keyframe {body!r}")
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+
+
+
+def ctrl_h_after_other_open(cfg, t):
+    """ctrl_h_after_failed_open's other half: while 「上書きしますか？」 is up
+    on row 1, a row that opens -- another recording, and a second row of
+    row 1's own recording (the same file, so the same mark-file name) -- is
+    double-clicked. Its recording comes up, so Yes is about a recording no
+    longer on screen and writes nothing: row 1's file is left as it was,
+    and row 2's marks never reach it. (42nd pass, stage 3: the rule for
+    "the window has left" moved from `openGen` to `shownGen`; this checks
+    it still drops what it dropped.)"""
+    a_marks = [400, 500]
+    a_file = os.path.join(cfg.media, "a.keyframe")
+    for name, second in (("another recording", cfg.b), ("the same file", cfg.a)):
+        with open(a_file, "w", newline="") as f:
+            f.write("".join(f"{n}\n" for n in a_marks))
+        with App(cfg, "ctrl_h_after_other_open", [{"path": cfg.a}, {"path": second}]) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 60)
+            app.open_row(1, "a.ts")
+            wait_for("row 1's marks", lambda: app.state()["keys"].startswith("2"), 10)
+            app.s.keys("Control+h")
+            wait_for("the overwrite question", lambda: app.dialogs(), 10, 0.2)
+            app.open_row(2, os.path.basename(second), wait=False)
+            app.to_editor()
+            # Row 2 up and walked: its own marks (none for b.mkv; a.keyframe's
+            # for the second a.ts row, read again as a first visit). For
+            # b.mkv the title tells row 2 from row 1, which is still up
+            # until it arrives; the same file's row has only the wait below.
+            wait_for("row 2 walked", lambda: (lambda s: s if s and s["frames"] is not None
+                                              and os.path.basename(second) in s["title"]
+                                              and not (s["status"] or "").startswith("開けません") else None)(
+                app.state()), 120, 0.2)
+            time.sleep(1.5)
+            answered = app.answer(True, timeout=5)
+            time.sleep(1)
+            st = app.state()
+            with open(a_file, "rb") as f:
+                body = f.read()
+            t.check(f"42h2 Yes after {name} came up in row 2 writes nothing",
+                    answered and b"\r\n" not in body and [int(x) for x in body.split()] == a_marks
+                    and "保存しました" not in (st["status"] or ""),
+                    f"answered {answered}; title {st['title']!r}; status {st['status']!r}; a.keyframe {body!r}")
+            app.escape(discard=True, expect_dialog=False)
+            app.gone()
 
 # -- 29 --------------------------------------------------------------------
 def disc_refuses_opus(cfg, t):
@@ -2463,6 +2572,23 @@ def read_project_not_a_file(cfg, t):
                 and took[2].startswith("開けません") and "プロジェクトファイルではありません" not in took[2]
                 and took[3].startswith("copied ") and os.path.isfile(took[3][len("copied "):]),
                 f"{took}")
+        # And a link to a project is copied (the project's bytes), while a
+        # file over read_project's 64 MiB is refused before any copy (42nd
+        # pass, S3: a recording picked by mistake was copied whole first).
+        link = os.path.join(base, "link.scproj")
+        os.symlink(app.project, link)
+        big = os.path.join(base, "big.scproj")
+        with open(big, "wb") as f:
+            f.truncate((64 << 20) + 1)
+        queued = os.path.dirname(took[3][len("copied "):])
+        before = set(os.listdir(queued))
+        more = [copy(link), copy(big)]
+        made = set(os.listdir(queued)) - before
+        t.check("42g queue_copy: a link to a project copied, a file over 64 MiB refused and not copied",
+                more[0].startswith("copied ") and not os.path.islink(more[0][len("copied "):])
+                and "プロジェクトファイルではありません" in more[1]
+                and not any(n.startswith("big") for n in made),
+                f"{more} new in queue: {sorted(made)}")
     shutil.rmtree(base, ignore_errors=True)
 
 
@@ -6893,6 +7019,10 @@ SCENARIOS = [
     seam_follows_editor,
     seam_editor_visit,
     seam_editor_visit_failed,
+    seam_editor_visit_master,
+    seam_editor_visit_master_failed,
+    ctrl_h_after_failed_open,
+    ctrl_h_after_other_open,
     disc_refuses_opus,
     disc_keeps_its_name,
     disc_gauge_appends,

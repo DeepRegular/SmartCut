@@ -8360,9 +8360,12 @@ fn queue_copy_now(app: &tauri::AppHandle, path: &str) -> Result<String, String> 
     // A file, as `read_project` asks: a named pipe picked by mistake sat on
     // a blocked read for good, a pooled thread with it.
     // One gone since it was picked is said as the copy below said it.
+    // And of the size `read_project` takes: a recording picked by mistake
+    // was copied whole into the settings folder, gigabytes, before the read
+    // that follows refused it.
     let meta = std::fs::metadata(from)
         .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))?;
-    if !meta.is_file() {
+    if !meta.is_file() || meta.len() > 64 << 20 {
         return Err(trf!(
             "開けません: {} ({})",
             "Cannot open: {} ({})",
