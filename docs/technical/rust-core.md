@@ -386,10 +386,29 @@ same rate divided more finely, which puts every picture in exactly the same
 place. The one answer that would be wrong is taking an interlaced recording's field
 rate for its frame rate -- a Blu-ray averaging 29.97 declares 59.94, and a
 timeline counting fields of that makes every picture half as long as it is.
-The container's own answer cannot produce it, since it only calls a recording
-variable when the average runs *above* the declared rate; the walk has an
-answer of its own, so [`Grid`] declines a declared rate above the average
-rather than let the two of them meet in the one place it would matter.
+So [`Grid`] never builds on a declared rate above the average: it builds on
+the average, divided as finely, which is what a recording that varies by
+holding a picture wants anyway.
+
+**Past twice the declared rate, the other half is in reach as well.** A
+screen recording holds a picture for as long as nothing on the screen moves
+and sends thirty a second while something does, so it declares 30 and
+averages anywhere from 4 to 9. Opened off an MP4's own table, which never
+reads the pictures, one was called constant, and its output was divided into
+fields of the average -- 106 ms at 4.7 -- so the pictures of every stretch
+where the screen moved, 33 ms apart, fell three to a field. A cut of a
+40-second one keeping 2 s to 9 s wrote 17 to 22 of its 42 pictures; the rest
+"could not be placed". So a declared rate more than 2.02 times the average
+calls a recording variable too (`variable_rate` in `outline_of`,
+[`lib.rs`](../../rust/crates/core/src/lib.rs)): above twice it, some picture
+is closer to the next than a field of the average. Not at twice, which is
+exactly what an interlaced recording declares, and the two hundredths over
+it cover an average a container worked out a little short. Not where the
+declared rate is Matroska's millisecond clock turned over (see below), which
+is a thousand whatever the pictures do. And not on a program or transport
+stream: one off the air is walked, which reads the pictures themselves, a
+disc's clip does not hold a picture for seconds, and there a stream with 2:3
+pulldown can declare its fields beside an average of its film frames.
 
 **Neither touches constant-rate material**, and both are written so that they
 cannot. The span is a maximum over the two answers, and they agree whenever

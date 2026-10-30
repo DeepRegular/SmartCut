@@ -243,6 +243,38 @@ track with the arithmetic that sizes linear PCM instead — samples by channels
 by bits — charges an AAC track carried at 250 kbit/s a megabit and a half,
 which on four of those six recordings put the estimate 14% over.
 
+**An AAC rate read off a transport stream is not believed below half the
+usual.** ADTS and LATM frames carry no rate, so what libav states for one in
+a program or transport stream is the average over the few frames its probe
+read, and a recording that opens quiet makes that a fraction of the track's:
+a recorder title's stereo track stated 29 kbit/s where it was carried at 190,
+and a 300-second cut fitted to 400 MB came out 8.5 MB past its price on the
+sound alone. So where the track is AAC on a 90 kHz clock, or LATM, a stated
+rate below half of what the codec is worth at that many channels gives way to
+that figure (`audio_rate`). A track really carried that low is then priced
+high, and its pictures come out a little smaller than they needed to; none
+of 35 broadcast services carries one that low. An MP4 or Matroska file
+states what the track holds, and AAC-LC at 64 kbit/s or HE-AAC at 48 is
+common and true there: distrusted everywhere, an MPEG-2 cut with tracks
+like those fitted to 30 MB was written at 51% and came to 26.0 MB, where
+57% had made 28.9. Those are told apart by the clock, which is the sound's
+own samples in an MP4 and milliseconds in Matroska.
+
+**A disc's tables are priced by the second, not as a share.** The list of
+programmes and the map go out every frame, the clock in a packet of its own,
+and a partial stream's SIT and SDT besides -- at the same rate whatever the
+pictures are doing. Up to 0.8.37 they were priced as 0.7% of the rest, so the
+smaller `--fit` made the pictures, the further short the price fell: a
+recorder title cut to 300 seconds at 75% carried 5.5 MB of them where 3.7
+had been priced, and a run fitted to 400 MB came out over it. Counted on three
+cuts written to a disc, a broadcast recorder title sends 99 packets a second
+of them, a broadcast `.ts` 104, and a DVD title with linear PCM 103 (no clock
+packet there, but the map fifty times a second). So a disc is now charged 104
+packets of 192 bytes a second for them (`DISC_TABLES` in
+[`fit.rs`](../../rust/crates/core/src/fit.rs)). A cut into a file keeps the
+share: a `.ts` carries the broadcast's own tables as the broadcast sent them,
+and a file is never priced below its own rate besides.
+
 Against whole recordings written onto a disc, that lands within about one per
 cent:
 
@@ -314,13 +346,20 @@ read-only image, the image itself, once it is written -- each file takes
 whole extents in it and the file system has structures of its own, so a
 folder under the size can make an image over it, and up to 0.8.33 such an
 image was weighed by its folder and said nothing. The note also says why:
-the pictures would not shrink as far as they were asked to; or the run was
-priced to fit as it was, so they were left as they were (with
+the recording weighed more than it was priced at; or the run was
+priced to fit as it was, so the pictures were left as they were (with
 `--video-share` to write them smaller, or, for anything but MPEG-2, the
 reminder that only MPEG-2 can be -- up to 0.8.33 an H.264 cut was told to
 try `--video-share` too); or, for an image whose files alone come to less
 than the size, that the rest is the image's own file system, which `--fit`
-does not price. Nothing written is changed by any of this: they are
+does not price. Where the pictures were written smaller, the note says what
+the run was priced at with them at that share and how far past that it came,
+and puts that down to the recording weighing more than its index measured --
+the pictures, or what goes round them -- with the note above it where the
+pictures would not shrink as far as asked. Up to 0.8.37 it blamed the
+pictures alone, and a disc whose pictures had come to exactly their share,
+over because its tables had been priced short, was told the pictures would
+not shrink. Nothing written is changed by any of this: they are
 messages. The window's check after a run weighs the same things and, with
 **Transcode** on, gives the same reasons -- where none of the recordings written is MPEG-2, that only MPEG-2 can be
 transcoded. Up to 0.8.34 it weighed a read-only image by its folder too, and
