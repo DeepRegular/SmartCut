@@ -4413,6 +4413,58 @@ let scrubIdle = [];
 const scrubSettled = () =>
   scrubBusy ? new Promise((r) => scrubIdle.push(r)) : Promise.resolve();
 
+/// A frame on or back: what the arrow keys, a notch of the wheel and ◀ ▶ do.
+///
+/// A step of `frame()` is a picture only where the pictures keep to the
+/// rate. On a variable-rate recording that is the average, and the stage
+/// answers an instant with the *nearer* picture and the playhead is snapped
+/// onto it: a screen recording that holds one picture for seconds took every
+/// press back to that picture, so neither key ever got past a hold, and
+/// where it moves at its own 30 or 60 a second a step of the average (9 a
+/// second on such a recording) went over two pictures out of three. So
+/// there, once the walk has made the stage exact, the step looks for the
+/// next picture: a hundredth of a second first, which is under half the
+/// gap of anything up to 120 a second and so cannot pass a picture, then
+/// twice as far each time the same picture comes back. An ask that returns
+/// another picture never passes one, since the ask before it, half as far,
+/// was nearer the one it started on.
+let pictureStepping = false;
+const PICTURE_ASK = 0.01;
+function stepFrame(dir, from = playOut()) {
+  if (!src) return;
+  if (!src.variable || !walked()) {
+    scrubTo(from + dir * frame());
+    return;
+  }
+  // One at a time: a held key or a run of notches is the next step, asked
+  // for once this one has found its picture.
+  if (pictureStepping) return;
+  pictureStepping = true;
+  stepPicture(dir).finally(() => {
+    pictureStepping = false;
+  });
+}
+
+async function stepPicture(dir) {
+  const was = src;
+  await scrubSettled();
+  if (src !== was || playing) return;
+  const from = playOut();
+  const pic = shownTime;
+  // Under half the closest two pictures can come, where that is finer still
+  // (a 240-a-second capture): see `least_gap`.
+  const first = Math.min(frame(), PICTURE_ASK, src.least_gap > 0 ? src.least_gap / 2 : PICTURE_ASK);
+  for (let s = first, i = 0; i < 16; s *= 2, i++) {
+    const want = clamp(from + dir * s, 0, lastStop());
+    scrubTo(want);
+    await scrubSettled();
+    // Another recording, playback, or a hand that moved the playhead
+    // meanwhile (its picture is the one up now): this step is over.
+    if (src !== was || playing || Math.abs(shownTime - pic) > 1e-6) return;
+    if (want <= 0 || want >= lastStop()) return;
+  }
+}
+
 /// The last picture the recording really has, in its own seconds, once it is
 /// known; null until then.
 ///
@@ -4557,7 +4609,7 @@ function wheelStep(dir, shift) {
   const from = playOut();
   if (playing) stopPlay(false);
   if (shift) scrubTo(srcToOutSeam(stepPoint(dir)));
-  else scrubTo(from + dir * frame());
+  else stepFrame(dir, from);
 }
 
 // --- playback -----------------------------------------------------------
@@ -5468,6 +5520,7 @@ const atLastPicture = (o) => o >= Math.min(outDur - frame() * 1.5, lastOut() - f
 /// only way back to the mark you had was to remember the frame number.
 function setIn(o, mark = true) {
   const a = atFirstPicture(o) ? 0 : clamp(o, 0, outDur);
+  const raw = mark && onRawPlayhead(a);
   // Both ends on one frame is a selection of that frame, not a crossing:
   // counted as one, I then O on the same frame selected from the start, and
   // the next Del took everything up to it.
@@ -5482,14 +5535,198 @@ function setIn(o, mark = true) {
   updateReadouts();
   draw();
   scheduleStrip();
+  if (raw) ontoPicture("a", a, playhead);
+}
+
+/// Whether an end put at `o` is on the playhead while the stage is still
+/// deciding which picture the playhead is on: a J jump, a press on the
+/// timeline or a step, with I or O straight after it.
+///
+/// On a variable-rate recording the playhead is first put where it was
+/// asked for and then onto the picture that comes back (`showFrame`). An IN
+/// put down in between stood on the instant, a hair after its picture
+/// began, with `[` drawn on that picture (`onPicture`), and ✂ began just
+/// past it and kept it: J 00:00:02.961 then I on a phone recording whose
+/// picture begins at 2.960633 kept 180 pictures where 179 were left. Such
+/// an end goes onto its picture once the stage says which (`ontoPicture`).
+/// A constant-rate timeline is left as it was.
+function onRawPlayhead(o) {
+  if (!src || !src.variable || src.pulldown || !walked()) return false;
+  return Math.abs(shownTime - playhead) >= 1e-6 && Math.abs(o - playOut()) < 1e-9;
+}
+
+/// Put the end `which` ("a" or "b"), set at `o` on the playhead standing at
+/// `at` (the recording's seconds), onto the picture the stage shows there.
+/// Asked for on its own rather than taken from the stage's answer: that one
+/// is dropped when the playhead moves on before it comes back. Not where
+/// the end, the recording or the selection has moved meanwhile, nor under a
+/// ✂ that is asking about the selection as it stands (`exactEnd`).
+async function ontoPicture(which, o, at) {
+  const was = src;
+  let pic;
+  try {
+    pic = (await invoke("preview", { time: at, width: 64 })).time;
+  } catch (e) {
+    jlog(`ontoPicture: ${e}`);
+    return;
+  }
+  if (src !== was || selGone || endAsking) return;
+  const p = srcToOut(pic);
+  if (p === null) return;
+  if (p === o) {
+    // On its picture already.
+  } else if (which === "a" && selA === o && p <= selB) selA = p;
+  else if (which === "b" && selB === o && p >= selA) selB = p;
+  else return;
+  updateReadouts();
+  draw();
+  if (which === "b") {
+    const end = exactOut();
+    if (end !== null) pictureAfter(end).catch(() => {});
+  }
 }
 
 /// The instant just past the selection: IN..OUT is inclusive of OUT, so
 /// removing it means removing everything up to the start of the next picture.
-const selEnd = () => (selB >= outDur - 1e-9 ? outDur : Math.min(selB + frame(), outDur));
+const selEnd = () => (selB >= outDur - 1e-9 ? outDur : Math.min(selB + onePicture(selB), outDur));
+
+/// `selEnd` for what ✂ and 範囲外を削除 write: on a variable-rate recording,
+/// the start of the picture after OUT's, found by asking the stage.
+///
+/// `onePicture` does not know that picture and ends OUT a fraction of the
+/// shortest gap past it. Where OUT's picture is held -- up for two of the
+/// declared rate's frames or more -- the range after a ✂ then opens inside
+/// that hold, and the cutter puts what is on screen there back: a phone
+/// recording's held picture, IN i49 OUT i55, came out with 176 pictures where
+/// 175 were left. No picture after OUT's is the end of the timeline; a cut
+/// after it in the recording, the join. undefined where the recording
+/// changed meanwhile.
+async function selEndExact() {
+  const plain = selEnd();
+  const at = exactOut();
+  if (at === null) return plain;
+  const was = src;
+  const k = keeps.find((r) => at >= r.a - 1e-9 && at <= r.b + 1e-9);
+  if (!k) return plain;
+  let next;
+  try {
+    next = await pictureAfter(at);
+  } catch (e) {
+    jlog(`selEndExact: ${e}`);
+    return src === was ? plain : undefined;
+  }
+  if (src !== was) return undefined;
+  const end = k.at + (next === null || next >= k.b ? k.b : next) - k.a;
+  return Math.min(Math.max(end, selB), outDur);
+}
+
+/// OUT in the recording's seconds where `selEndExact` has to ask for the
+/// picture after it; null where `selEnd` already knows it.
+function exactOut() {
+  if (!src || !src.variable || src.pulldown || !walked() || selB >= outDur - 1e-9) return null;
+  const at = outToSrc(selB);
+  return pointNext(selB, at, pictureFloor()) === null ? at : null;
+}
+
+/// When the picture after the one at `at` (the recording's seconds) begins,
+/// or null where none does. The search is `stepPicture`'s, off the stage
+/// rather than the playhead: no ask past the closest two pictures can come
+/// passes one. Each ask decodes from an entry point, so it is begun when OUT
+/// is put down (`setOut`) and the ✂ that follows waits on the same one.
+let afterAsked = null;
+function pictureAfter(at) {
+  if (afterAsked && afterAsked.src === src && afterAsked.at === at) return afterAsked.p;
+  const was = src;
+  const p = (async () => {
+    const pic = Math.abs(shownTime - at) < 1e-6 ? shownTime : (await invoke("preview", { time: at, width: 64 })).time;
+    let s = Math.min(frame(), was.least_gap > 0 ? was.least_gap : PICTURE_ASK);
+    if (was.closest > 0) s = Math.min(s, was.closest);
+    for (let i = 0; i < 24 && src === was; i++, s *= 2) {
+      const ask = Math.min(pic + s, was.duration);
+      const t = (await invoke("preview", { time: ask, width: 64 })).time;
+      if (t > pic + 1e-6) return t;
+      if (ask >= was.duration) return null;
+    }
+    throw new Error(`no picture after ${at}`);
+  })();
+  afterAsked = { src, at, p };
+  // Asked again, not remembered, after a failure.
+  p.catch(() => {
+    if (afterAsked && afterAsked.p === p) afterAsked = null;
+  });
+  return p;
+}
+
+/// How far past the start of the picture at `o` (output seconds) a bound
+/// goes to take that picture and nothing after it: a frame, where the
+/// pictures keep to the rate.
+///
+/// On a variable-rate recording `frame()` is the average, which on a screen
+/// recording that holds still pictures is three times the gap where it
+/// moves: ✂ took OUT's picture and the two after it, which nobody had
+/// selected, and キープ kept two more. The next picture is not known here,
+/// so the bound is put where the cutter reads it as OUT's, which is past
+/// half of the shortest gap its pictures can have (the cutter takes a bound
+/// within that of an entry point for the entry point) and short of a whole
+/// one. Put 4 ms past OUT on such a recording, an OUT on an entry point was
+/// the entry point itself: キープ ended at it and lost OUT's picture, ✂
+/// resumed on it and kept the picture it had taken out, and a keep up to
+/// the picture before the next entry point re-encoded its last GOP rather
+/// than copying it.
+///
+/// Where that gap is not known finer than the average -- a clock that
+/// states no rate (an Android capture's 90 kHz, a Matroska file's) -- the
+/// average is no measure of it, and 4 ms past OUT is under the gap of
+/// anything up to 120 a second, on a millisecond clock too; only on an
+/// entry point does the bound have to clear the cutter's half frame.
+///
+/// Except where OUT's picture is the last before an entry point: an entry
+/// point nearer than two of the closest gaps has no picture between it and
+/// OUT, so the next picture is that point, and the bound goes on it -- where
+/// a keep copies up to. Short of it by either margin above, the cutter took
+/// it for a bound inside the GOP before and re-encoded the whole GOP that a
+/// keep from one entry point to the picture before the next (無劣化's shape)
+/// could copy: a phone recording's every second, a screen recording's
+/// seconds-long GOPs.
+const PICTURE_END = 0.004;
+function onePicture(o) {
+  if (!src || !src.variable) return frame();
+  const gap = src.least_gap > 0 ? Math.min(src.least_gap, frame()) : frame();
+  const at = o === undefined ? null : outToSrc(o);
+  const toPoint = at === null ? null : pointNext(o, at, pictureFloor());
+  if (toPoint !== null) return toPoint;
+  if (gap < frame() * 0.99) return gap * 0.75;
+  const onPoint = at !== null && src.points.some((p) => Math.abs(p - at) < 1e-3);
+  return Math.min(frame(), onPoint ? frame() / 2 + PICTURE_END : PICTURE_END);
+}
+
+/// No two pictures of a variable recording come closer than this, as far as
+/// is known; 0 where nothing is. The closest gap measured, or `least_gap`
+/// where that is finer than the average -- a declared rate the pictures sit
+/// on -- whichever is the larger: a 2:3 pulldown declared as its fields has
+/// no picture shorter than two of them. A frame of the average is no floor
+/// for a clock that states no rate.
+function pictureFloor() {
+  const gap = src.least_gap > 0 ? Math.min(src.least_gap, frame()) : frame();
+  const measured = src.closest > 0 ? Math.min(src.closest, frame()) : 0;
+  return gap < frame() * 0.99 ? Math.max(gap, measured) : measured;
+}
+
+/// How far the entry point just after the picture at `o` (output seconds;
+/// `at` in the recording's) is, where nothing can lie between them; null
+/// where something can, or where the point is not next on the timeline.
+function pointNext(o, at, floor) {
+  if (!(floor > 0)) return null;
+  const k = src.points.find((p) => p > at + 1e-6);
+  if (k === undefined || k - at >= 2 * floor * 0.999) return null;
+  const ko = srcToOut(k);
+  if (ko === null || Math.abs(ko - o - (k - at)) > 1e-6) return null;
+  return k - at;
+}
 
 function setOut(o, mark = true) {
   const b = atLastPicture(o) ? outDur : clamp(o, 0, outDur);
+  const raw = mark && onRawPlayhead(b);
   const a = selGone || b < selA ? 0 : selA;
   if (a === selA && b === selB && !selGone) return;
   if (mark) remember();
@@ -5499,6 +5736,13 @@ function setOut(o, mark = true) {
   updateReadouts();
   draw();
   scheduleStrip();
+  if (raw) {
+    ontoPicture("b", b, playhead);
+    return;
+  }
+  // Not for each step of a drag: only where it is put down.
+  const at = mark ? exactOut() : null;
+  if (at !== null) pictureAfter(at).catch(() => {});
 }
 
 /// Pick up the marks saved beside a recording, if any are.
@@ -7607,7 +7851,7 @@ function holdStep(id, dir) {
   // Bumped on release, so a run whose picture is still being decoded when the
   // button comes up does not schedule one more step behind it.
   let run = 0;
-  const step = () => scrubTo(playOut() + dir * frame());
+  const step = () => stepFrame(dir);
   const stop = () => {
     run++;
     clearTimeout(timer);
@@ -7672,11 +7916,22 @@ el("snap").addEventListener("click", () => {
   // one frame into a GOP -- a re-encode after a snap that was meant to save
   // one. A selection that runs to the end stays there.
   const a = srcToOutSeam(nearestPoint(outToSrc(selA)));
+  //
+  // A frame back from it is the picture before it where the pictures keep to
+  // the rate. Where they do not, a frame of the average is no picture: on a
+  // screen recording it was three back, and OUT there ended the keep short
+  // of the point, so the last GOP was re-encoded and the pictures between
+  // OUT and the point were lost from it. There OUT goes back a quarter more
+  // than the closest gap -- the picture before the point is the nearer one
+  // there unless it was held over two and a half gaps, and the point is
+  // still next (see `onePicture`), so the selection ends on it.
+  const floor = src.variable ? pictureFloor() : 0;
+  const back = floor > 0 ? Math.min(frame(), floor * 1.25) : frame();
   let b = outDur;
   if (!(selB >= outDur - 1e-9 || atLastPicture(selB))) {
     let resume = srcToOutSeam(nearestPoint(outToSrc(selEnd())));
-    if (resume - frame() <= a) resume = srcToOutSeam(nearestPoint(outToSrc(a), 1));
-    b = resume - frame();
+    if (resume - back <= a) resume = srcToOutSeam(nearestPoint(outToSrc(a), 1));
+    b = resume - back;
   }
   if (b <= a) return;
   const from = clamp(a, 0, outDur);
@@ -7691,6 +7946,22 @@ el("snap").addEventListener("click", () => {
   draw();
   scheduleStrip();
 });
+
+/// One ✂ or 範囲外を削除 at a time while `selEndExact` asks the stage, and
+/// none at all if the selection or the cuts moved meanwhile.
+let endAsking = false;
+async function exactEnd() {
+  if (endAsking) return undefined;
+  const was = [src, selA, selB, cuts];
+  endAsking = true;
+  try {
+    const b = await selEndExact();
+    const same = [src, selA, selB, cuts].every((v, i) => v === was[i]);
+    return same && !selGone ? b : undefined;
+  } finally {
+    endAsking = false;
+  }
+}
 
 /// Take the selection out of the output.
 ///
@@ -7711,20 +7982,23 @@ el("snap").addEventListener("click", () => {
 /// can reach the last picture -- and `outDur` is past the last picture, not
 /// on it. Read as an end to cut up to, it would take the very frame the mark
 /// is sitting on. The start of the last picture is what the mark meant.
-function cutSelection(inner) {
+async function cutSelection(inner) {
   // A second Del straight after the first. The selection went with the
   // material; what IN and OUT were collapsed onto is the join, and taking
   // that would take the frames after it, which nobody chose.
   if (!src || selB < selA || selGone) return;
-  const a = inner ? selA + frame() : atFirstPicture(selA) ? 0 : selA;
+  const a = inner ? selA + onePicture(selA) : atFirstPicture(selA) ? 0 : selA;
   const b = inner
     ? Math.min(selB, Math.max(0, Math.min(outDur - frame(), lastOut())))
     : atLastPicture(selB)
       ? outDur
-      : selEnd();
+      : src.variable
+        ? await exactEnd()
+        : selEnd();
+  if (b === undefined) return;
   // A selection with nothing inside it -- two frames, or one. Taking the
   // inside out of that is taking nothing out.
-  if (b - a < frame() / 2) return;
+  if (b - a < onePicture(selA) / 2) return;
   // All of what is left. There would be nothing to write, and nobody means
   // it: the likeliest way here is IN and OUT run out to the two ends.
   if (a <= 0 && b >= outDur - 1e-9) {
@@ -7743,11 +8017,29 @@ function cutSelection(inner) {
   seekOut(at);
 }
 
-el("cut-range").addEventListener("click", () => cutSelection(false));
-el("cut-outside").addEventListener("click", () => {
+/// The ✂ or 範囲外を削除 that is waiting on `exactEnd`, as the promise of its
+/// being done; null where none is. OK waits for it. O, Del and Shift+Enter
+/// in one go on a phone recording closed the window while the Del was still
+/// asking the stage where OUT's picture ends, and the list kept the row
+/// without the cut.
+let cutting = null;
+function whileCutting(p) {
+  cutting = p;
+  const done = () => {
+    if (cutting === p) cutting = null;
+  };
+  p.then(done, done);
+  return p;
+}
+
+el("cut-range").addEventListener("click", () => whileCutting(cutSelection(false)));
+el("cut-outside").addEventListener("click", () => whileCutting(cutOutside()));
+async function cutOutside() {
   if (!src || selB < selA || selGone) return;
+  const end = src.variable ? await exactEnd() : selEnd();
+  if (end === undefined) return;
   const keep = outRangeToSrc(selA, selB);
-  applyCuts(cuts.concat(outRangeToSrc(0, selA)).concat(outRangeToSrc(selEnd(), outDur)));
+  applyCuts(cuts.concat(outRangeToSrc(0, selA)).concat(outRangeToSrc(end, outDur)));
   // What is left is what was selected, and a selection of all of it is one
   // Del short of nothing; see `cutSelection`.
   selA = 0;
@@ -7755,7 +8047,7 @@ el("cut-outside").addEventListener("click", () => {
   selGone = true;
   seekOut(0);
   jlog(`cut outside, kept ${JSON.stringify(keep)}`);
-});
+}
 el("undo-cut").addEventListener("click", () => stepHistory(past, undone));
 el("redo-cut").addEventListener("click", () => stepHistory(undone, past));
 el("clear-all").addEventListener("click", () => {
@@ -8098,10 +8390,12 @@ window.addEventListener("keydown", (ev) => {
   // of the two is a key that stops working halfway through an evening.
   const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
   if (playing && !QUIET.includes(key)) stopPlay();
-  const step = ev.shiftKey ? 1 : frame();
   if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
     ev.preventDefault();
-    if (arrowDue(ev)) scrubTo(playOut() + (ev.key === "ArrowRight" ? step : -step));
+    const dir = ev.key === "ArrowRight" ? 1 : -1;
+    if (!arrowDue(ev)) return;
+    if (ev.shiftKey) scrubTo(playOut() + dir);
+    else stepFrame(dir);
     return;
   }
   // Up and down walk the scene changes, which is what they do in the
@@ -8132,7 +8426,7 @@ window.addEventListener("keydown", (ev) => {
   }
   if (ev.key === "Delete") {
     ev.preventDefault();
-    cutSelection(false);
+    whileCutting(cutSelection(false));
     return;
   }
   if (ev.key === "Insert") {
@@ -9272,7 +9566,9 @@ function applyCmBlocks(blocks, marks = true) {
   draw();
 }
 
-el("editor-ok").addEventListener("click", () => {
+el("editor-ok").addEventListener("click", async () => {
+  // The cut made just before it is part of what OK hands over; see `cutting`.
+  if (cutting) await cutting.catch(() => {});
   sync();
   // After the debounce, so the last cut is over the wire before the window
   // that made it goes away.

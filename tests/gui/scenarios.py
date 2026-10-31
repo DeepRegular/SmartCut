@@ -1575,6 +1575,133 @@ def seam_editor_visit_master_failed(cfg, t):
                       master=1, kind="dissolve")
 
 
+def _vfr_screen(cfg):
+    """A screen recording as a capture tool writes one: thirty a second
+    while something moves, one picture held for seconds where nothing does
+    (mpdecimate), H.264 with B pictures in an .mp4 that declares 30 and
+    averages about 9. The 42nd pass made such a file variable."""
+    v = os.path.join(cfg.media, "vfr.mp4")
+    if not os.path.exists(v):
+        subprocess.run([
+            "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc2=s=720x480:r=30:d=2",
+            "-f", "lavfi", "-i", "testsrc2=s=720x480:r=30:d=1",
+            "-f", "lavfi", "-i", "sine=frequency=330:duration=16.6:sample_rate=48000",
+            "-filter_complex",
+            "[0]split=3[a][b][c];[1]split=2[d][e];"
+            "[b]trim=end_frame=1,tpad=stop_mode=clone:stop_duration=7[b2];"
+            "[e]trim=end_frame=1,tpad=stop_mode=clone:stop_duration=4.5[e2];"
+            "[a][b2][d][e2][c]concat=n=5,mpdecimate=hi=1:lo=1:frac=0,format=yuv420p[v]",
+            "-map", "[v]", "-map", "2:a", "-fps_mode", "vfr", "-c:v", "libx264",
+            "-preset", "veryfast", "-x264-params", "bframes=3:b-pyramid=normal",
+            "-c:a", "aac", "-b:a", "128k", "-shortest", "-f", "mp4", v + ".part"], check=True)
+        os.replace(v + ".part", v)
+    return v
+
+
+def seam_vfr_reel(cfg, t, vfr_first=True, master=None, kind="dissolve",
+                  name="seam_vfr_reel"):
+    """継ぎ目の編集 on an ORDINARY two-row join where one reel is a VFR screen
+    recording (.mp4, read as variable since the 42nd pass) and the other a
+    .ts: the window loads the pair, a dissolve/wipe set in it gets a span,
+    the step buttons and 末尾 put a picture on the stage, playing gives
+    pictures and stops, and OK writes the crossing onto the first row with
+    the master unchanged. (43rd pass)"""
+    v = _vfr_screen(cfg)
+    rows = [{"path": v}, {"path": cfg.a}] if vfr_first else [{"path": cfg.a}, {"path": v}]
+    extra = {} if master is None else {"master": master}
+    with App(cfg, name, rows, {"joinAll": True, **extra}) as app:
+        app.to_list()
+        wait_for("rows read", lambda: app.s.js(
+            "return [...document.querySelectorAll('#cliplist > li .badge')]"
+            ".every((b) => b.classList.contains('ready'))"), 90)
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled;"), 90)
+        before = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+        app.s.switch(seam)
+        wait_for("the join loaded", lambda: app.s.js(
+            "return document.getElementById('out-clip-time').textContent") not in
+            ("--:--:--.--", "00:00:00.00"), 60)
+        app.s.js(
+            f"const k = document.getElementById('x-kind'); k.value = '{kind}';"
+            "k.dispatchEvent(new Event('change', {bubbles: true}));")
+        time.sleep(1.5)
+        read = lambda: app.s.js(  # noqa: E731
+            "return [document.getElementById('ovl-frame').textContent,"
+            " document.getElementById('ovl-time').textContent,"
+            " document.getElementById('out-clip-time').textContent,"
+            " document.getElementById('out-cross-time').textContent,"
+            " document.getElementById('note').textContent,"
+            " document.getElementById('preview').getAttribute('src') || '']")
+        # The window's own failures, as opposed to what it says about a
+        # crossing (that the output comes out shorter, say).
+        bad = lambda note: any(w in note for w in (  # noqa: E731
+            "読み込めません", "読み込んでいます", "再生:", "could not be read", "Playback:"))
+        r0 = read()
+        t.check(f"43v {name}: the pair loads, a {kind} has a span and no failure",
+                r0[3] not in ("00:00:00.00", "--:--:--.--") and not bad(r0[4]) and r0[5] != "",
+                str(r0[:5]))
+        shots = []
+        for _ in range(3):
+            app.s.click("#step-fwd")
+            time.sleep(1.2)
+            shots.append(read())
+        moved = [s[0] for s in shots]
+        t.check(f"43v {name}: 1 フレーム進む steps the readout and draws a picture each time",
+                len(set(moved)) == 3 and all(s[5] for s in shots) and not any(bad(s[4]) for s in shots),
+                str(moved))
+        app.s.click("#go-end")
+        time.sleep(2)
+        r1 = read()
+        n, of = (int(x) for x in r1[0].split("/"))
+        t.check(f"43v {name}: 末尾 lands on the last frame with a picture",
+                n == of and r1[5] != "" and not bad(r1[4]), str(r1[:5]))
+        app.s.click("#go-start")
+        time.sleep(1)
+        app.s.click("#play")
+        time.sleep(3)
+        r2 = read()
+        app.s.click("#play")
+        time.sleep(1)
+        r3 = read()
+        t.check(f"43v {name}: 再生 moves the playhead with pictures and stops",
+                r2[1] != r0[1] and r2[5].startswith("blob:") and not bad(r2[4])
+                and app.s.js("return document.getElementById('play').textContent") == "▶",
+                f"playing {r2[:2]} {r2[4]!r}; stopped {r3[:2]}")
+        try:
+            app.s.click("#cross-ok")
+        except WebDriverError:
+            pass
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+        app.s.switch(app.main)
+        p = app.save()
+        afters = [(c.get("after") or {}).get("kind") for c in p["clips"]]
+        kept = (p.get("settings") or {}).get("master")
+        t.check(f"43v {name}: OK writes the {kind} onto row 1, master kept",
+                afters[0] == kind and (kept == master if master is not None else not kept),
+                f"after {afters}; master {kept!r}")
+
+
+def seam_vfr_reel_master_ts(cfg, t):
+    """seam_vfr_reel with the .ts (the second row) as 基準クリップ and a wipe:
+    the crossing goes INTO the master, out of the VFR reel. (43rd pass)"""
+    seam_vfr_reel(cfg, t, vfr_first=True, master=1, kind="wipe-left",
+                  name="seam_vfr_reel_master_ts")
+
+
+def seam_vfr_reel_after(cfg, t):
+    """seam_vfr_reel with the .ts first and the VFR recording second, the VFR
+    reel as 基準クリップ: a dissolve INTO the variable master. (43rd pass)"""
+    seam_vfr_reel(cfg, t, vfr_first=False, master=1, kind="dissolve",
+                  name="seam_vfr_reel_after")
+
+
 def ctrl_h_after_failed_open(cfg, t):
     """Row 1 up with its own .keyframe, Ctrl+H, and while 「上書きしますか？」
     is up, row 2 -- a recording broken since the list read it -- double-
@@ -6981,6 +7108,297 @@ def chain_fast_double_switch(cfg, t):
                 f"asked {asked}/{asked2}; rows {fmt(c1)} {fmt(c2)} {fmt(c3)}; row 2 {st2}")
 
 
+def _counter_time(app):
+    """The editor's counter as seconds; a variable-rate recording's counter
+    is the time alone."""
+    s = app.s.js("return document.getElementById('counter').innerText") or ""
+    m = re.search(r"(\d+):(\d+):(\d+)\.(\d+)", s)
+    return None if not m else int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]) + int(m[4]) / 100
+
+
+def _hold_mp4(cfg):
+    """hold.mp4 of `vfr_hold_arrows`: 2 s at 30 a second, one picture held
+    for 7 s, 2 s more (pictures at 1.9, 2.0, 9.0667 ...)."""
+    home = os.path.join(cfg.work, "vfrhold")
+    os.makedirs(home, exist_ok=True)
+    v = os.path.join(home, "hold.mp4")
+    if not os.path.exists(v):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2",
+                        "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2",
+                        "-filter_complex",
+                        "[0]split=2[a][b];[b]trim=end_frame=1,tpad=stop_mode=clone:stop_duration=7[h];"
+                        "[a][h][1]concat=n=3,mpdecimate=hi=1:lo=1:frac=0,format=yuv420p[v]",
+                        "-map", "[v]", "-fps_mode", "vfr", "-c:v", "libx264", "-preset", "veryfast",
+                        "-x264-params", "bframes=3:b-pyramid=normal", v + ".part.mp4"], check=True)
+        os.replace(v + ".part.mp4", v)
+    return v
+
+
+def vfr_del_then_ok(cfg, t):
+    """On a variable-rate recording ✂ asks the stage where OUT's picture ends
+    before it cuts (`exactEnd` in main.js), which takes a moment. O, Del and
+    Shift+Enter pressed in one go closed the window before the cut was made,
+    and the list kept the row without it (43rd pass, seventh stage). And an
+    IN put down with I straight after a J jump, before the stage had put the
+    playhead on its picture, stood on the instant typed, a hair after the
+    picture began: ✂ began past it and kept it."""
+    v = _hold_mp4(cfg)
+    with App(cfg, "vfr_del_then_ok", [{"path": v}, {"path": v}]) as app:
+        def jump(text, then=()):
+            app.s.keys("j")
+            wait_for("the jump box", lambda: app.s.js(
+                "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+            app.s.keys("Control+a")
+            app.s.type(text)
+            app.s.keys("Enter", *then)
+        for n in (1, 2):
+            app.to_list()
+            app.open_row(n, "hold.mp4", wait=False)
+            app.to_editor()
+            wait_for("the walk", lambda: "hold.mp4" in app.state()["title"] and app.s.js(
+                "const k = document.getElementById('ovl-kind'); return !!k && k.innerText !== ''"
+                " && !k.innerText.includes('解析中')"), 120, 0.3)
+            time.sleep(3.0)
+            if n == 1:
+                # IN on 1.9, OUT on the held 2.0; O, Del and OK at once.
+                jump("00:00:01.90")
+                wait_for("the playhead on 1.9", lambda: abs((_counter_time(app) or -1) - 1.9) < 0.02, 10)
+                time.sleep(1.5)
+                app.s.keys("i")
+                jump("00:00:02.00")
+                wait_for("the playhead on 2.0", lambda: abs((_counter_time(app) or -1) - 2.0) < 0.02, 10)
+                time.sleep(1.5)
+                app.s.keys("o", "Delete", "Shift+Enter")
+            else:
+                # I straight after a jump typed 0.5 ms into the picture at 1.9.
+                jump("00:00:01.9005", ("i",))
+                time.sleep(2.0)
+                jump("00:00:02.00")
+                wait_for("the playhead on 2.0", lambda: abs((_counter_time(app) or -1) - 2.0) < 0.02, 10)
+                time.sleep(1.5)
+                app.s.keys("o")
+                time.sleep(2.0)
+                app.s.keys("Delete")
+                time.sleep(2.0)
+                app.ok()
+            app.gone()
+        proj = app.save()
+        c1, c2 = cuts_of(proj, 1), cuts_of(proj, 2)
+        t.check("43p7a O, Del and OK in one go: the cut is handed over",
+                len(c1) == 1 and abs(c1[0][0] - 1.9) < 1e-3 and abs(c1[0][1] - 9.0667) < 2e-3, f"cuts {c1}")
+        t.check("43p7b I straight after J: IN on the picture the jump lands on",
+                len(c2) == 1 and abs(c2[0][0] - 1.9) < 1e-5 and abs(c2[0][1] - 9.0667) < 2e-3, f"cuts {c2}")
+
+
+def vfr_hold_arrows(cfg, t):
+    """A screen recording that holds one picture for 7 s (mpdecimate, as a
+    phone or desktop capture of a still screen is), opened and walked: the
+    playhead put on the held picture with J, then -> must reach the picture
+    after the hold, and <- from there must come back to the held one. Each
+    press asked for the instant a frame away, the stage answered with the
+    nearer picture -- the same one -- and the playhead was snapped back onto
+    it, so neither key ever left the hold. (43rd pass.)"""
+    v = _hold_mp4(cfg)
+    with App(cfg, "vfr_hold_arrows", [{"path": v}]) as app:
+        app.to_list()
+        app.open_row(1, "hold.mp4", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: "hold.mp4" in app.state()["title"] and app.s.js(
+            "const k = document.getElementById('ovl-kind'); return !!k && k.innerText !== ''"
+            " && !k.innerText.includes('解析中')"), 120, 0.3)
+        app.s.keys("j")
+        wait_for("the jump box", lambda: app.s.js(
+            "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+        app.s.keys("Control+a")
+        app.s.type("00:00:02.00")
+        app.s.keys("Enter")
+        wait_for("the playhead on the held picture", lambda: abs((_counter_time(app) or -1) - 2.0) < 0.02, 10)
+        time.sleep(1.0)
+        app.s.keys("Right")
+        time.sleep(3.0)
+        fwd = _counter_time(app)
+        app.s.keys("Left")
+        time.sleep(3.0)
+        back = _counter_time(app)
+        t.check("43a -> on a 7 s hold reaches the picture after it, <- comes back",
+                fwd is not None and 8.9 < fwd < 9.2 and back is not None and abs(back - 2.0) < 0.02,
+                f"after -> {fwd}; after <- {back}")
+        # Where it moves at 30 a second, a press is the picture beside it,
+        # not the average's step (about 0.11 s here: three pictures).
+        app.s.keys("Left")
+        time.sleep(2.0)
+        back2 = _counter_time(app)
+        app.s.keys("Right")
+        time.sleep(2.0)
+        fwd2 = _counter_time(app)
+        t.check("43b <- / -> where the pictures come 30 a second step one picture",
+                back2 is not None and 1.955 < back2 < 1.975 and fwd2 is not None and abs(fwd2 - 2.0) < 0.005,
+                f"after <- {back2} (want 1.96); after -> {fwd2}")
+        # The hold cut out: IN on the held picture, -> to the one after it,
+        # OUT there, Del. Pictures 2.000 and 9.067 go and nothing else: the
+        # cut took OUT's picture and the two after it (the average's frame,
+        # 0.09 s here, past OUT).
+        app.s.keys("i")
+        app.s.keys("Right")
+        time.sleep(2.0)
+        app.s.keys("o")
+        time.sleep(0.3)
+        app.s.keys("Delete")
+        wait_for("the plan after the cut", lambda: "カット 1" in (app.state()["plan"] or ""), 20, 0.3)
+        plan = app.state()["plan"]
+        app.s.keys("End")
+        time.sleep(2.0)
+        end = _counter_time(app)
+        app.s.keys("Left")
+        time.sleep(2.0)
+        end1 = _counter_time(app)
+        # The length is what is left of the timeline once IN..OUT's end is
+        # taken: OUT's end is the start of the picture after it (3.99 s, sixth
+        # stage of the 43rd pass), three quarters of the 30-a-second gap past
+        # it before that (4.00), 4 ms past it in the first stage (4.02), and
+        # the average's frame past it before (3.93, two pictures more).
+        t.check("43c the hold cut out with IN/OUT from the keys; End, then <- one picture",
+                any(f"00:00:{s}" in plan for s in ("03.99", "04.00", "04.01", "04.02"))
+                and end is not None and end1 is not None
+                and 0.02 < end - end1 < 0.05,
+                f"plan {plan!r}; End {end}; <- {end1}")
+        app.ok()
+        app.gone()
+        outs = app.export()
+        got = pictures(outs[0]) if outs else None
+        want = pictures(v) - 2
+        t.check("43d the output lacks exactly the two pictures IN..OUT stood on",
+                got == want, f"{got} pictures (want {want}); outputs {outs}")
+
+
+
+def vfr_key_out(cfg, t):
+    """OUT on an entry point of a screen recording (declared 30, averaging
+    about 9, an entry point every 12 pictures): ✂ takes IN..OUT and nothing
+    else, 範囲外を削除 keeps IN..OUT and nothing else. OUT's end was put 4 ms
+    past it, inside the cutter's rounding of half a picture (16.7 ms), so
+    the cutter read that end as the entry point itself: ✂ resumed on OUT's
+    picture, which it had been asked to take, and the keep ended on it and
+    lost it. (43rd pass, second stage.)
+
+    And a keep from an entry point to the picture before the next one copies:
+    a 2:3 pulldown MP4 declares its fields (16.7 ms) and no picture of it is
+    shorter than two, so OUT's end 12.5 ms past the picture before an entry
+    point 33 ms on was a bound inside the GOP, and the keep re-encoded it.
+    (43rd pass, third stage.)"""
+    home = os.path.join(cfg.work, "vfrkey")
+    os.makedirs(home, exist_ok=True)
+    made = []
+    for name in ("kd.mp4", "kk.mp4"):
+        v = os.path.join(home, name)
+        if not os.path.exists(v):
+            subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                            "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2",
+                            "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2",
+                            "-filter_complex",
+                            "[0]split=2[a][b];[b]trim=end_frame=1,tpad=stop_mode=clone:stop_duration=7[h];"
+                            "[a][h][1]concat=n=3,mpdecimate=hi=1:lo=1:frac=0,format=yuv420p[v]",
+                            "-map", "[v]", "-fps_mode", "vfr", "-c:v", "libx264", "-preset", "veryfast",
+                            "-x264-params", "bframes=3:b-pyramid=normal:keyint=12:min-keyint=12:scenecut=0",
+                            v + ".part.mp4"], check=True)
+            os.replace(v + ".part.mp4", v)
+        made.append(v)
+    # 23.976 film in 2:3 pulldown, stamped as its fields would show it
+    # (declared 59.94, averaging 23.976): an entry point every 12 pictures,
+    # 0.5005 s apart.
+    pd = os.path.join(home, "kp.mp4")
+    if not os.path.exists(pd):
+        raw = pd + ".264"
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "testsrc2=s=640x360:r=24000/1001:d=3",
+                        "-c:v", "libx264", "-preset", "veryfast",
+                        "-x264-params", "pulldown=32:bframes=0:keyint=12:min-keyint=12:scenecut=0",
+                        "-f", "h264", raw], check=True)
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", raw, "-c:v", "copy",
+                        "-bsf:v", "setts=time_base=1/60000:ts=(5*floor(N/2)+3*mod(N\\,2))*1001",
+                        "-video_track_timescale", "60000", pd + ".part.mp4"], check=True)
+        os.remove(raw)
+        os.replace(pd + ".part.mp4", pd)
+    made.append(pd)
+
+    def to(app, at):
+        app.s.keys("j")
+        wait_for("the jump box", lambda: app.s.js(
+            "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+        app.s.keys("Control+a")
+        app.s.type(at)
+        app.s.keys("Enter")
+        want = float(at.split(":")[-1])
+        wait_for(f"the playhead on {at}", lambda: abs((_counter_time(app) or -1) - want) < 0.02, 10)
+        time.sleep(0.5)
+
+    def walked(app, name):
+        wait_for("the walk", lambda: name in app.state()["title"] and app.s.js(
+            "const k = document.getElementById('ovl-kind'); return !!k && k.innerText !== ''"
+            " && !k.innerText.includes('解析中')"), 120, 0.3)
+
+    with App(cfg, "vfr_key_out", [{"path": made[0]}, {"path": made[1]}, {"path": made[2]}]) as app:
+        app.to_list()
+        # Pictures 1.000 .. 1.600 (an entry point): 19 of them.
+        app.open_row(1, "kd.mp4", wait=False)
+        app.to_editor()
+        walked(app, "kd.mp4")
+        to(app, "00:00:01.00")
+        app.s.keys("i")
+        to(app, "00:00:01.60")
+        app.s.keys("o")
+        time.sleep(0.3)
+        app.s.keys("Delete")
+        wait_for("the plan after the cut", lambda: "カット 1" in (app.state()["plan"] or ""), 20, 0.3)
+        app.ok()
+        app.gone()
+        app.open_row(2, "kk.mp4", wait=False)
+        app.to_editor()
+        walked(app, "kk.mp4")
+        # Pictures 0.400 .. 1.600: 37, copied from the entry point at 0.4.
+        to(app, "00:00:00.40")
+        app.s.keys("i")
+        to(app, "00:00:01.60")
+        app.s.keys("o")
+        time.sleep(0.3)
+        app.s.click("#cut-outside")
+        time.sleep(1.0)
+        app.ok()
+        app.gone()
+        app.open_row(3, "kp.mp4", wait=False)
+        app.to_editor()
+        walked(app, "kp.mp4")
+        # Pictures 0.5005 (an entry point) .. 0.9676, the one before the
+        # entry point at 1.001: 12, all of them copied.
+        to(app, "00:00:00.501")
+        app.s.keys("i")
+        to(app, "00:00:00.968")
+        app.s.keys("o")
+        time.sleep(0.3)
+        app.s.click("#cut-outside")
+        wait_for("the plan after the keep", lambda: "カット 2" in (app.state()["plan"] or ""), 20, 0.3)
+        time.sleep(1.0)
+        plan_p = app.state()["plan"]
+        app.ok()
+        app.gone()
+        files = app.export()
+        outs = {os.path.basename(f): f for f in files}
+        n = pictures(made[0])
+        got_d = pictures(outs["cut_01_kd.mp4"]) if "cut_01_kd.mp4" in outs else None
+        got_k = pictures(outs["cut_02_kk.mp4"]) if "cut_02_kk.mp4" in outs else None
+        t.check("43e ✂ with OUT on an entry point takes IN..OUT and nothing else",
+                got_d == n - 19, f"{got_d} pictures (want {n - 19}); outputs {sorted(outs)}")
+        t.check("43f 範囲外を削除 with OUT on an entry point keeps IN..OUT",
+                got_k == 37, f"{got_k} pictures (want 37)")
+        got_p = pictures(outs["cut_03_kp.mp4"]) if "cut_03_kp.mp4" in outs else None
+        t.check("43g 範囲外を削除 from an entry point to the picture before the next copies it (pulldown mp4)",
+                got_p == 12 and "再エンコード 0.00s" in (plan_p or ""),
+                f"{got_p} pictures (want 12); plan {plan_p!r}")
+        for f in files:
+            os.remove(f)
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -7021,8 +7439,14 @@ SCENARIOS = [
     seam_editor_visit_failed,
     seam_editor_visit_master,
     seam_editor_visit_master_failed,
+    seam_vfr_reel,
+    seam_vfr_reel_master_ts,
+    seam_vfr_reel_after,
     ctrl_h_after_failed_open,
     ctrl_h_after_other_open,
+    vfr_hold_arrows,
+    vfr_del_then_ok,
+    vfr_key_out,
     disc_refuses_opus,
     disc_keeps_its_name,
     disc_gauge_appends,

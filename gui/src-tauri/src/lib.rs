@@ -338,6 +338,18 @@ struct SourceInfo {
     /// Whether the pictures come at a rate a frame number could be counted
     /// off. See [`smartcut_core::VideoInfo::variable_rate`].
     variable: bool,
+    /// The shortest time one of its pictures can be up for, which is `1 /
+    /// fps` except where the pictures come finer than the average: the
+    /// rounding the cutter allows a bound is half of it, so the window puts
+    /// the end of OUT's picture where the cutter reads the same picture. See
+    /// [`smartcut_core::VideoInfo::least_gap`].
+    least_gap: f64,
+    /// The closest two of its pictures were measured to come, in seconds; 0
+    /// where nothing measured it. With it the window can tell that OUT's
+    /// picture is the last before an entry point -- the point is nearer than
+    /// two such gaps -- and end the selection on the point itself, which is
+    /// where the cutter copies up to. See [`smartcut_core::VideoInfo::closest`].
+    closest: f64,
     has_audio: bool,
     /// Channels in the recording's audio, so the output settings can say
     /// whether there is anything to downmix. 0 when there is no audio.
@@ -1045,6 +1057,8 @@ async fn open_outline(path: String) -> Result<SourceInfo, String> {
             // them.
             pulldown: false,
             variable: false,
+            least_gap: o.video.frame_duration(),
+            closest: 0.0,
             has_audio: o.audio.is_some(),
             audio_channels: o.audio.as_ref().map_or(0, |a| a.channels),
             audio_sample_rate: o.audio.as_ref().map_or(0, |a| a.sample_rate),
@@ -1301,6 +1315,8 @@ fn info_of(src: &Source) -> SourceInfo {
         interlaced: src.video.interlaced(),
         pulldown: src.video.pulldown,
         variable: src.video.variable_rate,
+        least_gap: src.video.least_gap(),
+        closest: if src.video.closest.is_finite() { src.video.closest.max(0.0) } else { 0.0 },
         has_audio: src.audio.is_some(),
         audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
         audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),
@@ -7554,7 +7570,23 @@ async fn play(
             }
             let base = elapsed_out;
             let seg_from = start;
-            let gap = 1.0 / fps.max(1.0);
+            // A frame of the rate the window asked for, which is the
+            // recording's average -- except where the pictures do not come at
+            // a rate. A screen recording that holds still pictures averages 9
+            // a second and sends 30 while the screen moves, and paced at the
+            // average every other one of those went by unshown. There the
+            // gap is the closest two of them can come, where that is known
+            // (see `VideoInfo::least_gap`), and where it is not -- a clock
+            // that states no rate (an Android capture's 90 kHz, a Matroska
+            // file's) -- nothing is passed over for coming too soon: only for
+            // coming late.
+            let variable = src.video.variable_rate;
+            let gap = if variable {
+                src.video.least_gap()
+            } else {
+                1.0 / fps.max(1.0)
+            };
+            let capped = !variable || gap < src.video.frame_duration();
             let r = smartcut_core::play_from(
                 &src,
                 start,
@@ -7602,7 +7634,7 @@ async fn play(
                     // rather than exactly. Judged on that error, every other
                     // picture would fall on the wrong side of it and be
                     // dropped.
-                    if out_t + gap / 2.0 < next_show {
+                    if capped && out_t + gap / 2.0 < next_show {
                         return smartcut_core::Pace::Skip;
                     }
                     next_show = out_t + gap;
