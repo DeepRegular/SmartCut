@@ -386,6 +386,32 @@ Where that first cluster holds nothing but the cue and the sound, the
 sought read missed it as the open did, and a file 1.15 s short was called OK;
 that shape is now found too.
 
+**The reads of a track stop by where the file stands.** Each one reads on
+until the pictures are well past where it is going, and took that from a
+picture's presentation time. A recording with B pictures stores the picture
+shown after a still before the pictures shown ahead of it: a screen recording
+holding one picture for twelve seconds stores the next one, shown twelve
+seconds on, just after the still and among the sound of the still's first
+second. Every read that crossed it stopped there, so a sound-only file of
+`--keep 1-5` of such a recording held 1.1 s of sound, and `--verify` said a
+correct cut had seconds less sound than it has, or passed one that had lost
+it. They now go by the picture's decode time, which is the file's own order
+and runs ahead of the sound by no more than the pictures held back for
+reordering (`audio::read_reached`): `--verify`'s reads, the sound-only file,
+the sound's shape and the decode around a seam, and the cut's own copy.
+
+**And the last picture is as long as the track says.** `--verify` took the
+last picture to be up for a frame of the average, which is where it puts the
+end of the pictures to measure the sound against. A variable-rate cut ending
+on a still writes that picture up to where the range ends (see [the Rust
+core](rust-core.md#how-close-the-pictures-come-asked-in-one-place)), and with
+sound beside it the sound was said to be laid seconds past the pictures. The
+length now comes from the end the container states for the picture track
+where that is more than a frame and a half past the last picture: an MP4's
+track length, or the `DURATION` libavformat's Matroska muxer writes for each
+track. A transport stream states none of its own, and a constant-rate output
+reads as it always has.
+
 **Nothing may finish having written a declared track and no frames of it.**
 Every other way of losing one ends in an error: a codec the container has no
 box for stops the header, an encoder that will not open stops the setup. That

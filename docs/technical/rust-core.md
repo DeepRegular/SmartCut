@@ -411,13 +411,177 @@ disc's clip does not hold a picture for seconds, and there a stream with 2:3
 pulldown can declare its fields beside an average of its film frames.
 
 **Neither touches constant-rate material**, and both are written so that they
-cannot. The span is a maximum over the two answers, and they agree whenever
-the pictures are a frame apart; the carried picture is only reached when the
+cannot. The span is a maximum over the two answers wherever a picture's coded
+length means anything (see [the next
+section](#how-close-the-pictures-come-asked-in-one-place) for where it does
+not, all of it variable), and they agree whenever the pictures are a frame
+apart; the carried picture is only reached when the
 gap to the first picture of the range is a whole frame or more, which at a
 constant rate cannot happen. The thirteen cases in `tests/run_rust_tests.sh`
 report the same counts, the same first timestamps and the same jitter of zero
 as before, and `tests/run_vfr_tests.sh` has a constant-rate control in it for
 the same reason.
+
+### How close the pictures come, asked in one place
+
+Much of the above leans on one number: how short a picture of the recording
+can be. The planner rounds every bound by half of it, the re-encode puts the
+picture on screen in at a range's start once the range's first picture is
+that far off, the film strip takes two cells within half of it for one
+picture, and playback paces by it. Up to 0.8.38 each of them took a frame of
+the average, and on a recording whose pictures do not come at its average that
+measures nothing. A screen recording that declares 30 and averages 12.8 has a
+frame of 78 ms, two and a half of the pictures it sends while the screen
+moves: a range opened on either of the two pictures before an entry point, or
+ended on the one just after it, lost them, and an entry point within half a
+frame of the average past OUT was taken for OUT, which put the picture before
+it in the cut as well.
+
+There is now one rule, `VideoInfo::off_the_average` and
+`VideoInfo::least_gap` in [`lib.rs`](../../rust/crates/core/src/lib.rs), and
+the plan, the cut, the preview, playback and a join's conform all read it.
+
+**Off the average** is a variable recording whose pictures come finer than the
+average its grid is built on. It is one of two things:
+
+| | Which recordings |
+|---|---|
+| A declared rate more than 1% above the average | Held pictures (a screen recording), or a 2:3 pulldown stated as its fields |
+| The closest two pictures, measured, under two thirds of a frame of the average | A declared rate that says nothing: a phone's screen capture counting in 90 kHz ticks declares 90000, and a screen recording remuxed into Matroska declares its average |
+
+**Not an interlaced recording that declares its fields**, a declared rate
+between 1.98 and 2.02 times the average. A recorder's 1080i BD-RE title is
+PAFF, which the walk calls variable, and declares 59.94 beside an average of
+29.97: its pictures come at the average. Taken as off it, a 24p clip joined to
+one was written at its own 23.976 instants instead of on the master's frames
+(120 pictures fewer over 20 s), and a plain cut of it was planned to half a
+frame. Nor a phone that drops a picture now and then, whose average is its
+rate, unless what was measured says otherwise. A phone whose times only
+wander has its closest two pictures nine tenths of a frame apart, so a reel
+joined to one is laid on its frames as before; other phones' capture clocks
+now and then put two a third to two thirds of a frame apart (38 of the 53
+variable phone recordings measured here), and a reel joined to one of those is
+laid at its own instants.
+
+**The least gap** is a frame of the average, except in three places:
+
+| Where | The least gap |
+|---|---|
+| Off the average, with a declared rate under 1000 (not Matroska's clock turned over) | A frame of the declared rate, but never below the closest gap measured |
+| The closest gap measured is under nine tenths of a frame of the average | That gap (a phone's 29.5 ms beside its average's 33.3) |
+| Either of those under 1/480 s | 1/480 s: closer than that is a timestamp a muxer nudged, not a picture |
+
+The floor in the first row is for a 2:3 pulldown declared as its fields, which
+has no picture shorter than two of them. Taken at one field, a ✂ whose OUT was
+a three-field picture resumed a field and a half into it, and since nothing
+came within a field of that, the picture the cut had taken out was put back at
+the seam for the rest of its time. A gap measured at nine tenths of a frame or
+more is a clock that rounds (a broadcast's 29.97 in 90 kHz ticks, a walked
+recording whose times wander a tick), and the average stands for it as it
+always did.
+
+**What is measured is `VideoInfo::closest`**, the shortest gap between two
+pictures shown one after the other. It comes from an MP4's or a QuickTime
+file's own table of its pictures, where nothing is reordered (no B pictures)
+and there are at least 32 gaps, and from the walk, which reads every picture;
+where both answer, the closer is taken. A container whose table holds only its
+key pictures (Matroska's Cues, an FLV's) answers nothing. **Nor does the walk
+of a field-coded stream.** One field lost to damage, as in a recorder's 1080i
+with a dropout, leaves its partner without one, the pairs after it are counted
+from their second fields, and that single half-frame gap was the closest two
+pictures came: a PAFF title was taken off its average, a 24p reel joined to it
+was laid at its own instants (709 packets against 828), and its cuts were
+planned to a quarter of a frame.
+
+The seek index keeps the walk's figure after the bit rate, so
+`seek_index::VERSION` went up to 18. A screen recording remuxed into Matroska
+states its average as its rate and only the walk sees how close its pictures
+come; an index saved before has no such figure, and a cut opened from it would
+be planned on the average where a fresh open plans on the pictures. Every
+saved index is made again once.
+
+**The same table says which recordings vary** (`crowded_in_table` in
+[`lib.rs`](../../rust/crates/core/src/lib.rs)), read in the same pass under
+the same conditions. Two answers call one variable:
+
+| | What the table holds | Why it matters |
+|---|---|---|
+| Crowded | Two pictures closer than half a frame of the average | Each picture goes to the field of the average nearest it, and two less than a field apart can round to the same one: the second is left out |
+| Held | The closest two within 1.03 frames of the declared rate, one gap over 1.5 of its frames, and the mean gap more than 1.001 of them | A frame of the average is longer than the gap the pictures come at, so a bound a frame past OUT reaches the next picture |
+
+The crowded case is a phone recording that declares 60 and averages 57,
+with two gaps of 8.3 ms in fifteen minutes against fields of 8.8:
+`--keep 449.22-456` copied 391 of its 392 pictures and `--verify` failed it.
+Neither earlier rule sees it (its declared rate is 5% above the average, not
+twice it, and a table is not walked). One gap is enough where the walk wants
+four, because a gap that short is not a fault a constant-rate recording has
+(none in the 47,971 broadcast and disc pictures above), and calling one
+variable by mistake costs only the finer division.
+
+The held case is a phone that declares 60, records at it while the light
+allows and holds a picture for a thirtieth where it does not, averaging 56.5:
+no two of its pictures are closer than a field of that. A frame of its average
+is 17.7 ms against pictures 16.7 apart, so a kept range ended one picture
+past the one asked for and ✂ took one more out. The thousandth in the last
+condition is the share of a frame a bound is rounded to; a constant-rate
+recording's gaps and their mean are its declared rate's, and a dashcam whose
+clock runs a little slow comes further apart on the whole but never holds a
+picture. Of
+2,751 MP4 recordings measured here (broadcast remuxes, dashcams, cameras,
+edits, phones), 24 are now called variable that were not, every one a phone's
+with pictures held for two to six frames. The command line's description of
+the video no longer calls the rate beside "(the pictures vary)" the declared
+one, since on an MP4 it is the average.
+
+**Where a picture's coded length says nothing** (`coded_length_unbounded` in
+[`cut.rs`](../../rust/crates/core/src/cut.rs)), [`held_to_the_end`] takes the
+end of the segment rather than the larger of that and the coded length. That
+is a variable recording whose grid is built on its average, in three ways: off
+the average; with no declared rate at all; or with a declared rate that is the
+average restated and a least gap under a frame of it, which is what a variable
+MP4 remuxed into Matroska becomes. On that grid a frame is coded as two fields
+of the average. A screen recording that declares 60 and averages 18 had the
+last picture of every segment taken as up for 55 ms where its pictures are
+16.7 ms apart, so the segment after it began 39 ms late, each seam adding its
+own, 117 ms by the third; one remuxed into Matroska, averaging 24.5 with its
+pictures 33 ms apart, opened the range after a cut 47 ms late and the next 55.
+A transport stream with pictures missing is not one of these: it declares the
+rate it keeps, its closest two are a whole frame of it apart, and its coded
+length is right.
+
+**And the output's last picture is up until the last range ends.** A
+container works out every other picture's length from the next one, and takes
+the last one's from its packet, which on those recordings was the average's
+frame. A screen recording with no sound, a slide held from 2.0 s to 8.0 s, cut
+with `--keep 0.5-7`, came out 1.53 s long with the slide up for a tenth of a
+second. Now the writer keeps that picture back over the cut's last range and
+gives it the length to where the range ends (`Writer::ends`), and the last
+picture in decode order as far, where that is a B picture shown before it, as
+an MP4 takes its track's length off the decode times. This applies on the
+recordings above and also on a variable one whose declared rate is its average
+with pictures a frame of it apart (a screen capture into WebM), and only where
+the last range's recording is on the output's own grid.
+
+Three more readers took the average's frame and now take the least gap. The
+re-encode puts the picture on screen in at a range's start when the range's
+first picture is a least gap off: a 2:3 pulldown MP4 averaging 23 a second
+opened a range 12 ms into a picture on the next one, 38 ms on, and every
+picture of the range sat 38 ms ahead of its sound. The planner counts a
+segment's pictures again at the least gap where the average found none, so a
+head of the one or two pictures before an entry point is not taken for an
+empty window. And playback paces a variable recording by the least gap, and
+where that is no finer than the average (a clock that states no rate) passes
+over no picture for coming early, only for coming late; a picture that begins
+before the place played from is shown first only where it is the nearer of
+the two either side.
+
+**The reads of the copy and the re-encode stop by decode time.** They stop
+once the pictures are well past the segment's end, and asked by presentation
+time, a picture after a hold, stored right behind the one before it and shown
+seconds later, stopped them early: on a screen recording, a P picture shown 6 s
+after the copy's terminating entry point came in the file just before the sound
+frame lying across that entry point, and 21 ms of sound went at every such
+seam.
 
 ### A rate with nothing round in it, and the ticks a container can state
 
@@ -445,6 +609,21 @@ byte for byte. For the recording above the nearest rational under the bound is
 nothing moves as a result. A picture is placed by its own timestamp rather than
 by counting this rate off, so what the approximation changes is the size of a
 tick.
+
+**A tick also has to be coarse enough for the longest step.** An MP4 states
+each picture's decode time as a step from the one before, in 32 bits, and
+libavformat's muxer, handed a longer step, says so in the log and writes the
+picture one tick after the last with no presentation time, and every picture
+after it the same. A phone's screen capture averaging 24300000/1349377 came
+to a timescale of 1.55 GHz, where a step of 1.4 s is already too long: its
+first hold, of six seconds, put the 85 pictures after it within a microsecond
+of the first, and the cut's video track was 55 ms long beside 8 s of sound.
+So where the rate has a denominator past 1001 (not one a recording is
+authored at) and the recording's own length would overflow a step, it is
+approximated until it does not (`Grid::held_within`). A round rate is left
+exactly as it was. A join's reel written afresh at its own instants writes a
+held picture again after each second it stands, for the same reason
+([joining](joining.md#a-clip-that-does-not-match-has-every-picture-written-afresh)).
 
 **Five phone recordings say what this is worth**, three H.264 and two HEVC, all
 declaring 60 and averaging 56.59 to 59.98 by holding a picture in the dark, one

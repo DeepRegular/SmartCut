@@ -981,6 +981,67 @@ you close in, so re-placing IN is no reason to lose OUT. Only when the two cross
 one just placed win, and the other retreat to the end of the timeline — "from here on" and
 "up to here" is the honest reading until the range is narrowed.
 
+### Where OUT's picture ends when the pictures do not come at a rate
+
+"IN to OUT includes the OUT frame" needs to know where OUT's picture ends.
+At a constant rate that is a frame after it begins, and `frame()` is that
+frame. On a variable-rate recording `frame()` is the average, which on a
+screen recording that holds still pictures is three times the gap where the
+screen moves: ✂ took OUT's picture and the two after it, and a kept stretch
+ended two pictures late. The engine now hands the window two figures beside
+the rate, `SourceInfo.least_gap` and `SourceInfo.closest` (see [the Rust
+core](rust-core.md#how-close-the-pictures-come-asked-in-one-place)), and
+`main.js` uses them as below. All of it applies only once the walk has
+given the entry points, and none of it to a constant-rate recording.
+
+**Where the end is not looked up** (`onePicture`: the selection's length on
+screen, the loop, Snap to lossless and the inner end of `Ctrl+Del`), the bound
+goes where the cutter reads it as OUT's picture:
+
+| Where OUT is | The end |
+|---|---|
+| The next entry point is nearer than two of the closest gaps | That entry point. Nothing can lie between, and a kept stretch that ends there copies the GOP before it rather than re-encoding it (a phone recording's every second, a screen recording's long GOPs) |
+| The least gap is finer than the average | Three quarters of it past OUT: past the half the cutter rounds by, short of a whole one |
+| Otherwise, on an entry point | Half a frame and 4 ms past it, to clear the cutter's half-frame rounding; at 4 ms an OUT on an entry point was read as the point itself, and a kept stretch lost OUT's picture |
+| Otherwise | 4 ms past it, under the gap of anything up to 120 a second, on a millisecond clock too |
+
+**✂ Cut and Cut outside look the end up**, because a held OUT picture is
+longer than any of those: the range after the cut opened inside the hold, and
+the cutter put what was on screen there back. A phone recording's held
+picture, IN i49 OUT i55, came out with 176 pictures where 175 were left.
+Except where the first row above already settles it, `selEndExact` asks the
+preview for the picture after OUT's (`pictureAfter`),
+from the closest gap and twice as far each time the same picture comes back,
+so no ask passes one. Each ask decodes from an entry point, so it is begun
+when OUT is put down (`setOut`) and the ✂ that follows waits on the same one.
+No picture after OUT's is the end of the timeline, and one past the end of
+the kept stretch OUT is in is the join. A ✂ whose selection, cuts or
+recording changed while it asked does nothing, and only one asks at a time.
+**OK waits for a ✂ still asking**: O, Del and Shift+Enter in one go on a phone
+recording closed the window before the cut was made, and the list kept the row
+without it.
+
+**An end put down before the stage has answered goes onto the picture it
+shows.** After a J jump, a press on the timeline or a step, the playhead is
+put where it was asked for and then onto the picture that comes back. An IN
+put down in between stood on the instant, a hair after its picture began,
+with `[` drawn on that picture, and ✂ began just past it and kept it: J
+00:00:02.961 then I on a phone recording whose picture begins at 2.960633
+kept 180 pictures where 179 were left. Such an end is now moved onto the
+picture the preview names for that instant (`ontoPicture`), unless the end,
+the selection or the recording moved meanwhile. Not on a recording with
+pulldown.
+
+Two more steps go by pictures there. ← →, a notch of the wheel and ◀ ▶ step
+to the next picture rather than by a frame of the average (`stepFrame`), which
+on a hold took every press back to the held picture and, where the screen
+moved, went over two pictures out of three: the step asks 10 ms on (less where
+the pictures come closer than 20 ms), then twice
+as far each time the same picture comes back. And Snap to lossless puts OUT a
+quarter more than the closest gap before the point rather than a frame of the
+average, which ended the keep short of the point, re-encoded the last GOP and
+lost the pictures between.
+
 ### Seams become keyframes, and seam cells decode for real
 
 **A seam left by a cut becomes a keyframe.** That is exactly what you will want to check

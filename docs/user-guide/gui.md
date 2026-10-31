@@ -986,6 +986,16 @@ frames you want to *keep* and it takes out what lies between them.
 - The selection is shown under the preview and on the line under the plan's band, as
   `Selection 1800 - 3599 : 00:01:00.06`.
 
+**On a recording whose pictures do not come at a steady rate** (a screen
+recording, or a phone recording that holds a picture in the dark), "one frame"
+means one picture once the recording has been read through. `←` `→`, the wheel
+and `◀` `▶` go to the next picture rather than a fixed step. OUT's picture is
+taken out up to where the next picture begins, however long it is held: `✂ Cut`
+and `Cut outside` ask the preview where that is, which starts as soon as OUT is
+put down, so a cut pressed straight after `O` may take a moment, and OK waits
+for it. `I` or `O` pressed straight after a jump goes onto the picture shown
+there.
+
 ### Making the cut
 
 ![After the cut](../images/usage-cut.png)

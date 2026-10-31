@@ -258,6 +258,28 @@ output frames, which is 8.02 s of the file's own rate.
 That is the rate conversion, and it is the one a smart renderer can honestly
 offer. Nothing here invents a picture that was never taken.
 
+**Except into a master whose pictures do not come at its average**
+(`cut_conform::own_instants`, which is `VideoInfo::off_the_average`; see
+[the Rust core](rust-core.md#how-close-the-pictures-come-asked-in-one-place)).
+A screen recording sends thirty pictures a second while something moves and
+holds one for seconds while nothing does, so it averages nine: a broadcast reel
+counted off at that was written at nine a second, 207 of its 682 pictures, and
+a second screen recording joined onto it lost the pictures of every stretch
+where its screen moved. The output's timeline there is divided finely, so each
+picture is written once at its own instant, as a seam's re-encode places them,
+and is up until the next one; a picture held for longer than a second is
+written again each second, since an MP4 states each step in 32 bits of a
+timescale held only to the master's own length. Two pictures closer than the
+timeline can tell apart keep the first. The encoder is told the reel's own
+rate rather than the master's average, since it spends its bit rate over as
+many pictures as it is told come in a second: a broadcast reel at its own
+thirty into such a master came out at 3.98 Mbit/s against the master's 1.01.
+Not for MPEG-1 or MPEG-2, which write the rate into every sequence header, and
+not through a transition, whose progress is counted in the master's frames on
+both sides. A variable master whose average is its rate (a phone's dropping a
+picture now and then) is counted off as before, and so is an interlaced one
+declaring its fields.
+
 **The scaler is rebuilt whenever the decoder starts handing over a different
 shape.** Not paranoia: a broadcast recording can change frame size mid-file
 where the station switched feeds, and a scaler built for the first shape
@@ -381,6 +403,10 @@ body before a crossing is read off the pictures (`plan::picture_on_screen`),
 a field-coded picture's two fields counted as one. On a soft-telecine clip
 joined to itself with a one-second dissolve, output pictures 350 and 351 were
 both its picture 84.
+The same goes for the body before a crossing into a master whose reels keep
+their own instants (above), whatever the clip: ended on the output's frames, it
+stopped part-way into a picture, which stood for a sliver and opened the
+crossing again.
 
 Measured on 2026-10-09: soft-telecine joins from the command line went from 8
 wrong in 12 to none in 67, variable-rate ones from 6 in 6 to none in 10. Three
