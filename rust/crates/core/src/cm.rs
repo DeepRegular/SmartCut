@@ -418,7 +418,9 @@ fn read_sound(
             end: last_end,
         });
     }
-    out.retain(|s| s.duration() >= opts.min_silence);
+    // With the saved answer's hair of slack (the GUI's `flat_keep`), so a
+    // stretch of exactly the minimum is not dropped fresh and kept cached.
+    out.retain(|s| s.duration() + 1e-9 >= opts.min_silence);
     let resets = if captions.is_empty() {
         Err(crate::caption::NoResets.into())
     } else {

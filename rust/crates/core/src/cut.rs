@@ -623,6 +623,18 @@ struct Span {
 ///
 /// Never shortens a span. A copy that stopped early has its own reasons and
 /// they are not this function's to overrule.
+///
+/// **Except where the coded length is no floor at all.** On a grid built on
+/// the average (see [`Grid::from_rates`]) a frame is coded as two fields of
+/// the average, and a screen recording that declares 60 and averages 18
+/// holds nothing for 55 ms while it moves: its pictures are 16.7 ms apart.
+/// The last picture of every segment was taken to be up for 55 ms, and the
+/// segment after it began 39 ms late -- a copy after a re-encoded head, the
+/// range after a cut, the tail -- each seam adding its own, 117 ms by the
+/// third, and the sound written beside it by the range's own clock. There
+/// `seg.end` is the answer, held to the last picture's place and no
+/// further. A recording of fields of a declared rate (2:3 pulldown in an
+/// MP4) is on that grid too, and is answered the same way.
 fn held_to_the_end(span: Span, anchor: Option<f64>, seg: &Segment, src: &Source, field: f64) -> Span {
     let Some(a) = anchor else { return span };
     let until = if src.duration > 0.0 {
@@ -630,11 +642,80 @@ fn held_to_the_end(span: Span, anchor: Option<f64>, seg: &Segment, src: &Source,
     } else {
         seg.end
     };
+    // Held to [`FAR`] for the reason the copy's own placing is.
+    let held = ((until - a).min(FAR) / field).round() as i64;
+    let own = Grid::of(src);
+    if coded_length_unbounded(&src.video) && own.unit() == field {
+        // The last picture starts at most a frame of this grid before the
+        // end its coded length gives (a field before, for the second field
+        // of a pair), and it is up for at least a unit.
+        let last = span.fields - own.fields(2);
+        return Span {
+            fields: held.max(last + 1),
+            ..span
+        };
+    }
     Span {
-        // Held to [`FAR`] for the reason the copy's own placing is.
-        fields: span.fields.max(((until - a).min(FAR) / field).round() as i64),
+        fields: span.fields.max(held),
         ..span
     }
+}
+
+/// Whether a picture's coded length on this recording's grid says nothing
+/// about how long it is up: a variable recording whose grid is built on its
+/// average. See [`held_to_the_end`] and [`Writer::ends`].
+///
+/// **Three ways to get there, and [`crate::VideoInfo::off_the_average`] is
+/// only the first**: a declared rate above the average (a screen recording
+/// in an MP4, 2:3 pulldown stated as fields), or pictures measured to come
+/// well inside a frame of it; no declared rate at all (0, a Matroska clock
+/// that turned over with no average either), where the grid is the
+/// average's for want of anything else; and a declared rate that is the
+/// average restated, where the pictures were measured to come closer than
+/// it at all ([`crate::VideoInfo::least_gap`] under a frame). That last is
+/// what ffmpeg makes of a variable MP4 remuxed into Matroska (OBS's own
+/// container): the track's default duration is written from the average
+/// and read back as both rates. A screen recording averaging 8.6 a second
+/// declares 8.6 while its pictures come 33 ms apart, and one that moves
+/// more, averaging 24.5 with its pictures 33 ms apart, is not under two
+/// thirds of a frame and so not off the average: there every segment
+/// ending in motion was taken to run a frame of the average long, and a
+/// range after a cut opened 47 ms late, the next 55.
+///
+/// **Not every recording whose declared rate is its average.** A transport
+/// stream with pictures missing -- walked as varying, its gaps a frame or
+/// two of the rate it keeps -- states the rate it keeps and measures a
+/// whole frame of it between its closest two. There the coded length is
+/// the picture's frame, and holding the last picture of a range to the
+/// range's end instead cut it short of that and moved every range after it
+/// off the grid the source is on.
+fn coded_length_unbounded(v: &crate::VideoInfo) -> bool {
+    v.variable_rate
+        && (v.off_the_average()
+            || !(v.base_rate.is_finite() && v.base_rate > 0.0)
+            || (restates_the_average(v) && v.least_gap() < v.frame_duration()))
+}
+
+/// Whether the declared rate is the average restated. See
+/// [`coded_length_unbounded`].
+fn restates_the_average(v: &crate::VideoInfo) -> bool {
+    let (f, b) = (v.frame_rate, v.base_rate);
+    f.is_finite() && f > 0.0 && (b / f - 1.0).abs() <= 1e-9
+}
+
+/// Whether the output's last picture is held to where the cut's last range
+/// ends, which only the timeline can say ([`Writer::ends`]).
+///
+/// Wherever [`coded_length_unbounded`] holds, and also on a variable
+/// recording whose declared rate is its average and whose pictures come a
+/// frame of it apart: there the coded length is a floor, so no picture is
+/// cut short and nothing is moved, but a still it ends on is held for as
+/// long as nothing changed and the coded length says one frame of it. A
+/// screen capture into WebM states the rate it captures at as both rates:
+/// one with no sound cut to end on a slide came out with the slide up for a
+/// frame.
+fn last_held_to_the_end(v: &crate::VideoInfo) -> bool {
+    coded_length_unbounded(v) || (v.variable_rate && restates_the_average(v))
 }
 
 /// Where a segment sits in the output and how its packets must be shaped.
@@ -746,6 +827,29 @@ struct Writer {
     /// has been written yet. See [`copy_segment`] for what an HEVC copy does
     /// with that.
     opening: bool,
+    /// Keep a picture more than the reorder depth asks back, so that the
+    /// output's last picture is still waiting when [`Writer::ends`] is set.
+    /// Only over the cut's last range, and only where that is of use; see
+    /// there.
+    keep_last: bool,
+    /// Where the output's pictures end, in units, for the last of them to
+    /// be up until.
+    ///
+    /// **A picture's length is what the timeline says of the last one, and
+    /// nothing else does.** Every other picture is up until the next, and a
+    /// container works that out for itself; the last is up for whatever its
+    /// packet says. On a recording whose coded length is no measure of it
+    /// (see [`last_held_to_the_end`]) that was the average's frame: a
+    /// screen recording with no sound cut to end on a slide -- held from
+    /// 2.0 s to 8.0 s, `--keep 0.5-7` -- came out 1.53 s long, and the slide
+    /// that was the point of keeping the last five seconds was up for a
+    /// tenth of one. With sound beside it a player holds the picture, but
+    /// the track says it stops. Set by the run before the last [`flush`].
+    ///
+    /// [`flush`]: Writer::flush
+    ends: Option<i64>,
+    /// The latest display position written, so the last picture is known.
+    top_written: Option<i64>,
 }
 
 /// Writing the pictures back smaller, so that a run fits where it has to.
@@ -1358,7 +1462,8 @@ impl Writer {
         // minute, and only those seven want the extra room. A picture shown
         // for *three* fields is still one frame and still counts two, so
         // pulldown does not move the boundary either.
-        while self.held_halves() > (self.depth * 2).max(0) {
+        let keep = (self.depth * 2).max(0) + if self.keep_last { 2 } else { 0 };
+        while self.held_halves() > keep {
             self.emit_one()?;
         }
         Ok(())
@@ -1454,6 +1559,7 @@ impl Writer {
             return Ok(());
         }
         self.last_dts = Some(dts);
+        self.top_written = Some(self.top_written.map_or(e.display, |t| t.max(e.display)));
         e.packet.set_stream(0);
         e.packet.set_pts(Some(e.display * self.field_ticks));
         e.packet.set_dts(Some(dts * self.field_ticks));
@@ -1515,6 +1621,29 @@ impl Writer {
     fn flush(&mut self) -> Result<()> {
         if let Some(held) = self.held.take() {
             self.release(held, None)?;
+        }
+        // The last picture shown, where it is still waiting: up until the
+        // pictures end. See [`Writer::ends`].
+        if let Some(ends) = self.ends.take() {
+            let top = self.top_written;
+            let unwritten = |e: &Emitted| top.is_none_or(|t| e.display > t) && ends > e.display;
+            let last = (0..self.pending.len()).max_by_key(|&k| self.pending[k].display);
+            if let Some(k) = last.filter(|&k| unwritten(&self.pending[k])) {
+                let e = &mut self.pending[k];
+                e.fields = ends - e.display;
+                // And the last in decode order as far, where that is another
+                // picture -- a B picture shown just before it. An MP4 takes
+                // its track's length off the decode times and the last
+                // sample's duration, not off the pictures shown, and was
+                // still a frame long after a re-encoded tail ending in a
+                // still. Matroska takes the latest a block is up until,
+                // which this does not pass.
+                if let Some(b) = self.pending.back_mut() {
+                    if ends > b.display {
+                        b.fields = b.fields.max(ends - b.display);
+                    }
+                }
+            }
         }
         while !self.pending.is_empty() {
             self.emit_one()?;
@@ -4267,8 +4396,16 @@ fn copy_segment(
             }
             // See [`TRAIL`]. The pictures are still arriving, so they are
             // what says how far past the end the read has gone.
-            if let Some(pts) = packet.pts() {
-                if pts as f64 * in_tb - src.start_time > seg.end + TRAIL {
+            //
+            // **By when they are decoded, not when they are shown.** A muxer
+            // interleaves by decode time, and a picture after a hold is
+            // decoded right behind the one before it and shown seconds
+            // later: a screen recording's P picture shown 6 s after the copy's
+            // terminating entry point came in the file just before the sound
+            // frame lying across that entry point, and the read stopped on
+            // it -- 21 ms of sound gone at every such seam.
+            if let Some(at) = packet.dts().or(packet.pts()) {
+                if at as f64 * in_tb - src.start_time > seg.end + TRAIL {
                     break;
                 }
             }
@@ -5301,7 +5438,46 @@ struct Grid {
 impl Grid {
     fn of(src: &Source) -> Grid {
         let v = &src.video;
-        Grid::from_rates(v.frame_rate, v.base_rate, v.variable_rate)
+        Grid::from_rates(v.frame_rate, v.base_rate, v.variable_rate).held_within(src.duration)
+    }
+
+    /// The grid, with ticks coarse enough that the longest gap the recording
+    /// can have between two pictures -- all of it -- is a gap an MP4 can
+    /// state.
+    ///
+    /// **An MP4 states each picture's decode time as a step from the one
+    /// before, in 32 bits**, and libavformat's muxer, handed a longer step,
+    /// says so in the log and writes the picture one tick after the last
+    /// with no presentation time at all -- and so every picture after it.
+    /// The average of a recording that holds its pictures is a fraction
+    /// with nothing round in it, and [`Grid::of_rate`] keeps as much of it
+    /// as 31 bits of timescale hold: an Android screen capture averaging
+    /// 24300000/1349377 came to 1.55 GHz, where a step of 1.4 s is already
+    /// too long. Its first hold, of six seconds, put the 85 pictures after
+    /// it within a microsecond of the first; the video track of the cut was
+    /// 55 ms long beside 8 s of sound. One made the way Game Bar makes its
+    /// captures (a 10 MHz clock, a jittered 60) did the same.
+    ///
+    /// So where a rate that is not one a recording is authored at (a
+    /// denominator past 1001) would let the recording's own length overflow
+    /// a step, it is approximated until it does not. The rate is an average
+    /// nothing was coded at, and the pictures are placed by their own times
+    /// on a unit that moves by a few parts in ten thousand at most, for a
+    /// recording ten hours long; see
+    /// [`Grid::of_rate`]. A round rate is left exactly as it was.
+    fn held_within(self, seconds: f64) -> Grid {
+        let fits = |g: Grid| g.timescale() as f64 * seconds <= f64::from(i32::MAX);
+        if !(seconds.is_finite() && seconds > 0.0) || self.den <= 1001 || fits(self) {
+            return self;
+        }
+        let most = ((f64::from(i32::MAX) / seconds) as i64 / (2 * self.sub)).max(1);
+        let (mut n, mut d) = (0i32, 0i32);
+        unsafe { ff::ffi::av_reduce(&mut n, &mut d, self.num, self.den, most) };
+        Grid {
+            num: i64::from(n).max(1),
+            den: i64::from(d).max(1),
+            sub: self.sub,
+        }
     }
 
     /// The grid a recording's two rates and the walk's answer come to.
@@ -5321,7 +5497,9 @@ impl Grid {
         // can meet here. Where the declared rate is not usable the average
         // stands, which is what a recording that varies by holding a
         // picture wanted anyway: there the two agree, and all that is
-        // needed is the finer division.
+        // needed is the finer division -- and a segment's end taken from
+        // where it ends rather than from its last picture's coded length,
+        // which on this grid is the average's (see [`held_to_the_end`]).
         let usable = base_rate > 0.0 && base_rate <= frame_rate * 1.01;
         let (num, den) = frame_rate_parts(if usable { base_rate } else { frame_rate });
         Grid::of_rate(num, den, FINE)
@@ -5836,6 +6014,7 @@ fn reencode_segment(
     // the gap to the previous picture is a frame by construction and the
     // range is answered by the picture it already had.
     let mut still_on_screen: Option<ff::frame::Video> = None;
+    let least = src.video.least_gap();
 
     macro_rules! place {
         ($f:expr, $t:expr) => {{
@@ -5929,13 +6108,20 @@ fn reencode_segment(
                 // written where two fit, and a stream that counts one field
                 // more than its timestamps. There the range opens on the
                 // next picture, as it did before holds were kept.
-                if anchor.is_none() && t - seg.start >= fd {
+                //
+                // A frame of the rate the pictures come at, which on a
+                // recording whose average is no such rate is not the
+                // average's: a 2:3 pulldown MP4 averaging 23 a second opened
+                // a range 12 ms into a picture on the next one, 38 ms on, and
+                // every picture of the range sat 38 ms ahead of its sound.
+                // See [`crate::VideoInfo::least_gap`].
+                if anchor.is_none() && t - seg.start >= least {
                     if let Some(mut held) = still_on_screen.take() {
                         let own_end = held.pts().map(|p| {
                             let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
-                            p as f64 * in_tb - src.start_time + f64::from(shown_for) * fd / 2.0
+                            p as f64 * in_tb - src.start_time + f64::from(shown_for) * least / 2.0
                         });
-                        if own_end.is_none_or(|end| end < t - fd / 4.0) {
+                        if own_end.is_none_or(|end| end < t - least / 4.0) {
                             // Up from the range's start until `t`, which is
                             // at least a frame on: a frame is what it is
                             // written as. A repeat it was coded with ran out
@@ -6011,8 +6197,10 @@ fn reencode_segment(
             {
                 break;
             }
+            // By decode time first, as the copy's; see [`copy_segment`].
             if packet
-                .pts()
+                .dts()
+                .or(packet.pts())
                 .is_some_and(|p| p as f64 * in_tb - src.start_time > seg.end + TRAIL)
             {
                 break;
@@ -8161,6 +8349,11 @@ fn ranges_with_transitions(
     let step = reels
         .get(master)
         .map_or(0.0, |r| r.src.video.frame_duration());
+    // Whether a reel written afresh keeps its own instants; see
+    // `cut_conform::pictures_afresh`.
+    let own_instants = reels
+        .get(master)
+        .is_some_and(|r| conformed::own_instants(&r.src.video));
     // How much of the clip after each overlapping crossing the crossing
     // really showed: the clip before's last pictures from where its body
     // ended, which is on a picture and so up to a frame more than was asked
@@ -8343,7 +8536,14 @@ fn ranges_with_transitions(
                     t_in
                 };
                 if take_tail > 0.0 {
-                    body_end = if fits[n].video {
+                    // Not into a master whose pictures vary, where a reel
+                    // written afresh keeps its pictures at their own
+                    // instants (see `cut_conform::pictures_afresh`) as a
+                    // reel of the master's shape does: there a body ended
+                    // on the output's frames stopped part-way into a
+                    // picture, which stood for a sliver and opened the
+                    // crossing again.
+                    body_end = if fits[n].video && !own_instants {
                         on_the_frames(body_start, body_end)
                     } else {
                         on_screen(body_end)
@@ -10696,6 +10896,9 @@ fn cut_into(
         shrink: shrink_for(src, opts),
         held: None,
         opening: false,
+        keep_last: false,
+        ends: None,
+        top_written: None,
     };
 
     // What a reel that does not match is written into: the master's own
@@ -11201,6 +11404,13 @@ fn cut_into(
                 }
             }
         }
+        // The last range of the cut, on a recording whose last picture's
+        // coded length is no measure of it, keeps that picture back for
+        // [`Writer::ends`] -- on its own grid only, as [`held_to_the_end`].
+        writer.keep_last = reel_no + 1 == reels.len()
+            && plan_no + 1 == reel_plans[reel_no].len()
+            && last_held_to_the_end(&rsrc.video)
+            && Grid::of(rsrc).unit() == grid.unit();
         for (n, seg) in plan.segments.iter().enumerate() {
             let first_segment = n == 0;
             // A stretch written in the master's shape -- a reel that does not
@@ -11366,6 +11576,9 @@ fn cut_into(
         for (p, pts) in tail {
             writer.push_audio_encoded(track, p, pts)?;
         }
+    }
+    if writer.keep_last {
+        writer.ends = Some(display_base);
     }
     writer.flush()?;
     writer.octx.write_trailer()?;

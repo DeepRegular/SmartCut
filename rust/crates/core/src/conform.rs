@@ -538,6 +538,7 @@ mod tests {
             },
             pulldown: false,
             variable_rate: false,
+            closest: 0.0,
             field_order: 0,
             bit_rate: Some(17_000_000.0),
             vc1: None,

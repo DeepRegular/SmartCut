@@ -1466,7 +1466,7 @@ fn take_range(
                 match packets.next() {
                     Some((stream, packet)) if stream.index() != track.stream_index => {
                         // Leeway for the pictures running a little ahead of their sound.
-                        if crate::input::packet_time(&stream, &packet, src.start_time)
+                        if crate::audio::read_reached(&stream, &packet, src.start_time)
                             .is_some_and(|t| t >= range.1 + 5.0)
                         {
                             read_over = true;

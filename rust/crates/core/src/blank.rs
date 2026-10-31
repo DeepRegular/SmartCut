@@ -407,7 +407,14 @@ fn runs_from(looks: &[Look], tail: f64, opts: &BlankOptions) -> Vec<Run> {
         }
     }
     close(&mut out, open, tail);
-    out.retain(|r| r.pictures >= opts.min_pictures.max(1) && r.duration() >= opts.min_seconds);
+    // With the hair of slack the saved answer is filtered with (the GUI's
+    // `flat_keep`): a run of exactly the minimum -- three seconds of black at
+    // 60 fps -- comes out of `end - start` as 2.9999999999999996 at some
+    // positions on an mp4's clock. Without it the run was dropped by a fresh
+    // pass and kept when a pass at a shorter minimum was served from its cache.
+    out.retain(|r| {
+        r.pictures >= opts.min_pictures.max(1) && r.duration() + 1e-9 >= opts.min_seconds
+    });
     out
 }
 
@@ -623,6 +630,28 @@ mod tests {
             },
         );
         assert_eq!(both.len(), 1);
+    }
+
+    /// A run of exactly the minimum is kept even where the clock's rounding
+    /// makes it a hair short, as the saved answer's filter keeps it.
+    #[test]
+    fn a_run_of_exactly_the_minimum_is_kept() {
+        let tb = 1.0 / 15360.0;
+        let a = (0..15360 * 600)
+            .step_by(256)
+            .find(|&a| ((a + 46080) as f64 * tb) - (a as f64 * tb) < 3.0)
+            .expect("a position where 3 s rounds short");
+        let (s, e) = (a as f64 * tb, (a + 46080) as f64 * tb);
+        let runs = runs_from(
+            &looks(&[(s - 0.1, N), (s, B), (e - 0.1, B), (e, N)]),
+            e + 0.1,
+            &BlankOptions {
+                min_pictures: 1,
+                min_seconds: 3.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(runs.len(), 1);
     }
 
     /// A level is a fraction of the same span the samples are shifted on,

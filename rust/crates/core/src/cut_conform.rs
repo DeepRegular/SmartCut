@@ -126,8 +126,24 @@ fn pictures_afresh(
     let params = stream.parameters();
 
     let mut decoder = crate::video_decoder(params)?;
+    // Which masters lay a reel's pictures at their own instants; see below.
+    let own_instants = own_instants(into.video) && retouch.is_none();
+    // **Told the rate the reel's pictures come at, where they are laid at
+    // their own instants.** An encoder spends its bit rate a picture at a
+    // time, a second's worth over as many pictures as it was told come in a
+    // second -- the master's average, nine a second for a screen recording
+    // that holds what is on its screen. A broadcast reel written at its own
+    // thirty into such a master came out at 3.98 Mbit/s against the
+    // master's 1.01. Not for MPEG-1 or MPEG-2, which write the rate into
+    // every sequence header the reel's stretch would carry.
+    let at_own_rate = (own_instants
+        && !matches!(into.video.codec.as_str(), "mpeg1video" | "mpeg2video"))
+    .then(|| crate::VideoInfo {
+        frame_rate: src.video.frame_rate,
+        ..into.video.clone()
+    });
     let mut encoder = Pictures::open_into(
-        into.video,
+        at_own_rate.as_ref().unwrap_or(into.video),
         into.bit_rate,
         into.params,
         opts,
@@ -234,15 +250,63 @@ fn pictures_afresh(
         seg.end
     };
 
+    // **A master whose pictures vary has no frame to count off.** Its
+    // `frame_rate` is the average, and a screen recording that sends thirty
+    // a second while something moves and holds a picture for seconds while
+    // nothing does averages nine: a broadcast reel conformed into it was
+    // written at nine a second, 207 of its 682 pictures, and a second screen
+    // recording joined onto it lost the pictures of every stretch where its
+    // screen moved. The timeline there is divided finely (see `Grid`), so
+    // each picture is written once at its own instant instead, as
+    // [`reencode_segment`] places them, and lasts until the next one. Not
+    // through a transition, whose progress is counted in the master's
+    // frames on both sides of it. Which masters: see [`own_instants`],
+    // asked above where the encoder is opened.
+    // Where the picture held is next written (where it arrived, until it
+    // has been), and the first place on the timeline a picture may still
+    // take.
+    let mut held_at = f64::NAN;
+    let mut next_free = 0i64;
+
     // Write the held picture at every output instant up to `before`.
     macro_rules! lay {
         ($before:expr) => {{
             let before = $before;
             if let (Some(a), Some(frame)) = (anchor, held.as_mut()) {
-                while a + made as f64 * step < before - slack {
-                    let display = ctx.display_base + made * per_frame;
-                    placed.insert(fed, (display, per_frame));
-                    span.fields = span.fields.max(display - ctx.display_base + per_frame);
+                loop {
+                    // Written as `<` and not as `>=` against a NaN, which
+                    // stops the laying as it always did.
+                    let due = |at: f64| at < before - slack;
+                    let (offset, length) = if own_instants {
+                        let at = held_at.max(a);
+                        if !due(at) {
+                            break;
+                        }
+                        // Written again after a second of standing: an MP4
+                        // states each step in 32 bits of a timescale that is
+                        // held only to the master's own length (see
+                        // `Grid::held_within`), and a reel can hold a
+                        // picture for longer than that.
+                        let end = before.min(at + LONGEST_HELD);
+                        held_at = end;
+                        let from = ((at - a) / field).round() as i64;
+                        let to = ((end - a) / field).round() as i64;
+                        if from < next_free {
+                            // Closer to the picture before than the
+                            // timeline can tell apart.
+                            continue;
+                        }
+                        next_free = from + 1;
+                        (from, (to - from).max(1))
+                    } else {
+                        if !due(a + made as f64 * step) {
+                            break;
+                        }
+                        (made * per_frame, per_frame)
+                    };
+                    let display = ctx.display_base + offset;
+                    placed.insert(fed, (display, length));
+                    span.fields = span.fields.max(display - ctx.display_base + length);
                     span.pictures += 1;
                     // How far through the transition this frame is, if
                     // this stretch is one.
@@ -320,7 +384,7 @@ fn pictures_afresh(
                             writer.push(Emitted {
                                 packet,
                                 display,
-                                fields: per_frame,
+                                fields: length,
                             })?;
                         }
                     }
@@ -352,6 +416,7 @@ fn pictures_afresh(
                     anchor = Some(t.max(seg.start));
                 }
                 held = Some(shaped);
+                held_at = t;
             }
         };
     }
@@ -473,6 +538,21 @@ fn pictures_afresh(
         );
     }
     Ok(span)
+}
+
+/// The longest a picture laid at its own instant stands before it is written
+/// again; see [`pictures_afresh`].
+const LONGEST_HELD: f64 = 1.0;
+
+/// Whether a reel written afresh into this master keeps its pictures at
+/// their own instants rather than being counted off at the master's frame;
+/// see [`pictures_afresh`]. A master whose pictures vary and whose declared
+/// rate is above its average -- held pictures, or a 2:3 pulldown stated as
+/// its fields -- which is where `Grid` gives up the declared rate too and
+/// divides the average finely. A variable master whose average is its rate
+/// (a phone's, dropping a picture now and then) is counted off as before.
+pub(crate) fn own_instants(master: &crate::VideoInfo) -> bool {
+    master.off_the_average()
 }
 
 /// How far after an output instant a picture may arrive and still be the one

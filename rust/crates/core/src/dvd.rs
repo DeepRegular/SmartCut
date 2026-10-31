@@ -742,13 +742,16 @@ fn title_set_of(base: &str) -> Option<(&str, usize)> {
     let upper = base.to_ascii_uppercase().replace('\\', "/");
     let (at, file) = match upper.rfind("/VIDEO_TS/") {
         Some(at) => (at, at + "/VIDEO_TS/".len()),
-        None => {
-            let at = upper.rfind('/')?;
-            (at, at + 1)
-        }
+        None => match upper.rfind('/') {
+            Some(at) => (at, at + 1),
+            // Named from inside the disc's folder (`VTS_01_1.VOB@...` typed
+            // in `VIDEO_TS`): the disc is the folder it is named in. Without
+            // it the title read as having no subtitles at all.
+            None => (0, 0),
+        },
     };
     let number = upper[file..].strip_prefix("VTS_")?.get(..2)?.parse().ok()?;
-    Some((&base[..at], number))
+    Some((if file == 0 { "." } else { &base[..at] }, number))
 }
 
 /// The palette of the chain that plays the sectors this title starts at.
@@ -1355,6 +1358,9 @@ mod tests {
             Some(("/rec/My disc", 1))
         );
         assert_eq!(title_set_of("/rec/programme.vob"), None);
+        // Named from inside the disc's folder.
+        assert_eq!(title_set_of("VTS_04_1.VOB"), Some((".", 4)));
+        assert_eq!(title_set_of("programme.vob"), None);
     }
 
     #[test]

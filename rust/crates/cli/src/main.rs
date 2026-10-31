@@ -1454,6 +1454,13 @@ fn run() -> Result<()> {
         if let Some(out) = output.as_ref().filter(|_| audio_es) {
             taken.push(std::path::Path::new(out).with_extension("aac"));
         }
+        // And the name a transport stream's tables are put back under before
+        // it is renamed over the cut (`si::graft`), which is taken away and
+        // made afresh: a log there was unlinked mid-run, with every earlier
+        // run's lines in it, and the run ended well.
+        if let Some(out) = &output {
+            taken.push(format!("{out}.si").into());
+        }
         // And what `--preview` and `--proxy` write when `-o` does not say:
         // `--preview 60 --log preview.jpg` wrote the picture over the log.
         if output.is_none() {
@@ -1499,11 +1506,42 @@ fn run() -> Result<()> {
                 // path the disc's own list gives, and how `--join` takes
                 // one): read through the files of its title set, and the
                 // rest of its `VIDEO_TS` is the disc's as well.
+                let here = std::path::Path::new(".");
                 if let Ok(i) = smartcut_core::input::Input::parse(&at.to_string_lossy()) {
                     if let Some(dir) = i.parts.first().and_then(|p| p.parent()) {
-                        let here = std::path::Path::new(".");
                         return vec![if dir.as_os_str().is_empty() { here } else { dir }.to_path_buf()];
                     }
+                }
+                // And one piece of a title set opened by itself
+                // (`VIDEO_TS/VTS_01_1.VOB`), which is a plain file to the
+                // reader: its folder is still the disc's, and `--log
+                // VIDEO_TS/VTS_01_2.VOB` added the run's lines onto the end of
+                // the next piece of the title.
+                let vob = at.file_name().is_some_and(|n| {
+                    let n = n.to_string_lossy().to_ascii_uppercase();
+                    n == "VIDEO_TS.VOB"
+                        || (n.len() == 12
+                            && n.starts_with("VTS_")
+                            && n.ends_with(".VOB")
+                            && n.as_bytes()[6] == b'_')
+                });
+                // Where it is linked from as well: through a link of the
+                // user's own, the folder that holds the title set is the
+                // one the link points into, and `--log VIDEO_TS/VTS_01_2.VOB`
+                // beside the real piece was still added onto.
+                let real = std::fs::canonicalize(&at).ok();
+                let named = [Some(at.as_path()), real.as_deref()];
+                let folders: Vec<std::path::PathBuf> = named
+                    .into_iter()
+                    .flatten()
+                    .filter(|_| vob && at.is_file())
+                    .filter_map(|p| p.parent())
+                    .map(|dir| if dir.as_os_str().is_empty() { here } else { dir })
+                    .filter(|dir| ["VIDEO_TS.IFO", "video_ts.ifo"].iter().any(|n| dir.join(n).is_file()))
+                    .map(std::path::Path::to_path_buf)
+                    .collect();
+                if !folders.is_empty() {
+                    return folders;
                 }
                 Vec::new()
             })
@@ -1584,7 +1622,13 @@ fn run() -> Result<()> {
             bail!(
                 "--log {at} is inside the disc {}, which this run reads or writes: name a file \
                  outside it",
-                disc.display()
+                // The folder by its name where it was only "the one this was
+                // typed in" (`STREAM/00001.m2ts` from inside `BDAV`).
+                std::fs::canonicalize(disc)
+                    .ok()
+                    .filter(|_| disc.as_os_str() == ".")
+                    .unwrap_or_else(|| disc.clone())
+                    .display()
             );
         }
         smartcut_core::log::write_only(&format!(
@@ -1812,11 +1856,13 @@ fn run() -> Result<()> {
         v.width,
         v.height,
         v.frame_rate,
-        // The rate is the container's, and where the pictures do not keep to
-        // it that is worth saying beside it rather than leaving the reader
-        // to wonder why the frame counts below do not add up. See
+        // Where the pictures do not keep to the rate that is worth saying
+        // beside it rather than leaving the reader to wonder why the frame
+        // counts below do not add up. Not called the declared rate: on an
+        // MP4 it is the average, and a screen recording declared at 60 read
+        // "26.809fps (declared; ...)". See
         // [`smartcut_core::VideoInfo::variable_rate`].
-        if v.variable_rate { " (declared; the pictures vary)" } else { "" },
+        if v.variable_rate { " (the pictures vary)" } else { "" },
         v.has_b_frames,
         src.duration,
         src.start_time

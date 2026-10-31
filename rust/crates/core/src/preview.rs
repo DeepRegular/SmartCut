@@ -74,7 +74,17 @@ pub fn shots_at(src: &Source, times: &[f64], width: u32) -> Result<Vec<Option<Sh
     // six seconds a run covers and decoding the thirteen pictures wanted out
     // of it, which is what the strip costs while a proxy is being built and
     // there is nothing faster to read from.
-    let keys = times.iter().all(|&t| on_point(&src.points, t, fd / 2.0));
+    //
+    // On an entry point to within half the closest two pictures can come,
+    // not half the average: on a screen recording averaging 9 a second that
+    // was 55 ms, so a cell standing on the picture 33 ms after an entry
+    // point -- a single cell is a run at the strip's wider settings -- was
+    // given the entry picture, which is another one. See
+    // [`crate::VideoInfo::least_gap`]; it is a frame on every recording whose
+    // pictures come at a rate.
+    let keys = times
+        .iter()
+        .all(|&t| on_point(&src.points, t, src.video.least_gap() / 2.0));
 
     // One pool for the whole request, not one per run. The strip's wider
     // settings ask for a run per cell -- the cells are further apart than a
@@ -185,10 +195,11 @@ impl<'a, P: Clone> Slots<'a, P> {
         Ok(())
     }
 
-    /// The run's answer, once nothing more is coming.
+    /// The run's answer, once nothing more is coming. `close` is the closest
+    /// two different pictures can come ([`crate::VideoInfo::least_gap`]).
     fn finish(
         mut self,
-        fd: f64,
+        close: f64,
         image: impl Fn(P) -> Result<Vec<u8>>,
     ) -> Result<Vec<Option<Shot>>> {
         // Two slots can round to the same picture -- the strip's spacing need
@@ -196,7 +207,7 @@ impl<'a, P: Clone> Slots<'a, P> {
         // never is. The later slot gives it up rather than repeating it.
         for i in (1..self.got.len()).rev() {
             let dup = match (&self.got[i], &self.got[i - 1]) {
-                (Some(a), Some(b)) => (a.0 - b.0).abs() < fd / 2.0,
+                (Some(a), Some(b)) => (a.0 - b.0).abs() < close / 2.0,
                 _ => false,
             };
             if dup {
@@ -262,7 +273,7 @@ fn collect_run(
             break;
         }
     }
-    got.finish(fd, |frame| encode_jpeg(&frame, sar, width))
+    got.finish(src.video.least_gap(), |frame| encode_jpeg(&frame, sar, width))
 }
 
 /// As [`collect_run`], for a run whose every slot stands on an entry point.
@@ -351,7 +362,7 @@ fn entry_run(
         }
     }
     // Already encoded, on the worker that decoded it.
-    got.finish(fd, Ok)
+    got.finish(src.video.least_gap(), Ok)
 }
 
 /// The entry pictures of a stretch of the recording, as packets, decoding
@@ -477,9 +488,46 @@ pub fn play_from(
     let fd = src.video.frame_duration();
     let entry = entry_before(&src.points, from);
     let mut stopped = false;
+    // One picture handed over, paced by the caller; false where it said stop.
+    let mut put = |t: f64, frame: &ff::frame::Video| match pace(t) {
+        Pace::Stop => false,
+        Pace::Skip => true,
+        Pace::Show => {
+            if let Ok(jpeg) = encode_jpeg(frame, src.video.sample_aspect_ratio, width) {
+                show(t, jpeg);
+            }
+            true
+        }
+    };
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut began_late = true;
+        // **A picture that begins before `from` is played only where it is
+        // the nearer of the two either side of it**, as `picture_in` picks
+        // the one the editor stands on. Up to half a frame early was the
+        // whole rule, and a frame is the average's: on a screen recording
+        // averaging 9 a second whose pictures come 33 ms apart wherever the
+        // screen moves, half of it is 55 ms, so playing from a picture
+        // began on the one before it -- a picture of what was cut, at
+        // every range's head. Where pictures come a frame apart this is
+        // the same rule as before.
+        let mut early: Option<(f64, ff::frame::Video)> = None;
         let first = walk(src, entry, margin, false, true, Cores::All, false, None, |t, frame| {
+            if t < from - fd / 2.0 {
+                return true;
+            }
+            if t < from - 1e-6 {
+                early = Some((t, frame.clone()));
+                return true;
+            }
+            if let Some((e, held)) = early.take() {
+                if from - e <= t - from {
+                    began_late = false;
+                    if !put(e, &held) {
+                        stopped = true;
+                        return false;
+                    }
+                }
+            }
             if t >= until - 1e-6 {
                 // The end of the stretch, which stops the playing -- unless
                 // nothing of it has been played: a seek that landed past the
@@ -488,24 +536,20 @@ pub fn play_from(
                 stopped = !began_late;
                 return false;
             }
-            if t < from - fd / 2.0 {
-                return true;
-            }
             began_late = false;
-            match pace(t) {
-                Pace::Stop => {
-                    stopped = true;
-                    false
-                }
-                Pace::Skip => true,
-                Pace::Show => {
-                    if let Ok(jpeg) = encode_jpeg(frame, src.video.sample_aspect_ratio, width) {
-                        show(t, jpeg);
-                    }
-                    true
-                }
+            if !put(t, frame) {
+                stopped = true;
+                return false;
             }
+            true
         })?;
+        // The file ended with nothing after it: it is the nearer.
+        if let Some((e, held)) = early.take() {
+            if !stopped {
+                began_late = false;
+                stopped = !put(e, &held);
+            }
+        }
         // Landing past the wanted picture means nothing was played; back off
         // and start again earlier, as the scrubbing paths do.
         if !landed_late(first, from, fd / 2.0) || !began_late || attempt == 1 || stopped {
@@ -2016,9 +2060,13 @@ pub(crate) fn pictures_in(
         if head.is_some_and(|end| t >= end - eps) {
             return true;
         }
+        // On the closest two pictures can come, not the average, as the
+        // re-encode in `cut` asks it (see `VideoInfo::least_gap`): a frame on
+        // every recording whose pictures come at a rate.
+        let least = src.video.least_gap();
         let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
-        let own_end = was + f64::from(shown_for) * fd / 2.0;
-        t - from >= fd && own_end < t - fd / 4.0
+        let own_end = was + f64::from(shown_for) * least / 2.0;
+        t - from >= least && own_end < t - least / 4.0
     };
     // **The stretch `to` lies in, and not the one after it.** On a
     // recorder's clip the next stretch can open on pictures stamped before

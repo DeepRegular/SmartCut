@@ -653,12 +653,25 @@ pub fn plan_range(
     let t_in = t_in.max(points.first().map_or(0.0, |p| p.time));
 
     let fd = video.frame_duration();
-    let eps = fd / 2.0;
+    // How close two pictures can come, which on a recording whose pictures
+    // do not come at a rate is not the average; see [`VideoInfo::least_gap`]. Half of
+    // it is the rounding every bound below is allowed: half a frame of a
+    // screen recording's average is a whole picture of it, and an entry
+    // point that far past OUT, or before IN, put that picture in the cut.
+    let gap = video.least_gap();
+    let eps = gap / 2.0;
     let min_copy = opts.min_copy.unwrap_or_else(|| (2.0 * fd).max(0.5));
 
     let finish = |mut segments: Vec<Segment>| -> RangePlan {
         for s in &mut segments {
             s.frames = frames_in(video, points, fps, s.start, s.end, duration);
+            // Counted again at the closest the pictures come, where the
+            // average found none: a re-encode of the one or two pictures
+            // before an entry point, a third of the average apart on a screen
+            // recording, is not the empty window `retain` below is for.
+            if s.frames == 0 && gap < fd {
+                s.frames = frames_in(video, points, 1.0 / gap, s.start, s.end, duration);
+            }
         }
         // A re-encode window with no picture in it is not a small piece of
         // work, it is an error: the cutter decodes the window, finds nothing
@@ -739,7 +752,7 @@ pub fn plan_range(
     // Where there is none, the range simply begins at the entry point
     // instead, and the audio is anchored there with it: that is what
     // `effective_in` below reports back.
-    if body_start - t_in >= fd - 1e-9 {
+    if body_start - t_in >= gap - 1e-9 {
         segments.push(Segment {
             kind: SegmentKind::Reencode,
             start: t_in,
@@ -1323,6 +1336,7 @@ mod tests {
             shape: Default::default(),
             pulldown: false,
             variable_rate: false,
+            closest: 0.0,
             base_rate: 0.0,
             field_order: 2,
             bit_rate: None,
@@ -1520,6 +1534,122 @@ mod tests {
         video.field_order = 1;
         let kept = on_the_pictures(&video, 300.0, &points, &[(1.0, bound)]);
         assert_eq!(kept[0].1, bound);
+    }
+
+    /// Which variable recordings come finer than their average, and what
+    /// the closest two of their pictures then are.
+    #[test]
+    fn off_the_average_and_least_gap() {
+        let at = |frame_rate: f64, base_rate: f64, field_order: i32, variable_rate: bool| {
+            let mut v = video();
+            v.codec = "h264".into();
+            v.frame_rate = frame_rate;
+            v.base_rate = base_rate;
+            v.field_order = field_order;
+            v.variable_rate = variable_rate;
+            v
+        };
+        // A screen recording: declares 30, averages 12.8.
+        let screen = at(12.8, 30.0, 1, true);
+        assert!(screen.off_the_average());
+        assert!((screen.least_gap() - 1.0 / 30.0).abs() < 1e-12);
+        // A 2:3 pulldown stated as its fields, progressive or not.
+        assert!(at(22.76, 59.94, 1, true).off_the_average());
+        assert!(at(23.976, 59.94, 2, true).off_the_average());
+        // A recorder's PAFF title: interlaced, declares its fields.
+        let paff = at(29.97, 59.94, 2, true);
+        assert!(!paff.off_the_average());
+        assert_eq!(paff.least_gap(), paff.frame_duration());
+        // A progressive 60 averaging just under half of it is not fields.
+        assert!(at(29.75, 60.0, 1, true).off_the_average());
+        // A phone dropping a picture now and then; a constant rate; no base.
+        assert!(!at(29.9, 30.0, 1, true).off_the_average());
+        assert!(!at(12.8, 30.0, 1, false).off_the_average());
+        assert!(!at(29.97, 0.0, 1, true).off_the_average());
+        // The Matroska clock turned over: off the average, but no gap of it.
+        let mkv = at(29.6, 1000.0, 1, true);
+        assert!(mkv.off_the_average());
+        assert_eq!(mkv.least_gap(), mkv.frame_duration());
+
+        // Measured: an Android screen capture on a 90 kHz clock, ...
+        let mut android = at(18.0, 90000.0, 1, true);
+        android.closest = 0.011;
+        assert!(android.off_the_average());
+        assert_eq!(android.least_gap(), 0.011);
+        // ... a screen recording remuxed into Matroska, declaring its average,
+        let mut remux = at(8.6, 8.6, 1, true);
+        remux.closest = 0.033;
+        assert!(remux.off_the_average());
+        assert_eq!(remux.least_gap(), 0.033);
+        // ... an iPhone's wander: a finer gap, the same grid.
+        let mut iphone = at(30.06, 30.0, 1, true);
+        iphone.closest = 0.0295;
+        assert!(!iphone.off_the_average());
+        assert_eq!(iphone.least_gap(), 0.0295);
+        // ... a clock that rounds a tick is the average's as it was,
+        let mut wander = at(29.97, 29.97, 1, true);
+        wander.closest = 0.0333;
+        assert_eq!(wander.least_gap(), wander.frame_duration());
+        // ... a muxer's nudged timestamp is not a picture,
+        wander.closest = 0.0001;
+        assert_eq!(wander.least_gap(), 1.0 / 480.0);
+        // ... a 2:3 pulldown declared as its fields, no closer than two of
+        // them where that was measured (a field where it was not),
+        let mut film = at(23.976, 59.94, 1, true);
+        assert!((film.least_gap() - 1.0 / 59.94).abs() < 1e-12);
+        film.closest = 2.0 / 59.94;
+        assert!((film.least_gap() - 2.0 / 59.94).abs() < 1e-12);
+        // ... a screen recording measured at its declared rate keeps it,
+        let mut moved = at(12.8, 30.0, 1, true);
+        moved.closest = 0.0333;
+        assert_eq!(moved.least_gap(), 0.0333);
+        // ... and a recording at a rate is asked nothing.
+        let mut steady = at(29.97, 29.97, 1, false);
+        steady.closest = 0.011;
+        assert!(!steady.off_the_average());
+        assert_eq!(steady.least_gap(), steady.frame_duration());
+    }
+
+    /// A screen recording declares 30 and averages 12.8: a range opened on
+    /// the two pictures before an entry point, and ended on the one just
+    /// after the last, keeps them -- a head and a tail are planned, where a
+    /// frame of the average had no room for either. The entry points are the
+    /// ones of the recording this was measured on.
+    #[test]
+    fn a_screen_recording_keeps_the_pictures_beside_an_entry_point() {
+        let mut video = video();
+        video.codec = "h264".into();
+        video.field_order = 1;
+        video.time_base = 1.0 / 15360.0;
+        video.frame_rate = 12.8;
+        video.base_rate = 30.0;
+        video.variable_rate = true;
+        let points: Vec<AccessPoint> = [0.0, 1.6, 9.0, 11.733333, 12.8, 17.066667, 18.666667]
+            .iter()
+            .map(|&time| AccessPoint {
+                time,
+                lead_start: time,
+                lead_indices: Vec::new(),
+                droppable: true,
+                pos: -1,
+                measured: true,
+            })
+            .collect();
+        let plan = plan_range(&video, 20.0, &points, 17.0, 18.7, &PlanOptions::default());
+        let kinds: Vec<_> = plan.segments.iter().map(|s| (s.kind, s.start, s.end)).collect();
+        assert_eq!(plan.segments.len(), 3, "{kinds:?}");
+        assert_eq!(plan.segments[0].kind, SegmentKind::Reencode);
+        assert!(plan.segments.iter().all(|s| s.frames > 0), "{:?}", plan.segments);
+        assert_eq!((plan.t_in, plan.t_out), (17.0, 18.7));
+        // An entry point a picture past OUT is not OUT.
+        let plan = plan_range(&video, 20.0, &points, 1.0, 11.7, &PlanOptions::default());
+        assert_eq!(plan.t_out, 11.7, "{:?}", plan.segments);
+        // At a rate, a window thinner than a frame of it is still none.
+        video.variable_rate = false;
+        video.frame_rate = 30.0;
+        let plan = plan_range(&video, 20.0, &points, 17.05, 18.68, &PlanOptions::default());
+        assert_eq!(plan.segments.len(), 1, "{:?}", plan.segments);
+        assert_eq!(plan.segments[0].kind, SegmentKind::Copy);
     }
 
     /// A clock fine enough to tell a bound from a picture leaves every bound

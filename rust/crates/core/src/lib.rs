@@ -194,6 +194,17 @@ pub struct VideoInfo {
     ///
     /// [pulldown]: VideoInfo::pulldown
     pub variable_rate: bool,
+    /// The shortest time between two pictures shown one after the other, in
+    /// seconds, where something read every picture's time: the walk, or an
+    /// MP4's or QuickTime file's own table of them. 0 where nothing did.
+    ///
+    /// Asked only of a variable recording, by [`VideoInfo::least_gap`]: what
+    /// the container declares beside its average is not always the rate the
+    /// pictures come at. An Android screen capture counting at 90 kHz
+    /// declares 90000; a screen recording remuxed into Matroska declares its
+    /// average; and both send pictures three to five times as close as that
+    /// average while something moves.
+    pub closest: f64,
     /// AVFieldOrder from the source. Broadcast material is interlaced, and an
     /// encoder told nothing about that quietly produces progressive pictures
     /// -- which comb against the copied ones at every splice.
@@ -310,6 +321,119 @@ impl VideoInfo {
         } else {
             1.0 / 30.0
         }
+    }
+
+    /// The pictures come finer than the average this recording's grid is built on.
+    ///
+    /// A recording whose pictures vary and whose declared rate is above its
+    /// average: held pictures (a screen recording), or a 2:3 pulldown stated
+    /// as its fields. A variable recording whose average is its rate (a
+    /// phone's, dropping a picture now and then) is not; nor one whose
+    /// declared rate is unknown (`base_rate` 0).
+    ///
+    /// **Nor an interlaced one declaring its fields.** A recorder's 1080i
+    /// BD-RE title is PAFF, which the walk calls variable, and states 59.94
+    /// beside an average of 29.97: its pictures come at the average, and the
+    /// declared rate is its fields. Taken as pictures finer than that, a 24p
+    /// clip joined to it was written afresh at its own 23.976 instants inside
+    /// the 29.97i master instead of on the master's frames (120 pictures
+    /// fewer over 20 s), and a plain cut of it was planned to half a frame.
+    /// The same margin as `variable_rate`'s twice; a 2:3 pulldown stated as
+    /// its fields is two and a half times its average, well past it.
+    ///
+    /// **And where the pictures were measured, they say so themselves**, as
+    /// a declared rate cannot always: see [`VideoInfo::closest`]. Two in
+    /// three frames of the average or closer, which a recording that holds
+    /// its pictures is many times over (a remuxed screen recording's are a
+    /// third of one) and an iPhone's that only wanders is not (its closest
+    /// two are nine tenths of one apart): such a master's reels are laid on
+    /// its frames, as they were. An Android phone's or a Pixel's often is:
+    /// their capture clock puts a pair of pictures a third to two thirds of
+    /// a frame apart now and then (38 of the 53 variable phone recordings
+    /// measured here), and a reel joined to one is laid at its own instants
+    /// -- a 25p clip at 25 a second, not repeated onto the phone's 30.
+    pub fn off_the_average(&self) -> bool {
+        let fields = self.interlaced()
+            && self.base_rate >= self.frame_rate * 1.98
+            && self.base_rate <= self.frame_rate * 2.02;
+        let declared = self.variable_rate
+            && self.base_rate.is_finite()
+            && self.base_rate > self.frame_rate * 1.01
+            && !fields;
+        declared || self.measured_finer(2.0 / 3.0).is_some()
+    }
+
+    /// The closest two pictures were measured to come, where that is under
+    /// `share` of a frame of the average on a variable recording.
+    ///
+    /// Never at a share near one: a hair inside a frame is not a recording
+    /// whose pictures come finer than its average but one whose clock rounds
+    /// -- a broadcast's 29.97 counted in 90 kHz ticks, a walked recording
+    /// whose times wander a tick -- and the average stands for it as it
+    /// always did. Held to a 480th of a second, below which a gap is a
+    /// timestamp nudged by a muxer, not a picture (an Android recording's
+    /// table has one tick between two pictures where its decode times were
+    /// shifted).
+    fn measured_finer(&self, share: f64) -> Option<f64> {
+        /// Never closer than this.
+        const SHORTEST: f64 = 1.0 / 480.0;
+        let fd = self.frame_duration();
+        (self.variable_rate
+            && self.closest.is_finite()
+            && self.closest > 0.0
+            && self.closest < fd * share)
+            .then(|| self.closest.max(SHORTEST))
+    }
+
+    /// The shortest time a picture of this recording can be up for.
+    ///
+    /// A frame of the declared rate where [`off_the_average`] holds -- the
+    /// rate the pictures come at while they come -- and that is a rate at all
+    /// (not the thousand a Matroska clock that turned over states, see
+    /// `base_rate`); a frame of the average otherwise.
+    ///
+    /// **There the average is no measure of it.** A screen recording sends
+    /// thirty pictures a second while something moves and holds one for as long
+    /// as nothing does, and one made here declares 30 and averages 12.8: a frame
+    /// of the average is 78 ms, two and a half of the pictures that come while
+    /// the screen moves. `plan_range` asked a head for a whole frame of that
+    /// before an entry point and a tail for half of one after the last, so a
+    /// range opened on either of the two pictures before an entry point, or
+    /// ended on the one just after it, lost them -- the cut opened on the entry
+    /// point, or stopped there -- and it took an entry point within half a frame
+    /// of the average past OUT for OUT itself, which put the picture before that
+    /// entry point in the cut as well. The declared rate is the one the pictures come
+    /// at while they come, so a frame of it is the closest two of them are.
+    ///
+    ///
+    /// **Nor is the declared rate always one.** An Android screen capture
+    /// counting in 90 kHz ticks declares 90000, and a screen recording
+    /// remuxed into Matroska declares its average: there the closest two
+    /// pictures were measured come in where a declared rate would (see
+    /// [`VideoInfo::closest`]), and the closer of the two is taken where
+    /// both are known.
+    ///
+    /// [`off_the_average`]: VideoInfo::off_the_average
+    pub fn least_gap(&self) -> f64 {
+        let fd = self.frame_duration();
+        let mut gap = fd;
+        if self.off_the_average() && self.base_rate.is_finite() && self.base_rate > 0.0 && self.base_rate < 1000.0 {
+            // But never closer than they were seen to come, where they were
+            // measured: a 2:3 pulldown declared as its fields has no picture
+            // shorter than two of them. Taken at one field, a ✂ whose OUT was
+            // a picture of three resumed a field and a half into it, and as
+            // nothing came within a field of that, the picture the cut had
+            // taken out was put back at the seam for the rest of its time.
+            let declared = 1.0 / self.base_rate;
+            let seen = self.measured_finer(f64::INFINITY).unwrap_or(0.0);
+            gap = gap.min(declared.max(seen));
+        }
+        // Nine tenths: an iPhone's two closest, 29.5 ms apart against its
+        // average's 33.3, are closer than a frame of the average allows.
+        if let Some(measured) = self.measured_finer(0.9) {
+            gap = gap.min(measured);
+        }
+        gap
     }
 }
 
@@ -1381,6 +1505,11 @@ fn assemble(
 
     video.pulldown = idx.pulldown.unwrap_or(false);
     video.variable_rate |= idx.variable.unwrap_or(false);
+    // The closer of the two, where both measured: the table is the
+    // container's, the walk the pictures' own times.
+    if let Some(walked) = idx.closest.filter(|g| g.is_finite() && *g > 0.0) {
+        video.closest = if video.closest > 0.0 { video.closest.min(walked) } else { walked };
+    }
     video.bit_rate = idx.bit_rate;
 
     // A container that says it is shorter than the pictures it holds is a
@@ -2154,6 +2283,13 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         }
     }
 
+    // Read once, for both: whether two pictures of the table come too close
+    // for the average's timeline, and how close they come.
+    let (crowded, table_closest) = if kept_table && has_b_frames == 0 {
+        crowded_in_table(&stream, frame_rate, base_rate)
+    } else {
+        (false, None)
+    };
     let video = VideoInfo {
         stream_index,
         codec: codec.clone(),
@@ -2210,9 +2346,17 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         // which asks the pictures themselves, a disc's clip does not hold
         // pictures for seconds, and there a stream with 2:3 pulldown can
         // declare its fields beside an average of its film frames.
-        variable_rate: base_rate > 0.0
+        //
+        // **And where the table holds every picture, it can be asked
+        // outright.** A phone's recording declares 60 and averages 57, so
+        // neither rule above calls it variable, and here and there two of
+        // its pictures are closer than a field of the average: see
+        // [`crowded_in_table`].
+        variable_rate: (base_rate > 0.0
             && (frame_rate > base_rate * 1.0001
-                || (kept_table && !turned_over && base_rate > frame_rate * 2.02)),
+                || (kept_table && !turned_over && base_rate > frame_rate * 2.02)))
+            || crowded,
+        closest: table_closest.unwrap_or(0.0),
         bit_rate: None,       // and this, when it read the pictures to find out
         // Read once, here, rather than hunted for in every packet: a
         // transport stream restates these in front of each entry point, so
@@ -2394,6 +2538,108 @@ pub(crate) fn container_start(ictx: &input::Demux) -> f64 {
         .filter(|at| at.is_finite() && (at - rounded).abs() <= 0.5e-6 + 1e-9)
         .min_by(f64::total_cmp)
         .unwrap_or(rounded)
+}
+
+/// Whether a container's own table of its pictures puts any two of them
+/// closer together than half a frame of `frame_rate`, the average.
+///
+/// **That is the one gap the constant-rate timeline cannot hold.** It is
+/// divided into fields of the average, and each picture goes to the field
+/// nearest its own time; two pictures less than a field apart can round to
+/// the same one, and the second is then left out. A phone records at the
+/// rate the light allows and stamps each picture when it came, so one that
+/// declares 60 and averages 57 has here and there two pictures 8.3 ms
+/// apart against fields of 8.8: measured on an Android recording with two
+/// such gaps in fifteen minutes, `--keep 449.22-456` copied 391 of its 392
+/// pictures and verify failed it. Neither of the other two answers sees
+/// that recording: its declared rate is above the average by 5% rather
+/// than twice, and a table is not walked. The walk asks the same question
+/// of the pictures it reads (see [`index::varies`]).
+///
+/// One gap is enough, where the walk wants four. A gap that short is not a
+/// fault a constant-rate recording has -- the walk measured none in 47,971
+/// broadcast and disc pictures -- and what a false answer costs is a finer
+/// division of the same timeline, which places every picture where it was;
+/// a true one missed costs the picture.
+///
+/// Read off the table libavformat already holds, which for an MP4 or a
+/// QuickTime file is every sample, in decode order. So only where nothing is
+/// reordered: with B pictures the decode times are spaced however the muxer
+/// liked, and say nothing about when the pictures are shown. A container
+/// whose table holds only its key pictures -- Matroska's cues, an FLV's --
+/// has no gap that short to find, and answers no.
+///
+/// **Nor is a phone that holds its pictures, declaring the rate they come
+/// at.** An Android phone declares 60 and records at it while the light
+/// allows, holding a picture for a thirtieth now and then where it does
+/// not, so it averages 56.5: no two of its pictures are closer than a
+/// field of that, and its declared rate is not twice its average. Taken at
+/// the average's rate, a frame of it is 17.7 ms where its pictures are
+/// 16.7 apart, so a bound a frame past OUT took the picture after OUT as
+/// well -- キープ kept one picture more than was selected, ✂ took one more
+/// out. So the table is asked that too: its pictures come at the declared
+/// rate (the closest two no further apart than a frame of it, give or take
+/// a muxer's rounding), one of them is up for more than one and a half of
+/// that rate's frames, and on the whole they come further apart than it by
+/// more than a thousandth -- the share of a frame a bound is rounded to,
+/// so that past it, the average's frame reaches the next picture. A
+/// constant-rate recording is none of these: its gaps are the declared
+/// rate's, and so is their mean; a dashcam whose clock runs a little slow
+/// of the rate it declares comes further apart on the whole, but never
+/// holds a picture; and the last sample's length, the one a muxer guesses,
+/// is not a gap between two pictures and is not counted. Measured on 2,746
+/// MP4 recordings here (broadcast remuxes, dashcams, cameras, edits,
+/// phones), this calls 24 more variable, every one a phone's with pictures
+/// held for two to six frames.
+///
+/// Answers how close the two closest came as well, where it counted enough
+/// gaps to answer at all: see [`VideoInfo::closest`].
+fn crowded_in_table(stream: &ff::format::stream::Stream, frame_rate: f64, base_rate: f64) -> (bool, Option<f64>) {
+    /// As many gaps as the walk wants before it asks at all.
+    const ENOUGH: usize = 32;
+    let tick = f64::from(stream.time_base());
+    if !(frame_rate.is_finite() && frame_rate > 0.0 && tick.is_finite() && tick > 0.0) {
+        return (false, None);
+    }
+    let half = 0.5 / frame_rate;
+    let (mut counted, mut crowded, mut last) = (0usize, false, None::<i64>);
+    let mut closest = f64::INFINITY;
+    let (mut spanned, mut longest) = (0.0, 0.0_f64);
+    unsafe {
+        let st = stream.as_ptr() as *mut ff::ffi::AVStream;
+        let n = ff::ffi::avformat_index_get_entries_count(st);
+        for i in 0..n {
+            let e = ff::ffi::avformat_index_get_entry(st, i);
+            // A picture an edit list hides is not shown, so not placed.
+            if e.is_null() || (*e).flags() & ff::ffi::AVINDEX_DISCARD_FRAME != 0 {
+                continue;
+            }
+            let at = (*e).timestamp;
+            if let Some(before) = last {
+                let gap = at.saturating_sub(before) as f64 * tick;
+                if gap > 0.0 {
+                    counted += 1;
+                    crowded |= gap < half;
+                    closest = closest.min(gap);
+                    spanned += gap;
+                    longest = longest.max(gap);
+                }
+            }
+            last = Some(at);
+        }
+    }
+    let enough = counted >= ENOUGH;
+    // Held: at the declared rate where they come, one of them up for more
+    // than one and a half of its frames, and further apart than it on the
+    // whole by more than the thousandth of a frame the cut rounds a bound
+    // to. See above.
+    let held = base_rate.is_finite()
+        && base_rate > 0.0
+        && base_rate < 1000.0
+        && closest < 1.03 / base_rate
+        && longest > 1.5 / base_rate
+        && spanned / counted.max(1) as f64 > 1.001 / base_rate;
+    ((crowded || held) && enough, (enough && closest.is_finite()).then_some(closest))
 }
 
 /// How fast the first pictures of a recording come, for one that states no

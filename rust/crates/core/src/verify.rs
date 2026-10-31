@@ -856,9 +856,21 @@ pub fn check_placed(
         } else {
             drop(rx);
         }
+        // How long the last picture is up: a frame of the average, unless
+        // the track says it holds it well past that -- a variable-rate cut
+        // ending on a still, whose last picture is written up to where the
+        // range ends (see `Writer::ends` in `cut.rs`), which with sound
+        // beside it was said to be laid seconds past the pictures. Taken
+        // only past half a frame more, so that a constant-rate output reads
+        // as it always has.
+        let a_frame = 1.0 / frame_rate(&ictx, video, fps);
+        let last_length = match (last_pts, track_end(&ictx, video)) {
+            (Some(l), Some(end)) if end - l as f64 * v_tb > a_frame * 1.5 => end - l as f64 * v_tb,
+            _ => a_frame,
+        };
         report.seconds = if report.pictures {
             match (first_pts, last_pts) {
-                (Some(f), Some(l)) => (l - f) as f64 * v_tb + 1.0 / frame_rate(&ictx, video, fps),
+                (Some(f), Some(l)) => (l - f) as f64 * v_tb + last_length,
                 _ => 0.0,
             }
         } else {
@@ -868,7 +880,7 @@ pub fn check_placed(
         // Where the last picture stops being shown, on the clock the sound's
         // ends are taken on above.
         let pictures_end = last_pts.filter(|_| report.pictures).map(|l| {
-            l as f64 * v_tb - origin + 1.0 / frame_rate(&ictx, video, fps)
+            l as f64 * v_tb - origin + last_length
         });
         // Each track's place among the master's, for [`Sound::short`]:
         // counted over the tracks that had packets of their own, since the
@@ -1279,15 +1291,21 @@ fn listen(
 ) -> Option<()> {
     let mut packets = ictx.read_packets();
     for (stream, packet) in packets.by_ref() {
-        let Some(t) = crate::input::packet_time(&stream, &packet, start) else { continue };
         let Some(k) = tracks.iter().position(|&i| i == stream.index()) else {
             // The pictures say when the stretch is over: sound is laid
-            // into a stream up to a second either side of them.
-            if t > y + 1.5 {
+            // into a stream up to a second either side of them. By where
+            // the file stands (decode time), not when a picture is shown:
+            // a recording with B pictures stores the one shown after a long
+            // still right after the still, among the still's own sound
+            // ([`crate::audio::read_reached`]), and asked of its
+            // presentation time the read stopped there and a cut's own
+            // recording was said to have seconds less sound than it has.
+            if crate::audio::read_reached(&stream, &packet, start).is_some_and(|t| t > y + 1.5) {
                 break;
             }
             continue;
         };
+        let Some(t) = crate::input::packet_time(&stream, &packet, start) else { continue };
         if t >= x && t < y {
             let end = t + packet.duration().max(0) as f64 * f64::from(stream.time_base());
             got[k] = Some(got[k].map_or((t, end), |(f, l)| (f.min(t), l.max(end))));
@@ -1473,7 +1491,10 @@ fn sound_span(src: &Source, head: bool, tail: bool, near: f64) -> Option<(f64, f
             let mut ictx = head_of(src, index)?;
             for (stream, packet) in ictx.read_packets() {
                 if stream.index() != index {
-                    if time(&packet, f64::from(stream.time_base())).is_some_and(|t| t > near) {
+                    // Where the file stands, as in [`listen`].
+                    if crate::audio::read_reached(&stream, &packet, src.start_time)
+                        .is_some_and(|t| t > near)
+                    {
                         break;
                     }
                     continue;
@@ -1515,6 +1536,35 @@ fn sound_span(src: &Source, head: bool, tail: bool, near: f64) -> Option<(f64, f
         to = last.iter().flatten().fold(f64::INFINITY, |m, &t| m.min(t));
     }
     Some((from, to))
+}
+
+/// Where the output's picture track ends, on its own clock, where the
+/// container states it: an MP4's track length (the last sample's duration
+/// is the last picture's), and the `DURATION` libavformat's Matroska muxer
+/// writes for each track. Not a transport stream's, which is libavformat's
+/// own estimate.
+fn track_end(ictx: &crate::input::Demux, video: Option<usize>) -> Option<f64> {
+    let format = ictx.format();
+    let name = format.name();
+    let s = ictx.stream(video?)?;
+    let tb = f64::from(s.time_base());
+    if name.contains("mp4") || name.contains("mov") {
+        let (start, d) = (s.start_time(), s.duration());
+        if d <= 0 || d == ff::ffi::AV_NOPTS_VALUE {
+            return None;
+        }
+        let start = if start == ff::ffi::AV_NOPTS_VALUE { 0 } else { start };
+        return Some((start + d) as f64 * tb);
+    }
+    if name.contains("matroska") {
+        let tag = s.metadata().get("DURATION")?.to_string();
+        let mut secs = 0.0;
+        for part in tag.split(':') {
+            secs = secs * 60.0 + part.trim().parse::<f64>().ok()?;
+        }
+        return secs.is_finite().then_some(secs);
+    }
+    None
 }
 
 /// The output's frame rate, for the length of its last picture.

@@ -137,7 +137,14 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// to have lost it, and the file kept the zero of the cluster after
 /// ([`crate::sound::open_lost`]). An index written before holds every time
 /// on that zero, more than a second off.
-pub const VERSION: u32 = 17;
+///
+/// 18: the shortest gap between two pictures the walk read
+/// ([`crate::VideoInfo::closest`]) is kept, after the bit rate. A screen
+/// recording remuxed into Matroska states its average as its rate, and only
+/// the walk sees that its pictures come three times as close: an index
+/// written before has no such figure, and a cut opened from it would be
+/// planned on the average where a fresh open plans on the pictures.
+pub const VERSION: u32 = 18;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 
@@ -186,6 +193,9 @@ pub struct SeekIndex {
     /// is worth more than the alternative, which is every held index on the
     /// machine being thrown away and read again for one number.
     pub bit_rate: Option<f64>,
+    /// The shortest gap between two pictures, when the pass that made this
+    /// measured one. See [`crate::VideoInfo::closest`].
+    pub closest: Option<f64>,
     /// The thumbnail track and scene index, when one was built.
     ///
     /// Optional because the index is worth keeping on its own: a file whose
@@ -217,6 +227,7 @@ impl index::IndexSource for SeekIndex {
             leading_known: self.leading_known,
             pulldown: self.pulldown,
             variable: self.variable,
+            closest: self.closest,
             bit_rate: self.bit_rate,
             end: self.end,
             whole: true,
@@ -233,6 +244,7 @@ impl SeekIndex {
             pulldown: Some(src.video.pulldown),
             variable: Some(src.video.variable_rate),
             bit_rate: src.video.bit_rate,
+            closest: (src.video.closest > 0.0).then_some(src.video.closest),
             // The duration a `Source` carries is the pass's own answer where
             // the container had none worth having, so it is the answer to
             // keep.
@@ -313,6 +325,8 @@ impl SeekIndex {
         // reads a whole file and a reader which knows about it reads a whole
         // file too. Zero says the pass never counted.
         w.f64(self.bit_rate.unwrap_or(0.0));
+        // And after it the closest two pictures came; zero, not measured.
+        w.f64(self.closest.unwrap_or(0.0));
 
         // Through a temporary and renamed into place. This runs to tens of
         // megabytes and the process can be closed while it is writing; a
@@ -463,6 +477,7 @@ impl SeekIndex {
             // put it there. Zero is how "not measured" is written, a rate of
             // nothing being no rate at all.
             bit_rate: r.f64().ok().filter(|r| r.is_finite() && *r > 0.0),
+            closest: r.f64().ok().filter(|g| g.is_finite() && *g > 0.0),
             whole: true,
         })
     }
@@ -858,6 +873,7 @@ mod tests {
             pulldown: None,
             variable: None,
             bit_rate: None,
+            closest: None,
             track: None,
             whole: true,
         };

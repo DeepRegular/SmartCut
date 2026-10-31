@@ -27,6 +27,10 @@ pub struct Index {
     /// Whether the pictures come at a rate the frame arithmetic can
     /// predict, when the source could tell. See [`varies`].
     pub variable: Option<bool>,
+    /// The shortest time between two pictures shown one after the other, in
+    /// seconds, when the source read every picture. See
+    /// [`crate::VideoInfo::closest`].
+    pub closest: Option<f64>,
     /// Bits per second the pictures take, when the source read them --
     /// all of them, in the walk's case, or enough of them to divide one
     /// into the other, in the disc index's. See [`crate::VideoInfo::bit_rate`],
@@ -216,6 +220,9 @@ pub fn walk(
     // sequence allows fields at all (`field_shape`), which is a handful.
     let mut shown: Vec<f64> = Vec::new();
     let mut half_open = false;
+    // Whether any picture came as a field, which takes `shown` out of
+    // [`closest`]'s hands; see there.
+    let mut in_fields = false;
     // The sequence the slices are read by, as the stream restates it in
     // front of its entry points. **Not only the one it opened on:** a cut of
     // a recorder's PAFF recording opens on the encoder's MBAFF pictures, with
@@ -268,6 +275,7 @@ pub fn walk(
                 .is_some_and(|d| bitstream::is_field_picture(d, &codec, framing, shape.as_ref()));
             let second = field && half_open;
             half_open = field && !second;
+            in_fields |= field;
             second
         };
         // Every packet, a second field with no time of its own as well: the
@@ -340,10 +348,31 @@ pub fn walk(
         leading_known: true,
         pulldown: Some(pulldown),
         variable: Some(varies(&shown, video.frame_duration())),
+        // **Not where the pictures came as fields.** A field-coded
+        // recording's pictures are read off the pairs above, and one field
+        // lost to damage (a recorder's 1080i with a dropout) leaves its
+        // partner without one: the pairs after it are counted from their
+        // second fields, half a frame on, and that one gap of half a frame
+        // was the closest two pictures came. It took a PAFF title off its
+        // average, which `VideoInfo::off_the_average` keeps it on: a 24p
+        // reel joined to it was laid at its own instants (709 packets
+        // against 828) and its cuts planned to a quarter of a frame.
+        closest: if in_fields { None } else { closest(&shown) },
         bit_rate,
         end,
         whole,
     })
+}
+
+/// The shortest gap between two of `shown`, which is in the order the
+/// pictures are shown. Two pictures at one time are one gap of nothing, not
+/// a gap. `None` where there is no gap at all.
+pub(crate) fn closest(shown: &[f64]) -> Option<f64> {
+    shown
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|g| g.is_finite() && *g > 0.0)
+        .reduce(f64::min)
 }
 
 /// How few gaps have to be the wrong size before a stream counts as one
@@ -525,6 +554,7 @@ impl IndexSource for DiscIndex {
             leading_known: false,
             pulldown: None,
             variable: None,
+            closest: None,
             bit_rate,
             end,
             whole: true,
@@ -645,6 +675,7 @@ impl IndexSource for ContainerIndex {
             leading_known: false,
             pulldown: None,
             variable: None,
+            closest: None,
             bit_rate: None,
             end: None,
             whole: true,

@@ -1492,6 +1492,33 @@ pub fn pcm_bits(params: &ff::codec::Parameters) -> u8 {
     }
 }
 
+/// How far into the recording the reading has got, said by a packet of
+/// another stream than the track being read (the pictures): its decode time
+/// where it has one, its presentation time where not. Seconds from
+/// `start_time`.
+///
+/// The reads of a track that stop once the pictures are well past where
+/// they are going ask this, and a picture's presentation time is not where
+/// the file stands. A recording with B pictures stores the picture shown
+/// after a still before the pictures that are shown before it: a screen
+/// recording holding one picture for twelve seconds stores the next one,
+/// shown twelve seconds on, just after the still -- and among the sound of
+/// the still's first second. Asked of its presentation time, every read
+/// that crossed it stopped there: a sound-only file of `--keep 1-5` of such
+/// a recording held 1.1 s of sound. The decode time is the file's own
+/// order, and runs ahead of the sound by no more than the pictures held
+/// back for reordering.
+pub(crate) fn read_reached(
+    stream: &ff::format::stream::Stream,
+    packet: &ff::Packet,
+    start_time: f64,
+) -> Option<f64> {
+    packet
+        .dts()
+        .or(packet.pts())
+        .map(|p| p as f64 * f64::from(stream.time_base()) - start_time)
+}
+
 /// Whether a codec writes the samples down rather than describing them.
 ///
 /// What this decides is whether a bit rate means anything: LPCM's size is
@@ -1675,7 +1702,7 @@ fn frame_shape(
     let mut frame = ff::frame::Audio::empty();
     for (stream, packet) in ictx.read_packets().take(4096) {
         if stream.index() != stream_index {
-            if crate::input::packet_time(&stream, &packet, start_time).is_some_and(|t| t > from + 10.0)
+            if read_reached(&stream, &packet, start_time).is_some_and(|t| t > from + 10.0)
             {
                 return None;
             }
@@ -2055,7 +2082,7 @@ fn decode_on(
                 // got to. Well past the edge with nothing of this track is a
                 // track that is not there -- the programme before this one's
                 // second sound, say -- and is the end of what there is.
-                let gone = crate::input::packet_time(&stream, &packet, src.start_time)
+                let gone = read_reached(&stream, &packet, src.start_time)
                     .is_some_and(|t| t > at + GIVE_UP + reach as f64 / rate);
                 if !gone {
                     continue;

@@ -99,7 +99,7 @@ pub fn framing(
     let mut began: Option<f64> = None;
     for (stream, packet) in ictx.read_packets().take(8192) {
         if stream.index() != audio_index {
-            if let Some(t) = crate::input::packet_time(&stream, &packet, 0.0) {
+            if let Some(t) = crate::audio::read_reached(&stream, &packet, 0.0) {
                 let first = *began.get_or_insert(t);
                 if t > first + 30.0 {
                     return None;

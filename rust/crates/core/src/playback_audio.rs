@@ -1219,7 +1219,7 @@ fn feed_from(
                 // Well past the range with nothing of this track in it.
                 // Leeway, because a transport stream carries its pictures a
                 // little ahead of the sound that goes with them.
-                if crate::input::packet_time(&stream, &packet, src.start_time)
+                if crate::audio::read_reached(&stream, &packet, src.start_time)
                     .is_some_and(|t| t >= b + PAST)
                 {
                     break;
@@ -1390,7 +1390,7 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
 
     'packets: for (stream, packet) in ictx.read_packets() {
         if stream.index() != idx {
-            if crate::input::packet_time(&stream, &packet, src.start_time)
+            if crate::audio::read_reached(&stream, &packet, src.start_time)
                 .is_some_and(|t| t >= end + PAST)
             {
                 break;

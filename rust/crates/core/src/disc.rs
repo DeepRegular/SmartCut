@@ -555,8 +555,18 @@ pub fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
         .chars()
         .map(|c| if c == '\\' { '/' } else { c.to_ascii_uppercase() })
         .collect();
-    let at = plain.rfind("/STREAM/")?;
-    let (root, rest) = (&path[..at], &path[at + "/STREAM/".len()..]);
+    // A clip named from inside the disc's own directory, `STREAM/00001.m2ts`
+    // typed in `BDAV`, has nothing in front of its `STREAM`: the disc is the
+    // folder it was typed in. Taken for a broadcast, a recorder's clip of
+    // five clocks was read unjoined -- 3238 s where the disc plays 2785 --
+    // and walked, with no languages, listing or entry points.
+    // `at` is where the directory in front of `STREAM` ends, `rest` the name
+    // behind it.
+    let (at, root, rest) = match plain.rfind("/STREAM/") {
+        Some(at) => (at, &path[..at], &path[at + "/STREAM/".len()..]),
+        None if plain.starts_with("STREAM/") => (0, ".", &path["STREAM/".len()..]),
+        None => return None,
+    };
     let clip = rest.get(..rest.len().checked_sub(".m2ts".len())?)?;
     let named = rest[clip.len()..].eq_ignore_ascii_case(".m2ts");
     if !named || clip.is_empty() || clip.contains(['/', '\\']) {
@@ -3924,6 +3934,11 @@ mod tests {
         assert_eq!(clip_on_a_disc("/no/such/place/STREAM/00001.m2ts"), None);
         assert_eq!(clip_on_a_disc("http://h/x/STREAM/00001.m2ts"), None);
         assert_eq!(clip_on_a_disc("/no/such/place/STREAM/clip.m2ts"), None);
+        // Named from inside the disc's directory there is nothing in front of
+        // `STREAM`, and the disc is the folder it is named in -- which here,
+        // the crate's own, holds no playlists.
+        assert_eq!(clip_on_a_disc("STREAM/00001.m2ts"), None);
+        assert_eq!(clip_on_a_disc("XSTREAM/00001.m2ts"), None);
     }
 
     /// A disc copied under a name of its own, and a folder holding a disc of
