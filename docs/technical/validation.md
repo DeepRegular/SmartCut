@@ -4,6 +4,10 @@
 
 ## Validation results
 
+The [container contract regressions](container-contracts.md) additionally check
+source-clock timing, display aspect, AV1 configuration and M2TS arrival clocks.
+They generate their own fixtures and run through `tests/ci.sh`.
+
 `tests/run_tests.sh` decodes the output, matches it against the source's frame
 hashes, and checks the frame count, the alignment, and how many frames are
 bit-exact.

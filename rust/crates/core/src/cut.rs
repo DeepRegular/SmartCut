@@ -635,17 +635,33 @@ struct Span {
 /// `seg.end` is the answer, held to the last picture's place and no
 /// further. A recording of fields of a declared rate (2:3 pulldown in an
 /// MP4) is on that grid too, and is answered the same way.
-fn held_to_the_end(span: Span, anchor: Option<f64>, seg: &Segment, src: &Source, field: f64) -> Span {
+fn held_to_the_end(span: Span, anchor: Option<f64>, seg: &Segment, src: &Source, field: f64,
+                   next_picture: Option<f64>) -> Span {
     let Some(a) = anchor else { return span };
-    let until = if src.duration > 0.0 {
+    let mut until = if src.duration > 0.0 {
         seg.end.min(src.duration)
     } else {
         seg.end
     };
+    // The planner moves coarse-clock CFR bounds slightly before a picture
+    // to settle selection. That slack must not shorten its display coverage.
+    // Use the next measured picture, or the real file end, rather than the
+    // selection bound. VFR ranges may intentionally end inside a hold.
+    if !src.on_a_ts && !src.video.interlaced() && !src.video.variable_rate {
+        let tick = src.video.time_base;
+        let frame = src.video.frame_duration();
+        if let Some(next) = next_picture.filter(|t| *t >= until && *t - until < frame) {
+            until = next;
+        } else if src.duration > until && src.duration - until <= 3.5 * tick {
+            until = src.duration;
+        }
+    }
     // Held to [`FAR`] for the reason the copy's own placing is.
     let held = ((until - a).min(FAR) / field).round() as i64;
     let own = Grid::of(src);
-    if coded_length_unbounded(&src.video) && own.unit() == field {
+    if (coded_length_unbounded(&src.video) || (!src.on_a_ts && !src.video.interlaced()))
+        && own.unit() == field
+    {
         // The last picture starts at most a frame of this grid before the
         // end its coded length gives (a field before, for the second field
         // of a pair), and it is up for at least a unit.
@@ -753,6 +769,7 @@ struct SegmentCtx<'a> {
 /// Everything the writer needs that is shared across segments.
 struct Writer {
     octx: ff::format::context::Output,
+    av1_config: Option<crate::av1_config::Guard>,
     /// Whether a track's `pid` is really a PID, for the messages that name
     /// one. See [`crate::Source::on_a_ts`].
     on_a_ts: bool,
@@ -1324,7 +1341,10 @@ impl Writer {
     /// each picture's own length: under pulldown the lengths differ, and a
     /// decode-order sum overtakes the presentation time it is supposed to
     /// precede. The muxer rejects that outright -- `pts < dts`.
-    fn push(&mut self, e: Emitted) -> Result<()> {
+    fn push(&mut self, mut e: Emitted) -> Result<()> {
+        if let Some(config) = self.av1_config.as_mut() {
+            config.packet(&mut e.packet)?;
+        }
         self.opening = false;
         if let Some(held) = self.held.as_mut() {
             if !held.sealed {
@@ -3438,12 +3458,23 @@ fn take_graphics(
 }
 
 fn open_input(path: &str) -> Result<(crate::input::Demux, usize)> {
-    let ictx = crate::input::demux(&path)?;
+    let mut ictx = crate::input::demux(&path)?;
     let index = ictx
         .streams()
         .best(ff::media::Type::Video)
         .ok_or_else(|| anyhow!("no video stream"))?
         .index();
+    // Propagate the container's display aspect to both copied parameters
+    // and the boundary encoder. AV1 has no bitstream SAR to fall back on.
+    unsafe {
+        let stream = *(*ictx.as_mut_ptr()).streams.add(index);
+        let sar = ff::ffi::av_guess_sample_aspect_ratio(
+            ictx.as_mut_ptr(), stream, std::ptr::null_mut(),
+        );
+        if sar.num > 0 && sar.den > 0 {
+            (*(*stream).codecpar).sample_aspect_ratio = sar;
+        }
+    }
     Ok((ictx, index))
 }
 
@@ -4664,7 +4695,7 @@ fn copy_segment(
         }
         bail!("could not find the entry point at {:.3}s", seg.start);
     }
-    Ok(held_to_the_end(span, anchor, seg, src, field))
+    Ok(held_to_the_end(span, anchor, seg, src, field, None))
 }
 
 /// How the pictures of a re-encoded segment are produced.
@@ -5438,7 +5469,43 @@ struct Grid {
 impl Grid {
     fn of(src: &Source) -> Grid {
         let v = &src.video;
-        Grid::from_rates(v.frame_rate, v.base_rate, v.variable_rate).held_within(src.duration)
+        let grid = Grid::from_rates(v.frame_rate, v.base_rate, v.variable_rate).held_within(src.duration);
+        if !src.on_a_ts && !v.interlaced() {
+            grid.on_clock(v.time_base, src.duration)
+        } else {
+            grid
+        }
+    }
+
+    /// Keep the container's timestamp ticks representable, including on a
+    /// nominally constant recording. A rounded average is not its clock.
+    fn on_clock(self, seconds_per_tick: f64, duration: f64) -> Grid {
+        if !(seconds_per_tick.is_finite() && seconds_per_tick > 0.0) {
+            return self;
+        }
+        let clock = ff::Rational::from(seconds_per_tick).reduce();
+        let (n, d) = (i64::from(clock.numerator()), i64::from(clock.denominator()));
+        if n <= 0 || d <= 0 { return self; }
+        let Some(needed) = d.checked_mul(self.den) else { return self };
+        let Some(available) = n.checked_mul(2 * self.num) else { return self };
+        let step = needed / unsafe { ff::ffi::av_gcd(needed, available) };
+        // Any multiple of `step` represents both the field and source clock.
+        // Keep at least the existing precision, without taking the LCM with
+        // FINE: that can needlessly multiply the clock and exhaust the bound
+        // on a long recording whose GOP-sized timestamps fit comfortably.
+        let Some(groups) = self.sub.checked_add(step - 1).map(|s| s / step) else { return self };
+        let Some(sub) = groups.checked_mul(step) else { return self };
+        if self.num.checked_mul(sub).and_then(|v| v.checked_mul(2)).is_none() {
+            return self;
+        }
+        let aligned = Grid { sub, ..self };
+        let scale = aligned.timescale();
+        if scale > i64::from(i32::MAX)
+            || (duration.is_finite() && duration > 0.0 && scale as f64 * duration > f64::from(i32::MAX))
+        {
+            return self;
+        }
+        aligned
     }
 
     /// The grid, with ticks coarse enough that the longest gap the recording
@@ -5543,7 +5610,12 @@ impl Grid {
 
     /// Ticks per second in the output's own time base.
     fn timescale(self) -> i64 {
-        2 * self.num * self.sub
+        let raw = 2 * self.num * self.sub;
+        raw / unsafe { ff::ffi::av_gcd(raw, self.den) }
+    }
+
+    fn ticks_per_unit(self) -> i64 {
+        self.den / unsafe { ff::ffi::av_gcd(2 * self.num * self.sub, self.den) }
     }
 
     fn time_base(self) -> ff::Rational {
@@ -5552,7 +5624,7 @@ impl Grid {
 
     /// How long one unit lasts, in seconds.
     fn unit(self) -> f64 {
-        self.den as f64 / self.timescale() as f64
+        self.ticks_per_unit() as f64 / self.timescale() as f64
     }
 
     /// What a picture shown for `fields` fields occupies.
@@ -6014,6 +6086,7 @@ fn reencode_segment(
     // the gap to the previous picture is a frame by construction and the
     // range is answered by the picture it already had.
     let mut still_on_screen: Option<ff::frame::Video> = None;
+    let mut next_picture: Option<f64> = None;
     let least = src.video.least_gap();
 
     macro_rules! place {
@@ -6081,6 +6154,7 @@ fn reencode_segment(
                 let Some(pts) = frame.pts() else { continue };
                 let t = pts as f64 * in_tb - src.start_time;
                 if t >= seg.end - tol {
+                    next_picture = Some(next_picture.map_or(t, |old| old.min(t)));
                     past_end = true;
                     continue;
                 }
@@ -6303,7 +6377,7 @@ fn reencode_segment(
             seg.start, seg.end, span.pictures,
         );
     }
-    Ok(held_to_the_end(span, anchor, seg, src, field))
+    Ok(held_to_the_end(span, anchor, seg, src, field, next_picture))
 }
 
 /// Where the streams go on the way out.
@@ -9148,7 +9222,41 @@ pub fn join_with_progress(
     // that file is gone. By then the output context has been dropped on the
     // way out, which is what lets Windows remove it.
     let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        cut_into(reels, master.min(reels.len().saturating_sub(1)), output, opts, progress)
+        let master = master.min(reels.len().saturating_sub(1));
+        let progress: Option<SharedReport> =
+            progress.map(std::sync::Arc::from);
+        let run = |reels: &[Reel]| {
+            let report = progress.clone().map(|f| {
+                Box::new(move |p, job, pass| f(p, job, pass)) as Report
+            });
+            cut_into(reels, master, output, opts, report)
+        };
+        let first = run(reels);
+        if !first.as_ref().err().is_some_and(|e| e.is::<crate::av1_config::Changed>()) {
+            return first;
+        }
+        // FFmpeg 7.1's MOV muxer writes one sample description, and
+        // Matroska/WebM requires one AV1 sequence for the whole track.
+        // Retry the selection with a consistent encoder configuration;
+        // never claim the incompatible smart-rendered file was valid.
+        crate::say!(
+            "note: this container cannot describe the AV1 configuration change at a seam. \
+             The entire selected video is re-encoded to keep one valid configuration."
+        );
+        crate::say!("        copied 0.000s (0.0%), re-encoded the entire selected video (AV1 configuration fallback)");
+        let full: Vec<Vec<RangePlan>> = reels.iter().map(|r| {
+            r.plans.iter().map(|p| {
+                let mut full = crate::plan::reencode_range(&r.src.points, p.t_in, p.t_out);
+                if let Some(s) = full.segments.first_mut() {
+                    s.frames = p.segments.iter().map(|s| s.frames).sum();
+                }
+                full
+            }).collect()
+        }).collect();
+        let fallback: Vec<Reel> = reels.iter().zip(&full).map(|(r, plans)| Reel {
+            src: r.src, plans, after: r.after.clone(),
+        }).collect();
+        run(&fallback).context("writing AV1 with one configuration after full-video fallback")
     }));
     if !matches!(done, Ok(Ok(()))) && ours {
         let _ = std::fs::remove_file(output);
@@ -9199,6 +9307,7 @@ const WRITING_SHARE: f64 = 0.7;
 /// How a cut says where it has got to: which pass it is in, how far through
 /// the whole job that is, and how far through the pass itself.
 pub type Report = Box<dyn Fn(Pass, f64, f64) + Send + Sync>;
+type SharedReport = std::sync::Arc<dyn Fn(Pass, f64, f64) + Send + Sync>;
 
 /// As [`cut`], reporting how far along it is.
 ///
@@ -9407,14 +9516,12 @@ fn cut_into(
         }
     };
     let grid = Grid::of(src);
-    let den = grid.den;
+    let den = grid.ticks_per_unit();
 
-    // Output timebase: one tick per 1/(2*num*sub) second, so a *unit* is
-    // exactly `den` ticks, a field is `sub` of them and a normal frame twice
-    // that. 30000/1001 lands on 1/60000 with 1001 ticks per field -- integer
-    // arithmetic throughout, no rounding anywhere on the timeline, and
-    // 3-field pictures are representable. See [`Grid`] for the recording
-    // that needs the units smaller than a field.
+    // Normalize the field grid and container clock together. A unit is
+    // `den` ticks after reduction, a field is `sub` units, and 30000/1001
+    // still lands on exactly 1001/60000 s per field. Container ticks remain
+    // expressible instead of being rounded to a grid derived from an average.
     let mut muxer_opts = ff::Dictionary::new();
     let timescale = grid.timescale().to_string();
     let to_ts = writing_ts(output);
@@ -10051,10 +10158,16 @@ fn cut_into(
     let stated_rate = matches!(octx.format().name(), "matroska" | "webm")
         .then(|| rate_to_state(reels, grid))
         .flatten();
+    let av1_config = if src.video.codec == "av1" && (iso || matches!(octx.format().name(), "matroska" | "webm")) {
+        Some(crate::av1_config::Guard::new(&params, !iso)?)
+    } else { None };
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params.clone());
         ost.set_time_base(grid.time_base());
+        unsafe {
+            (*ost.as_mut_ptr()).sample_aspect_ratio = (*params.as_ptr()).sample_aspect_ratio;
+        }
         if let Some((num, den)) = stated_rate {
             ost.set_avg_frame_rate(ff::Rational::new(num, den));
         }
@@ -10074,6 +10187,12 @@ fn cut_into(
             // writes an empty box: a file that says "wrote" and that nothing
             // can open. The version said as 1, the layout being the same.
             let par = ost.parameters().as_mut_ptr();
+            if av1_config.is_some() {
+                // Let the first actual output sequence describe the track,
+                // including when every selected picture is re-encoded.
+                ff::ffi::av_freep(std::ptr::addr_of_mut!((*par).extradata).cast());
+                (*par).extradata_size = 0;
+            }
             if src.video.codec == "hevc"
                 && !(*par).extradata.is_null()
                 && (*par).extradata_size >= 23
@@ -10851,6 +10970,7 @@ fn cut_into(
     });
 
     let mut writer = Writer {
+        av1_config,
         on_a_ts: src.on_a_ts,
         into_ts: octx.format().name().contains("mpegts"),
         octx,
@@ -11409,7 +11529,7 @@ fn cut_into(
         // [`Writer::ends`] -- on its own grid only, as [`held_to_the_end`].
         writer.keep_last = reel_no + 1 == reels.len()
             && plan_no + 1 == reel_plans[reel_no].len()
-            && last_held_to_the_end(&rsrc.video)
+            && (last_held_to_the_end(&rsrc.video) || (!rsrc.on_a_ts && !rsrc.video.interlaced()))
             && Grid::of(rsrc).unit() == grid.unit();
         for (n, seg) in plan.segments.iter().enumerate() {
             let first_segment = n == 0;
@@ -12021,6 +12141,10 @@ fn cut_into(
         }
     }
 
+    if writing_m2ts(output) {
+        crate::m2ts::restamp(output).context("clocking M2TS packet arrivals")?;
+    }
+
     // Whichever pass was the last one, ending on the end of it. A cut whose
     // tables were not going back in never left the first.
     if let Some(report) = &progress {
@@ -12036,6 +12160,24 @@ fn cut_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_ticks_survive_a_rate_derived_grid() {
+        for (rate, base, variable, tick) in [
+            (6000.0 / 319.0, 25.0, true, 1.0 / 12800.0),
+            (30000.0 / 1001.0, 30000.0 / 1001.0, false, 0.001),
+        ] {
+            let before = Grid::from_rates(rate, base, variable);
+            let grid = before.on_clock(tick, 6000.0);
+            assert!(grid.unit() <= before.unit());
+            for i in 0..10000 {
+                let t = i as f64 * tick;
+                let restored = (t / grid.unit()).round() * grid.unit();
+                assert!((restored - t).abs() < 1e-10);
+            }
+            assert!(grid.timescale() <= i64::from(i32::MAX));
+        }
+    }
 
     /// Every `.sup` of one cut has a name of its own. A transport stream's
     /// are named as they always were, by language or else by PID; a Matroska

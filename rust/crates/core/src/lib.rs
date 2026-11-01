@@ -14,6 +14,7 @@ pub mod aac;
 pub mod adts;
 pub mod arib;
 pub mod audio;
+pub(crate) mod av1_config;
 pub mod bdav;
 pub mod bitstream;
 pub mod blank;
@@ -38,6 +39,7 @@ pub(crate) mod leadrefs;
 pub mod log;
 pub mod logo;
 pub mod mediainfo;
+pub(crate) mod m2ts;
 pub mod netpath;
 pub mod nice;
 pub mod pgs;
@@ -1777,7 +1779,14 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         } else {
             std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
         };
-        let sar = (*p).sample_aspect_ratio;
+        // AV1 can carry SAR only on AVStream (MP4 pasp / Matroska display
+        // dimensions), with no corresponding value in codecpar.
+        let sar = ff::ffi::av_guess_sample_aspect_ratio(
+            ictx.as_ptr() as *mut _,
+            stream.as_ptr() as *mut _,
+            std::ptr::null_mut(),
+        );
+        let sar = if sar.num > 0 && sar.den > 0 { sar } else { (*p).sample_aspect_ratio };
         (
             (*p).width as u32,
             (*p).height as u32,
