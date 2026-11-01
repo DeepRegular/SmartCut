@@ -3438,12 +3438,22 @@ fn take_graphics(
 }
 
 fn open_input(path: &str) -> Result<(crate::input::Demux, usize)> {
-    let ictx = crate::input::demux(&path)?;
+    let mut ictx = crate::input::demux(&path)?;
     let index = ictx
         .streams()
         .best(ff::media::Type::Video)
         .ok_or_else(|| anyhow!("no video stream"))?
         .index();
+    // Carry container-only SAR to copied parameters and boundary encoders.
+    unsafe {
+        let stream = *(*ictx.as_mut_ptr()).streams.add(index);
+        let sar = ff::ffi::av_guess_sample_aspect_ratio(
+            ictx.as_mut_ptr(), stream, std::ptr::null_mut(),
+        );
+        if sar.num > 0 && sar.den > 0 {
+            (*(*stream).codecpar).sample_aspect_ratio = sar;
+        }
+    }
     Ok((ictx, index))
 }
 
@@ -10055,6 +10065,9 @@ fn cut_into(
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params.clone());
         ost.set_time_base(grid.time_base());
+        unsafe {
+            (*ost.as_mut_ptr()).sample_aspect_ratio = (*params.as_ptr()).sample_aspect_ratio;
+        }
         if let Some((num, den)) = stated_rate {
             ost.set_avg_frame_rate(ff::Rational::new(num, den));
         }

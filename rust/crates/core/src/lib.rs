@@ -1777,7 +1777,12 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         } else {
             std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
         };
-        let sar = (*p).sample_aspect_ratio;
+        // Container-only display aspect (notably AV1) can live on AVStream
+        // without a corresponding SAR in codecpar.
+        let sar = ff::ffi::av_guess_sample_aspect_ratio(
+            ictx.as_ptr() as *mut _, stream.as_ptr() as *mut _, std::ptr::null_mut(),
+        );
+        let sar = if sar.num > 0 && sar.den > 0 { sar } else { (*p).sample_aspect_ratio };
         (
             (*p).width as u32,
             (*p).height as u32,
