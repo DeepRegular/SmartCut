@@ -14,6 +14,7 @@ pub mod aac;
 pub mod adts;
 pub mod arib;
 pub mod audio;
+pub(crate) mod av1_mp4;
 pub mod bdav;
 pub mod bitstream;
 pub mod blank;

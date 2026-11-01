@@ -28,7 +28,7 @@ SUITES=(
   audio_codec audio_smart audio_format audio_head bilingual
   index proxy
   disc bdav udf dvd bd_audio
-  vp9_av1 vfr demux transrate join
+  vp9_av1 av1_mp4 vfr demux transrate join
 )
 [ $# -gt 0 ] && SUITES=("$@")
 

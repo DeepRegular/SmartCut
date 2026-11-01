@@ -753,6 +753,7 @@ struct SegmentCtx<'a> {
 /// Everything the writer needs that is shared across segments.
 struct Writer {
     octx: ff::format::context::Output,
+    av1_mp4: Option<crate::av1_mp4::Guard>,
     /// Whether a track's `pid` is really a PID, for the messages that name
     /// one. See [`crate::Source::on_a_ts`].
     on_a_ts: bool,
@@ -1324,7 +1325,10 @@ impl Writer {
     /// each picture's own length: under pulldown the lengths differ, and a
     /// decode-order sum overtakes the presentation time it is supposed to
     /// precede. The muxer rejects that outright -- `pts < dts`.
-    fn push(&mut self, e: Emitted) -> Result<()> {
+    fn push(&mut self, mut e: Emitted) -> Result<()> {
+        if let Some(config) = self.av1_mp4.as_mut() {
+            config.packet(&mut e.packet)?;
+        }
         self.opening = false;
         if let Some(held) = self.held.as_mut() {
             if !held.sealed {
@@ -9148,7 +9152,44 @@ pub fn join_with_progress(
     // that file is gone. By then the output context has been dropped on the
     // way out, which is what lets Windows remove it.
     let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        cut_into(reels, master.min(reels.len().saturating_sub(1)), output, opts, progress)
+        let master = master.min(reels.len().saturating_sub(1));
+        let progress: Option<SharedReport> =
+            progress.map(std::sync::Arc::from);
+        let run = |reels: &[Reel]| {
+            let report = progress.clone().map(|f| {
+                Box::new(move |p, job, pass| f(p, job, pass)) as Report
+            });
+            cut_into(reels, master, output, opts, report)
+        };
+        let first = run(reels);
+        if !first.as_ref().err().is_some_and(|e| e.is::<crate::av1_mp4::Changed>()) {
+            return first;
+        }
+        // Only the MP4 writer can raise Changed. The failed context has
+        // closed before this retry, including on Windows. Matroska/WebM
+        // never enter the guard and retain their existing rendering policy.
+        crate::say!(
+            "note: an AV1 configuration change cannot share MP4's single sample description. \
+             The entire selected video is re-encoded with one configuration."
+        );
+        crate::say!(
+            "note: the copy figures above describe the discarded plan; \
+             this retry copies no video (0%). Audio and subtitle modes are unchanged."
+        );
+        let full: Vec<Vec<RangePlan>> = reels.iter().map(|r| {
+            r.plans.iter().map(|p| {
+                let mut full = crate::plan::reencode_range(&r.src.points, p.t_in, p.t_out);
+                if let Some(s) = full.segments.first_mut() {
+                    s.frames = p.segments.iter().map(|s| s.frames).sum();
+                }
+                full
+            }).collect()
+        }).collect();
+        let fallback: Vec<Reel> = reels.iter().zip(&full).map(|(r, plans)| Reel {
+            src: r.src, plans, after: r.after.clone(),
+        }).collect();
+        // One retry only: another configuration change is an error, not a loop.
+        run(&fallback).context("writing AV1 MP4 with one configuration after full-video fallback")
     }));
     if !matches!(done, Ok(Ok(()))) && ours {
         let _ = std::fs::remove_file(output);
@@ -9199,6 +9240,7 @@ const WRITING_SHARE: f64 = 0.7;
 /// How a cut says where it has got to: which pass it is in, how far through
 /// the whole job that is, and how far through the pass itself.
 pub type Report = Box<dyn Fn(Pass, f64, f64) + Send + Sync>;
+type SharedReport = std::sync::Arc<dyn Fn(Pass, f64, f64) + Send + Sync>;
 
 /// As [`cut`], reporting how far along it is.
 ///
@@ -10051,6 +10093,11 @@ fn cut_into(
     let stated_rate = matches!(octx.format().name(), "matroska" | "webm")
         .then(|| rate_to_state(reels, grid))
         .flatten();
+    // MP4 only. Matroska/WebM keep their current sequence-header policy;
+    // deciding that policy is separate work for the maintainer.
+    let av1_mp4 = if src.video.codec == "av1" && octx.format().name() == "mp4" {
+        Some(crate::av1_mp4::Guard::new(&params)?)
+    } else { None };
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params.clone());
@@ -10074,6 +10121,12 @@ fn cut_into(
             // writes an empty box: a file that says "wrote" and that nothing
             // can open. The version said as 1, the layout being the same.
             let par = ost.parameters().as_mut_ptr();
+            if av1_mp4.is_some() {
+                // Let the first actual output sequence describe MP4's track,
+                // even when the whole selection is written by the encoder.
+                ff::ffi::av_freep(std::ptr::addr_of_mut!((*par).extradata).cast());
+                (*par).extradata_size = 0;
+            }
             if src.video.codec == "hevc"
                 && !(*par).extradata.is_null()
                 && (*par).extradata_size >= 23
@@ -10851,6 +10904,7 @@ fn cut_into(
     });
 
     let mut writer = Writer {
+        av1_mp4,
         on_a_ts: src.on_a_ts,
         into_ts: octx.format().name().contains("mpegts"),
         octx,
