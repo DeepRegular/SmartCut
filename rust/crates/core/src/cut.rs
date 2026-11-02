@@ -1325,9 +1325,9 @@ impl Writer {
     /// each picture's own length: under pulldown the lengths differ, and a
     /// decode-order sum overtakes the presentation time it is supposed to
     /// precede. The muxer rejects that outright -- `pts < dts`.
-    fn push(&mut self, mut e: Emitted) -> Result<()> {
+    fn push(&mut self, kind: SegmentKind, mut e: Emitted) -> Result<()> {
         if let Some(config) = self.av1_mp4.as_mut() {
-            config.packet(&mut e.packet)?;
+            config.packet(&mut e.packet, kind)?;
         }
         self.opening = false;
         if let Some(held) = self.held.as_mut() {
@@ -4633,7 +4633,7 @@ fn copy_segment(
             },
             None => packet,
         };
-        writer.push(Emitted {
+        writer.push(SegmentKind::Copy, Emitted {
             packet,
             display,
             fields,
@@ -5881,7 +5881,7 @@ fn drain_encoder_shown(
             }
             None => packet,
         };
-        writer.push(Emitted {
+        writer.push(SegmentKind::Reencode, Emitted {
             packet,
             display,
             fields,
@@ -6069,7 +6069,7 @@ fn reencode_segment(
                 // goes straight out with the timing worked out above.
                 Pictures::Vc1(enc) => {
                     let packet = encode_vc1(enc, &$f, shown_for)?;
-                    writer.push(Emitted {
+                    writer.push(SegmentKind::Reencode, Emitted {
                         packet,
                         display,
                         fields,
@@ -10096,7 +10096,8 @@ fn cut_into(
     // MP4 only. Matroska/WebM keep their current sequence-header policy;
     // deciding that policy is separate work for the maintainer.
     let av1_mp4 = if src.video.codec == "av1" && octx.format().name() == "mp4" {
-        Some(crate::av1_mp4::Guard::new(&params)?)
+        let has_copy = all_plans().flat_map(|p| &p.segments).any(|s| s.kind == SegmentKind::Copy);
+        Some(crate::av1_mp4::Guard::new(&params, has_copy)?)
     } else { None };
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;

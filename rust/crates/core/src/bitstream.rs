@@ -870,6 +870,10 @@ impl Bits {
         Self { data: data.to_vec(), pos: 0 }
     }
 
+    pub(crate) fn position(&self) -> usize {
+        self.pos
+    }
+
     pub(crate) fn new(nal: &[u8]) -> Self {
         let mut data = Vec::with_capacity(nal.len());
         let mut i = 0;

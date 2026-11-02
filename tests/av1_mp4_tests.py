@@ -167,8 +167,21 @@ def main():
         if not mkv.exists():
             run([args.ffmpeg, '-v', 'error', '-y', '-i', fixtures/'rav1e.mp4', '-map', '0:v:0', '-c', 'copy', mkv])
         sources.append(('rav1e-mkv', mkv))
+        finite = fixtures/'svt-level40.mp4'
+        if not finite.exists():
+            run([args.ffmpeg, '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=192x112:rate=25',
+                 '-frames:v', '240', '-an', '-c:v', 'libsvtav1', '-preset', '12', '-crf', '28',
+                 '-g', '24', '-pix_fmt', 'yuv420p', '-svtav1-params', 'level=40:lp=2', finite])
+        chroma = fixtures/'chroma.mp4'
+        if not chroma.exists():
+            run([args.ffmpeg, '-v', 'error', '-y', '-i', fixtures/'aom8.mp4', '-map', '0:v:0',
+                 '-c', 'copy', '-bsf:v', 'av1_metadata=chroma_sample_position=colocated', chroma])
+        assert config(finite)[:3] == bytes.fromhex('81080c'), 'expected Level 4.0 fixture'
+        assert config(chroma)[:3] == bytes.fromhex('81000e'), 'expected colocated chroma fixture'
+        sources.extend([('finite4', finite), ('chroma', chroma)])
         cuts = [('partial', [(13, 227)]), ('multi', [(13, 81), (100, 227)]),
-                ('aligned', [(24, 216)]), ('one', [(23, 24)]), ('full', [(0, 240)])]
+                ('aligned', [(24, 216)]), ('one', [(23, 24)]), ('full', [(0, 240)]),
+                ('copy-first', [(0, 227)])]
         for name, source in sources:
             src = probe(source)
             source_pixels = pixels(source)
@@ -179,6 +192,10 @@ def main():
             assert len(source_pixels) == len(packets) == 240
             report['fixtures'].append({'name': name, 'path': str(source), 'sha256': sha(source)})
             for label, ranges in cuts:
+                if name in ('finite4', 'chroma') and label != 'partial':
+                    continue
+                if label == 'copy-first' and name != 'rav1e':
+                    continue
                 if source.suffix == '.mkv' and label not in ('partial', 'multi', 'full'):
                     continue
                 out = work/(name+'-'+label+source.suffix)
@@ -229,6 +246,8 @@ def main():
                         assert observed[oi]['data_hash'] == packets[si]['data_hash'], 'copy payload changed'
                         assert made_pixels[oi] == source_pixels[si], 'copy pixels changed'
                     row['copied_interior_frames_checked'] = len(copied)
+                    row['identical_source_packets'] = sum(p['data_hash'] == packets[si]['data_hash']
+                                                          for p, si in zip(observed, indices))
                     if label == 'full':
                         assert [p['data_hash'] for p in observed] == [p['data_hash'] for p in packets], 'pure copy changed packets'
                         assert made_pixels == source_pixels
@@ -236,6 +255,18 @@ def main():
                         assert copied, 'test did not exercise a copied middle'
                     if out.suffix == '.mp4':
                         check_config(out, row)
+                        if name in ('finite4', 'rav1e') and label in ('partial', 'multi', 'copy-first'):
+                            assert not row['full_video_fallback'], 'level-only seam discarded the copied middle'
+                            assert config(source)[:3] == config(out)[:3], 'level must match the copied source'
+                            # These CFR fixtures have exact millisecond cut points. Include the
+                            # very first copied key packet, where the source Sequence Header lives.
+                            for oi, si in enumerate(indices):
+                                if any(a <= float(times[si]-times[0]) < b for a, b in intervals):
+                                    assert observed[oi]['data_hash'] == packets[si]['data_hash'], 'copied header changed'
+                                    assert made_pixels[oi] == source_pixels[si], 'copied picture changed'
+                        if name == 'chroma':
+                            assert row['full_video_fallback'], 'incompatible chroma must retry'
+                            assert log.count(b'The entire selected video is re-encoded') == 1
                     row['frames'] = len(observed)
                     row['passed'] = True
                     print('ok', row['name'], flush=True)
@@ -248,7 +279,7 @@ def main():
         report['total'] = len(report['cases'])
         save()
         print(f'{report["passed"]}/{report["total"]} passed; evidence: {work}', flush=True)
-    return 0 if report['total'] == 18 and report['passed'] == 18 else 1
+    return 0 if report['total'] == 21 and report['passed'] == 21 else 1
 
 
 if __name__ == '__main__':
