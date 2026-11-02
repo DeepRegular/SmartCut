@@ -3438,22 +3438,12 @@ fn take_graphics(
 }
 
 fn open_input(path: &str) -> Result<(crate::input::Demux, usize)> {
-    let mut ictx = crate::input::demux(&path)?;
+    let ictx = crate::input::demux(&path)?;
     let index = ictx
         .streams()
         .best(ff::media::Type::Video)
         .ok_or_else(|| anyhow!("no video stream"))?
         .index();
-    // Carry container-only SAR to copied parameters and boundary encoders.
-    unsafe {
-        let stream = *(*ictx.as_mut_ptr()).streams.add(index);
-        let sar = ff::ffi::av_guess_sample_aspect_ratio(
-            ictx.as_mut_ptr(), stream, std::ptr::null_mut(),
-        );
-        if sar.num > 0 && sar.den > 0 {
-            (*(*stream).codecpar).sample_aspect_ratio = sar;
-        }
-    }
     Ok((ictx, index))
 }
 
@@ -9407,7 +9397,19 @@ fn cut_into(
         .collect();
 
     let (ictx, ist_index) = open_input(&src.input.url)?;
-    let params = ictx.stream(ist_index).unwrap().parameters();
+    let ist = ictx.stream(ist_index).unwrap();
+    let params = ist.parameters();
+    // A container may override the display aspect without rewriting the
+    // pictures (for example, mkvmerge --aspect-ratio). Keep that display SAR
+    // on the output stream, but leave codecpar alone: boundary encoders must
+    // say the same SAR as the copied pictures, not alternate at every seam.
+    // AV1's container-only SAR needs no corresponding encoder setting.
+    let display_sar = unsafe {
+        let sar = ff::ffi::av_guess_sample_aspect_ratio(
+            ictx.as_ptr() as *mut _, ist.as_ptr() as *mut _, std::ptr::null_mut(),
+        );
+        if sar.num > 0 && sar.den > 0 { sar } else { (*params.as_ptr()).sample_aspect_ratio }
+    };
     let extradata = unsafe {
         let p = params.as_ptr();
         if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
@@ -10066,7 +10068,10 @@ fn cut_into(
         ost.set_parameters(params.clone());
         ost.set_time_base(grid.time_base());
         unsafe {
-            (*ost.as_mut_ptr()).sample_aspect_ratio = (*params.as_ptr()).sample_aspect_ratio;
+            (*ost.as_mut_ptr()).sample_aspect_ratio = display_sar;
+            // libavformat requires these two output fields to agree. This is
+            // the muxer's copy, not the input parameters used by encoders.
+            (*ost.parameters().as_mut_ptr()).sample_aspect_ratio = display_sar;
         }
         if let Some((num, den)) = stated_rate {
             ost.set_avg_frame_rate(ff::Rational::new(num, den));

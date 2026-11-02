@@ -28,7 +28,7 @@ def main():
     fixtures.mkdir(parents=True, exist_ok=True)
     cut = args.cut.resolve()
     outline_probe = (args.outline_probe or cut.parent/'examples'/('conformdiag.exe' if os.name == 'nt' else 'conformdiag')).resolve()
-    commands, cases, outlines = [], [], []
+    commands, cases, outlines, overrides = [], [], [], []
 
     def sha(path):
         with path.open('rb') as stream:
@@ -50,6 +50,32 @@ def main():
     def sar(stream):
         value = stream.get('sample_aspect_ratio', 'N/A')
         return Fraction(value.replace(':', '/')) if value not in ('N/A', '0:1') else Fraction(1)
+
+    def header_sars(path):
+        # Inspect every SPS, including the ones written by boundary encoders;
+        # ffprobe's stream SAR alone can hide a change at a seam.
+        log = run([args.ffmpeg, '-v', 'info', '-i', path, '-map', '0:v:0',
+                   '-c', 'copy', '-bsf:v', 'trace_headers', '-f', 'null', '-']).stderr.decode(errors='replace')
+        (work/(path.name+'.headers.log')).write_text(log, encoding='utf-8')
+        fields = re.findall(r'\b(aspect_ratio_idc|sar_width|sar_height)\s+[01]+\s*=\s*(\d+)', log)
+        ratios = []
+        index = 0
+        while index < len(fields):
+            field, value = fields[index]
+            assert field == 'aspect_ratio_idc', (path, fields[index:])
+            value = int(value)
+            if value == 255:
+                assert [v[0] for v in fields[index+1:index+3]] == ['sar_width', 'sar_height'], path
+                ratios.append(Fraction(int(fields[index+1][1]), int(fields[index+2][1])))
+                index += 3
+            else:
+                # These fixtures deliberately cover square and non-square SPS SAR.
+                assert value in (1, 14), (path, value)
+                ratios.append({1: Fraction(1), 14: Fraction(4, 3)}[value])
+                index += 1
+        assert ratios, ('no SPS SAR found', path)
+        assert len(ratios) == len(re.findall(r'\] Sequence Parameter Set\s*$', log, re.M)), ('SPS without SAR', path)
+        return ratios
 
     encoders = {
         'h264': ['libx264', '-preset', 'medium', '-crf', '14'],
@@ -98,13 +124,83 @@ def main():
                     cases.append(row)
                     print('ok' if row['passed'] else 'FAIL', codec, ratio, container, mode,
                           row.get('error', ''), flush=True)
+
+    # A display-aspect override must not leak into the boundary SPS. The first
+    # fixture uses the reviewer's exact 30 s / 640x360 H.264 generation command.
+    # Also cover HEVC, a non-square coded SAR, both output containers, and a
+    # later TS remux where the container's display override no longer applies.
+    for codec in ('h264', 'hevc'):
+        for coded_sar in ('1/1', '4/3'):
+            stem = f'override-{codec}-{coded_sar.replace("/", "_")}'
+            original = fixtures/(stem+'.mp4')
+            source = fixtures/(stem+'.mkv')
+            if not original.exists():
+                options = [] if coded_sar == '1/1' else ['-vf', f'setsar={coded_sar}']
+                encoder = ['libx264'] if codec == 'h264' else ['libx265', '-x265-params', 'log-level=error:pools=none']
+                run([args.ffmpeg, '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                     'testsrc2=rate=25:size=640x360', '-t', '30', *options,
+                     '-c:v', *encoder, '-g', '50', original])
+            if not source.exists():
+                run([args.ffmpeg, '-v', 'error', '-y', '-i', original,
+                     '-c', 'copy', '-aspect', '4:3', source])
+            expected = Fraction(coded_sar)
+            source_sars = header_sars(source)
+            assert all(s == expected for s in source_sars), ('fixture SPS SAR', source, source_sars)
+            assert sar(probe(source)) == Fraction(3, 4), ('fixture container SAR', source)
+            shape = run([outline_probe, '--shape', source]).stdout.decode(errors='replace')
+            found = re.search(r'\bsar=([\d.]+)', shape)
+            correct = found is not None and abs(float(found[1])-0.75) < 0.0001
+            outlines.append({'input': source.name, 'input_sha256': sha(source),
+                             'expected_sar': '3/4', 'passed': correct, 'shape': shape})
+            print('ok' if correct else 'FAIL', 'outline override', codec, coded_sar, flush=True)
+            for container in ('.mp4', '.mkv'):
+                out = work/(stem+'-cut'+container)
+                remux = work/(out.name+'.ts')
+                row = {'codec': codec, 'container': container, 'coded_sar': coded_sar,
+                       'display_sar': '3/4', 'input': source.name, 'input_sha256': sha(source),
+                       'source_sps_sars': [str(s) for s in source_sars], 'output': out.name}
+                try:
+                    log = run([cut, source, '--keep', '3.3-12.1', '--keep', '15-22.7', '-o', out])
+                    text = (log.stdout+log.stderr).decode(errors='replace')
+                    (work/(out.name+'.log')).write_text(text, encoding='utf-8')
+                    assert re.search(r'^\s*copy\s+', text, re.M), 'fixture must exercise copied pictures'
+                    assert re.search(r'^\s*reencode\s+', text, re.M), 'fixture must exercise boundary encoders'
+                    made = probe(out)
+                    assert sar(made) == Fraction(3, 4), ('output container SAR', made)
+                    assert (made['width'], made['height'], made['codec_name']) == (640, 360, codec), made
+                    run([args.ffmpeg, '-v', 'error', '-xerror', '-err_detect', 'explode', '-i', out,
+                         '-map', '0:v:0', '-f', 'null', '-'])
+                    values = header_sars(out)
+                    row['output_sps_sars'] = [str(s) for s in values]
+                    # Inspect the TS even when the original output has a bad SPS,
+                    # so the retained evidence shows the downstream effect too.
+                    run([args.ffmpeg, '-v', 'error', '-y', '-i', out, '-map', '0:v:0', '-c', 'copy', remux])
+                    remux_sars = header_sars(remux)
+                    row['ts_sps_sars'] = [str(s) for s in remux_sars]
+                    row['ts_sha256'] = sha(remux)
+                    # The FFmpeg 7.1 HEVC TS remux also has a strict-decode
+                    # failure with unmodified v0.8.39. Check its SAR headers
+                    # here without making this suite a TS decoding fix.
+                    if codec == 'h264':
+                        run([args.ffmpeg, '-v', 'error', '-xerror', '-err_detect', 'explode', '-i', remux,
+                             '-map', '0:v:0', '-f', 'null', '-'])
+                    assert all(s == expected for s in values), ('output SPS SAR changes', row['output_sps_sars'])
+                    assert all(s == expected for s in remux_sars), ('remux SPS SAR changes', row['ts_sps_sars'])
+                    row.update(passed=True, frames=int(made['nb_read_frames']))
+                except (AssertionError, subprocess.TimeoutExpired) as error:
+                    row.update(passed=False, error=str(error))
+                if out.exists():
+                    row['output_sha256'] = sha(out)
+                overrides.append(row)
+                print('ok' if row['passed'] else 'FAIL', 'override', codec, coded_sar, container,
+                      row.get('error', ''), flush=True)
     record = {'cut': str(cut), 'cut_sha256': sha(cut), 'generator_sha256': sha(Path(__file__)),
               'outline_probe_sha256': sha(outline_probe), 'fixture_directory': str(fixtures), 'commands': commands,
-              'cases': cases, 'outline_checks': outlines}
+              'cases': cases, 'outline_checks': outlines, 'override_cases': overrides}
     (work/'results.json').write_text(json.dumps(record, indent=2)+'\n', encoding='utf-8')
-    checks = cases + outlines
+    checks = cases + outlines + overrides
     failures = sum(not c['passed'] for c in checks)
-    print(f'{len(checks)-failures} passed, {failures} failed ({len(cases)} exports, {len(outlines)} outlines); evidence: {work}', flush=True)
+    print(f'{len(checks)-failures} passed, {failures} failed ({len(cases)+len(overrides)} exports, {len(outlines)} outlines); evidence: {work}', flush=True)
     raise SystemExit(1 if failures else 0)
 
 
