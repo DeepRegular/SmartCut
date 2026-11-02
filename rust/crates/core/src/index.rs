@@ -417,6 +417,13 @@ fn varies(shown: &[f64], fd: f64) -> bool {
     if fd <= 0.0 || shown.len() < ENOUGH {
         return false;
     }
+    // The average can hide repeated holds: 40/40/80 ms averages to
+    // 53 ms, below the old 1.75-frame threshold. Use the typical measured
+    // gap as well; a 2:3 cadence and millisecond rounding still fit.
+    let mut gaps: Vec<f64> = shown.windows(2)
+        .map(|w| w[1] - w[0]).filter(|g| g.is_finite() && *g > 0.0).collect();
+    gaps.sort_by(f64::total_cmp);
+    let fd = gaps.get(gaps.len().saturating_sub(1) / 2).copied().map_or(fd, |g| fd.min(g));
     let (mut held, mut dense, mut counted) = (0usize, 0usize, 0usize);
     for w in shown.windows(2) {
         let gap = w[1] - w[0];
@@ -611,6 +618,16 @@ impl IndexSource for ContainerIndex {
             .any(|n| matches!(n.trim(), "mpeg" | "mpegts"))
         {
             bail!("an MPEG program or transport stream keeps no seek table");
+        }
+        // An MP4's public table contains decode times. With B pictures,
+        // outline_of cannot use it to classify display gaps. A progressive
+        // stream averaging materially below its declared rate may contain
+        // repeated holds (40/40/80 ms), so let the caller's packet scan ask
+        // its PTS instead. Constant-rate sources retain the fast table path.
+        if !video.variable_rate && !video.interlaced() && video.has_b_frames > 0
+            && video.base_rate > video.frame_rate * 1.01 && video.base_rate < 1000.0
+        {
+            bail!("reordered pictures below the declared rate need their display times scanned");
         }
         // How long the recording is, by the container's own reckoning. Only
         // used to ask whether the table below covers it, so a container that
@@ -2063,6 +2080,26 @@ pub fn sample_bit_rate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_holds_are_not_hidden_by_the_average() {
+        let mut shown = vec![0.0];
+        for i in 0..239 {
+            shown.push(shown.last().unwrap() + if i % 3 == 2 { 0.08 } else { 0.04 });
+        }
+        assert!(varies(&shown, 319.0 / 6000.0));
+    }
+
+    #[test]
+    fn rounded_ntsc_and_two_three_cadence_are_not_variable() {
+        let ntsc: Vec<_> = (0..240).map(|i| (i as f64 * 1001.0 / 30.0).round() / 1000.0).collect();
+        assert!(!varies(&ntsc, 1001.0 / 30000.0));
+        let mut film = vec![0.0];
+        for i in 0..239 {
+            film.push(film.last().unwrap() + if i % 2 == 0 { 0.04 } else { 0.06 });
+        }
+        assert!(!varies(&film, 0.04));
+    }
 
     /// Entry points every `every` seconds from `from` to `to`.
     fn every(from: f64, to: f64, every: f64) -> Vec<f64> {

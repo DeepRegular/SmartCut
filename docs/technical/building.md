@@ -86,6 +86,7 @@ bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out   
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
 bash tests/run_vp9_av1_tests.sh       # VP9 and AV1: cut, and still the source's bytes   5
 bash tests/run_vfr_tests.sh           # variable rate, both ways round                   8
+bash tests/run_source_clock_tests.sh  # source clocks, range ends and VFR copying       80
 bash tests/run_demux_tests.sh         # what a reader loses by reading what it does not  9
 bash tests/run_transrate_tests.sh     # fitting a disc: the identity, the size, the cost 15
 bash tests/run_join_tests.sh          # several recordings into one file, and the seams  17

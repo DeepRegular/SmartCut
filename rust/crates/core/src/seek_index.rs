@@ -144,7 +144,9 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// the walk sees that its pictures come three times as close: an index
 /// written before has no such figure, and a cut opened from it would be
 /// planned on the average where a fresh open plans on the pictures.
-pub const VERSION: u32 = 18;
+/// 19: repeated holds are measured against the typical gap as well as the
+/// average. Older caches may have classified 40/40/80 ms as constant.
+pub const VERSION: u32 = 19;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 
