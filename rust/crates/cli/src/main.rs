@@ -1517,24 +1517,28 @@ fn run() -> Result<()> {
                 // reader: its folder is still the disc's, and `--log
                 // VIDEO_TS/VTS_01_2.VOB` added the run's lines onto the end of
                 // the next piece of the title.
-                let vob = at.file_name().is_some_and(|n| {
-                    let n = n.to_string_lossy().to_ascii_uppercase();
-                    n == "VIDEO_TS.VOB"
-                        || (n.len() == 12
-                            && n.starts_with("VTS_")
-                            && n.ends_with(".VOB")
-                            && n.as_bytes()[6] == b'_')
-                });
+                let vob = |p: &std::path::Path| {
+                    p.file_name().is_some_and(|n| {
+                        let n = n.to_string_lossy().to_ascii_uppercase();
+                        n == "VIDEO_TS.VOB"
+                            || (n.len() == 12
+                                && n.starts_with("VTS_")
+                                && n.ends_with(".VOB")
+                                && n.as_bytes()[6] == b'_')
+                    })
+                };
                 // Where it is linked from as well: through a link of the
                 // user's own, the folder that holds the title set is the
                 // one the link points into, and `--log VIDEO_TS/VTS_01_2.VOB`
-                // beside the real piece was still added onto.
+                // beside the real piece was still added onto. Each by its own
+                // name: a link called something else (`film.vob`) names a
+                // piece of the title all the same, and was let write there.
                 let real = std::fs::canonicalize(&at).ok();
                 let named = [Some(at.as_path()), real.as_deref()];
                 let folders: Vec<std::path::PathBuf> = named
                     .into_iter()
                     .flatten()
-                    .filter(|_| vob && at.is_file())
+                    .filter(|p| vob(p) && at.is_file())
                     .filter_map(|p| p.parent())
                     .map(|dir| if dir.as_os_str().is_empty() { here } else { dir })
                     .filter(|dir| ["VIDEO_TS.IFO", "video_ts.ifo"].iter().any(|n| dir.join(n).is_file()))
@@ -1623,10 +1627,11 @@ fn run() -> Result<()> {
                 "--log {at} is inside the disc {}, which this run reads or writes: name a file \
                  outside it",
                 // The folder by its name where it was only "the one this was
-                // typed in" (`STREAM/00001.m2ts` from inside `BDAV`).
+                // typed in" (`STREAM/00001.m2ts` from inside `BDAV`), or the one
+                // above it (`00001.m2ts` from inside `STREAM`).
                 std::fs::canonicalize(disc)
                     .ok()
-                    .filter(|_| disc.as_os_str() == ".")
+                    .filter(|_| disc.as_os_str() == "." || disc.as_os_str() == "..")
                     .unwrap_or_else(|| disc.clone())
                     .display()
             );
@@ -3627,6 +3632,9 @@ fn run() -> Result<()> {
         }
     }
     marks.sort_by(f64::total_cmp);
+    // The plans the cut was written by in the end, where they are not the
+    // ones above: see `CutOptions::replanned`.
+    let replanned = std::sync::Arc::new(std::sync::OnceLock::new());
     let written = smartcut_core::cut::join(
         &reels,
         master,
@@ -3650,6 +3658,7 @@ fn run() -> Result<()> {
             poster,
             chapters: if chapters_wanted { marks.clone() } else { Vec::new() },
             plan: opts.clone(),
+            replanned: Some(replanned.clone()),
             ..Default::default()
         },
     );
@@ -3667,8 +3676,16 @@ fn run() -> Result<()> {
         }
         let whole: Vec<Vec<(f64, f64)>> =
             joined_src.iter().map(|s| vec![(0.0, s.duration)]).collect();
-        let mut pieces = vec![smartcut_core::verify::Piece { src: &src, ranges: &ranges, plans: &plans }];
-        for ((s, r), p) in joined_src.iter().zip(&whole).zip(&joined_plans) {
+        // Held to the plans the file was written by: an AV1 cut into MP4
+        // that had to be written again re-encoded copies nothing, and held
+        // to the copies planned above it was called a mismatch.
+        let (plans, joined_plans): (&[smartcut_core::RangePlan], &[Vec<smartcut_core::RangePlan>]) =
+            match replanned.get() {
+                Some(again) if again.len() == joined_plans.len() + 1 => (&again[0], &again[1..]),
+                _ => (&plans, &joined_plans),
+            };
+        let mut pieces = vec![smartcut_core::verify::Piece { src: &src, ranges: &ranges, plans }];
+        for ((s, r), p) in joined_src.iter().zip(&whole).zip(joined_plans) {
             pieces.push(smartcut_core::verify::Piece { src: s, ranges: r, plans: p });
         }
         // A crossing's pictures belong to neither clip, so a join with one

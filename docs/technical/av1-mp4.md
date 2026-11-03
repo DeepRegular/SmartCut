@@ -30,11 +30,25 @@ For entirely encoded selections the encoder's actual configuration applies.
 
 Index 31 has no level-based constraints. For a finite target, the coded and
 target indices must be defined, the target must be higher, and the other
-av1C fields (including tier) must agree. The guard declines finite
-promotions with explicit decoder model information, and 3.1 to 4.0, where
-the minimum compression ratio can tighten. A lower finite target, a change
-of bit depth/chroma/profile, or inconsistent copied sequences takes the
-existing retry path. See [AV1 Annex A.3](https://aomediacodec.github.io/av1-spec/av1-spec.pdf#page=651).
+av1C fields (including tier) must agree. Every Table A.3 limit is the same
+or larger at a higher index, and so is the minimum compression ratio's
+allowance (MinCompBasis × rate ÷ MaxDisplayRate: 2 ÷ 31,950,720 at 3.1,
+4 ÷ 70,778,880 at 4.0), so any higher defined index may be written. The
+guard declines finite promotions with explicit decoder model information,
+whose buffers would need separate verification. A lower finite target, a
+change of bit depth/chroma/profile, or inconsistent copied sequences takes
+the existing retry path. See [AV1 Annex A.3](https://aomediacodec.github.io/av1-spec/av1-spec.pdf#page=651).
+
+The boundary encoder is SVT-AV1 where it can write the recording, which
+chooses a level from the pictures. SVT-AV1 has no 4:4:4, 4:2:2 or 12-bit,
+so those go to rav1e, which writes index 31 unless told otherwise; 31 over
+a finite source cannot be promoted and would force the retry. rav1e is
+therefore given the source's first operating-point level (`level=X.Y`)
+when that level is defined and main tier. Told, it writes exactly that
+index and the coded pictures are unchanged. If rav1e refuses the level
+because the pictures exceed it (a source that understates its level), it
+is opened again without one. This applies to every output container, so
+in Matroska and WebM these seams now state the source's level as well.
 
 FFmpeg 7.1's MOV/MP4 writer emits one `stsd` entry. A `NEW_EXTRADATA` side
 datum updates its configuration, but cannot assign a second sample entry to

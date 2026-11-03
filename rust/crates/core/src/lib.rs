@@ -628,7 +628,8 @@ pub struct DroppedStream {
     /// where the `pid` beside it is not a PID. See [`track_name`].
     pub stream_index: usize,
     /// Which of them it is: `"superimpose"`, `"data"`, `"data stream"`,
-    /// `"menu"`, `"text subtitles"` or `"subtitle stream"`. The last is any
+    /// `"menu"`, `"text subtitles"`, `"video stream"` (a picture track
+    /// beside the one written) or `"subtitle stream"`. The last is any
     /// subtitle stream none of the readers takes -- SubRip, ASS, mov_text or
     /// WebVTT in a .mkv/.mp4, a DVD's subpictures outside a DVD, a DVB
     /// broadcast's -- where `"text subtitles"` is a Blu-ray's own text
@@ -653,6 +654,7 @@ impl DroppedStream {
             "text subtitles" => "text subtitles, whose typeface is on the disc",
             "data stream" => "a data stream",
             "subtitle stream" => "a subtitle stream (its format is not one a cut carries)",
+            "video stream" => "another video stream (a cut writes one)",
             _ => "data broadcast",
         }
     }
@@ -2256,6 +2258,23 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
                     stream_index: s.index(),
                     what: if on_a_ts { "data" } else { "data stream" },
                 }),
+                // A second picture track, as an .mp4 or .mkv with two video
+                // tracks has. The cut writes the one it chose and nothing
+                // else, and this said nothing about it
+                // while a timecode track beside it was named. An attached
+                // cover picture is not a track of pictures, and is not named.
+                (ff::media::Type::Video, _)
+                    if s.index() != stream_index
+                        && !s
+                            .disposition()
+                            .contains(ff::format::stream::Disposition::ATTACHED_PIC) =>
+                {
+                    Some(DroppedStream {
+                        pid: s.id(),
+                        stream_index: s.index(),
+                        what: "video stream",
+                    })
+                }
                 // A subtitle stream none of the readers above takes: SubRip,
                 // ASS, mov_text or WebVTT, a DVD's subpictures where there is
                 // no DVD to name them (a .mkv, a loose .vob), a DVB

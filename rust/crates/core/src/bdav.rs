@@ -1260,7 +1260,7 @@ fn read_clip(
             );
         }
     }
-    let video_pid = video_pid(&path, src.video.stream_index)?;
+    let (video_pid, interlaced_sequence) = video_pid(&path, src.video.stream_index)?;
     // The map has to describe the sound and the captions as well as the
     // pictures: what it says about each is what this writes into the disc's
     // own index. A recording's map is not fixed, so it is asked for by name.
@@ -1280,10 +1280,21 @@ fn read_clip(
             .map(|s| s.stream_type)
             .unwrap_or(fallback)
     };
+    // **Interlaced is what the sequence says, not its first picture.** The
+    // field order libavformat reports for MPEG-2 is the first picture's, and
+    // a broadcast sending film with repeated fields codes that picture as a
+    // whole frame: a 1080i programme -- or a cut of one that happens to open
+    // on film, a commercial among them -- went into the index as 1080p at
+    // 29.97, which is not a format any recorder writes. One station of
+    // twelve opens that way from its first picture.
+    let mut shown = src.video.clone();
+    if shown.codec == "mpeg2video" && !shown.interlaced() && interlaced_sequence == Some(true) {
+        shown.field_order = 2; // AV_FIELD_TT
+    }
     streams.push(Carried {
         pid: video_pid,
         coding: declared(video_pid, video_coding(&src.video.codec)),
-        attributes: video_attributes(&src.video),
+        attributes: video_attributes(&shown),
     });
     // What the sound is, rather than what it is where the clip opens.
     //
@@ -1430,15 +1441,32 @@ fn read_clip(
     })
 }
 
-/// Which PID the pictures are on.
+/// Which PID the pictures are on, and whether the MPEG-2 sequence header
+/// the stream states itself with calls the sequence interlaced (`None` where
+/// it carries none).
 ///
 /// Every other stream a [`crate::Source`] describes carries its own PID,
 /// because a broadcast names its sound and its captions that way and a cut
 /// puts them back where they were. The video does not: there is only ever
 /// one of it. So it is asked of the file.
-fn video_pid(path: &str, index: usize) -> Result<u16> {
+fn video_pid(path: &str, index: usize) -> Result<(u16, Option<bool>)> {
     let ictx = crate::input::open_local(path)?;
-    Ok(ictx.stream(index).map_or(0, |s| s.id()) as u16)
+    let Some(stream) = ictx.stream(index) else {
+        return Ok((0, None));
+    };
+    let params = stream.parameters();
+    let sequence = unsafe {
+        let p = params.as_ptr();
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            None
+        } else {
+            crate::bitstream::mpeg2_interlaced_sequence(std::slice::from_raw_parts(
+                (*p).extradata,
+                (*p).extradata_size as usize,
+            ))
+        }
+    };
+    Ok((stream.id() as u16, sequence))
 }
 
 /// The coding type of a picture stream, when its own map did not say.

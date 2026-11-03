@@ -1152,9 +1152,12 @@ impl Volume {
     fn label(&self, at: &Path) -> String {
         // The stem of an image and the whole name of a folder, whose dot is
         // part of its name and not an extension.
-        (if at.is_dir() { at.file_name() } else { at.file_stem() })
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "DVD".to_string())
+        // A folder named `.` or `..` has no name of its own in the path, and
+        // is called what it is called where it sits: the outer form of the
+        // same disc gave its rows that name, and these gave them `DVD`. And
+        // the disc named by its `VIDEO_TS` is called after the folder that
+        // holds it. See [`crate::disc::called`].
+        crate::disc::called(at).unwrap_or_else(|| "DVD".to_string())
     }
 }
 

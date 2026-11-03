@@ -64,26 +64,8 @@ impl Guard {
             source_fields: None,
             has_copy,
         };
+        (result.initial, result.source_fields) = source_config(params);
         unsafe {
-            let p = params.as_ptr();
-            if !(*p).extradata.is_null() && (*p).extradata_size > 0 {
-                let data = std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize);
-                result.initial = if data.first() == Some(&0x81) {
-                    data.get(4..).unwrap_or_default().to_vec()
-                } else {
-                    data.to_vec()
-                };
-                // Prefer the actual source sequence. An av1C record may also
-                // consist solely of its four fixed bytes, without configOBUs.
-                result.source_fields = sequences(&result.initial)
-                    .and_then(|s| fields(s[0]))
-                    .or(match data {
-                        [0x81, profile_level, colour, _, ..] => {
-                            Some([0x81, *profile_level, *colour])
-                        }
-                        _ => None,
-                    });
-            }
             let filter = av_bsf_get_by_name(c"extract_extradata".as_ptr());
             if filter.is_null() {
                 bail!("FFmpeg has no extract_extradata filter");
@@ -155,6 +137,50 @@ impl Guard {
         }
         Ok(())
     }
+}
+
+/// The sequence a description carries (av1C's configOBUs, or bare OBUs) and
+/// the fields the recording states for itself.
+fn source_config(params: &ff::codec::Parameters) -> (Vec<u8>, Option<[u8; 3]>) {
+    let data = unsafe {
+        let p = params.as_ptr();
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            return (Vec::new(), None);
+        }
+        std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+    };
+    let initial = if data.first() == Some(&0x81) {
+        data.get(4..).unwrap_or_default().to_vec()
+    } else {
+        data.to_vec()
+    };
+    // Prefer the actual source sequence. An av1C record may also
+    // consist solely of its four fixed bytes, without configOBUs.
+    let stated = sequences(&initial)
+        .and_then(|s| fields(s[0]))
+        .or(match data {
+            [0x81, profile_level, colour, _, ..] => Some([0x81, *profile_level, *colour]),
+            _ => None,
+        });
+    (initial, stated)
+}
+
+/// The level a seam encoder that can be told one is to write, spelt the way
+/// rav1e takes it (`4.0`): operating point zero of the recording's own
+/// sequence, the same one [`Guard`] holds the seams to.
+///
+/// **rav1e writes 31 unless told,** and 31 over a finite source is a lower
+/// target that cannot be promoted, so every 4:4:4 or 12-bit AV1 cut into
+/// .mp4 -- which SVT-AV1 cannot write and rav1e then does -- was re-encoded
+/// whole. Told, it writes exactly that level and changes nothing else in the
+/// stream. None for 31 (its default already), for an index Annex A.3 does not
+/// define (rav1e refuses those), and for the high tier, which rav1e has no
+/// way to write.
+pub(crate) fn seam_level(params: &ff::codec::Parameters) -> Option<String> {
+    let [_, profile_level, colour] = source_config(params).1?;
+    let level = profile_level & 31;
+    (defined_level(level) && colour >> 7 == 0)
+        .then(|| format!("{}.{}", 2 + level / 4, level % 4))
 }
 
 const NEW_CONFIG: ff::ffi::AVPacketSideDataType =
@@ -257,12 +283,12 @@ fn parse_sequence(data: &[u8]) -> Option<Sequence> {
         if b.u(1)? != 0 {
             b.skip(64)?;
             if b.u(1)? != 0 {
+                // uvlc() (4.10.3): the zeros run to the first one bit, however
+                // many there are; only from 32 on is no value read after it.
+                // Each read is bounded by the header, so this ends.
                 let mut zeros = 0;
                 while b.u(1)? == 0 {
                     zeros += 1;
-                    if zeros == 32 {
-                        break;
-                    }
                 }
                 if zeros < 32 {
                     b.skip(zeros)?;
@@ -369,14 +395,19 @@ fn parse_sequence(data: &[u8]) -> Option<Sequence> {
 }
 
 // Annex A.3 defines these finite indices; 31 removes level constraints.
-// Among the listed same-tier promotions, 3.1 -> 4.0 can tighten the
-// minimum compression ratio (MainCR / MaxDisplayRate). Explicit decoder
-// models also need separate buffer verification for a finite promotion.
+// Every limit of Table A.3 grows or stays with the index, and so does the
+// minimum compression ratio's allowance: MinCompBasis * rate / MaxDisplayRate
+// (libaom level.c get_min_cr) is 2/31,950,720 at 3.1 and 4/70,778,880 at
+// 4.0, smaller at every step up. A 3.1 boundary under a 4.0 source (an SVT
+// seam in a 720p30 recording labelled 4.0) is promoted like any other.
+// Explicit decoder models also need separate buffer verification for a
+// finite promotion.
 fn may_raise(from: u8, to: u8, decoder_model: bool) -> bool {
-    let defined = |n| matches!(n, 0 | 1 | 4 | 5 | 8 | 9 | 12..=19);
-    defined(from)
-        && from < to
-        && (to == 31 || (defined(to) && !decoder_model && (from, to) != (5, 8)))
+    defined_level(from) && from < to && (to == 31 || (defined_level(to) && !decoder_model))
+}
+
+fn defined_level(n: u8) -> bool {
+    matches!(n, 0 | 1 | 4 | 5 | 8 | 9 | 12..=19)
 }
 
 impl Sequence {
@@ -506,6 +537,18 @@ mod tests {
             }
         }
         params
+    }
+
+    #[test]
+    fn the_seam_encoder_is_told_the_recordings_own_finite_main_tier_level() {
+        assert_eq!(seam_level(&parameters(EIGHT)).as_deref(), Some("2.0"));
+        assert_eq!(seam_level(&parameters(&[0x81, 0x21, 0x0c, 0])).as_deref(), Some("2.1"));
+        assert_eq!(seam_level(&parameters(&[0x81, 0x48, 0x00, 0])).as_deref(), Some("4.0"));
+        assert_eq!(seam_level(&parameters(&[0x81, 19, 0x0c, 0])).as_deref(), Some("6.3"));
+        assert_eq!(seam_level(&parameters(&[0x81, 31, 0x0c, 0])), None);
+        assert_eq!(seam_level(&parameters(&[0x81, 6, 0x0c, 0])), None);
+        assert_eq!(seam_level(&parameters(&[0x81, 13, 0x8c, 0])), None); // high tier
+        assert_eq!(seam_level(&parameters(&[])), None);
     }
 
     #[test]
@@ -677,6 +720,51 @@ mod tests {
     }
 
     #[test]
+    fn mangled_headers_neither_panic_nor_promote_wrongly() {
+        // Seeded bit flips, truncations and random targets over the real
+        // headers above: every answer is an error, None, or bytes that parse
+        // back to the target with the rest of the syntax where it was.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let still = [0x0a, 6, 0x18, 0x15, 0x7f, 0xfd, 0xa0, 0x08];
+        for _ in 0..20000 {
+            let base: &[u8] = match next() % 3 {
+                0 => EIGHT,
+                1 => TEN,
+                _ => &still,
+            };
+            let mut data = base.to_vec();
+            for _ in 0..next() % 4 {
+                let i = (next() as usize) % data.len();
+                data[i] ^= 1 << (next() % 8);
+            }
+            if next() % 4 == 0 {
+                data.truncate((next() as usize) % (data.len() + 1));
+            }
+            let _ = sequences(&data);
+            if data.len() > 2 {
+                let _ = parse_sequence(&data[2..]);
+            }
+            let target = [0x81, (next() % 256) as u8, (next() % 256) as u8];
+            if let Ok(Some(out)) = align_obus(&data, target) {
+                let was = sequences(&data).unwrap();
+                let now = sequences(&out).unwrap();
+                assert_eq!(was.len(), now.len());
+                for (was, now) in was.iter().zip(now) {
+                    let (was, now) = (parse_sequence(was).unwrap(), parse_sequence(now).unwrap());
+                    assert_eq!(now.fields, target);
+                    assert_eq!((now.level_bit, now.reduced), (was.level_bit, was.reduced));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn incompatible_fields_and_unproven_finite_levels_are_not_promoted() {
         for target in [
             [0x81, 8, 0x8c],
@@ -689,7 +777,7 @@ mod tests {
             assert!(align_obus(EIGHT, target).unwrap_err().is::<Changed>());
         }
         assert!(!may_raise(31, 8, false));
-        assert!(!may_raise(5, 8, false));
+        assert!(may_raise(5, 8, false));
         assert!(!may_raise(0, 8, true));
         assert!(may_raise(0, 8, false));
         assert!(may_raise(0, 31, false));

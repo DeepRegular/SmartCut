@@ -898,8 +898,22 @@ impl Glancer {
         let idx = stream.index();
         let time_base = f64::from(stream.time_base());
         let params = stream.parameters();
+        // The shape the walk's outline gives the recording, and the cut its
+        // output: the container's where it states one, which is the only
+        // place an AV1 .mp4 or .mkv keeps it (see `outline_of`). Read off
+        // the codec alone, an anamorphic AV1's glimpse, strip cells and list
+        // picture came out square until the walk landed.
         let sar = unsafe {
-            let s = (*params.as_ptr()).sample_aspect_ratio;
+            let guessed = ff::ffi::av_guess_sample_aspect_ratio(
+                ictx.as_ptr() as *mut _,
+                stream.as_ptr() as *mut _,
+                std::ptr::null_mut(),
+            );
+            let s = if guessed.num > 0 && guessed.den > 0 {
+                guessed
+            } else {
+                (*params.as_ptr()).sample_aspect_ratio
+            };
             if s.num > 0 && s.den > 0 {
                 s.num as f64 / s.den as f64
             } else {

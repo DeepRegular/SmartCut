@@ -431,7 +431,7 @@ pub fn titles(at: &Path) -> Result<(Shape, Vec<Title>)> {
 /// one -- whose playlists name nothing -- and where the index cannot be read.
 pub fn listing_of(path: &str) -> Option<crate::si::Listed> {
     let (root, clip) = clip_on_a_disc(path)?;
-    let (_, titles) = titles(Path::new(root)).ok()?;
+    let (_, titles) = titles(Path::new(&root)).ok()?;
     let said = |t: &Title| t.name.is_some() || t.channel.is_some();
     // The title that opens this very path first: a recorder that divided a
     // recording plays one clip from two playlists, each a stretch of it named
@@ -442,7 +442,7 @@ pub fn listing_of(path: &str) -> Option<crate::si::Listed> {
     // A title's items name the clip whole (the window is put on in
     // [`rows_of`]), so the window is matched by the sequence it opens at.
     let stc = crate::input::clip_window(path).and_then(|(_, first, _)| {
-        let mut vol = Volume::open(Path::new(root)).ok()?;
+        let mut vol = Volume::open(Path::new(&root)).ok()?;
         let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
         sequence_starts(&raw).iter().find(|s| s.at == first).map(|s| s.id)
     });
@@ -451,13 +451,13 @@ pub fn listing_of(path: &str) -> Option<crate::si::Listed> {
             said(t)
                 && t.clips
                     .iter()
-                    .any(|c| c.stc == stc && c.name.eq_ignore_ascii_case(clip))
+                    .any(|c| c.stc == stc && c.name.eq_ignore_ascii_case(&clip))
         })
     });
     let named = || {
         titles
             .iter()
-            .position(|t| said(t) && t.clips.iter().any(|c| c.name.eq_ignore_ascii_case(clip)))
+            .position(|t| said(t) && t.clips.iter().any(|c| c.name.eq_ignore_ascii_case(&clip)))
     };
     let at = exact.or_else(named)?;
     titles
@@ -518,10 +518,10 @@ pub fn carry_disc_languages(src: &mut crate::Source) {
     let Some((root, clip)) = clip_on_a_disc(&path) else {
         return;
     };
-    let Ok(mut vol) = Volume::open(Path::new(root)) else {
+    let Ok(mut vol) = Volume::open(Path::new(&root)) else {
         return;
     };
-    let tracks = vol.tracks(clip);
+    let tracks = vol.tracks(&clip);
     if !tracks.is_empty() {
         carry_languages(src, &tracks);
     }
@@ -542,10 +542,37 @@ pub fn carry_disc_languages(src: &mut crate::Source) {
 /// a disc -- [`Volume::open`] reads its dialect off its playlists -- and
 /// taken for a broadcast it lost its languages, its listing, its entry
 /// points and the join of its clocks.
-pub fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
+///
+/// The disc's directory and the clip's number are handed back owned, because
+/// they need not be in `path` at all: a clip reached through a link of the
+/// user's own (`rec/00001.m2ts`, or `rec/` linked to the disc's `STREAM`)
+/// names no `STREAM`, and taken for a broadcast it lost all of the above.
+/// Where the name as given says nothing, it is asked where it really is --
+/// only for a name that ends the way a clip's does, so everything else still
+/// costs nothing.
+pub fn clip_on_a_disc(path: &str) -> Option<(String, String)> {
     // A name that plays one sequence of a clip still names the clip, and the
     // index beside it is the clip's.
     let path = crate::input::clip_window(path).map_or(path, |(base, _, _)| base);
+    if let Some((root, clip)) = named_on_a_disc(path) {
+        return Some((root.to_string(), clip.to_string()));
+    }
+    let clipped = path.len() > ".m2ts".len()
+        && path.is_char_boundary(path.len() - ".m2ts".len())
+        && path[path.len() - ".m2ts".len()..].eq_ignore_ascii_case(".m2ts");
+    if !clipped {
+        return None;
+    }
+    let real = std::fs::canonicalize(path).ok()?;
+    let real = real.to_str()?;
+    if real == path {
+        return None;
+    }
+    named_on_a_disc(real).map(|(root, clip)| (root.to_string(), clip.to_string()))
+}
+
+/// [`clip_on_a_disc`], asked of the name as it is spelled.
+fn named_on_a_disc(path: &str) -> Option<(&str, &str)> {
     // Asked of a copy with one separator and one case, because on Windows a
     // folder disc comes back as `D:\disc\BDAV\STREAM/00001.m2ts` -- the
     // folder as the user named it and the rest as [`Volume::stream`] put it
@@ -565,6 +592,17 @@ pub fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
     let (at, root, rest) = match plain.rfind("/STREAM/") {
         Some(at) => (at, &path[..at], &path[at + "/STREAM/".len()..]),
         None if plain.starts_with("STREAM/") => (0, ".", &path["STREAM/".len()..]),
+        // And named from inside `STREAM` itself, `00001.m2ts` typed there:
+        // the disc is the folder above. Asked only of a bare name, with no
+        // folder in it at all, so a clip named any other way costs nothing
+        // more than it did.
+        None if plain.ends_with(".M2TS")
+            && !plain.trim_start_matches("./").contains('/')
+            && in_stream_here() =>
+        {
+            let bare = path.len() - plain.trim_start_matches("./").len();
+            (0, "..", &path[bare..])
+        }
         None => return None,
     };
     let clip = rest.get(..rest.len().checked_sub(".m2ts".len())?)?;
@@ -593,6 +631,16 @@ pub fn clip_on_a_disc(path: &str) -> Option<(&str, &str)> {
             }
     };
     disc.then_some((root, clip))
+}
+
+/// Whether the folder the program runs in is called `STREAM`, whichever case
+/// it is spelled in: a clip named there by its bare name is a clip of the
+/// disc above it. See [`clip_on_a_disc`].
+fn in_stream_here() -> bool {
+    std::env::current_dir()
+        .ok()
+        .and_then(|d| d.file_name().map(|n| n.eq_ignore_ascii_case("STREAM")))
+        .unwrap_or(false)
 }
 
 pub fn carry_languages(src: &mut crate::Source, tracks: &[Track]) {
@@ -652,10 +700,10 @@ pub fn unreadable_streams(path: &str) -> Vec<(i32, &'static str)> {
     let Some((root, clip)) = clip_on_a_disc(path) else {
         return Vec::new();
     };
-    let Ok(mut vol) = Volume::open(Path::new(root)) else {
+    let Ok(mut vol) = Volume::open(Path::new(&root)) else {
         return Vec::new();
     };
-    vol.tracks(clip)
+    vol.tracks(&clip)
         .iter()
         .filter_map(|t| unreadable(t.coding).map(|what| (t.pid, what)))
         .collect()
@@ -1409,10 +1457,7 @@ impl Volume {
         // The stem of an image and the whole name of a folder: a folder
         // called `Anime vol.2` was labelled `Anime vol`, and two discs
         // `.D1` and `.D2` beside each other gave their rows the same names.
-        let fallback = (if at.is_dir() { at.file_name() } else { at.file_stem() })
-            .or_else(|| at.file_name())
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.shape().root().to_string());
+        let fallback = called(at).unwrap_or_else(|| self.shape().root().to_string());
         if self.shape() != Shape::Bdmv {
             // A disc of recordings says what it is called in its own index,
             // where a recorder puts the name somebody typed into it. The
@@ -1589,6 +1634,49 @@ pub(crate) fn inside_image(at: &Path) -> Option<(PathBuf, String)> {
         here = parent;
     }
     None
+}
+
+/// A path whose last step is a name: `.` and `..` (and a path ending in
+/// either) are taken where they lead, so a disc named from inside its own
+/// folder is labelled by that folder's name as it is from outside. Any other
+/// path is left as it is -- a link keeps the name it was given.
+pub(crate) fn named_folder(at: &Path) -> std::borrow::Cow<'_, Path> {
+    if at.file_name().is_some() {
+        return std::borrow::Cow::Borrowed(at);
+    }
+    std::fs::canonicalize(at).map_or(std::borrow::Cow::Borrowed(at), std::borrow::Cow::Owned)
+}
+
+/// What a disc is called after the folder or image it arrived as: the whole
+/// name of a folder, whose dot is part of its name, and the stem of an image.
+///
+/// A disc named by its own `VIDEO_TS`, `BDMV` or `BDAV` directory is called
+/// what the folder (or image) holding that directory is called -- the name
+/// somebody chose, and the one the same disc gets when it is named by that
+/// folder. Called `VIDEO_TS` or `BDMV`, every disc's rows came out under the
+/// same name, and so did the files cut from them. `None` where the path names
+/// nothing at all (`/`).
+pub(crate) fn called(at: &Path) -> Option<String> {
+    let named = named_folder(at);
+    let own = named.file_name()?;
+    let dialect = ["VIDEO_TS", "BDMV", "BDAV"]
+        .iter()
+        .any(|d| own.eq_ignore_ascii_case(d));
+    let holder = named
+        .parent()
+        .map(|p| if p.as_os_str().is_empty() { Path::new(".") } else { p });
+    if let Some(found) = holder.filter(|_| dialect).and_then(name_of) {
+        return Some(found);
+    }
+    name_of(at)
+}
+
+/// [`called`], of the path's own last step.
+fn name_of(at: &Path) -> Option<String> {
+    let named = named_folder(at);
+    (if at.is_dir() { named.file_name() } else { named.file_stem() })
+        .or_else(|| named.file_name())
+        .map(|s| s.to_string_lossy().into_owned())
 }
 
 /// The most an index file on a folder disc is read as: an index, a playlist,
@@ -2453,7 +2541,7 @@ pub fn encrypted(path: &str) -> bool {
     let Some((root, _)) = clip_on_a_disc(path) else {
         return false;
     };
-    Volume::open(Path::new(root)).is_ok_and(|v| v.protected())
+    Volume::open(Path::new(&root)).is_ok_and(|v| v.protected())
 }
 
 /// The entry points a disc holds for one of its own clips.
@@ -2463,7 +2551,7 @@ pub fn encrypted(path: &str) -> bool {
 /// is what always used to happen. See [`entry_points`].
 pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
     let (root, clip) = clip_on_a_disc(path)?;
-    let mut vol = Volume::open(Path::new(root)).ok()?;
+    let mut vol = Volume::open(Path::new(&root)).ok()?;
     let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
     // A name that plays one sequence is opened as those bytes alone, so the
     // map has to be cut to them and counted from where they start: a point
@@ -2478,8 +2566,8 @@ pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
             p.1 -= from;
         }
         points
-    } else if let Some(table) = joins_clocks(root, &vol)
-        .then(|| joined(&raw, vol.bytes(clip) / SOURCE_PACKET))
+    } else if let Some(table) = joins_clocks(&root, &vol)
+        .then(|| joined(&raw, vol.bytes(&clip) / SOURCE_PACKET))
         .flatten()
     {
         // A clip read whole is read with its clocks joined, so the map has to
@@ -2517,7 +2605,7 @@ pub fn clip_entry_points(path: &str) -> Option<Vec<(f64, u64)>> {
 /// index does not read.
 pub fn clip_presentation_start(path: &str) -> Option<f64> {
     let (root, clip) = clip_on_a_disc(path)?;
-    let mut vol = Volume::open(Path::new(root)).ok()?;
+    let mut vol = Volume::open(Path::new(&root)).ok()?;
     let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
     let starts = sequence_starts(&raw);
     // A name that plays one sequence is opened as those bytes alone, and the
@@ -2732,16 +2820,16 @@ pub fn clip_restamp(path: &str) -> Option<crate::restamp::Restamp> {
     // recorder writes `BDAV`. Asked of the name so that a pressed disc pays
     // nothing at all: no image opened, no index read.
     let (root, clip) = clip_on_a_disc(path)?;
-    if named_bdmv(root) {
+    if named_bdmv(&root) {
         return None;
     }
     // A directory under a name of its own is asked what it is.
-    let mut vol = Volume::open(Path::new(root)).ok()?;
-    if !joins_clocks(root, &vol) {
+    let mut vol = Volume::open(Path::new(&root)).ok()?;
+    if !joins_clocks(&root, &vol) {
         return None;
     }
     let raw = vol.read(&format!("CLIPINF/{clip}.clpi")).ok()?;
-    joined(&raw, vol.bytes(clip) / SOURCE_PACKET)
+    joined(&raw, vol.bytes(&clip) / SOURCE_PACKET)
 }
 
 /// Whether a clip read whole off this disc is read with its clocks joined:
@@ -3426,16 +3514,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn a_folder_named_dot_is_called_what_it_is_called() {
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(named_folder(Path::new(".")).file_name(), here.file_name());
+        assert_eq!(
+            named_folder(Path::new("..")).file_name(),
+            here.parent().unwrap().file_name()
+        );
+        assert_eq!(named_folder(Path::new("/a/disc")).as_ref(), Path::new("/a/disc"));
+        assert_eq!(named_folder(Path::new("/a/disc/")).file_name().unwrap(), "disc");
+    }
+
+    /// A disc named by its own directory is called after the folder or image
+    /// holding it; any other name is its own.
+    #[test]
+    fn a_disc_named_by_its_own_directory_is_called_after_its_folder() {
+        let root = std::env::temp_dir().join(format!("smartcut-disc-called-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["Seminar.D1/VIDEO_TS", "Anime/bdmv", "Rec/BDAV"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let at = |rel: &str| called(&root.join(rel));
+        assert_eq!(at("Seminar.D1/VIDEO_TS").as_deref(), Some("Seminar.D1"));
+        assert_eq!(at("Seminar.D1/VIDEO_TS/").as_deref(), Some("Seminar.D1"));
+        assert_eq!(at("Seminar.D1/VIDEO_TS/.").as_deref(), Some("Seminar.D1"));
+        assert_eq!(at("Seminar.D1").as_deref(), Some("Seminar.D1"));
+        assert_eq!(at("Anime/bdmv").as_deref(), Some("Anime"));
+        assert_eq!(at("Rec/BDAV").as_deref(), Some("Rec"));
+        // Through an image: the image's stem, as the image itself is called.
+        std::fs::write(root.join("Film.iso"), []).unwrap();
+        assert_eq!(at("Film.iso/BDMV").as_deref(), Some("Film"));
+        assert_eq!(at("Film.iso").as_deref(), Some("Film"));
+        // A disc copied under a name of its own keeps it.
+        assert_eq!(at("Anime").as_deref(), Some("Anime"));
+        // With nothing above it, the directory is all there is.
+        assert_eq!(called(Path::new("/VIDEO_TS")).as_deref(), Some("VIDEO_TS"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A name that plays one sequence still names its disc and its clip.
     #[test]
     fn a_windowed_name_is_still_a_clip_on_a_disc() {
         assert_eq!(
             clip_on_a_disc("/d/BDAV/STREAM/00001.m2ts@8960-4605951"),
-            Some(("/d/BDAV", "00001"))
+            Some(("/d/BDAV".into(), "00001".into()))
         );
         assert_eq!(
             clip_on_a_disc("/d/BDAV/STREAM/00001.m2ts"),
-            Some(("/d/BDAV", "00001"))
+            Some(("/d/BDAV".into(), "00001".into()))
         );
     }
 
@@ -3910,11 +4037,11 @@ mod tests {
     fn names_the_clip_a_path_on_a_disc_points_at() {
         assert_eq!(
             clip_on_a_disc("/rec/Anime.iso/BDMV/STREAM/00014.m2ts"),
-            Some(("/rec/Anime.iso/BDMV", "00014"))
+            Some(("/rec/Anime.iso/BDMV".into(), "00014".into()))
         );
         assert_eq!(
             clip_on_a_disc("/rec/copied/BDAV/STREAM/00001.m2ts"),
-            Some(("/rec/copied/BDAV", "00001"))
+            Some(("/rec/copied/BDAV".into(), "00001".into()))
         );
         // Anything that is not a clip on a disc is not one.
         assert_eq!(clip_on_a_disc("/rec/programme.ts"), None);
@@ -3923,11 +4050,11 @@ mod tests {
         // Windows: the folder as named, the rest as the volume joined it.
         assert_eq!(
             clip_on_a_disc(r"D:\rec\disc\BDAV\STREAM/00001.m2ts"),
-            Some((r"D:\rec\disc\BDAV", "00001"))
+            Some((r"D:\rec\disc\BDAV".into(), "00001".into()))
         );
         assert_eq!(
             clip_on_a_disc(r"D:\rec\disc\bdmv\stream\00014.M2TS"),
-            Some((r"D:\rec\disc\bdmv", "00014"))
+            Some((r"D:\rec\disc\bdmv".into(), "00014".into()))
         );
         // A folder that is not called either is not a disc on its name alone,
         // nor on its shape where it is neither a folder nor inside an image.
@@ -3963,8 +4090,8 @@ mod tests {
         std::fs::write(root.join("both/BDMV/CLIPINF/00001.clpi"), clpi(0x1102)).unwrap();
         let pids = |clip: &str| -> Vec<i32> {
             let (root, clip) = clip_on_a_disc(clip).expect("a clip on a disc");
-            let mut vol = Volume::open(Path::new(root)).unwrap();
-            vol.tracks(clip).iter().map(|t| t.pid).collect()
+            let mut vol = Volume::open(Path::new(&root)).unwrap();
+            vol.tracks(&clip).iter().map(|t| t.pid).collect()
         };
         let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
         assert_eq!(pids(&at("Anime 2026-08-17/STREAM/00001.m2ts")), vec![0x1100]);
@@ -3973,6 +4100,22 @@ mod tests {
         // A folder of that shape with no playlists beside it is not a disc.
         std::fs::create_dir_all(root.join("camera/STREAM")).unwrap();
         assert_eq!(clip_on_a_disc(&at("camera/STREAM/00001.m2ts")), None);
+        // Reached through a link whose own name runs through no `STREAM`: a
+        // link to the clip, and a link to the folder of clips.
+        #[cfg(unix)]
+        {
+            let stream = root.join("Anime 2026-08-17/STREAM");
+            std::fs::write(stream.join("00001.m2ts"), []).unwrap();
+            std::os::unix::fs::symlink(stream.join("00001.m2ts"), root.join("rec.m2ts")).unwrap();
+            std::os::unix::fs::symlink(&stream, root.join("clips")).unwrap();
+            assert_eq!(pids(&at("rec.m2ts")), vec![0x1100]);
+            assert_eq!(pids(&at("clips/00001.m2ts")), vec![0x1100]);
+            assert_eq!(pids(&format!("{}@0-9", at("clips/00001.m2ts"))), vec![0x1100]);
+            // A plain recording is still not one, through a link or not.
+            std::fs::write(root.join("camera/STREAM/00001.m2ts"), []).unwrap();
+            std::os::unix::fs::symlink(root.join("camera/STREAM/00001.m2ts"), root.join("cam.m2ts")).unwrap();
+            assert_eq!(clip_on_a_disc(&at("cam.m2ts")), None);
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

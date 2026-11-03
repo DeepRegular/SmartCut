@@ -140,7 +140,18 @@ pub fn media_info(path: &str) -> Result<MediaInfo> {
                 if raw.width > 0 && raw.height > 0 {
                     push(&mut facts, "resolution", format!("{} × {}", raw.width, raw.height));
                 }
-                let sar = raw.sample_aspect_ratio;
+                // The shape the outline and the cut use (`outline_of`): the
+                // container's own where it states one -- a Matroska's display
+                // size, an MP4's `pasp`, AV1's only place for it -- and the
+                // bitstream's where it does not. ffprobe answers the same.
+                let sar = unsafe {
+                    ff::ffi::av_guess_sample_aspect_ratio(
+                        ictx.as_ptr() as *mut _,
+                        s.as_ptr() as *mut _,
+                        std::ptr::null_mut(),
+                    )
+                };
+                let sar = if sar.num > 0 && sar.den > 0 { sar } else { raw.sample_aspect_ratio };
                 if sar.num > 0 && sar.den > 0 && raw.width > 0 && raw.height > 0 {
                     push(&mut facts, "sar", format!("{}:{}", sar.num, sar.den));
                     // In 64 bits: a SAR is whatever the container states, and
