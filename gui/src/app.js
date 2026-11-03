@@ -7813,6 +7813,9 @@ function joinHeard(list) {
 function joinsForWindow() {
   const list = ready();
   const heard = joinHeard(list);
+  // The shape the joined file is written in, which the window composites
+  // the seam at: see `cross_load`.
+  const master = masterClip(list);
   const out = [];
   for (let i = 0; i + 1 < list.length; i++) {
     const before = list[i];
@@ -7844,6 +7847,7 @@ function joinsForWindow() {
       afterOut: first.b,
       after: before.after ? { ...before.after } : null,
       heard,
+      masterPath: master ? master.path : null,
     });
   }
   return out;
@@ -9360,7 +9364,7 @@ async function writeJoined(list) {
     poster: coverAt(c),
   }));
   try {
-    await invoke("export_joined", {
+    const whole = await invoke("export_joined", {
       clips: sent,
       master: Math.max(0, list.indexOf(master)),
       output: out,
@@ -9398,6 +9402,9 @@ async function writeJoined(list) {
     for (const c of list) c.out = { state: "done", progress: 1, note: t("out.done", { extra }), detail };
     runLogLine(`${t("log.wrote")}: ${out}`);
     note(t("out.joined", { n: list.length, name: nameOf(out) }));
+    // Said after the line above, which would otherwise take its place: the
+    // engine wrote the file by other plans than the plan line showed.
+    if (whole) note(t("out.av1Whole", { name: nameOf(out) }));
     return true;
   } catch (e) {
     for (const c of list) c.out = { state: "error", progress: 0, note: String(e) };
@@ -9814,7 +9821,10 @@ async function startExport() {
     if (disc) discMarks.set(clip, chaptersFor(clip));
     writtenHere.push(out);
     try {
-      await invoke("export", {
+      // True where the engine had to write the file again with all of its
+      // pictures re-encoded, which the plan shown above did not say: an AV1
+      // cut into MP4 whose copies need a second sample description.
+      const whole = await invoke("export", {
         path: clip.path,
         ranges,
         output: out,
@@ -9858,6 +9868,7 @@ async function startExport() {
       // frame left standing is the last one the encoder made, rather than
       // whichever one the last progress report happened to fall short of.
       followWrite(1);
+      if (whole) note(t("out.av1Whole", { name: nameOf(out) }));
       let extra = "";
       // A disc carries its chapter points in its own playlist, which is
       // where a player looks for them; a file beside the stream would be the

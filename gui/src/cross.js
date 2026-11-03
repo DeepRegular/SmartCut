@@ -512,7 +512,7 @@ async function showJoin() {
   sayNote("xw.reading");
   const run = ++joinRun;
   const load = loading.then(() =>
-    invoke("cross_load", { before: j.beforePath, after: j.afterPath }),
+    invoke("cross_load", { before: j.beforePath, after: j.afterPath, master: j.masterPath ?? null }),
   );
   loading = load.catch(() => {});
   let got;
@@ -1134,7 +1134,7 @@ if (listen) {
       // And where it falls is where it fell: nothing to load again, and the
       // playback in hand can go on. Only its names can have moved (a twin
       // of one of its rows numbered).
-      if (["beforeIn", "beforeOut", "afterIn", "afterOut", "heard"].every((k) => j[k] === was[k])) {
+      if (["beforeIn", "beforeOut", "afterIn", "afterOut", "heard", "masterPath"].every((k) => j[k] === was[k])) {
         el("name-before").textContent = j.beforeName || "";
         el("name-after").textContent = j.afterName || "";
         if (j.beforePic) el("pic-before").src = j.beforePic;

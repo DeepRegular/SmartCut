@@ -7210,6 +7210,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     subsToken++;
     meterToken++;
     zoomToken++;
+    // The last recording's picture shape is no measure for this one's: the
+    // corners were drawn on it until this one's first picture had loaded.
+    pictureSize = null;
     paintSourceInfo();
     // A track number is only the same track on the same recording; see
     // `paintSubsPicker`, which keeps one only across a reopen. Another
@@ -8039,13 +8042,18 @@ async function cutSelection(inner) {
 /// in one go on a phone recording closed the window while the Del was still
 /// asking the stage where OUT's picture ends, and the list kept the row
 /// without the cut.
+///
+/// Every one still running, not only the last: a second Del pressed while
+/// the first is asking is dropped at once (`exactEnd`), and taking its place
+/// here let OK go on without waiting for the first.
 let cutting = null;
 function whileCutting(p) {
-  cutting = p;
+  const all = cutting ? Promise.allSettled([cutting, p]) : p;
+  cutting = all;
   const done = () => {
-    if (cutting === p) cutting = null;
+    if (cutting === all) cutting = null;
   };
-  p.then(done, done);
+  all.then(done, done);
   return p;
 }
 
@@ -8928,6 +8936,8 @@ function renderTracks() {
     // A subtitle format no cut carries (SubRip, ASS, mov_text, WebVTT,
     // dvb_subtitle): without this line it would read as a data broadcast.
     "subtitle stream": "tracks.subtitleStream",
+    // A picture track beside the one written (two video tracks in an .mp4).
+    "video stream": "tracks.videoStream",
   };
   for (const track of dropped) {
     const li = document.createElement("li");

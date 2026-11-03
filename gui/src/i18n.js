@@ -984,6 +984,7 @@ const CATALOG = {
     "out.done": "完了{extra}",
     "out.doneKeyframes": " / キーフレーム {n} 個",
     "out.joined": "{n} 本を \"{name}\" にまとめました",
+    "out.av1Whole": "\"{name}\" は再エンコードした部分とコピーした部分で AV1 の設定が食い違い、MP4 には設定を 1 つしか書けないため、映像をすべて再エンコードしました",
     "out.writingCrossings": "\"{name}\" を出力中: 継ぎ目 {n} か所（計 {secs} 秒）を再エンコードします…",
     "out.summary": "{done} / {all} 本を出力しました{failed}{aborted}　経過 {elapsed}",
     "out.summaryFailed": "　失敗 {n} 本",
@@ -1296,6 +1297,7 @@ const CATALOG = {
     "tracks.menu": "メニュー",
     "tracks.textst": "テキスト字幕（書体はディスク側にあります）",
     "tracks.subtitleStream": "字幕ストリーム（SmartCut が扱わない形式）",
+    "tracks.videoStream": "別の映像ストリーム（出力する映像は 1 本だけ）",
     "tracks.settled": "{what} — 環境設定で決めます   PID 0x{pid}",
     "tracks.settledNote":
       "データ放送を残すかどうかは環境設定で決めます。残せるのは .ts のときだけで、既定では残します。",
@@ -2320,6 +2322,7 @@ const CATALOG = {
     "out.done": "Done{extra}",
     "out.doneKeyframes": " / {n} keyframe{n?s}",
     "out.joined": "{n} clips written into \"{name}\"",
+    "out.av1Whole": "\"{name}\": the re-encoded and the copied parts would carry different AV1 settings and an MP4 holds only one, so all of its video was re-encoded",
     "out.writingCrossings": "Writing \"{name}\": {n} crossing{n?s} written afresh, {secs}s of it…",
     "out.summary": "{done} of {all} written{failed}{aborted}   elapsed {elapsed}",
     "out.summaryFailed": "   {n} failed",
@@ -2627,6 +2630,7 @@ const CATALOG = {
     "tracks.menu": "a menu",
     "tracks.textst": "text subtitles (the fonts are on the disc)",
     "tracks.subtitleStream": "a subtitle stream (a format SmartCut does not carry)",
+    "tracks.videoStream": "another video stream (a cut writes one)",
     "tracks.settled": "{what} — answered in the preferences   PID 0x{pid}",
     "tracks.settledNote":
       "The data broadcast is answered in the preferences rather than per track here. Only a .ts can hold one, and it is kept by default.",

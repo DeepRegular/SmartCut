@@ -1702,6 +1702,153 @@ def seam_vfr_reel_after(cfg, t):
                   name="seam_vfr_reel_after")
 
 
+def seam_sar_reels(cfg, t, before="~/media/sd43.ts", after="~/media/sd169.ts",
+                   master=None, want=4 / 3, name="seam_sar_reels"):
+    """継ぎ目の編集 on an ORDINARY join of two recordings of one size and
+    different pixel aspect (SD broadcast 4:3 then 16:9, both 720x480): the
+    picture on the stage has the shape the joined file is written in -- the
+    master's, the other reel filled into it (`want`, width over height of the
+    output). And OK writes the dissolve back with the master kept. (44th pass)"""
+    rows = [{"path": os.path.expanduser(before)}, {"path": os.path.expanduser(after)}]
+    for r in rows:
+        if not os.path.exists(r["path"]):
+            t.check(f"44s {name}: material", False, f"missing {r['path']}")
+            return
+    extra = {} if master is None else {"master": master}
+    with App(cfg, name, rows, {"joinAll": True, **extra}) as app:
+        app.to_list()
+        wait_for("rows read", lambda: app.s.js(
+            "return [...document.querySelectorAll('#cliplist > li .badge')]"
+            ".every((b) => b.classList.contains('ready'))"), 90)
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled;"), 90)
+        handles = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in handles] or [None])[0], 60)
+        app.s.switch(seam)
+        wait_for("the join loaded", lambda: app.s.js(
+            "return document.getElementById('out-clip-time').textContent") not in
+            ("--:--:--.--", "00:00:00.00"), 60)
+        app.s.js(
+            "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+            "k.dispatchEvent(new Event('change', {bubbles: true}));")
+        time.sleep(1.5)
+        shapes = []
+        for click in ("#go-start", "#go-end"):
+            app.s.click(click)
+            time.sleep(2)
+            shapes.append(wait_for("a picture on the stage", lambda: app.s.js(
+                "const p = document.getElementById('preview');"
+                "return p.complete && p.naturalWidth > 0 && p.getAttribute('src')"
+                " ? [p.naturalWidth, p.naturalHeight] : null;"), 30))
+        ratios = [w / h for w, h in shapes]
+        t.check(f"44s {name}: the stage's picture has the output's shape ({want:.3f}) at both ends",
+                all(abs(r - want) / want < 0.03 for r in ratios), f"{shapes} -> {[round(r, 3) for r in ratios]}")
+        try:
+            app.s.click("#cross-ok")
+        except WebDriverError:
+            pass
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+        app.s.switch(app.main)
+        p = app.save()
+        afters = [(c.get("after") or {}).get("kind") for c in p["clips"]]
+        kept = (p.get("settings") or {}).get("master")
+        t.check(f"44s {name}: OK writes the dissolve onto row 1, master kept",
+                afters[0] == "dissolve" and (kept == master if master is not None else not kept),
+                f"after {afters}; master {kept!r}")
+
+
+def seam_sar_reels_master_after(cfg, t):
+    """seam_sar_reels with the 16:9 recording (the second row) as 基準クリップ:
+    the joined file is 16:9 and the 4:3 reel is filled into it, and the stage
+    is 16:9 too. (44th pass: the window composited at the shape of the clip
+    BEFORE the join until cross_load was told the master.)"""
+    seam_sar_reels(cfg, t, master=1, want=16 / 9, name="seam_sar_reels_master_after")
+
+
+def _stage_shape(app):
+    """The width over height of the seam window's picture, at its start."""
+    app.s.click("#go-start")
+    time.sleep(2)
+    w, h = wait_for("a picture on the stage", lambda: app.s.js(
+        "const p = document.getElementById('preview');"
+        "return p.complete && p.naturalWidth > 0 && p.getAttribute('src')"
+        " ? [p.naturalWidth, p.naturalHeight] : null;"), 30)
+    return w / h
+
+
+def seam_master_changed(cfg, t):
+    """継ぎ目の編集 up on sd43 -> sd169 with the first row as 基準クリップ (the
+    stage 4:3), then 基準クリップ changed to the second row in the list while
+    the window stays up: the window is told the joins again and its stage
+    takes the new master's 16:9. And a join of two 4:3 rows whose master is
+    a third, 16:9 row: the stage is 16:9 though neither clip is. (44th pass,
+    stage 3: cross_load's master and its cache key.)"""
+    a = os.path.expanduser("~/media/sd43.ts")
+    b = os.path.expanduser("~/media/sd169.ts")
+    for f in (a, b):
+        if not os.path.exists(f):
+            t.check("44m seam_master_changed: material", False, f"missing {f}")
+            return
+
+    def open_seam(app):
+        app.to_list()
+        wait_for("rows read", lambda: app.s.js(
+            "return [...document.querySelectorAll('#cliplist > li .badge')]"
+            ".every((b) => b.classList.contains('ready'))"), 90)
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled;"), 90)
+        handles = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in handles] or [None])[0], 60)
+        app.s.switch(seam)
+        wait_for("the join loaded", lambda: app.s.js(
+            "return document.getElementById('out-clip-time').textContent") not in
+            ("--:--:--.--", "00:00:00.00"), 60)
+        return seam
+
+    with App(cfg, "seam_master_changed", [{"path": a}, {"path": b}], {"joinAll": True}) as app:
+        seam = open_seam(app)
+        first = _stage_shape(app)
+        app.s.switch(app.main)
+        app.s.js(
+            "const m = document.getElementById('out-master');"
+            "m.value = m.options[1].value;"
+            "m.dispatchEvent(new Event('input', {bubbles: true}));")
+        time.sleep(1)
+        app.s.switch(seam)
+        time.sleep(3)
+        second = _stage_shape(app)
+        t.check("44m seam_master_changed: the stage follows 基準クリップ changed while it is up",
+                abs(first - 4 / 3) < 0.04 and abs(second - 16 / 9) < 0.05,
+                f"before {first:.3f} (want 1.333), after {second:.3f} (want 1.778)")
+        app.s.switch(app.main)
+    rows = [{"path": a}, {"path": a}, {"path": b}]
+    with App(cfg, "seam_master_third", rows, {"joinAll": True, "master": 2}) as app:
+        open_seam(app)
+        got = _stage_shape(app)
+        t.check("44m seam_master_changed: a 4:3 join under a third, 16:9 master is staged 16:9",
+                abs(got - 16 / 9) < 0.05, f"{got:.3f} (want 1.778)")
+        app.s.switch(app.main)
+
+
+def seam_sar_av1_mp4(cfg, t):
+    """seam_sar_reels on two AV1 .mp4 reels whose pixel aspect is stated only
+    by the container (pasp 4:3, then 1:1; #11's case): the stage is 192x112 at
+    4:3 pixels, i.e. 16:7, the shape of the joined file. (44th pass)"""
+    seam_sar_reels(cfg, t, before="~/pr1112/fx-sar/av1-sar4_3.mp4",
+                   after="~/pr1112/fx-sar/av1-sar1_1.mp4", want=16 / 7,
+                   name="seam_sar_av1_mp4")
+
+
 def ctrl_h_after_failed_open(cfg, t):
     """Row 1 up with its own .keyframe, Ctrl+H, and while 「上書きしますか？」
     is up, row 2 -- a recording broken since the list read it -- double-
@@ -2947,6 +3094,34 @@ def tracks_subtitle_stream(cfg, t):
         t.check(f"33s visit {visit}: the SubRip track is a subtitle stream not carried",
                 "出力できません: 字幕ストリーム（SmartCut が扱わない形式）" in text
                 and "データ放送" not in text and "これらは選べません" not in text,
+                repr(text))
+
+
+def tracks_second_video(cfg, t):
+    """An .mp4 with two video tracks (b.mkv's picture twice, its sound once):
+    a cut writes one, and the track menu names the other as a video stream
+    left out -- not as a data broadcast, the line it fell back to while the
+    window did not know the kind. Opened twice, the second time from what the
+    first left. (44th pass)"""
+    at = os.path.join(cfg.work, "second_video")
+    os.makedirs(at, exist_ok=True)
+    path = os.path.join(at, "two.mp4")
+    if not os.path.exists(path):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", cfg.b, "-i", cfg.b,
+                        "-map", "0:v:0", "-map", "1:v:0", "-map", "0:a:0?", "-c", "copy",
+                        "-f", "mp4", path + ".part"], check=True)
+        os.replace(path + ".part", path)
+    for visit in (1, 2):
+        with App(cfg, f"tracks_second_video_{visit}", [{"path": path}]) as app:
+            app.open_row(1, "two.mp4")
+            app.s.click("#tracks")
+            text = wait_for("the track list", lambda: app.s.js(
+                "const m = document.getElementById('tracks-modal');"
+                "const l = document.getElementById('tracks-list');"
+                "return !m.hidden && l.children.length > 1 && l.innerText"), 30)
+        t.check(f"44v visit {visit}: the second video track is named as one not carried",
+                "出力できません: 別の映像ストリーム（出力する映像は 1 本だけ）" in text
+                and "データ放送" not in text,
                 repr(text))
 
 
@@ -7191,6 +7366,125 @@ def vfr_del_then_ok(cfg, t):
                 len(c2) == 1 and abs(c2[0][0] - 1.9) < 1e-5 and abs(c2[0][1] - 9.0667) < 2e-3, f"cuts {c2}")
 
 
+def vfr_del_twice_then_ok(cfg, t):
+    """`vfr_del_then_ok` with Del pressed twice. The second Del, made while the
+    first was still asking the stage where OUT's picture ends, is dropped by
+    `exactEnd` -- and it replaced the first as the cut OK waits for
+    (`whileCutting`), so OK went on at once and the window closed before the
+    first Del's cut was made (44th pass)."""
+    v = _hold_mp4(cfg)
+    with App(cfg, "vfr_del_twice_then_ok", [{"path": v}]) as app:
+        def jump(text):
+            app.s.keys("j")
+            wait_for("the jump box", lambda: app.s.js(
+                "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+            app.s.keys("Control+a")
+            app.s.type(text)
+            app.s.keys("Enter")
+        app.to_list()
+        app.open_row(1, "hold.mp4", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: "hold.mp4" in app.state()["title"] and app.s.js(
+            "const k = document.getElementById('ovl-kind'); return !!k && k.innerText !== ''"
+            " && !k.innerText.includes('解析中')"), 120, 0.3)
+        time.sleep(3.0)
+        jump("00:00:01.90")
+        wait_for("the playhead on 1.9", lambda: abs((_counter_time(app) or -1) - 1.9) < 0.02, 10)
+        time.sleep(1.5)
+        app.s.keys("i")
+        jump("00:00:02.00")
+        wait_for("the playhead on 2.0", lambda: abs((_counter_time(app) or -1) - 2.0) < 0.02, 10)
+        time.sleep(1.5)
+        app.s.keys("o", "Delete", "Delete", "Shift+Enter")
+        app.gone()
+        proj = app.save()
+        c1 = cuts_of(proj, 1)
+        t.check("44m1 O, Del, Del and OK in one go: the first Del's cut is handed over",
+                len(c1) == 1 and abs(c1[0][0] - 1.9) < 1e-3 and abs(c1[0][1] - 9.0667) < 2e-3, f"cuts {c1}")
+
+
+def preview_subs_playback(cfg, t):
+    """Preview subtitles up while playing (ab6daa3): an ARIB recording and a
+    PGS one, the first track put up from the 表示 menu, then played. The
+    layer is sampled every 10 ms in the page: once a line is up it must not
+    blink off for less than 150 ms (WebKitGTK says a loading picture has no
+    size, and the layer was put away on nearly every frame), and a PGS line
+    that stays up must not have its picture assigned again on every frame.
+    Then frames stepped with the arrow keys while a line is up, and the
+    other row opened while it is: the layer of the row left must not stand
+    over the new recording's first picture. NOT REACHED where no line came up
+    in the stretch played."""
+    rows = [{"path": os.path.expanduser("~/media/nhk-cap.ts")},
+            {"path": os.path.expanduser("~/media/bd-clip.ts")}]
+    sampler = (
+        "if (!window.__subs) {"
+        " const L = document.getElementById('subs-layer'), P = document.getElementById('subs-pic');"
+        " const s = window.__subs = {log: [], srcs: 0, last: null};"
+        " new MutationObserver(() => { s.srcs++; }).observe(P, {attributes: true, attributeFilter: ['src']});"
+        " setInterval(() => { const v = !L.hidden; if (v !== s.last) { s.log.push([performance.now(), v, s.srcs, (P.getAttribute('src') || '').length]); s.last = v; } }, 10);"
+        "} window.__subs.log = []; window.__subs.srcs = 0; window.__subs.last = null; return true;")
+    with App(cfg, "preview_subs_playback", rows) as app:
+        for n, name in ((1, "nhk-cap.ts"), (2, "bd-clip.ts")):
+            app.open_row(n, name, wait=False)
+            app.to_editor()
+            wait_for("the walk", lambda: name in app.state()["title"] and app.s.js(
+                "const k = document.getElementById('ovl-kind'); return !!k && k.innerText !== ''"
+                " && !k.innerText.includes('解析中')"), 180, 0.3)
+            time.sleep(2.0)
+            picked = app.s.js(
+                "const b = document.querySelector('#subs-track button[data-track]:not([data-track=\"\"])');"
+                "if (!b) return false; b.click(); return b.dataset.track;")
+            t.check(f"44s{n}a {name}: a subtitle track to put up", bool(picked), repr(picked))
+            if not picked:
+                continue
+            app.s.js(sampler)
+            app.s.keys(" ")
+            time.sleep(25.0 if n == 1 else 20.0)
+            app.s.keys(" ")
+            time.sleep(0.5)
+            log = app.s.js("return window.__subs.log")
+            srcs = app.s.js("return window.__subs.srcs")
+            ups = [i for i, e in enumerate(log) if e[1]]
+            # A line taken down and another put up 1-3 frames later is two
+            # lines (PGS leaves such gaps); a blink puts the same one back.
+            blinks = [round(log[i + 1][0] - log[i][0]) for i in range(len(log) - 1)
+                      if not log[i][1] and i > 0 and log[i - 1][1] and log[i + 1][1]
+                      and log[i + 1][0] - log[i][0] < 150
+                      and log[i + 1][2] == log[i - 1][2]]
+            reached = bool(ups)
+            t.check(f"44s{n}b {name}: no blink while playing{'' if reached else ' NOT REACHED'}",
+                    not blinks, f"blinks {blinks[:10]} of {len(log)} changes; src set {srcs}; {[(round(a), v, c, l) for a, v, c, l in log]}")
+            if n == 2 and reached:
+                t.check("44s2c bd-clip.ts: a PGS line's picture is not assigned every frame",
+                        srcs < 40, f"src set {srcs} times in 20 s")
+            # Steps while the line is still up, if it is.
+            up = app.s.js("return !document.getElementById('subs-layer').hidden")
+            if up:
+                app.s.js(sampler)
+                for _ in range(6):
+                    app.s.keys("Right")
+                    time.sleep(0.25)
+                log = app.s.js("return window.__subs.log")
+                t.check(f"44s{n}d {name}: frame steps with a line up keep it",
+                        all(e[1] for e in log), repr(log[:10]))
+            if n == 1:
+                app.to_list()
+        # Back to row 1 from row 2 straight after: the layer must not stand on
+        # the row left before row 1's line is read.
+        up2 = app.s.js("return !document.getElementById('subs-layer').hidden")
+        app.open_row(1, "nhk-cap.ts", wait=False)
+        app.to_editor()
+        early = []
+        for _ in range(30):
+            early.append(app.s.js(
+                "const t = document.getElementById('title').innerText;"
+                "return [t, !document.getElementById('subs-layer').hidden];"))
+            time.sleep(0.05)
+        stale = [e for e in early if "nhk-cap" in e[0] and e[1]]
+        t.check(f"44s3 switching rows: no line of the row left over the next one{'' if up2 else ' (none was up)'}",
+                not stale or not up2, repr(early[:3]))
+
+
 def vfr_hold_arrows(cfg, t):
     """A screen recording that holds one picture for 7 s (mpdecimate, as a
     phone or desktop capture of a still screen is), opened and walked: the
@@ -7399,6 +7693,54 @@ def vfr_key_out(cfg, t):
             os.remove(f)
 
 
+
+def av1_whole_verify(cfg, t):
+    """ベリファイ on, an AV1 .mp4 whose sequence header says its chroma is
+    colocated, cut at 0.52-9.08 into .mp4: the boundary encoder's sequence
+    differs, MP4 cannot describe both, and the engine writes the selection
+    again with every picture re-encoded (#12). The row must verify OK -- held
+    to the copies the first plan had, every one of them was a "copy that came
+    back different" and the row went red -- and the run says the video was
+    re-encoded whole. (44th pass)"""
+    src = os.path.expanduser("~/pr1112/fx-av1/aom8.mp4")
+    if not os.path.exists(src):
+        t.check("44f av1_whole_verify: material", False, f"missing {src}")
+        return
+    home = os.path.join(cfg.work, "av1whole")
+    os.makedirs(home, exist_ok=True)
+    chroma = os.path.join(home, "chroma.mp4")
+    if not os.path.exists(chroma):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", src, "-map", "0:v:0",
+                        "-c", "copy", "-bsf:v", "av1_metadata=chroma_sample_position=colocated",
+                        "-f", "mp4", chroma + ".part"], check=True)
+        os.replace(chroma + ".part", chroma)
+    rows = [{"path": chroma, "edit": {"cuts": [{"a": 0.0, "b": 0.52}, {"a": 9.08, "b": 99999.0}],
+                                      "keyframes": []}}]
+    with App(cfg, "av1_whole_verify", rows, {"container": "mp4", "number": False}) as app:
+        app.to_list()
+        app.s.js("const b = document.getElementById('pref-verify');"
+                 "if (!b.checked) b.click();")
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("the row on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == 1, 60)
+        time.sleep(0.5)
+        files = app.export()
+        notes = app.s.js(
+            "return [...document.querySelectorAll('#out-list > li .note')]"
+            ".map((n) => [n.innerText, n.title]);")
+        page = app.s.js("return document.body.innerText")
+        mp4 = [f for f in files if f.endswith(".mp4")]
+        got = pictures(mp4[0]) if len(mp4) == 1 else None
+        said = " | ".join(f"{a} [{b}]" for a, b in notes)
+        t.check("44f av1_whole_verify: the cut is written", len(mp4) == 1 and got == 214,
+                f"outputs {[os.path.basename(f) for f in files]}, {got} pictures (want 214)")
+        t.check("44f av1_whole_verify: ベリファイ OK", bool(notes) and all("ベリファイ OK" in a for a, _ in notes),
+                said)
+        t.check("44f av1_whole_verify: the run says the video was re-encoded whole",
+                "映像をすべて再エンコードしました" in page, page[-400:])
+        for f in files:
+            os.remove(f)
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -7442,10 +7784,15 @@ SCENARIOS = [
     seam_vfr_reel,
     seam_vfr_reel_master_ts,
     seam_vfr_reel_after,
+    seam_sar_reels,
+    seam_sar_reels_master_after,
+    seam_master_changed,
     ctrl_h_after_failed_open,
     ctrl_h_after_other_open,
     vfr_hold_arrows,
     vfr_del_then_ok,
+    vfr_del_twice_then_ok,
+    preview_subs_playback,
     vfr_key_out,
     disc_refuses_opus,
     disc_keeps_its_name,
@@ -7458,6 +7805,7 @@ SCENARIOS = [
     image_only_twice_other,
     image_from_its_own_image,
     tracks_subtitle_stream,
+    tracks_second_video,
     disc_gauge_overwritable,
     disc_fit_busy_stretch,
     image_turned_on_during_run,
@@ -7510,7 +7858,7 @@ SCENARIOS = [
 
 
 # Selectable by name, not run by default.
-EXTRA = [ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
+EXTRA = [av1_whole_verify, seam_sar_av1_mp4, ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
          disc_seam_gap_chapters, disc_seam_join_chapters, disc_plays_rows, disc_plays_switch,
          disc_plays_recount, disc_plays_due, disc_plays_trim_first,
          real_old_projects_ok_unchanged, disc_plays_trim_left,
