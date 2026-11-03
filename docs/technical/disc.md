@@ -290,6 +290,15 @@ dozen namespaces declared and one interesting element in it, and pulling in an
 XML parser just to reach `<di:name>` would be by far the largest dependency in
 the program.
 
+Where the disc names itself nowhere — a DVD, a pressed disc with no `META`, a
+disc of recordings whose `info.bdav` carries no name — it is called what it
+arrived as: the stem of an image, and the whole name of a folder, dot and all.
+**A disc named by its own `VIDEO_TS`, `BDMV` or `BDAV` directory is called after
+the folder or image that holds it**, and so is one named as `.` or `..` from
+inside it, so `Seminar.D1/VIDEO_TS` gives the same rows as `Seminar.D1`, and so
+do the files cut from it. Named by the directory, every such disc came out as
+`VIDEO_TS` or `BDMV` (`disc::called`).
+
 ## The crawl, and the other kind of subtitles
 
 A broadcast sends more text than the subtitles. Beside them runs the **crawl** — the
@@ -899,6 +908,16 @@ reads the broadcast's own tables (PAT, PMT, SDT, EIT, SIT) walks the file
 directly, so it has to open a **range inside an image** and to find packets
 **192 bytes apart**. Both are in, which is why a cut taken from a disc carries
 the broadcast's tables the same as a cut taken from a `.ts`.
+
+**A clip is read as its disc's however it is named.** The disc is found from the
+path, so a clip named with `STREAM` in it (`STREAM/00001.m2ts` from inside
+`BDAV`) has its disc's index behind it: the languages, the listing, the entry
+points and the join of its clocks below. Two names say no `STREAM` at all, and
+were taken for a broadcast that had none of those. A bare `00001.m2ts` typed
+inside `STREAM` itself is read as a clip of the disc above it. A clip reached
+through a link of the user's own (`rec.m2ts`, or a folder linked to the disc's
+`STREAM`) is followed to where it really is. Only a name ending in `.m2ts` is
+followed, so any other file costs nothing more (`disc::clip_on_a_disc`).
 
 ### A clip whose clock restarts
 

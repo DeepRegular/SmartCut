@@ -300,6 +300,15 @@ taken from the opening either way, four places through the stream, because a cop
 rewrites nothing — [the opening is not the
 recording](audio.md#the-opening-is-not-the-recording).
 
+**The scan is the sequence's and not its first picture's.** The field order
+libavformat reports for MPEG-2 is its first picture's, and a broadcast sending
+film with repeated fields codes that picture as a whole frame. A 1080i programme
+that opens on film, or a cut that does (on a commercial, say), went into the
+index as 1080p at 29.97, which is not a format a recorder writes. An MPEG-2
+stream whose sequence header calls the sequence interlaced is now indexed as
+1080i or 480i, and the registration the cut writes onto the pictures in the
+stream's own map says the same, so the two cannot disagree (`bdav::read_clip`).
+
 **Which network the recording came off** sits in the same block as the
 transport stream and the service. It was written as 4 — satellite — until a
 recorder's own discs were read: the authoring tool's two are both of a
