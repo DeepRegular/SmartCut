@@ -151,7 +151,7 @@ FFmpeg 7.1 で生成した、B ピクチャを含む VFR の MP4 は、エディ
 
 対象は時刻とコピーだけである。次のものは確かめない。
 
-- AV1 の MP4 での sample description の適合（[AV1 in MP4](av1-mp4.md)、英語のみ）
+- AV1 の MP4 での sample description の適合（[MP4 に書く AV1 の構成情報](av1-mp4.ja.md)）
 - SAR の受け渡し
 - M2TS の到着時刻
 - GUI の再生

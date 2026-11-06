@@ -1,5 +1,7 @@
 # AV1 configuration in MP4
 
+[← Documentation](../README.md) ・ [← SmartCut](../../README.md) ・ [日本語](av1-mp4.ja.md)
+
 An AV1 boundary encoder can write different Sequence Header OBUs from the
 recording's. Decoding that seam successfully does not prove that MP4's
 `av1C` describes every sample which references it.
