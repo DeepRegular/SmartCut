@@ -65,9 +65,20 @@ pub struct Seam<'a> {
     pub after_in: f64,
     pub after_out: f64,
     pub transition: Transition,
+    /// The recording whose shape the joined file is written in -- the
+    /// master -- where that is not the clip before the join. Both clips are
+    /// composited at its shape, as the cut writes every reel into it (see
+    /// [`crate::conform`]). `None` takes the clip before's.
+    pub shaped_like: Option<&'a Source>,
 }
 
 impl Seam<'_> {
+    /// The size the preview's pictures are composited at: the master's
+    /// shape, at most `width` wide. See [`shape_for`].
+    pub fn shape(&self, width: u32) -> (u32, u32) {
+        shape_for(self.shaped_like.unwrap_or(self.before), width)
+    }
+
     /// How much of each clip the crossing really takes.
     ///
     /// [`Transition::takes`] says what it asks for; this is what the material
@@ -289,10 +300,11 @@ impl Window {
 
 /// The size the preview's pictures are composited at.
 ///
-/// Square pixels, worked out from the clip before the join -- which is the
-/// one whose shape the joined file takes when it is the master, and the
-/// nearer of the two to what the seam is being judged on either way. Even in
-/// both directions, because `yuv420p` has half as many chroma samples.
+/// Square pixels, worked out from the recording whose shape the joined file
+/// takes ([`Seam::shape`]): a 4:3 recording joined onto a 16:9 master is
+/// written filled into 16:9, and composited at its own shape the window
+/// showed a seam the file does not have. Even in both directions, because
+/// `yuv420p` has half as many chroma samples.
 pub fn shape_for(src: &Source, width: u32) -> (u32, u32) {
     let sar = src.video.sample_aspect_ratio.max(0.01);
     let native = (f64::from(src.video.width) * sar).round() as u32;
@@ -439,7 +451,7 @@ fn overlay_of(transition: &Transition, shape: (u32, u32)) -> Result<Option<Laid>
 /// -- see [`play`].
 pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>> {
     crate::init()?;
-    let shape = shape_for(seam.before, width);
+    let shape = seam.shape(width);
     let look = window.look(t);
     let laid = overlay_of(&seam.transition, shape).ok().flatten();
     let mut near_scale = None;
@@ -625,7 +637,7 @@ pub fn play(
     mut show: impl FnMut(f64, Vec<u8>),
 ) -> Result<()> {
     crate::init()?;
-    let shape = shape_for(seam.before, width);
+    let shape = seam.shape(width);
     let laid = overlay_of(&seam.transition, shape).ok().flatten();
     // Held to the rates a recording can have (see where `frame_rate` is
     // worked out). The rate arrives from the window, and a huge one made the

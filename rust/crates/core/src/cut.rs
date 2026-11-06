@@ -363,6 +363,18 @@ pub struct CutOptions {
     /// that comes to no more than the start of the file says nothing a
     /// player does not already know, and is left out.
     pub chapters: Vec<f64>,
+    /// Where the caller wants to hear that the cut was written by other
+    /// plans than the ones it was given, and by which.
+    ///
+    /// An AV1 cut into MP4 whose copies would need a second sample
+    /// description is written again with all its pictures re-encoded (see
+    /// [`join_with_progress`]); the plans that run used are put here, one
+    /// list per reel. A check that reads the file back holds it to those:
+    /// held to the plans it was handed, it called every copied picture of a
+    /// faithful cut a copy that came back different. Left empty by every cut
+    /// that wrote what it was given. A caller that does not ask leaves it
+    /// `None`.
+    pub replanned: Option<std::sync::Arc<std::sync::OnceLock<Vec<Vec<RangePlan>>>>>,
 }
 
 /// A cover picture: a JPEG, and its size.
@@ -776,6 +788,7 @@ struct SegmentCtx<'a> {
 /// Everything the writer needs that is shared across segments.
 struct Writer {
     octx: ff::format::context::Output,
+    av1_mp4: Option<crate::av1_mp4::Guard>,
     /// Whether a track's `pid` is really a PID, for the messages that name
     /// one. See [`crate::Source::on_a_ts`].
     on_a_ts: bool,
@@ -1351,7 +1364,10 @@ impl Writer {
     /// each picture's own length: under pulldown the lengths differ, and a
     /// decode-order sum overtakes the presentation time it is supposed to
     /// precede. The muxer rejects that outright -- `pts < dts`.
-    fn push(&mut self, e: Emitted) -> Result<()> {
+    fn push(&mut self, kind: SegmentKind, mut e: Emitted) -> Result<()> {
+        if let Some(config) = self.av1_mp4.as_mut() {
+            config.packet(&mut e.packet, kind)?;
+        }
         self.opening = false;
         if let Some(held) = self.held.as_mut() {
             if !held.sealed {
@@ -4319,6 +4335,28 @@ fn copy_segment(
     let in_tb = f64::from(ictx.stream(ist_index).unwrap().time_base());
     let fd = src.video.frame_duration();
     let field = ctx.grid.unit();
+    // The aspect this recording's own sequence headers state, where the
+    // output needs another one said in them. See [`restated_sar`].
+    let mut restate = match restated_sar(
+        ctx.signalling,
+        &src.video.codec,
+        unsafe { (*ictx.stream(ist_index).unwrap().parameters().as_ptr()).sample_aspect_ratio },
+        src.video.width,
+        src.video.height,
+    ) {
+        Some(sar) => match SarRestate::new(&src.video.codec, sar, src.video.width, src.video.height) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                crate::note_once(format!(
+                    "note: the pictures' aspect ({}:{}) could not be written into their sequence \
+                     headers ({e}), so the output plays at the shape the bitstream states",
+                    sar.0, sar.1
+                ));
+                None
+            }
+        },
+        None => None,
+    };
     // The stretch this segment copies, as bytes. A copy that begins just
     // after a seam is looking for an entry point that the stretch before it
     // can reach over: the last entry point of that stretch is written earlier
@@ -4669,7 +4707,22 @@ fn copy_segment(
             },
             None => packet,
         };
-        writer.push(Emitted {
+        let packet = match restate.as_mut().map(|r| r.packet(packet.data().unwrap_or(&[]))) {
+            Some(Ok(Some(data))) => {
+                let mut out = ff::Packet::copy(&data);
+                out.set_flags(packet.flags());
+                out
+            }
+            Some(Err(e)) => {
+                crate::note_once(format!(
+                    "note: the pictures' aspect could not be written into a copied sequence \
+                     header ({e}); that one is left as the recording states it"
+                ));
+                packet
+            }
+            _ => packet,
+        };
+        writer.push(SegmentKind::Copy, Emitted {
             packet,
             display,
             fields,
@@ -4879,6 +4932,258 @@ struct Signalling {
     /// own `max_num_ref_frames`. Set per seam, never for the whole cut; see
     /// [`refs_before`].
     refs: Option<i64>,
+    /// The pixel aspect the pictures have to state themselves, where the
+    /// output keeps no aspect of its own to state it for them. See
+    /// [`restated_sar`].
+    restate_sar: Option<(i32, i32)>,
+}
+
+/// The pixel aspect a picture coded with `coded` has to be rewritten to
+/// state in this output, or `None` where what it states already shows the
+/// same shape.
+///
+/// **A container may say the pictures' shape over their heads**
+/// (`mkvmerge --aspect-ratio`, `ffmpeg -c copy -aspect`, an MP4's `pasp`
+/// over a sequence header saying 1:1), and that shape is the one a player
+/// shows and the editor's outline shows. An MP4 or Matroska output says it
+/// again for the stream. A transport stream (or a program stream) has
+/// nowhere to say it but the sequence headers, so a cut of such a recording
+/// into `.ts`, `.m2ts` or a disc played at the bitstream's shape: 720x480
+/// stated 16:9 by its container came out 3:2. There the copied sequence
+/// headers are rewritten and the seams are encoded to say the same, so every
+/// one in the output agrees.
+///
+/// Compared on the picture's width in pixels: a container states its shape
+/// as a display width rounded to a whole pixel (an anamorphic DVD rip in
+/// Matroska says 853 for 32:27, which libavformat reads back as a ratio
+/// near it, not equal to it), and a recording whose two statements are a
+/// pixel or less apart is left exactly as it was. MPEG-2 can only say one of
+/// four display shapes, so there the question is which of them each SAR is
+/// nearest.
+fn restated_sar(
+    signalling: &Signalling,
+    codec: &str,
+    coded: ff::ffi::AVRational,
+    width: u32,
+    height: u32,
+) -> Option<(i32, i32)> {
+    let (num, den) = signalling.restate_sar?;
+    let ratio = |n: i32, d: i32| if n > 0 && d > 0 { f64::from(n) / f64::from(d) } else { 1.0 };
+    let (had, want) = (ratio(coded.num, coded.den), ratio(num, den));
+    match codec {
+        "h264" | "hevc" => ((had - want).abs() * f64::from(width.max(1)) > 1.0).then_some((num, den)),
+        "mpeg2video" if width > 0 && height > 0 => {
+            let (had, want) = (
+                mpeg2_aspect_code(had, width, height),
+                mpeg2_aspect_code(want, width, height),
+            );
+            (had != want).then(|| mpeg2_code_sar(want, width, height))
+        }
+        _ => None,
+    }
+}
+
+/// The display shapes an MPEG-2 sequence header can state, by its
+/// `aspect_ratio_information`: square pixels, 4:3, 16:9, 2.21:1.
+const MPEG2_ASPECTS: [(u8, i64, i64); 3] = [(2, 4, 3), (3, 16, 9), (4, 221, 100)];
+
+/// Which `aspect_ratio_information` shows pixels of this aspect nearest.
+fn mpeg2_aspect_code(sar: f64, width: u32, height: u32) -> u8 {
+    let dar = sar * f64::from(width) / f64::from(height);
+    let off = |d: f64| (dar / d).ln().abs();
+    let square = f64::from(width) / f64::from(height);
+    MPEG2_ASPECTS
+        .iter()
+        .map(|&(code, n, d)| (code, off(n as f64 / d as f64)))
+        .fold((1u8, off(square)), |best, c| if c.1 < best.1 { c } else { best })
+        .0
+}
+
+/// The pixel aspect an `aspect_ratio_information` means at this size.
+fn mpeg2_code_sar(code: u8, width: u32, height: u32) -> (i32, i32) {
+    let Some(&(_, n, d)) = MPEG2_ASPECTS.iter().find(|a| a.0 == code) else {
+        return (1, 1);
+    };
+    let (num, den) = (n * i64::from(height), d * i64::from(width));
+    let mut g = (num, den);
+    while g.1 != 0 {
+        g = (g.1, g.0 % g.1);
+    }
+    let g = g.0.max(1);
+    ((num / g) as i32, (den / g) as i32)
+}
+
+// ffmpeg-sys-next 7.1 omits bsf.h; the public FFmpeg 7.1 declarations, as
+// in [`crate::av1_mp4`] (the same layout, so the two agree).
+#[repr(C)]
+struct SarBsf {
+    class: *const std::ffi::c_void,
+    filter: *const std::ffi::c_void,
+    private: *mut std::ffi::c_void,
+    par_in: *mut ff::ffi::AVCodecParameters,
+    par_out: *mut ff::ffi::AVCodecParameters,
+    time_base_in: ff::ffi::AVRational,
+    time_base_out: ff::ffi::AVRational,
+}
+extern "C" {
+    fn av_bsf_get_by_name(name: *const std::ffi::c_char) -> *const std::ffi::c_void;
+    fn av_bsf_alloc(filter: *const std::ffi::c_void, context: *mut *mut SarBsf) -> std::ffi::c_int;
+    fn av_bsf_init(context: *mut SarBsf) -> std::ffi::c_int;
+    fn av_bsf_free(context: *mut *mut SarBsf);
+    fn av_bsf_send_packet(context: *mut SarBsf, packet: *mut ff::ffi::AVPacket) -> std::ffi::c_int;
+    fn av_bsf_receive_packet(context: *mut SarBsf, packet: *mut ff::ffi::AVPacket) -> std::ffi::c_int;
+}
+
+/// Rewrites the pixel aspect the copied pictures' sequence headers state.
+/// See [`restated_sar`].
+///
+/// **Only the sequence headers are touched.** H.264 and HEVC go through
+/// libavcodec's own `h264_metadata` / `hevc_metadata`, which re-write an SPS
+/// from its parsed fields -- but they are handed the parameter sets alone,
+/// never a picture's slices, which go out as the recording's own bytes. An
+/// MPEG-2 sequence header states its shape in four fixed bits.
+struct SarRestate {
+    codec: String,
+    /// `aspect_ratio_information`, for MPEG-2.
+    code: u8,
+    filter: *mut SarBsf,
+    /// The parameter sets already rewritten, and the sequence headers they
+    /// came out as: an MP4's are restated in front of every entry point.
+    done: std::collections::HashMap<Vec<u8>, Vec<Vec<u8>>>,
+}
+
+impl Drop for SarRestate {
+    fn drop(&mut self) {
+        if !self.filter.is_null() {
+            unsafe { av_bsf_free(&mut self.filter) }
+        }
+    }
+}
+
+impl SarRestate {
+    fn new(codec: &str, (num, den): (i32, i32), width: u32, height: u32) -> Result<Self> {
+        let mut out = SarRestate {
+            codec: codec.to_string(),
+            code: mpeg2_aspect_code(f64::from(num) / f64::from(den.max(1)), width, height.max(1)),
+            filter: std::ptr::null_mut(),
+            done: Default::default(),
+        };
+        let (name, id) = match codec {
+            "h264" => (c"h264_metadata", ff::ffi::AVCodecID::AV_CODEC_ID_H264),
+            "hevc" => (c"hevc_metadata", ff::ffi::AVCodecID::AV_CODEC_ID_HEVC),
+            _ => return Ok(out),
+        };
+        let check = |code: std::ffi::c_int| -> Result<()> {
+            if code < 0 {
+                return Err(ff::Error::from(code).into());
+            }
+            Ok(())
+        };
+        unsafe {
+            let filter = av_bsf_get_by_name(name.as_ptr());
+            if filter.is_null() {
+                bail!("this FFmpeg has no {}", name.to_string_lossy());
+            }
+            check(av_bsf_alloc(filter, &mut out.filter))?;
+            // No extradata: what it is handed is start-coded.
+            (*(*out.filter).par_in).codec_type = ff::ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+            (*(*out.filter).par_in).codec_id = id;
+            (*out.filter).time_base_in = ff::ffi::AVRational { num: 1, den: 1 };
+            check(ff::ffi::av_opt_set_q(
+                out.filter.cast(),
+                c"sample_aspect_ratio".as_ptr(),
+                ff::ffi::AVRational { num, den },
+                ff::ffi::AV_OPT_SEARCH_CHILDREN,
+            ))?;
+            check(av_bsf_init(out.filter))?;
+        }
+        Ok(out)
+    }
+
+    /// The packet with its sequence headers saying the new aspect, or
+    /// `None` where it carries none (or says it already).
+    fn packet(&mut self, data: &[u8]) -> Result<Option<Vec<u8>>> {
+        if !is_annexb(data) {
+            return Ok(None);
+        }
+        if self.codec == "mpeg2video" {
+            let mut out: Option<Vec<u8>> = None;
+            let mut i = 0;
+            while i + 8 <= data.len() {
+                if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && data[i + 3] == 0xB3 {
+                    let at = i + 7;
+                    if data[at] >> 4 != self.code {
+                        let o = out.get_or_insert_with(|| data.to_vec());
+                        o[at] = (self.code << 4) | (data[at] & 0x0F);
+                    }
+                    i += 8;
+                } else {
+                    i += 1;
+                }
+            }
+            return Ok(out);
+        }
+        let hevc = self.codec == "hevc";
+        let kind = |n: &[u8]| -> u8 {
+            match n.first() {
+                Some(b) if hevc => (b >> 1) & 0x3F,
+                Some(b) => b & 0x1F,
+                None => 0,
+            }
+        };
+        let sps = if hevc { 33 } else { 7 };
+        let nals = crate::bitstream::nal_payloads(data, NalFraming::AnnexB);
+        if !nals.iter().any(|n| kind(n) == sps) {
+            return Ok(None);
+        }
+        // HEVC's sequence header is read against the video parameter set
+        // it names, so that goes in with it.
+        let sets: Vec<&[u8]> = nals
+            .iter()
+            .copied()
+            .filter(|n| kind(n) == sps || (hevc && kind(n) == 32))
+            .collect();
+        let key = prepend_parameter_sets_annexb(&[], &sets.iter().map(|s| s.to_vec()).collect::<Vec<_>>());
+        if !self.done.contains_key(&key) {
+            let mut packet = ff::Packet::copy(&key);
+            let written = unsafe {
+                let code = av_bsf_send_packet(self.filter, ff::packet::Mut::as_mut_ptr(&mut packet));
+                if code < 0 {
+                    return Err(ff::Error::from(code).into());
+                }
+                let code = av_bsf_receive_packet(self.filter, ff::packet::Mut::as_mut_ptr(&mut packet));
+                if code < 0 {
+                    return Err(ff::Error::from(code).into());
+                }
+                packet.data().unwrap_or(&[]).to_vec()
+            };
+            let rewritten: Vec<Vec<u8>> = crate::bitstream::nal_payloads(&written, NalFraming::AnnexB)
+                .into_iter()
+                .filter(|n| kind(n) == sps)
+                .map(<[u8]>::to_vec)
+                .collect();
+            self.done.insert(key.clone(), rewritten);
+        }
+        let rewritten = &self.done[&key];
+        if rewritten.len() != sets.iter().filter(|n| kind(n) == sps).count() {
+            bail!(
+                "{} sequence header(s) went in and {} came out",
+                sets.iter().filter(|n| kind(n) == sps).count(),
+                rewritten.len()
+            );
+        }
+        let mut out = Vec::with_capacity(data.len() + 16);
+        let mut from = 0;
+        let mut next = rewritten.iter();
+        for nal in nals.iter().filter(|n| kind(n) == sps) {
+            let at = nal.as_ptr() as usize - data.as_ptr() as usize;
+            out.extend_from_slice(&data[from..at]);
+            out.extend_from_slice(next.next().map_or(*nal, Vec::as_slice));
+            from = at + nal.len();
+        }
+        out.extend_from_slice(&data[from..]);
+        Ok((out != data).then_some(out))
+    }
 }
 
 /// Does this stream declare Dolby Vision?
@@ -5174,7 +5479,21 @@ fn open_encoder(
         let Some(codec) = ff::encoder::find_by_name(name) else {
             continue;
         };
-        match open_encoder_as(codec, video, bit_rate, params, opts, signalling) {
+        // rav1e is told the recording's level (see
+        // [`crate::av1_mp4::seam_level`]), and checks it against the picture
+        // size and rate when it opens. A recording that understates its own
+        // level is refused there; it is then opened as it always was, at 31.
+        let level = (*name == "librav1e")
+            .then(|| crate::av1_mp4::seam_level(params))
+            .flatten();
+        if level.is_some() {
+            if let Ok(enc) =
+                open_encoder_as(codec, video, bit_rate, params, opts, signalling, level.as_deref())
+            {
+                return Ok(enc);
+            }
+        }
+        match open_encoder_as(codec, video, bit_rate, params, opts, signalling, None) {
             Ok(enc) => return Ok(enc),
             Err(e) => refused = Some(anyhow!("{name}: {e}")),
         }
@@ -5183,7 +5502,7 @@ fn open_encoder(
         return Err(e);
     }
     let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no encoder for {id:?}"))?;
-    open_encoder_as(codec, video, bit_rate, params, opts, signalling)
+    open_encoder_as(codec, video, bit_rate, params, opts, signalling, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5194,6 +5513,7 @@ fn open_encoder_as(
     params: &ff::codec::Parameters,
     opts: &CutOptions,
     signalling: &Signalling,
+    av1_level: Option<&str>,
 ) -> Result<ff::encoder::video::Encoder> {
     let mut enc = ff::codec::context::Context::new_with_codec(codec)
         .encoder()
@@ -5220,7 +5540,18 @@ fn open_encoder_as(
         let e = enc.as_mut_ptr();
         // codecpar carries the pixel format as a plain int
         crate::set_raw_enum(std::ptr::addr_of_mut!((*e).pix_fmt), (*p).format);
-        (*e).sample_aspect_ratio = (*p).sample_aspect_ratio;
+        // The aspect the copied pictures are rewritten to state, where the
+        // output can state it nowhere else. See [`restated_sar`].
+        (*e).sample_aspect_ratio = match restated_sar(
+            signalling,
+            &v.codec,
+            (*p).sample_aspect_ratio,
+            v.width,
+            v.height,
+        ) {
+            Some((num, den)) => ff::ffi::AVRational { num, den },
+            None => (*p).sample_aspect_ratio,
+        };
         crate::set_raw_enum(
             std::ptr::addr_of_mut!((*e).color_primaries),
             crate::raw_enum(std::ptr::addr_of!((*p).color_primaries)),
@@ -5254,7 +5585,8 @@ fn open_encoder_as(
         // ones they sit among, and an encoder left to work it out writes a
         // level those pictures actually need. The codecs whose two ends
         // agree are still told, because there the recording's own answer is
-        // better than a fresh one.
+        // better than a fresh one. rav1e works nothing out -- it writes 31
+        // -- and is told in its own spelling below.
         if !matches!(params.id(), ff::codec::Id::AV1 | ff::codec::Id::VP9) {
             (*e).level = (*p).level;
         }
@@ -5389,7 +5721,12 @@ fn open_encoder_as(
             eopts.set("row-mt", "1");
         }
         "libsvtav1" => eopts.set("preset", "8"),
-        "librav1e" => eopts.set("speed", "8"),
+        "librav1e" => {
+            eopts.set("speed", "8");
+            if let Some(level) = av1_level {
+                eopts.set("rav1e-params", &format!("level={level}"));
+            }
+        }
         "libaom-av1" => {
             eopts.set("cpu-used", "8");
             eopts.set("row-mt", "1");
@@ -5980,7 +6317,7 @@ fn drain_encoder_shown(
             }
             None => packet,
         };
-        writer.push(Emitted {
+        writer.push(SegmentKind::Reencode, Emitted {
             packet,
             display,
             fields,
@@ -6169,7 +6506,7 @@ fn reencode_segment(
                 // goes straight out with the timing worked out above.
                 Pictures::Vc1(enc) => {
                     let packet = encode_vc1(enc, &$f, shown_for)?;
-                    writer.push(Emitted {
+                    writer.push(SegmentKind::Reencode, Emitted {
                         packet,
                         display,
                         fields,
@@ -7558,6 +7895,20 @@ fn graft_tables(
     let registration = if !pids.bluray {
         Vec::new()
     } else {
+        // Interlaced as the sequence says, not as its first picture: the
+        // clip index reads it that way (see `bdav::read_clip`), and the two
+        // describe the same stream. An MPEG-2 cut opening on a film picture
+        // otherwise said 1080p here and 1080i there.
+        let mut shown = src.video.clone();
+        if shown.codec == "mpeg2video"
+            && !shown.interlaced()
+            && open_input(&src.input.url)
+                .ok()
+                .and_then(|(ictx, i)| ictx.stream(i).and_then(|s| stated_sequence(&s.parameters())))
+                == Some(true)
+        {
+            shown.field_order = 2; // AV_FIELD_TT
+        }
         crate::si::hdmv_registration(
             service
                 .stream(pids.video(video_pid) as u16)
@@ -7566,7 +7917,7 @@ fn graft_tables(
                     || crate::bdav::video_coding(&src.video.codec),
                     |es| es.stream_type,
                 ),
-            &crate::bdav::video_attributes(&src.video),
+            &crate::bdav::video_attributes(&shown),
         )
     };
     // Where each stream really went, and what the map being corrected calls
@@ -9253,7 +9604,65 @@ pub fn join_with_progress(
     // that file is gone. By then the output context has been dropped on the
     // way out, which is what lets Windows remove it.
     let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        cut_into(reels, master.min(reels.len().saturating_sub(1)), output, opts, progress)
+        let master = master.min(reels.len().saturating_sub(1));
+        let progress: Option<SharedReport> =
+            progress.map(std::sync::Arc::from);
+        let run = |reels: &[Reel], opts: &CutOptions| {
+            let report = progress.clone().map(|f| {
+                Box::new(move |p, job, pass| f(p, job, pass)) as Report
+            });
+            cut_into(reels, master, output, opts, report)
+        };
+        let first = run(reels, opts);
+        if !first.as_ref().err().is_some_and(|e| e.is::<crate::av1_mp4::Changed>()) {
+            return first;
+        }
+        // Only the MP4 writer can raise Changed. The failed context has
+        // closed before this retry, including on Windows. Matroska/WebM
+        // never enter the guard and retain their existing rendering policy.
+        crate::say!(
+            "note: an AV1 configuration change cannot share MP4's single sample description. \
+             The entire selected video is re-encoded with one configuration."
+        );
+        crate::say!(
+            "note: the copy figures above describe the discarded plan; \
+             this retry copies no video (0%). Audio and subtitle modes are unchanged."
+        );
+        let full: Vec<Vec<RangePlan>> = reels.iter().map(|r| {
+            r.plans.iter().map(|p| {
+                // A range the planner found thinner than a picture writes
+                // nothing; planned afresh it asks for a picture that is not
+                // there (see `ranges_with_transitions`).
+                if p.segments.is_empty() {
+                    return p.clone();
+                }
+                let mut full = crate::plan::reencode_range(&r.src.points, p.t_in, p.t_out);
+                if let Some(s) = full.segments.first_mut() {
+                    s.frames = p.segments.iter().map(|s| s.frames).sum();
+                }
+                full
+            }).collect()
+        }).collect();
+        let fallback: Vec<Reel> = reels.iter().zip(&full).map(|(r, plans)| Reel {
+            src: r.src, plans, after: r.after.clone(),
+        }).collect();
+        // A transition re-plans the body of the range it touches (see
+        // `ranges_with_transitions`), which would plan copies into the
+        // retry again: a join with a dissolve failed outright. No copy is
+        // worth making in it.
+        let whole = CutOptions {
+            plan: crate::plan::PlanOptions { min_copy: Some(f64::INFINITY), ..opts.plan.clone() },
+            ..opts.clone()
+        };
+        // One retry only: another configuration change is an error, not a loop.
+        let done = run(&fallback, &whole)
+            .context("writing AV1 MP4 with one configuration after full-video fallback");
+        if done.is_ok() {
+            if let Some(told) = &opts.replanned {
+                let _ = told.set(full.clone());
+            }
+        }
+        done
     }));
     if !matches!(done, Ok(Ok(()))) && ours {
         let _ = std::fs::remove_file(output);
@@ -9304,6 +9713,7 @@ const WRITING_SHARE: f64 = 0.7;
 /// How a cut says where it has got to: which pass it is in, how far through
 /// the whole job that is, and how far through the pass itself.
 pub type Report = Box<dyn Fn(Pass, f64, f64) + Send + Sync>;
+type SharedReport = std::sync::Arc<dyn Fn(Pass, f64, f64) + Send + Sync>;
 
 /// As [`cut`], reporting how far along it is.
 ///
@@ -9502,7 +9912,19 @@ fn cut_into(
         .collect();
 
     let (ictx, ist_index) = open_input(&src.input.url)?;
-    let params = ictx.stream(ist_index).unwrap().parameters();
+    let ist = ictx.stream(ist_index).unwrap();
+    let params = ist.parameters();
+    // A container may override the display aspect without rewriting the
+    // pictures (for example, mkvmerge --aspect-ratio). Keep that display SAR
+    // on the output stream, but leave codecpar alone: boundary encoders must
+    // say the same SAR as the copied pictures, not alternate at every seam.
+    // AV1's container-only SAR needs no corresponding encoder setting.
+    let display_sar = unsafe {
+        let sar = ff::ffi::av_guess_sample_aspect_ratio(
+            ictx.as_ptr() as *mut _, ist.as_ptr() as *mut _, std::ptr::null_mut(),
+        );
+        if sar.num > 0 && sar.den > 0 { sar } else { (*params.as_ptr()).sample_aspect_ratio }
+    };
     let extradata = unsafe {
         let p = params.as_ptr();
         if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
@@ -10149,15 +10571,40 @@ fn cut_into(
     } else {
         Signalling::default()
     };
+    // A transport or program stream keeps no aspect for its pictures; the
+    // aspect the master shows is said in their sequence headers instead.
+    // See [`restated_sar`].
+    let signalling = Signalling {
+        restate_sar: (matches!(
+            octx.format().name(),
+            "mpegts" | "mpeg" | "vob" | "dvd" | "svcd" | "vcd"
+        )
+            && display_sar.num > 0
+            && display_sar.den > 0)
+            .then_some((display_sar.num, display_sar.den)),
+        ..signalling
+    };
     // The rate a Matroska file states for its pictures. See
     // [`rate_to_state`].
     let stated_rate = matches!(octx.format().name(), "matroska" | "webm")
         .then(|| rate_to_state(reels, grid))
         .flatten();
+    // MP4 only. Matroska/WebM keep their current sequence-header policy;
+    // deciding that policy is separate work for the maintainer.
+    let av1_mp4 = if src.video.codec == "av1" && octx.format().name() == "mp4" {
+        let has_copy = all_plans().flat_map(|p| &p.segments).any(|s| s.kind == SegmentKind::Copy);
+        Some(crate::av1_mp4::Guard::new(&params, has_copy)?)
+    } else { None };
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params.clone());
         ost.set_time_base(grid.time_base());
+        unsafe {
+            (*ost.as_mut_ptr()).sample_aspect_ratio = display_sar;
+            // libavformat requires these two output fields to agree. This is
+            // the muxer's copy, not the input parameters used by encoders.
+            (*ost.parameters().as_mut_ptr()).sample_aspect_ratio = display_sar;
+        }
         if let Some((num, den)) = stated_rate {
             ost.set_avg_frame_rate(ff::Rational::new(num, den));
         }
@@ -10177,6 +10624,12 @@ fn cut_into(
             // writes an empty box: a file that says "wrote" and that nothing
             // can open. The version said as 1, the layout being the same.
             let par = ost.parameters().as_mut_ptr();
+            if av1_mp4.is_some() {
+                // Let the first actual output sequence describe MP4's track,
+                // even when the whole selection is written by the encoder.
+                ff::ffi::av_freep(std::ptr::addr_of_mut!((*par).extradata).cast());
+                (*par).extradata_size = 0;
+            }
             if src.video.codec == "hevc"
                 && !(*par).extradata.is_null()
                 && (*par).extradata_size >= 23
@@ -10954,6 +11407,7 @@ fn cut_into(
     });
 
     let mut writer = Writer {
+        av1_mp4,
         on_a_ts: src.on_a_ts,
         into_ts: octx.format().name().contains("mpegts"),
         octx,
@@ -12841,5 +13295,99 @@ mod tests {
         assert!(broken_link(&framed(&[&aud, &[0x02, 0x01, 0x80, 0x11]]), NalFraming::Length(4)).is_none());
         // A length past the packet's end is not read as anything.
         assert!(broken_link(&[0, 0, 0, 9, 0x2A, 0x01], NalFraming::Length(4)).is_none());
+    }
+
+    /// Where a container states the pictures' shape over their heads, a
+    /// transport stream's pictures say it themselves; a container that says
+    /// the same shape to the pixel leaves them as they were.
+    #[test]
+    fn a_container_aspect_is_restated_only_where_it_differs() {
+        let q = |num, den| ff::ffi::AVRational { num, den };
+        let to = |sar| Signalling { restate_sar: sar, ..Default::default() };
+        // Not a stream that keeps no aspect of its own: nothing to do.
+        assert_eq!(restated_sar(&to(None), "h264", q(1, 1), 720, 480), None);
+        // mkvmerge's 16:9 over a 1:1 SPS.
+        assert_eq!(restated_sar(&to(Some((32, 27))), "h264", q(1, 1), 720, 480), Some((32, 27)));
+        assert_eq!(restated_sar(&to(Some((32, 27))), "hevc", q(0, 1), 720, 480), Some((32, 27)));
+        // A DisplayWidth of 853 read back near 32:27, and an unstated SPS
+        // under a container saying square: the same shape.
+        assert_eq!(restated_sar(&to(Some((147, 124))), "h264", q(32, 27), 720, 480), None);
+        assert_eq!(restated_sar(&to(Some((1, 1))), "h264", q(0, 1), 1920, 1080), None);
+        assert_eq!(restated_sar(&to(Some((1, 1))), "h264", q(1, 1), 1920, 1080), None);
+        // Not a codec this rewrites.
+        assert_eq!(restated_sar(&to(Some((32, 27))), "vc1", q(1, 1), 720, 480), None);
+        // MPEG-2: which of its four shapes each is nearest.
+        assert_eq!(mpeg2_aspect_code(8.0 / 9.0, 720, 480), 2);
+        assert_eq!(mpeg2_aspect_code(10.0 / 11.0, 720, 480), 2);
+        assert_eq!(mpeg2_aspect_code(32.0 / 27.0, 720, 480), 3);
+        assert_eq!(mpeg2_aspect_code(4.0 / 3.0, 1440, 1080), 3);
+        assert_eq!(mpeg2_aspect_code(1.0, 720, 480), 1);
+        assert_eq!(mpeg2_code_sar(3, 720, 480), (32, 27));
+        assert_eq!(mpeg2_code_sar(2, 720, 480), (8, 9));
+        assert_eq!(mpeg2_code_sar(1, 720, 480), (1, 1));
+        assert_eq!(restated_sar(&to(Some((32, 27))), "mpeg2video", q(8, 9), 720, 480), Some((32, 27)));
+        assert_eq!(restated_sar(&to(Some((10, 11))), "mpeg2video", q(8, 9), 720, 480), None);
+    }
+
+    /// The copied sequence headers say the new aspect, and nothing else in
+    /// the packet changes.
+    #[test]
+    fn copied_sequence_headers_are_rewritten_and_nothing_else() {
+        let hex = |h: &str| -> Vec<u8> {
+            (0..h.len() / 2).map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap()).collect()
+        };
+        // x264's 720x480 SPS saying 1:1, its PPS and a slice's first bytes.
+        let sps = hex("6764001eacd940b43db01100000303e90000ea600f162d96");
+        let pps = hex("68ef8fcb");
+        let slice = hex("6588840033ff");
+        let packet = [&[0, 0, 0, 1][..], &sps, &[0, 0, 0, 1], &pps, &[0, 0, 1], &slice].concat();
+        let mut r = SarRestate::new("h264", (32, 27), 720, 480).unwrap();
+        let out = r.packet(&packet).unwrap().expect("rewritten");
+        let nals = crate::bitstream::nal_payloads(&out, NalFraming::AnnexB);
+        assert_eq!(nals.len(), 3);
+        assert_ne!(nals[0], &sps[..]);
+        assert_eq!(nals[1], &pps[..]);
+        assert_eq!(nals[2], &slice[..]);
+        // aspect_ratio_idc 255, then 32 and 27, read back the long way.
+        let mut b = crate::bitstream::Bits::new(&nals[0][1..]);
+        b.skip(24).unwrap();
+        for _ in 0..2 {
+            b.ue().unwrap(); // seq_parameter_set_id, chroma_format_idc
+        }
+        b.ue().unwrap();
+        b.ue().unwrap();
+        b.skip(2).unwrap(); // qpprime, scaling matrix flag
+        b.ue().unwrap(); // log2_max_frame_num
+        assert_eq!(b.ue().unwrap(), 0); // pic_order_cnt_type
+        b.ue().unwrap();
+        b.ue().unwrap(); // max_num_ref_frames
+        b.skip(1).unwrap();
+        assert_eq!(b.ue().unwrap(), 44); // width in macroblocks - 1
+        assert_eq!(b.ue().unwrap(), 29);
+        assert_eq!(b.u(1).unwrap(), 1); // frame_mbs_only
+        b.skip(1).unwrap();
+        assert_eq!(b.u(1).unwrap(), 0); // no cropping
+        assert_eq!(b.u(1).unwrap(), 1); // vui
+        assert_eq!(b.u(1).unwrap(), 1);
+        assert_eq!(b.u(8).unwrap(), 255);
+        assert_eq!((b.u(16).unwrap(), b.u(16).unwrap()), (32, 27));
+        // Restated in front of the next entry point, the same way.
+        assert_eq!(r.packet(&packet).unwrap().unwrap(), out);
+        // A packet with no sequence header is not touched.
+        assert!(r.packet(&[&[0, 0, 1][..], &slice].concat()).unwrap().is_none());
+
+        // MPEG-2: the four bits, every sequence header, nothing else.
+        let seq = [0, 0, 1, 0xB3, 0x2D, 0x01, 0xE0, 0x24, 0x17, 0xFF];
+        let pic = [0, 0, 1, 0x00, 0x00, 0x0F];
+        let packet = [&seq[..], &pic, &seq].concat();
+        let mut r = SarRestate::new("mpeg2video", (32, 27), 720, 480).unwrap();
+        let out = r.packet(&packet).unwrap().unwrap();
+        assert_eq!(out[7], 0x34);
+        assert_eq!(out[23], 0x34);
+        let mut back = out.clone();
+        back[7] = 0x24;
+        back[23] = 0x24;
+        assert_eq!(back, packet);
+        assert!(r.packet(&out).unwrap().is_none());
     }
 }

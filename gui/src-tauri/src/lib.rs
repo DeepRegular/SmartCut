@@ -182,6 +182,25 @@ struct CrossPair {
     after_path: String,
     before: Source,
     after: Source,
+    /// The list's master, as the window named it, and the recording itself
+    /// where it is neither of the two: the joined file is written in its
+    /// shape, and so is the seam composited. See
+    /// [`smartcut_core::crossview::Seam::shaped_like`].
+    master_path: Option<String>,
+    master: Option<Source>,
+}
+
+impl CrossPair {
+    /// The recording whose shape the seam is composited at, where that is
+    /// not the clip before the join.
+    fn shaped_like(&self) -> Option<Source> {
+        match &self.master_path {
+            Some(m) if *m == self.before_path => None,
+            Some(m) if *m == self.after_path => Some(self.after.clone()),
+            Some(_) => self.master.clone(),
+            None => None,
+        }
+    }
 }
 
 /// The subtitle track the preview is drawing, once one has been asked for.
@@ -2501,6 +2520,7 @@ struct CrossInfo {
 async fn cross_load(
     before: String,
     after: String,
+    master: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<CrossInfo, String> {
     off_thread(move || {
@@ -2508,18 +2528,28 @@ async fn cross_load(
             let state = app.state::<Crossed>();
             let held = locked(&state.0);
             if let Some(pair) = held.as_ref() {
-                if pair.before_path == before && pair.after_path == after {
+                if pair.before_path == before && pair.after_path == after && pair.master_path == master {
                     return Ok(info_of_pair(pair));
                 }
             }
         }
         let (before_src, _) = scan_cached(&app, &before)?;
         let (after_src, _) = scan_cached(&app, &after)?;
+        // Read only where it is neither clip: a master that cannot be read is
+        // no reason to show no seam, and the clip before's shape is what the
+        // window showed before it was told the master's.
+        let master_src = master
+            .as_ref()
+            .filter(|m| **m != before && **m != after)
+            .and_then(|m| scan_cached(&app, m).ok())
+            .map(|(s, _)| s);
         let pair = CrossPair {
             before_path: before,
             after_path: after,
             before: before_src,
             after: after_src,
+            master_path: master,
+            master: master_src,
         };
         let info = info_of_pair(&pair);
         *locked(&app.state::<Crossed>().0) = Some(pair);
@@ -2581,13 +2611,13 @@ fn with_seam<T>(
     // a decode of both recordings, and `cross_span`, which the window's own
     // thread answers, waits on this lock -- the whole window stopped for as
     // long as each picture took. `cross_play` copies them out the same way.
-    let (before, after) = {
+    let (before, after, master) = {
         let state = app.state::<Crossed>();
         let held = locked(&state.0);
         let pair = held.as_ref().ok_or("no join open")?;
-        (pair.before.clone(), pair.after.clone())
+        (pair.before.clone(), pair.after.clone(), pair.shaped_like())
     };
-    what(&seam_over(&before, &after, spec))
+    what(&seam_over(&before, &after, master.as_ref(), spec))
 }
 
 /// The seam itself, over two recordings that are already open.
@@ -2597,6 +2627,7 @@ fn with_seam<T>(
 fn seam_over<'a>(
     before: &'a Source,
     after: &'a Source,
+    master: Option<&'a Source>,
     spec: &SeamSpec,
 ) -> smartcut_core::crossview::Seam<'a> {
     smartcut_core::crossview::Seam {
@@ -2607,6 +2638,7 @@ fn seam_over<'a>(
         after_in: spec.after_in,
         after_out: spec.after_out,
         transition: spec.crossing.clone().into_transition(),
+        shaped_like: master,
     }
 }
 
@@ -2678,11 +2710,11 @@ async fn cross_play(
     if !app.state::<CrossUp>().0.load(Ordering::SeqCst) {
         return Ok(());
     }
-    let (mut before, mut after) = {
+    let (mut before, mut after, master) = {
         let state = app.state::<Crossed>();
         let held = locked(&state.0);
         let pair = held.as_ref().ok_or("no join open")?;
-        (pair.before.clone(), pair.after.clone())
+        (pair.before.clone(), pair.after.clone(), pair.shaped_like())
     };
     if let Some(nth) = heard {
         heard_nth(&mut before, nth);
@@ -2699,7 +2731,7 @@ async fn cross_play(
 
     // Worked out once, here, because both halves play the same stretch: the
     // picture walks the window and the sound plays the two clips under it.
-    let sound = seam_over(&before, &after, &seam)
+    let sound = seam_over(&before, &after, None, &seam)
         .window(smartcut_core::crossview::LEAD)
         .sound();
     let silent = before.audio.is_none() && after.audio.is_none();
@@ -2768,7 +2800,7 @@ async fn cross_play(
         let hearing = audio_handle.is_some();
         let mut began = None;
         let gap = 1.0 / fps.max(1.0);
-        let s = seam_over(&before, &after, &seam);
+        let s = seam_over(&before, &after, master.as_ref(), &seam);
         let window = s.window(smartcut_core::crossview::LEAD);
         let outcome = smartcut_core::crossview::play(
             &s,
@@ -6130,7 +6162,7 @@ async fn export(
     // where the container keeps a chapter list; see
     // [`smartcut_core::CutOptions::chapters`].
     chapters: Option<Vec<f64>>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     // Cutting is minutes of I/O on a broadcast recording; keeping it off the
     // UI thread is what lets the progress bar move at all.
     tauri::async_runtime::spawn_blocking(move || {
@@ -6190,6 +6222,9 @@ async fn export(
         // through a list, and an untagged fraction would move whichever row
         // happened to be on screen.
         let whose = src.path.clone();
+        // Whether the cut is written by the plans above. See [`REPLANNED`].
+        let replanned = std::sync::Arc::new(std::sync::OnceLock::new());
+        locked(&REPLANNED).remove(&output);
         let opts = smartcut_core::CutOptions {
             audio_mode: if audio_reencode.unwrap_or(false) {
                 smartcut_core::AudioMode::Reencode
@@ -6249,6 +6284,7 @@ async fn export(
             audio_fade: prefs::audio_fade(),
             poster,
             chapters: chapters.unwrap_or_default(),
+            replanned: Some(replanned.clone()),
             ..Default::default()
         };
         if sound_only {
@@ -6267,7 +6303,7 @@ async fn export(
                 })),
             )
             .map_err(|e| e.to_string())?;
-            return Ok(());
+            return Ok(false);
         }
         // The AAC beside the cut takes the cut's name with `.aac` on it, and
         // that can be the recording being read (a transport stream saved as
@@ -6296,7 +6332,12 @@ async fn export(
                 let _ = reporter.emit("export-progress", (whose.clone(), tables, done, within));
             })),
         )
-        .map_err(|e| e.to_string())?;
+        // With its causes: the engine says what it was doing when it failed,
+        // and the outermost of that alone ("writing picture 812 of the
+        // output", "replacing x.ts") left out why.
+        .map_err(|e| format!("{e:#}"))?;
+        // Answered to the window, which says so: see `CutOptions::replanned`.
+        let replanned = note_replanned(&output, &replanned);
 
         // Read back out of the file just written, so what sits beside the
         // video is by construction the audio that is in it.
@@ -6309,7 +6350,7 @@ async fn export(
             )
             .map_err(|e| e.to_string())?;
         }
-        Ok(())
+        Ok(replanned)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6377,6 +6418,35 @@ struct VerifyStop(AtomicBool);
 static PLANNED_WITH: Mutex<std::collections::BTreeMap<String, Option<f64>>> =
     Mutex::new(std::collections::BTreeMap::new());
 
+/// The plans each output of this session was written by in the end, by the
+/// output's local path, where the engine wrote it by other plans than the
+/// ones it was handed: an AV1 cut into MP4 that had to be written again with
+/// every picture re-encoded. See `smartcut_core::CutOptions::replanned`.
+///
+/// For [`verify_output`] as [`PLANNED_WITH`] is: planned again as the export
+/// planned it, the check held such a file to copies it does not have and
+/// called a faithful cut wrong.
+static REPLANNED: Mutex<std::collections::BTreeMap<String, Vec<Vec<smartcut_core::RangePlan>>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// Write down what `replanned` says the export at `output` was written by,
+/// and whether that was not what it was given.
+fn note_replanned(
+    output: &str,
+    replanned: &std::sync::OnceLock<Vec<Vec<smartcut_core::RangePlan>>>,
+) -> bool {
+    match replanned.get() {
+        Some(plans) => {
+            locked(&REPLANNED).insert(output.to_string(), plans.clone());
+            true
+        }
+        None => {
+            locked(&REPLANNED).remove(output);
+            false
+        }
+    }
+}
+
 #[tauri::command]
 fn stop_verify(stop: State<VerifyStop>) {
     stop.0.store(true, Ordering::SeqCst);
@@ -6413,6 +6483,12 @@ async fn verify_output(
             .get(&output)
             .copied()
             .unwrap_or_else(prefs::clean_join);
+        // Or not planned at all, where the export was written by other plans
+        // than its own in the end. See [`REPLANNED`].
+        let replanned = locked(&REPLANNED)
+            .get(&output)
+            .filter(|again| again.len() == clips.len())
+            .cloned();
         let mut sources = Vec::with_capacity(clips.len());
         let mut plans = Vec::with_capacity(clips.len());
         for (n, c) in clips.iter().enumerate() {
@@ -6426,7 +6502,11 @@ async fn verify_output(
             // it out: where each range really begins and ends, and which of
             // its pictures are held to coming back bit for bit. Only where
             // the pictures are lined up at all.
-            let plan = if compare != smartcut_core::verify::Compare::Nothing {
+            let plan = if compare == smartcut_core::verify::Compare::Nothing {
+                Vec::new()
+            } else if let Some(again) = &replanned {
+                again[n].clone()
+            } else {
                 if !src.leading_known {
                     index::refine_leading(
                         &src.input.url.clone(),
@@ -6454,8 +6534,6 @@ async fn verify_output(
                     n > 0 && clips.len() > 1,
                 );
                 plan
-            } else {
-                Vec::new()
             };
             sources.push(src);
             plans.push(plan);
@@ -6636,7 +6714,7 @@ async fn export_joined(
     data_broadcast: Option<bool>,
     video_share: Option<f64>,
     chapters: Option<Vec<f64>>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if clips.is_empty() {
             return Err("nothing to write: the list is empty".to_string());
@@ -6741,6 +6819,9 @@ async fn export_joined(
             .collect();
         let whose = reels[0].src.path.clone();
         let reporter = app.clone();
+        // Whether the cut is written by the plans above. See [`REPLANNED`].
+        let replanned = std::sync::Arc::new(std::sync::OnceLock::new());
+        locked(&REPLANNED).remove(&output);
         let opts = smartcut_core::CutOptions {
             audio_mode: if audio_reencode.unwrap_or(false) {
                 smartcut_core::AudioMode::Reencode
@@ -6792,6 +6873,7 @@ async fn export_joined(
                 clean_join,
                 ..Default::default()
             },
+            replanned: Some(replanned.clone()),
             ..Default::default()
         };
         if sound_only {
@@ -6815,7 +6897,7 @@ async fn export_joined(
                 })),
             )
             .map_err(|e| e.to_string())?;
-            return Ok(());
+            return Ok(false);
         }
         if audio_es.unwrap_or(false) {
             let beside = std::path::Path::new(&output).with_extension("aac");
@@ -6833,7 +6915,9 @@ async fn export_joined(
                 let _ = reporter.emit("export-progress", (whose.clone(), tables, done, within));
             })),
         )
-        .map_err(|e| e.to_string())?;
+        // With its causes, as `export` gives them.
+        .map_err(|e| format!("{e:#}"))?;
+        let replanned = note_replanned(&output, &replanned);
 
         if audio_es.unwrap_or(false) {
             let beside = std::path::Path::new(&output).with_extension("aac");
@@ -6844,7 +6928,7 @@ async fn export_joined(
             )
             .map_err(|e| e.to_string())?;
         }
-        Ok(())
+        Ok(replanned)
     })
     .await
     .map_err(|e| e.to_string())?

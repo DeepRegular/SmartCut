@@ -400,16 +400,22 @@ and runs ahead of the sound by no more than the pictures held back for
 reordering (`audio::read_reached`): `--verify`'s reads, the sound-only file,
 the sound's shape and the decode around a seam, and the cut's own copy.
 
-**And the last picture is as long as the track says.** `--verify` took the
-last picture to be up for a frame of the average, which is where it puts the
-end of the pictures to measure the sound against. A variable-rate cut ending
-on a still writes that picture up to where the range ends (see [the Rust
+**And the last picture is as long as the track says.** `--verify` took the last
+picture to be up for a frame of the average, which is where it puts the end of
+the pictures to measure the sound against. A variable-rate cut ending on a still
+writes that picture up to where the range ends (see [the Rust
 core](rust-core.md#how-close-the-pictures-come-asked-in-one-place)), and with
 sound beside it the sound was said to be laid seconds past the pictures. The
-length now comes from the end the container states for the picture track
-where that is more than a frame and a half past the last picture: an MP4's
-track length, or the `DURATION` libavformat's Matroska muxer writes for each
-track. A transport stream states none of its own, and a constant-rate output
+length now comes from the end the container states for the picture track where
+that is more than a frame and a half past the last picture: an MP4's track
+length, or the `DURATION` libavformat's Matroska muxer writes for each track. A
+cut of a variable-rate recording takes the track at its word wherever it states
+an end, however close that end is to the last picture: a range ending just after
+a picture of a screen moving ends that picture some 40 ms on, and counted a
+frame of the average past it (most of a second on a screen recording) a faithful
+cut's sound was called OFF. Where nothing states an end, as in a transport
+stream, the last picture is taken to be up for no longer than the shortest gap
+measured between the recording's pictures. A cut of a constant-rate recording
 reads as it always has.
 
 **Nothing may finish having written a declared track and no frames of it.**

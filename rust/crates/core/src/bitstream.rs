@@ -865,6 +865,15 @@ pub(crate) struct Bits {
 }
 
 impl Bits {
+    /// AV1 has no H.26x emulation-prevention bytes to remove.
+    pub(crate) fn raw(data: &[u8]) -> Self {
+        Self { data: data.to_vec(), pos: 0 }
+    }
+
+    pub(crate) fn position(&self) -> usize {
+        self.pos
+    }
+
     pub(crate) fn new(nal: &[u8]) -> Self {
         let mut data = Vec::with_capacity(nal.len());
         let mut i = 0;

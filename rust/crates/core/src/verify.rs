@@ -541,6 +541,9 @@ pub fn check_placed(
         own_short.push(track_ends(p, span, stop));
     }
     let fps = pieces.first().map(|p| p.src.video.frame_rate).unwrap_or(0.0);
+    // Whether a piece's pictures vary, which is when the average says
+    // nothing about how long the last of them is up: see `last_length`.
+    let varies = pieces.iter().any(|p| p.src.video.variable_rate);
     let estimate = (kept * if fps > 0.0 { fps } else { 30.0 }).max(1.0);
 
     // A join whose clips differ in the pictures -- size, rate, codec, the
@@ -863,9 +866,38 @@ pub fn check_placed(
         // beside it was said to be laid seconds past the pictures. Taken
         // only past half a frame more, so that a constant-rate output reads
         // as it always has.
+        //
+        // **And on a variable recording, wherever the track says.** There a
+        // frame of the average is no measure of the last picture in the
+        // other direction either: a screen recording that holds its pictures
+        // for seconds averages a picture a second, and a range ending just
+        // after one of the pictures that come while the screen moves ends
+        // that picture 40 ms on. Counted a whole frame of the average past
+        // it, the pictures of a faithful .mp4 cut ran 1.1 s longer than they
+        // do and its sound was called OFF.
         let a_frame = 1.0 / frame_rate(&ictx, video, fps);
         let last_length = match (last_pts, track_end(&ictx, video)) {
-            (Some(l), Some(end)) if end - l as f64 * v_tb > a_frame * 1.5 => end - l as f64 * v_tb,
+            (Some(l), Some(end)) => {
+                let held = end - l as f64 * v_tb;
+                if held > a_frame * 1.5 || (varies && held > 0.0 && held.is_finite()) {
+                    held
+                } else {
+                    a_frame
+                }
+            }
+            // **Nor, where nothing states an end, the average either.** A
+            // transport stream gives its pictures no lengths, and a frame of
+            // a screen recording's average is most of a second: a range that
+            // ends just after a picture of the screen moving was called a
+            // second longer than its sound. The closest the last piece's
+            // pictures come is the least it can be up for, which is all the
+            // file says; a range ending in a hold, whose last picture a
+            // stream of this kind does not hold to the end, still reads as
+            // short of its sound.
+            (Some(_), None) => match pieces.last().map(|p| &p.src.video) {
+                Some(v) if v.variable_rate && v.least_gap() > 0.0 => v.least_gap().min(a_frame),
+                _ => a_frame,
+            },
             _ => a_frame,
         };
         report.seconds = if report.pictures {

@@ -345,8 +345,9 @@ These only surfaced on real material:
   stream's `seq_level_idx` in `AVCodecContext.level` — 0 for level 2.0, counting up —
   and SVT-AV1 wants 20 for the same level, so the recording's own figure handed
   straight over produced `Level must be in the range of [2.0-7.3]` at every seam. For
-  AV1 and VP9 the level is left for the encoder to work out; the codecs whose two ends
-  agree are still told the recording's.
+  AV1 and VP9 the level is left for the encoder to work out, except that rav1e, which
+  would write 31, is told the recording's in its own spelling ([AV1 in
+  MP4](av1-mp4.md)); the codecs whose two ends agree are still told the recording's.
 - **Every encoder ran on one core until 0.8.0.** `avcodec_alloc_context3` leaves
   `thread_count` at 1, not 0, and an encoder reads it literally, so seams were written
   on one core while the decode feeding them ran on four. It never showed on the codecs

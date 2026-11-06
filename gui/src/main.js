@@ -2150,6 +2150,17 @@ function lang3(code) {
   return known.startsWith("lang.") ? code : known;
 }
 
+/// The size of the last picture the stage finished loading.
+///
+/// While the next one loads WebKitGTK says the image has no size at all, and
+/// every frame of playback is a new one -- so the answer for the caption,
+/// which comes back in a millisecond or two, landed in that gap,
+/// found nothing to measure against and put the layer away until the
+/// picture's `load` put it back. Once a frame: the caption flickered. A
+/// recording's frames are all one shape, and one that changes shape is
+/// placed again on its own `load`.
+let pictureSize = null;
+
 /// Where the picture actually is inside the stage.
 ///
 /// `object-fit: contain` centres the picture and leaves black at two of the
@@ -2159,8 +2170,11 @@ function pictureBox() {
   const img = el("preview");
   const w = img.clientWidth;
   const h = img.clientHeight;
-  const nw = img.naturalWidth;
-  const nh = img.naturalHeight;
+  if (img.naturalWidth && img.naturalHeight) {
+    pictureSize = { width: img.naturalWidth, height: img.naturalHeight };
+  }
+  const nw = pictureSize ? pictureSize.width : 0;
+  const nh = pictureSize ? pictureSize.height : 0;
   if (!w || !h || !nw || !nh) return null;
   const scale = Math.min(w / nw, h / nh);
   const pw = nw * scale;
@@ -2296,7 +2310,10 @@ function drawSubs() {
   // A disc's subtitle is a picture of its own rectangle of the screen.
   if (subsShown.picture) {
     const p = subsShown.picture;
-    pic.src = p.url;
+    // Only when it is another picture. The same line comes back on every
+    // frame it stays up, and an `<img>` given its own data URL again decodes
+    // it again -- blank until it has, which was a flicker a frame.
+    if (pic.getAttribute("src") !== p.url) pic.src = p.url;
     pic.style.left = `${p.x * sx}px`;
     pic.style.top = `${p.y * sy}px`;
     pic.style.width = `${p.width * sx}px`;
@@ -7193,6 +7210,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     subsToken++;
     meterToken++;
     zoomToken++;
+    // The last recording's picture shape is no measure for this one's: the
+    // corners were drawn on it until this one's first picture had loaded.
+    pictureSize = null;
     paintSourceInfo();
     // A track number is only the same track on the same recording; see
     // `paintSubsPicker`, which keeps one only across a reopen. Another
@@ -8022,13 +8042,18 @@ async function cutSelection(inner) {
 /// in one go on a phone recording closed the window while the Del was still
 /// asking the stage where OUT's picture ends, and the list kept the row
 /// without the cut.
+///
+/// Every one still running, not only the last: a second Del pressed while
+/// the first is asking is dropped at once (`exactEnd`), and taking its place
+/// here let OK go on without waiting for the first.
 let cutting = null;
 function whileCutting(p) {
-  cutting = p;
+  const all = cutting ? Promise.allSettled([cutting, p]) : p;
+  cutting = all;
   const done = () => {
-    if (cutting === p) cutting = null;
+    if (cutting === all) cutting = null;
   };
-  p.then(done, done);
+  all.then(done, done);
   return p;
 }
 
@@ -8911,6 +8936,8 @@ function renderTracks() {
     // A subtitle format no cut carries (SubRip, ASS, mov_text, WebVTT,
     // dvb_subtitle): without this line it would read as a data broadcast.
     "subtitle stream": "tracks.subtitleStream",
+    // A picture track beside the one written (two video tracks in an .mp4).
+    "video stream": "tracks.videoStream",
   };
   for (const track of dropped) {
     const li = document.createElement("li");

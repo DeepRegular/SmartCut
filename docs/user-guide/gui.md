@@ -1149,6 +1149,8 @@ give it ends.
 - It is decoded again out of the recording, never the proxy, at the size the
   recording is shown at: every sample across, in square pixels. 1440×1080 at
   16:9 is saved as 1920×1080, and a 16:9 DVD as 853×480.
+  Where an `.mp4` or `.mkv` states a shape of its own over the pictures', that
+  is the shape used, as it is in the editor.
 - An interlaced recording is saved from one field, as the thumbnail is, so
   there is no comb.
 - The colours go through the matrix the recording declares (BT.709 for HD).
@@ -1299,6 +1301,11 @@ list of recordings has as many answers as it has rows. So one row supplies them
 all, and the picker under the box is where you say which. The first row is the
 answer if you say nothing.
 
+That includes the shape the pictures are shown at. Where the master is an `.mp4`
+or `.mkv` whose container states a shape over its pictures' own, that is the
+shape, and a `.ts` or a disc, which has nowhere to state it but in the pictures,
+has the copied pictures rewritten to say it (H.264, HEVC and MPEG-2).
+
 A row that matches the master is smart-rendered exactly as it would be on its
 own. **A row that does not is decoded and written afresh to fit** — another
 size is scaled, another frame rate is converted by holding or passing over
@@ -1376,6 +1383,13 @@ it in real time with its sound. The bar under it is in three parts: the clip
 before on the left, the clip after on the right, and the coloured stretch
 between them is what the effect covers. With `None` chosen that stretch is a
 single line, because a cut takes no time.
+
+The frame is **the master clip's shape**, because that is the shape the joined
+file is written in: a 4:3 clip joined onto a 16:9 master is shown inside the
+16:9 frame, as the file will have it, even where neither clip at this join is
+the master. Choose another master clip while the window is open and the preview
+is composited again at the new one's shape. Up to 0.8.39 the preview took the
+shape of the clip before the join.
 
 The playback controls sit in the middle of the bottom row, the row with OK:
 
@@ -1726,6 +1740,14 @@ Where a file cannot be lined up frame for frame, what can be checked is:
 In the two cases of a join, a decode error is reported but does not fail the
 check: it cannot be told apart from the recording's own reception errors. Only
 a file whose pictures do not decode at all fails.
+
+**An AV1 recording cut into `.mp4` can end up re-encoded whole.** An MP4 file
+describes its AV1 settings once, and where the re-encoded frames and the copied
+ones would need two different descriptions, the file is written a second time
+with all of its video re-encoded. The plan on the output screen does not show
+this, so once the file is written the output screen says it, and so does the run
+log. The check then holds the file to that second writing, so a file with no
+copied frames is not failed for the copies the first plan promised.
 
 ### The run log
 

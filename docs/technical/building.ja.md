@@ -86,6 +86,8 @@ bash tests/run_dvd_tests.sh           # DVD-Video をフォルダーと .iso か
 bash tests/run_bd_audio_tests.sh      # ディスクの音声が書き出せるか                    39
 bash tests/run_vc1_tests.sh           # VC-1 エンコーダをデコーダに通す                  4
 bash tests/run_vp9_av1_tests.sh       # VP9 と AV1 を継いで、録画のバイトのままか        5
+bash tests/run_sar_tests.sh           # SAR（書き出し 44・輪郭 16）                     60
+bash tests/run_av1_mp4_tests.sh       # AV1 の MP4。継ぎ目の level と mkv の対照          21
 bash tests/run_vfr_tests.sh           # 保持されたフレームが保持されたままか、速い差し込みが残るか  8
 bash tests/run_demux_tests.sh         # 読まないストリームを切ると何が戻るか              9
 bash tests/run_transrate_tests.sh     # 容量に合わせる。同一性・サイズ・代償         15

@@ -432,6 +432,8 @@ struct Walk {
     last: f64,
     /// The gap before it; see where this is set up.
     gap: f64,
+    /// How long the container says that last picture is up, where it says.
+    length: Option<f64>,
 }
 
 impl Walk {
@@ -448,6 +450,8 @@ impl Walk {
             self.gap = t - self.last;
         }
         self.last = t;
+        let own = frame.packet().duration;
+        self.length = (own > 0).then_some(own as f64 * src.video.time_base);
         let format = frame.format();
         if self.luma.as_ref().is_none_or(|(was, _)| *was != format) {
             self.luma = Some((format, Luma::of(format)?));
@@ -502,6 +506,7 @@ pub fn find_runs_with(
         // last picture's end is wanted from it, and the gap before it is the
         // best guess at that.
         gap: 1.0 / src.video.frame_rate.max(1.0),
+        length: None,
     };
     let mut frame = ff::frame::Video::empty();
     let mut told = -1.0;
@@ -534,8 +539,25 @@ pub fn find_runs_with(
     if let Some(f) = progress.as_mut() {
         f(1.0);
     }
-    let tail = walk.last + walk.gap;
-    Ok(runs_from(&walk.looks, tail, opts))
+    Ok(runs_from(&walk.looks, tail_of(&walk), opts))
+}
+
+/// Where the last picture read stops being on screen.
+///
+/// The gap before it, as a broadcast recording is measured -- **except where
+/// that gap is many of the picture's own length.** A screen recording holds a
+/// picture for as long as nothing moves, and one that ended on black held it
+/// three seconds and then sent one more picture of a sixtieth: taken as up
+/// for the three seconds before it, the black ran three seconds past the end
+/// of the recording, and was that much longer for the minimum it is held to.
+/// Four times, so that a broadcast picture is measured as it always was:
+/// its gap is its frame, or a field more where one is repeated, and a
+/// field-coded one is stated as the half of it its first field's packet is.
+fn tail_of(walk: &Walk) -> f64 {
+    match walk.length {
+        Some(own) if walk.gap > 4.0 * own => walk.last + own,
+        _ => walk.last + walk.gap,
+    }
 }
 
 #[cfg(test)]
@@ -652,6 +674,24 @@ mod tests {
             },
         );
         assert_eq!(runs.len(), 1);
+    }
+
+    /// A recording that ends on a held picture ends where its last picture
+    /// does, not a hold past it; a broadcast one is measured by its gaps.
+    #[test]
+    fn the_last_picture_is_not_taken_for_the_hold_before_it() {
+        let walk = |gap: f64, length: Option<f64>| Walk {
+            luma: None,
+            looks: Vec::new(),
+            last: 27.983,
+            gap,
+            length,
+        };
+        assert!((tail_of(&walk(2.983, Some(1.0 / 60.0))) - 28.0).abs() < 1e-3);
+        // A repeated field, a frame and a half before it: as it was.
+        assert_eq!(tail_of(&walk(0.05, Some(1.0 / 30.0))), 27.983 + 0.05);
+        // ...and where nothing says how long it is.
+        assert_eq!(tail_of(&walk(2.983, None)), 27.983 + 2.983);
     }
 
     /// A level is a fraction of the same span the samples are shifted on,

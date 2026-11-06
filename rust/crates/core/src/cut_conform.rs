@@ -381,7 +381,7 @@ fn pictures_afresh(
                             // fields it said each picture was repeated three
                             // times over.
                             let packet = encode_vc1(enc, picture, 2)?;
-                            writer.push(Emitted {
+                            writer.push(SegmentKind::Reencode, Emitted {
                                 packet,
                                 display,
                                 fields: length,

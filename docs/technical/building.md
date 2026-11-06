@@ -85,6 +85,8 @@ bash tests/run_dvd_tests.sh           # a DVD-Video disc, as a folder and as an 
 bash tests/run_bd_audio_tests.sh      # the sound a disc carries, written out             39
 bash tests/run_vc1_tests.sh           # the VC-1 encoder, put through a decoder          4
 bash tests/run_vp9_av1_tests.sh       # VP9 and AV1: cut, and still the source's bytes   5
+bash tests/run_sar_tests.sh           # SAR: 44 exports + 16 outlines                  60
+bash tests/run_av1_mp4_tests.sh       # AV1 MP4 seam levels and Matroska controls       21
 bash tests/run_vfr_tests.sh           # variable rate, both ways round                   8
 bash tests/run_source_clock_tests.sh  # source clocks, range ends and VFR copying       80
 bash tests/run_demux_tests.sh         # what a reader loses by reading what it does not  9

@@ -60,6 +60,15 @@ The master is the caller's choice and not the first row, because the two are
 different questions. A list of twelve episodes and one trailer wants the
 episodes' shape, and the trailer may well be at the top of the list.
 
+The pixel aspect is the one the master is shown at: its container's, where an
+MP4 or Matroska file states one over its sequence headers, and the bitstream's
+otherwise. An `.mp4` or `.mkv` states it for the stream. A `.ts`, `.m2ts`, disc,
+`.mpg` or `.vob` has no such place, so where the master's container and its
+sequence headers disagree, every copied sequence header in the file is rewritten
+to the master's shape and the seams are encoded to say the same ([the Rust
+core](rust-core.md#and-a-container-can-state-the-pictures-shape-over-their-heads)).
+A join copied into one `.ts` does not change shape partway.
+
 ### What a reel that is not the master supplies
 
 Its pictures and its sound, and its captions. **Which of its streams stands in

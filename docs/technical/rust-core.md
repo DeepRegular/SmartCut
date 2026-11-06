@@ -169,6 +169,38 @@ given the recording's value and told `atc-sei` separately. Both halves of the
 signalling then come out the way they went in. Only libx265 can be told this,
 so it is the only codec it is done for.
 
+### And a container can state the pictures' shape over their heads
+
+A pixel aspect is said in two places. The pictures' own sequence headers say one,
+and an MP4 or Matroska file can say another for the stream: a `pasp` over an SPS
+saying 1:1, the display size `mkvmerge --aspect-ratio` writes, `ffmpeg -c copy
+-aspect`. A player shows the container's, and AV1 has no other place to keep it. So
+the outline (`outline_of`), the glimpses, the stills, the media info panel and the
+cut all take `av_guess_sample_aspect_ratio`: the container's ratio where it states
+one, the bitstream's where it does not. An `.mp4` or `.mkv` output states that ratio
+for its stream again. The seam encoders keep the recording's coded SAR there, so a
+seam says what the copied pictures either side of it say.
+
+A transport or program stream has nowhere to say it but the sequence headers, so a
+cut of such a recording into `.ts`, `.m2ts`, a BDAV disc, `.mpg` or `.vob` played at
+the bitstream's shape: 720x480 stated 16:9 by its container came out 3:2. **There,
+and only where the two disagree, the copied sequence headers are rewritten to the
+container's shape**, and the seam encoders are given the same SAR. H.264 and HEVC
+parameter sets go through libavcodec's `h264_metadata` / `hevc_metadata`, handed the
+parameter sets alone, so every slice still goes out as the recording's own bytes; an
+MPEG-2 sequence header gets the nearest of the four shapes its
+`aspect_ratio_information` can say. In a join the shape is the master's, so a join
+copied into one `.ts` no longer changes shape partway (`cut::restated_sar`).
+
+The two are compared on the picture's width in pixels. A Matroska file stores a
+display width rounded to a whole pixel (853 for a 16:9 DVD), which libavformat reads
+back as a ratio near the sequence header's but not equal to it; a recording whose
+two statements are a pixel or less apart is written byte for byte as before, and so
+is every recording whose container says nothing of its own. For MPEG-2 the question
+is which of the four shapes each is nearest. No other codec's headers are rewritten,
+and a header that cannot be is said in a `note:` and left as the recording states
+it.
+
 ### Dolby Vision is in the pictures, and cannot be written back
 
 In a Dolby Vision recording the colour is decided by an RPU on every picture,
@@ -914,7 +946,7 @@ Three things did have to be said outright.
 | | |
 |---|---|
 | **Which AV1 encoder** | `avcodec_find_encoder(AV_CODEC_ID_AV1)` answers libaom-av1, whose default `cpu-used` is 0: 348 seconds for two seconds of 1080p24. That is not a seam being written, it is an export that looks hung. `cut::encoders_for` names SVT-AV1, then rav1e, then libaom, and each is opened in turn -- an encoder being present is not the same as its being able to write this recording, and SVT refuses 4:2:2 when it is opened rather than when it is looked up. At preset 8 it writes the same two seconds in 3.97 s, 0.002 dB from libaom's |
-| **The level is not one number** | A decoder puts an AV1 stream's `seq_level_idx` in `AVCodecContext.level` -- 0 for level 2.0, counting up -- and SVT-AV1 wants 20 for the same level. Handed the recording's own figure it said `Level must be in the range of [2.0-7.3]` at every seam. For AV1 and VP9 the level is left for the encoder to work out; a level describes what a decoder must keep up with, and the pictures written here are the size and rate of the ones they sit among |
+| **The level is not one number** | A decoder puts an AV1 stream's `seq_level_idx` in `AVCodecContext.level` -- 0 for level 2.0, counting up -- and SVT-AV1 wants 20 for the same level. Handed the recording's own figure it said `Level must be in the range of [2.0-7.3]` at every seam. For AV1 and VP9 the level is left for the encoder to work out; a level describes what a decoder must keep up with, and the pictures written here are the size and rate of the ones they sit among. rav1e is the exception: left to itself it writes 31, no level at all, so it is told the recording's own ([AV1 in MP4](av1-mp4.md)) |
 | **The speeds** | Their defaults are set for encoding a film, and this writes a second of one. libvpx spends 6.52 s on two seconds of 1080p24 at `cpu-used 0` and 2.54 s at 2, for a thousandth of a decibel. The figures chosen put a seam at roughly what libx264 costs for the same seconds |
 
 ### And every encoder was on one core
@@ -950,6 +982,14 @@ they are known to refuse, which is all a container that says no out loud needs.
 A cut into a container that cannot hold what is going into it stops before the
 output file is made, and the window greys the entry out with the same answer;
 see [the design notes](design.md).
+
+An AV1 cut into `.mp4` has one more thing to agree on. MP4 describes a track's AV1
+configuration once, and where a seam's sequence header cannot be made to agree with
+the copied pictures' on what that description holds, the cut is written again with
+every picture of the selection re-encoded ([AV1 in MP4](av1-mp4.md)). The run says
+so in a `note:` line, and `--verify` (and the window's check) holds the file to the
+plans that second attempt used, so a faithful cut is not called a mismatch for
+copies it no longer has.
 
 ## VC-1: the codec with no encoder
 
