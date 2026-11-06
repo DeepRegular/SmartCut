@@ -1,5 +1,7 @@
 # Source clocks and variable-rate range ends
 
+[← Documentation](../README.md) ・ [← SmartCut](../../README.md) ・ [日本語](source-clock.ja.md)
+
 The timestamp clock and the nominal picture rate serve different purposes.
 The boundary encoder still uses the existing rate and quality settings. The
 output timeline must also represent the source's display timestamps.
