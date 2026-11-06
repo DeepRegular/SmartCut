@@ -647,17 +647,27 @@ struct Span {
 /// `seg.end` is the answer, held to the last picture's place and no
 /// further. A recording of fields of a declared rate (2:3 pulldown in an
 /// MP4) is on that grid too, and is answered the same way.
-fn held_to_the_end(span: Span, anchor: Option<f64>, seg: &Segment, src: &Source, field: f64) -> Span {
+fn held_to_the_end(span: Span, anchor: Option<f64>, seg: &Segment, src: &Source,
+                   ctx: &SegmentCtx) -> Span {
+    let field = ctx.grid.unit();
     let Some(a) = anchor else { return span };
     let until = if src.duration > 0.0 {
         seg.end.min(src.duration)
     } else {
         seg.end
     };
+    let own = Grid::of(src);
     // Held to [`FAR`] for the reason the copy's own placing is.
     let held = ((until - a).min(FAR) / field).round() as i64;
-    let own = Grid::of(src);
-    if coded_length_unbounded(&src.video) && own.unit() == field {
+    // Refining the clock must not remove a normal picture's coded floor:
+    // a varying 23.976 MP4 can end a range only 4 ms into its last picture.
+    // Only the original unbounded-length case may replace that floor by
+    // measured coverage at a range end. Genuine VFR holds keep
+    // their existing semantics, including cuts entirely inside one hold.
+    // Inside a kept range the next segment resumes at a measured picture,
+    // so preserving a nominal floor there would shift every later picture.
+    let continuing = own.divisor.is_some() && !ctx.last;
+    if (coded_length_unbounded(&src.video) || continuing) && own.unit() == field {
         // The last picture starts at most a frame of this grid before the
         // end its coded length gives (a field before, for the second field
         // of a pair), and it is up for at least a unit.
@@ -757,6 +767,9 @@ struct SegmentCtx<'a> {
     /// Whether this is the opening segment of its keep-range, which is where
     /// the range's audio boundary decision is made.
     first: bool,
+    /// The end of a keep-range, rather than a seam inside it. A normal
+    /// picture retains its coded floor here even on a finer source clock.
+    last: bool,
     /// What the recording says about its own colour, read once for the
     /// whole cut. See [`signalling_of`].
     signalling: &'a Signalling,
@@ -845,6 +858,10 @@ struct Writer {
     /// Only over the cut's last range, and only where that is of use; see
     /// there.
     keep_last: bool,
+    /// On a refined clock the last displayed picture must remain writable
+    /// until its exact hold is known, even if several B pictures follow it
+    /// in decode order. Decoder reorder depth alone does not bound that run.
+    hold_latest: bool,
     /// Where the output's pictures end, in units, for the last of them to
     /// be up until.
     ///
@@ -1480,6 +1497,19 @@ impl Writer {
         // pulldown does not move the boundary either.
         let keep = (self.depth * 2).max(0) + if self.keep_last { 2 } else { 0 };
         while self.held_halves() > keep {
+            // A copied P picture can be followed by three B pictures while
+            // has_b_frames says two. Writing it now loses the chance to set
+            // its final hold: a 40/40/80 ms cut ended 27 ms early. Let it go
+            // when a later displayed picture arrives, or lengthen it in
+            // flush. Apply only to the clocks this change refines. A bounded
+            // hold is best effort: over the limit, emit the picture as before
+            // rather than refuse the cut for a longer final hold.
+            if self.hold_latest && self.pending.front().is_some_and(|front|
+                self.pending.iter().all(|p| p.display <= front.display))
+                && self.pending.iter().map(|p| p.packet.size()).sum::<usize>() <= HELD_AT_MOST
+            {
+                break;
+            }
             self.emit_one()?;
         }
         Ok(())
@@ -4717,7 +4747,7 @@ fn copy_segment(
         }
         bail!("could not find the entry point at {:.3}s", seg.start);
     }
-    Ok(held_to_the_end(span, anchor, seg, src, field))
+    Ok(held_to_the_end(span, anchor, seg, src, ctx))
 }
 
 /// How the pictures of a re-encoded segment are produced.
@@ -5741,6 +5771,10 @@ fn open_encoder_as(
 /// [`Grid`].
 const FINE: i64 = 32;
 
+fn needs_source_clock(variable: bool, frame: f64, tick: f64) -> bool {
+    variable && frame.is_finite() && frame > 0.0 && tick.is_finite() && tick > 0.0
+}
+
 /// The units the output timeline is counted in.
 ///
 /// **A field of the rate the recording is built on**, which for everything
@@ -5770,12 +5804,60 @@ struct Grid {
     den: i64,
     /// Units per field.
     sub: i64,
+    /// Reduce only a newly aligned clock. Existing grids retain their exact
+    /// timescale and sample tables, even where the fraction could be reduced.
+    divisor: Option<i64>,
 }
 
 impl Grid {
     fn of(src: &Source) -> Grid {
         let v = &src.video;
-        Grid::from_rates(v.frame_rate, v.base_rate, v.variable_rate).held_within(src.duration)
+        let grid = Grid::from_rates(v.frame_rate, v.base_rate, v.variable_rate).held_within(src.duration);
+        // CFR keeps the nominal grid even when the source tick rounds each
+        // timestamp (e.g. 29.97 fps written as 33/34 ms in Matroska).
+        // Only pictures classified as varying need the source clock.
+        if !src.on_a_ts && !v.interlaced()
+            && needs_source_clock(v.variable_rate, v.frame_duration(), v.time_base)
+        {
+            grid.on_clock(v.time_base, src.duration)
+        } else {
+            grid
+        }
+    }
+
+    /// Keep a variable recording's container ticks representable.
+    /// A rounded average is not its clock.
+    fn on_clock(self, seconds_per_tick: f64, duration: f64) -> Grid {
+        if !(seconds_per_tick.is_finite() && seconds_per_tick > 0.0) {
+            return self;
+        }
+        let clock = ff::Rational::from(seconds_per_tick).reduce();
+        let (n, d) = (i64::from(clock.numerator()), i64::from(clock.denominator()));
+        if n <= 0 || d <= 0 { return self; }
+        let Some(needed) = d.checked_mul(self.den) else { return self };
+        let Some(available) = n.checked_mul(2 * self.num) else { return self };
+        let step = needed / unsafe { ff::ffi::av_gcd(needed, available) };
+        if self.sub % step == 0 {
+            return self;
+        }
+        // Any multiple of `step` represents both the field and source clock.
+        // Keep at least the existing precision, without taking the LCM with
+        // FINE: that can needlessly multiply the clock and exhaust the bound
+        // on a long recording whose GOP-sized timestamps fit comfortably.
+        let Some(groups) = self.sub.checked_add(step - 1).map(|s| s / step) else { return self };
+        let Some(sub) = groups.checked_mul(step) else { return self };
+        if self.num.checked_mul(sub).and_then(|v| v.checked_mul(2)).is_none() {
+            return self;
+        }
+        let divisor = unsafe { ff::ffi::av_gcd(2 * self.num * sub, self.den) };
+        let aligned = Grid { sub, divisor: Some(divisor), ..self };
+        let scale = aligned.timescale();
+        if scale > i64::from(i32::MAX)
+            || (duration.is_finite() && duration > 0.0 && scale as f64 * duration > f64::from(i32::MAX))
+        {
+            return self;
+        }
+        aligned
     }
 
     /// The grid, with ticks coarse enough that the longest gap the recording
@@ -5814,6 +5896,7 @@ impl Grid {
             num: i64::from(n).max(1),
             den: i64::from(d).max(1),
             sub: self.sub,
+            divisor: None,
         }
     }
 
@@ -5865,7 +5948,7 @@ impl Grid {
     fn of_rate(num: i64, den: i64, sub: i64) -> Grid {
         let most = i64::from(i32::MAX) / (2 * sub);
         if num <= most {
-            return Grid { num, den, sub };
+            return Grid { num, den, sub, divisor: None };
         }
         let (mut n, mut d) = (0i32, 0i32);
         // Bounds both terms, which is what is wanted: a frame rate is over
@@ -5875,12 +5958,17 @@ impl Grid {
             num: i64::from(n).max(1),
             den: i64::from(d).max(1),
             sub,
+            divisor: None,
         }
     }
 
     /// Ticks per second in the output's own time base.
     fn timescale(self) -> i64 {
-        2 * self.num * self.sub
+        2 * self.num * self.sub / self.divisor.unwrap_or(1)
+    }
+
+    fn ticks_per_unit(self) -> i64 {
+        self.den / self.divisor.unwrap_or(1)
     }
 
     fn time_base(self) -> ff::Rational {
@@ -5889,7 +5977,7 @@ impl Grid {
 
     /// How long one unit lasts, in seconds.
     fn unit(self) -> f64 {
-        self.den as f64 / self.timescale() as f64
+        self.ticks_per_unit() as f64 / self.timescale() as f64
     }
 
     /// What a picture shown for `fields` fields occupies.
@@ -6640,7 +6728,7 @@ fn reencode_segment(
             seg.start, seg.end, span.pictures,
         );
     }
-    Ok(held_to_the_end(span, anchor, seg, src, field))
+    Ok(held_to_the_end(span, anchor, seg, src, ctx))
 }
 
 /// Where the streams go on the way out.
@@ -9829,14 +9917,12 @@ fn cut_into(
         }
     };
     let grid = Grid::of(src);
-    let den = grid.den;
+    let den = grid.ticks_per_unit();
 
-    // Output timebase: one tick per 1/(2*num*sub) second, so a *unit* is
-    // exactly `den` ticks, a field is `sub` of them and a normal frame twice
-    // that. 30000/1001 lands on 1/60000 with 1001 ticks per field -- integer
-    // arithmetic throughout, no rounding anywhere on the timeline, and
-    // 3-field pictures are representable. See [`Grid`] for the recording
-    // that needs the units smaller than a field.
+    // A unit is `den` output ticks, a field is `sub` units. A newly aligned
+    // source clock reduces both together; untouched grids retain exactly
+    // their old time base and sample tables. 30000/1001 remains 1001/60000 s
+    // per field. See [`Grid`] for the finer units varying pictures need.
     let mut muxer_opts = ff::Dictionary::new();
     let timescale = grid.timescale().to_string();
     let to_ts = writing_ts(output);
@@ -11351,6 +11437,7 @@ fn cut_into(
         held: None,
         opening: false,
         keep_last: false,
+        hold_latest: false,
         ends: None,
         top_written: None,
     };
@@ -11865,6 +11952,7 @@ fn cut_into(
             && plan_no + 1 == reel_plans[reel_no].len()
             && last_held_to_the_end(&rsrc.video)
             && Grid::of(rsrc).unit() == grid.unit();
+        writer.hold_latest = writer.keep_last && Grid::of(rsrc).divisor.is_some();
         for (n, seg) in plan.segments.iter().enumerate() {
             let first_segment = n == 0;
             // A stretch written in the master's shape -- a reel that does not
@@ -11890,6 +11978,7 @@ fn cut_into(
                 offset: target_start - plan.t_in,
                 subpictures: thread.graphics,
                 first: first_segment,
+                last: n + 1 == plan.segments.len(),
                 signalling: &signalling,
             };
             // Each segment reports the span it actually occupied, so the
@@ -12490,6 +12579,107 @@ fn cut_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_ticks_survive_a_rate_derived_grid() {
+        for (rate, base, variable, tick) in [
+            (6000.0 / 319.0, 25.0, true, 1.0 / 12800.0),
+            (30000.0 / 1001.0, 30000.0 / 1001.0, true, 0.001),
+        ] {
+            let before = Grid::from_rates(rate, base, variable);
+            let grid = before.on_clock(tick, 6000.0);
+            assert!(grid.unit() <= before.unit());
+            for i in 0..10000 {
+                let t = i as f64 * tick;
+                let restored = (t / grid.unit()).round() * grid.unit();
+                assert!((restored - t).abs() < 1e-10);
+            }
+            assert!(grid.timescale() <= i64::from(i32::MAX));
+        }
+    }
+
+    #[test]
+    fn ordinary_cfr_does_not_acquire_a_new_clock() {
+        for (rate, tick) in [(25.0, 1.0 / 12800.0), (25.0, 0.001),
+                             (24000.0 / 1001.0, 1.0 / 24000.0),
+                             (30000.0 / 1001.0, 1.0 / 30000.0),
+                             (24000.0 / 1001.0, 0.001),
+                             (30000.0 / 1001.0, 0.001)] {
+            assert!(!needs_source_clock(false, 1.0 / rate, tick));
+        }
+        assert!(needs_source_clock(true, 1001.0 / 24000.0, 0.001));
+        assert!(needs_source_clock(true, 1.0 / 25.0, 1.0 / 12800.0));
+        let original = Grid::from_rates(25.0, 25.0, false);
+        let already = original.on_clock(1.0 / 25.0, 60.0);
+        assert_eq!(already.timescale(), original.timescale());
+        assert_eq!(already.sub, original.sub);
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(!needs_source_clock(true, 0.04, bad));
+            assert_eq!(original.on_clock(bad, 60.0).timescale(), original.timescale());
+        }
+    }
+
+
+
+    #[test]
+    fn a_last_picture_over_the_buffer_limit_is_written_not_refused() {
+        use ff::codec::packet::{Mut, Ref};
+
+        ff::init().unwrap();
+        let sink = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let mut output = ff::format::output_as(sink, "null").unwrap();
+        {
+            let mut stream = output.add_stream(ff::encoder::find(ff::codec::Id::RAWVIDEO)).unwrap();
+            stream.set_time_base((1, 50));
+            let mut parameters = stream.parameters();
+            unsafe {
+                let p = parameters.as_mut_ptr();
+                (*p).codec_type = ff::ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+                (*p).codec_id = ff::ffi::AVCodecID::AV_CODEC_ID_RAWVIDEO;
+                (*p).width = 1;
+                (*p).height = 1;
+                (*p).format = ff::ffi::AVPixelFormat::AV_PIX_FMT_GRAY8 as i32;
+            }
+        }
+        output.write_header().unwrap();
+        let out_tb = output.stream(0).unwrap().time_base();
+        let mut writer = Writer {
+            octx: output, av1_mp4: None, on_a_ts: false, into_ts: false,
+            field_ticks: 1, sub: 1, our_tb: (1, 50).into(), out_tb, depth: 2,
+            pending: Default::default(), seen: Default::default(), shown: Default::default(),
+            first_shown: None, last_dts: None, written: 0, skipped: 0, halves: 0,
+            audio: Vec::new(), lengths: Default::default(), captions: Vec::new(),
+            graphics: Vec::new(), subpictures: None, converted: Vec::new(),
+            progress: None, expected: 0, shrink: None, held: None, opening: false,
+            keep_last: true, hold_latest: true, ends: None, top_written: None,
+        };
+        // Exercise the real 256 MiB threshold without allocating that much.
+        // These packets share one refcounted payload; queue counts their
+        // declared sizes, and the null muxer needs no encoded picture data.
+        let payload = ff::Packet::new(1 << 20);
+        let packet = || {
+            let mut p = ff::Packet::empty();
+            unsafe { assert_eq!(ff::ffi::av_packet_ref(p.as_mut_ptr(), payload.as_ptr()), 0); }
+            p
+        };
+        let count = HELD_AT_MOST / payload.size();
+        for i in 0..count {
+            writer.queue(Emitted {
+                packet: packet(), display: if i == 0 { 1000 } else { (i as i64 - 1) * 2 }, fields: 2,
+            }).unwrap();
+        }
+        assert_eq!(writer.written, 0);
+        assert_eq!(writer.pending.len(), count);
+        writer.queue(Emitted {
+            packet: packet(), display: (count as i64 - 1) * 2, fields: 2,
+        }).unwrap();
+        assert!(writer.written > 0);
+        assert!(writer.pending.iter().map(|p| p.packet.size()).sum::<usize>() <= HELD_AT_MOST);
+        writer.flush().unwrap();
+        assert_eq!(writer.written, count as i64 + 1);
+        assert_eq!(writer.skipped, 0);
+        writer.octx.write_trailer().unwrap();
+    }
 
     /// Every `.sup` of one cut has a name of its own. A transport stream's
     /// are named as they always were, by language or else by PID; a Matroska
