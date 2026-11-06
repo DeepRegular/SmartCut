@@ -6,10 +6,12 @@ output timeline must also represent the source's display timestamps.
 
 ## When the clock changes
 
-`Grid::of` refines a progressive, non-TS source only when it is variable-rate,
-or its nominal frame period is not an integer number of source ticks (for
-example, 23.976 fps stored in milliseconds). An ordinary 25 fps MP4, or a
-23.976 fps MP4 on a 1/24000 clock, retains its existing grid and timescale.
+`Grid::of` refines a progressive, non-TS source only when it is classified
+as variable-rate. Constant-rate sources retain their nominal grid and
+timescale even when a frame period is not a whole number of source ticks.
+For example, 29.97 fps in Matroska has 33/34 ms timestamp steps because its
+clock rounds to milliseconds. Written to MP4, that CFR source still has
+exact 1001/30000 second steps, not the millisecond rounding of the input.
 An already suitable grid is returned unchanged, without fraction reduction.
 
 `on_clock` chooses a subdivision that represents both the field grid and
@@ -26,8 +28,10 @@ NTSC and a 2:3 cadence still do not count as variable by that test.
 An unclassified progressive stream with B pictures and an average over 1%
 below its declared rate needs its display times read: the public container
 index contains decode timestamps. `ContainerIndex` declines that case,
-so the default `auto` mode falls back to the packet scan. This can add a
-sequential read for those sources; ordinary CFR keeps the fast table path.
+so the default `auto` mode falls back to a full packet scan before cutting.
+Opening a large file can therefore take noticeably longer, since the whole
+file must be read instead of just its seek table. This is a packet scan,
+not a full-video decode. Ordinary CFR keeps the fast table path.
 An explicitly required container index reports the reason it cannot answer.
 Seek-cache version 19 invalidates the former classification.
 
@@ -45,17 +49,15 @@ normal 23.976 frame lasts about 41.708 ms. The existing
 `coded_length_unbounded` cases retain their time-based hold behavior,
 including a range entirely inside a long held picture.
 
-For newly refined CFR, the decoder's next measured picture compensates for
-the planner's coarse-clock selection margin. A copy has that coverage from
-the planner's terminating access point, including its leading pictures.
-
 On a refined clock, the final displayed picture also stays in the write
 queue until a later displayed picture arrives or the final hold is known.
 Decoder reorder depth alone is insufficient: a copied H.264 P picture can
 precede three B pictures while `has_b_frames` is two. Releasing that P
 picture too early left a 40/40/80 ms selection about 27 ms short. The queue
-uses the existing 256 MiB seam-buffer limit and reports an error if that
-limit is exceeded. Other clocks retain the existing queue behavior.
+uses the existing 256 MiB seam-buffer limit. If that limit is exceeded,
+`emit_one()` releases the picture as before so the cut can continue; its
+final hold can then be shorter because that packet is no longer writable.
+Other clocks retain the existing queue behavior.
 
 ## Reproducing the checks
 
@@ -69,9 +71,11 @@ python3 tests/source_clock_tests.py --cut rust/target/release/smartcut \
 bash tests/run_vfr_tests.sh
 ```
 
-The 80-case suite generates AVC, HEVC and AV1 inputs, includes the reviewer's
+The 95-case suite generates AVC, HEVC, AV1 and VP9 inputs, includes the reviewer's
 unchanged 90-second 720p command, and checks single/multiple selections,
 copy-only and single-picture cuts, long holds and CFR controls in MP4/MKV.
+The millisecond CFR controls also export to MP4 and require exact nominal
+frame steps and average rates, including 29.97 fps VP9 from Matroska.
 It checks decoded counts, all display PTS, decode ordering, movie and video
 track ends, compressed copied pictures and their decoded pixels. AVC/HEVC
 VCL bytes are checked separately from repeated parameter-set NAL units.

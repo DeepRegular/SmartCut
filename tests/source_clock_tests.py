@@ -115,6 +115,11 @@ def main():
                 *codec_options[codec], '-video_track_timescale', timescale])
             mkv = generate(f'{codec}-{label}.mkv', ['-i', mp4, '-map', '0:v:0', '-c', 'copy'])
             specs.extend([(mp4, 'cfr'), (mkv, 'coarse' if label == 'ntsc' else 'cfr')])
+    vp9 = generate('vp9-ntsc.mkv', ['-f', 'lavfi', '-i',
+        'testsrc2=size=192x112:rate=30000/1001', '-frames:v', '240',
+        '-c:v', 'libvpx-vp9', '-deadline', 'good', '-cpu-used', '6',
+        '-b:v', '0', '-crf', '30', '-g', '24', '-lag-in-frames', '0', '-auto-alt-ref', '0'])
+    specs.append((vp9, 'coarse-vp9'))
     hold = generate('holds.mp4', ['-f', 'lavfi', '-i', 'testsrc2=size=192x112:rate=30',
         '-frames:v', '180', '-vf', r'setpts=N+gte(N\,60)*60+gte(N\,120)*60',
         '-fps_mode', 'passthrough', *codec_options['h264'],
@@ -155,7 +160,7 @@ def main():
         result['total'] = len(result['cases'])
         (root / 'results.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
 
-    def case(path, name, ranges, expected, end, suffix=None, kind='', extra=()):
+    def case(path, name, ranges, expected, end, suffix=None, kind='', extra=(), nominal_rate=None):
         src = sources[path]
         out = root / (name + (suffix or path.suffix))
         command = [args.cut.resolve(), path, '-o', out]
@@ -227,6 +232,22 @@ def main():
                 row['issues'].append('copied_picture')
             row['output_sha256'] = sha(out)
             row['time_base'] = got['streams'][0]['time_base']
+            row['avg_frame_rate'] = got['streams'][0].get('avg_frame_rate')
+            row['variable_rate'] = b'(the pictures vary)' in log
+            row['minimum_display_step'] = min((b-a for a, b in zip(pts, pts[1:])), default=None)
+            if nominal_rate is not None:
+                row['expected_nominal_rate'] = str(nominal_rate)
+                if row['variable_rate']:
+                    row['issues'].append('cfr_classified_variable')
+                if out.suffix == '.mp4':
+                    tb = Fraction(row['time_base'])
+                    exact = [int(p['pts']) * tb for p in got['sorted']]
+                    row['exact_nominal_steps'] = all(b-a == 1/nominal_rate
+                                                    for a, b in zip(exact, exact[1:]))
+                    if not row['exact_nominal_steps']:
+                        row['issues'].append('nominal_cfr_steps')
+                    if Fraction(row['avg_frame_rate']) != nominal_rate:
+                        row['issues'].append('nominal_avg_frame_rate')
             if kind == 'review' and len(ranges) == 2:
                 seam = sum(20 <= t < 38 for t in src['times'])
                 row['seam_gap_seconds'] = pts[seam] - pts[seam-1]
@@ -247,17 +268,29 @@ def main():
         stream = src['streams'][0]
         # The generating cadence gives the final picture 40 ms. A B-frame
         # MP4's stream.duration is a decode duration, not its displayed end.
-        final = ((240 * 1001 / 24000 if 'ntsc' in path.name else 9.6) if kind != 'vfr'
+        rate = Fraction(30000 if kind == 'coarse-vp9' else 24000, 1001) if 'ntsc' in path.name else Fraction(25)
+        final = ((float(240 / rate)) if kind != 'vfr'
                  else 12.76)
         times = src['times'] + [final]
         for label, indices in cuts.items():
             expected, ranges, offset = [], [], 0.0
             for a, b in indices:
                 ranges.append((times[a], times[b]))
-                expected.extend((i, offset + times[i] - times[a]) for i in range(a, b))
-                offset += times[b] - times[a]
+                if kind.startswith('coarse'):
+                    # CFR millisecond ticks are rounded timestamps, not
+                    # actual variation. Keep the nominal frame grid.
+                    expected.extend((i, offset + float((i-a) / rate)) for i in range(a, b))
+                    offset += float((b-a) / rate)
+                else:
+                    expected.extend((i, offset + times[i] - times[a]) for i in range(a, b))
+                    offset += times[b] - times[a]
             case(path, path.stem + '-' + path.suffix[1:] + '-' + label,
-                 ranges, expected, offset, kind=kind)
+                 ranges, expected, offset, kind=kind,
+                 suffix='.mp4' if kind == 'coarse-vp9' else None,
+                 nominal_rate=rate if kind != 'vfr' else None)
+            if kind == 'coarse':
+                case(path, path.stem + '-mkv-to-mp4-' + label,
+                     ranges, expected, offset, suffix='.mp4', kind=kind, nominal_rate=rate)
 
     for path in (hold, hold_mkv):
         times = sources[path]['times']

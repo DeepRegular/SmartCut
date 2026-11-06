@@ -88,7 +88,7 @@ bash tests/run_vp9_av1_tests.sh       # VP9 and AV1: cut, and still the source's
 bash tests/run_sar_tests.sh           # SAR: 44 exports + 16 outlines                  60
 bash tests/run_av1_mp4_tests.sh       # AV1 MP4 seam levels and Matroska controls       21
 bash tests/run_vfr_tests.sh           # variable rate, both ways round                   8
-bash tests/run_source_clock_tests.sh  # source clocks, range ends and VFR copying       80
+bash tests/run_source_clock_tests.sh  # source clocks, range ends and VFR copying       95
 bash tests/run_demux_tests.sh         # what a reader loses by reading what it does not  9
 bash tests/run_transrate_tests.sh     # fitting a disc: the identity, the size, the cost 15
 bash tests/run_join_tests.sh          # several recordings into one file, and the seams  17
