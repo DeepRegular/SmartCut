@@ -359,9 +359,9 @@ frames are counted in the master's, but the stretch runs between two of the
 reel's own pictures, where the body before it ends and where the body after it
 opens, and on a variable-rate reel that is not a whole number of master
 frames. Laid whole, the last frame ran up to a frame past it, and every
-picture after it was written that much late: a phone clip faded in from black
-was 30 to 38 ms behind its sound for the rest of it, a screen recording
-averaging 1.2 pictures a second 575 ms. Going out, the next reel was pushed
+picture after it was written that much late: a 30 fps test clip with jitter
+faded in from black was 30 to 38 ms behind its sound for the rest of it, a
+test screen recording averaging 1.2 pictures a second 575 ms. Going out, the next reel was pushed
 along with its sound, which then opened before its range. On a master whose
 timeline is divided finely enough (see `Grid`), such a fade now writes as many
 frames as before, each the picture it was, spread evenly across the reel's own
