@@ -249,9 +249,17 @@ player holds the stream to it; a file on its own makes no such promise.
 
 A stream with no clock reference, or whose references step backwards, has
 nothing to stamp from. It is left as written with a note, rather than failing a
-cut that is otherwise complete. A clip in `BDAV/STREAM/` is not touched by this
-at all: `bdav::stamp` writes its times, and `--bdav` output is byte-identical to
-0.8.40.
+cut that is otherwise complete. So is a file the pass could not read or write
+through: the cut or the sound is already written, its 188-byte packets are not
+touched, and an I/O error here is a note, not a failure that removes the
+output.
+
+Which `.m2ts` is a disc's clip is decided by the run, not by its path. A disc
+made with `--bdav`, or by the window's disc export, tells the cut so, and
+`bdav::stamp` writes those clips' times afterwards; this pass leaves them
+alone, and `--bdav` output is byte-identical to 0.8.40. Any other `.m2ts` is
+restamped wherever it was named, a `-o …/BDAV/STREAM/00001.m2ts` typed by hand
+included: nothing else stamps that file or lists it in a disc's index.
 
 ### The stream is padded to where a recorder stops
 

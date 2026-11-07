@@ -22,10 +22,24 @@ Checked arithmetic and the existing 32-bit MP4 step/timescale limits bound
 the result; if no such refinement fits, the existing bounded grid remains.
 This does not promise exact ticks for every possible clock and file length.
 
-The walk measures repeated holds against the typical positive display gap
-as well as the average. A 40/40/80 ms pattern must not be called constant
-merely because its average frame lasts about 53 ms. Millisecond-rounded
-NTSC and a 2:3 cadence still do not count as variable by that test.
+A refined clock can be finer than the 90 kHz of MPEG-TS and MPEG-PS. Two
+decode times one unit apart could then round to the same output tick, and a
+cut with a deep B pyramid into `.ts` or `.m2ts` failed with "Invalid
+argument". For those muxers `Writer::dts_gap` keeps consecutive decode times
+at least one output tick apart, counted in units. Every other grid, and every
+other muxer, keeps the gap of one unit it had before.
+
+`varies` asks two questions of the display gaps, and a stream is variable if
+either says so. The held test counts gaps longer than 1.75 times the smaller
+of the average frame and the typical positive gap (the median). A 40/40/80 ms
+pattern must not be called constant merely because its average frame lasts
+about 53 ms. The dense test counts gaps shorter than half the average frame,
+and only the average: that is the grid a constant recording is cut on. Asked
+against the median it never fired where most gaps are the fast ones; a
+screen recording remuxed into Matroska that moves at 30 pictures a second and
+then holds for ten seconds was called constant at its average, and a cut kept
+150 of its 195 pictures. Millisecond-rounded NTSC and a 2:3 cadence still do
+not count as variable by either test.
 
 An unclassified progressive stream with B pictures and an average over 1%
 below its declared rate needs its display times read: the public container
@@ -35,7 +49,8 @@ Opening a large file can therefore take noticeably longer, since the whole
 file must be read instead of just its seek table. This is a packet scan,
 not a full-video decode. Ordinary CFR keeps the fast table path.
 An explicitly required container index reports the reason it cannot answer.
-Seek-cache version 19 invalidates the former classification.
+Seek-cache version 20 invalidates the former classification (19 was only
+ever written by development builds).
 
 ## A seam is not the end of a keep-range
 
@@ -60,6 +75,15 @@ uses the existing 256 MiB seam-buffer limit. If that limit is exceeded,
 `emit_one()` releases the picture as before so the cut can continue; its
 final hold can then be shorter because that packet is no longer writable.
 Other clocks retain the existing queue behavior.
+
+In `.mkv`, `.webm`, `.mp4` and `.mov`, the last range of such a recording no
+longer ends on a frozen picture. Matroska takes the file's length from the
+latest any block lasts until, and an MP4's edit list ends at the latest
+picture's end, so a coded length of one average frame on a picture shortly
+before the end ran the file past the range. There, each picture lasts no
+longer than until the next picture shown, whether that one is still waiting
+or already written, and the last picture lasts until the range end. A picture
+held to the end still lasts to it.
 
 ## Reproducing the checks
 
