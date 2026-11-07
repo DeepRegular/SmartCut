@@ -146,7 +146,13 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// planned on the average where a fresh open plans on the pictures.
 /// 19: repeated holds are measured against the typical gap as well as the
 /// average. Older caches may have classified 40/40/80 ms as constant.
-pub const VERSION: u32 = 19;
+///
+/// 20: the short side of that test is asked against the average again, as
+/// it was at 18. An index of 19 -- written only by development builds,
+/// never a release -- can call constant a recording whose pictures come at
+/// three times its average between long holds (a screen recording remuxed
+/// into Matroska), and a cut planned on it lost a quarter of its pictures.
+pub const VERSION: u32 = 20;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 

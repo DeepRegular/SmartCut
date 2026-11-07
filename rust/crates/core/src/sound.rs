@@ -806,8 +806,13 @@ fn run(
     octx.write_trailer()?;
     drop(octx);
     // See the same step in `crate::cut`.
-    if crate::m2ts::standalone(output) {
-        crate::m2ts::restamp(output)?;
+    // The sound is all written by now, and a pass over its arrival times that
+    // fails part way leaves every packet as it was: a note, not a failure
+    // that removes the file.
+    if crate::m2ts::standalone(output, opts.disc_clip) {
+        if let Err(e) = crate::m2ts::restamp(output) {
+            crate::say!("note: the arrival times in {output} were left as written: {e:#}");
+        }
     }
     say(ranges_in_all);
     Ok(())

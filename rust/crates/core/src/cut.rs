@@ -375,6 +375,13 @@ pub struct CutOptions {
     /// that wrote what it was given. A caller that does not ask leaves it
     /// `None`.
     pub replanned: Option<std::sync::Arc<std::sync::OnceLock<Vec<Vec<RangePlan>>>>>,
+    /// Whether this run is writing a clip into a disc's folder -- the
+    /// command line's `--bdav`, or a disc the window is making -- which
+    /// [`crate::bdav::stamp`] stamps once it is written. Every other `.m2ts`
+    /// has its arrival times written again here ([`crate::m2ts`]), whatever
+    /// folder it was named into: a disc's clip is a thing the run makes, not
+    /// a thing a path looks like.
+    pub disc_clip: bool,
 }
 
 /// A cover picture: a JPEG, and its size.
@@ -1523,6 +1530,25 @@ impl Writer {
             .sum()
     }
 
+    /// The fewest units between two decode times for the output to keep
+    /// them apart. One wherever a unit is no finer than the output's own
+    /// tick, which is every grid but a variable recording's own clock (see
+    /// [`Grid::on_clock`]) written into the 90 kHz of MPEG-TS or -PS: those
+    /// muxers refuse a decode time that does not move on.
+    fn dts_gap(&self) -> i64 {
+        if !matches!(self.octx.format().name(), "mpegts" | "mpeg" | "vob" | "dvd" | "svcd" | "vcd") {
+            return 1;
+        }
+        let (our, out) = (self.our_tb, self.out_tb);
+        if our.numerator() <= 0 || out.denominator() <= 0 || self.field_ticks <= 0 {
+            return 1;
+        }
+        // One output tick, in units.
+        let tick = f64::from(out.numerator()) * f64::from(our.denominator())
+            / (f64::from(out.denominator()) * f64::from(our.numerator()));
+        ((tick / self.field_ticks as f64).ceil() as i64).max(1)
+    }
+
     fn emit_one(&mut self) -> Result<()> {
         let Some(mut e) = self.pending.pop_front() else {
             return Ok(());
@@ -1548,9 +1574,15 @@ impl Writer {
         // pictures arrive in one of the orders a coder produces and does not
         // where a damaged stretch hands them over out of any order at all.
         let last_dts = self.last_dts;
+        // One unit apart is apart on the timeline, and not always in the
+        // file: a recording on a 10 MHz or 90 kHz clock is counted in units
+        // finer than the 90 kHz a transport stream keeps (see
+        // [`Grid::on_clock`]), and two decode times a unit apart came out as
+        // one there -- the muxer refused the cut with "Invalid argument".
+        let gap = self.dts_gap();
         let settle = |c: i64| {
             let dts = c.min(e.display);
-            last_dts.map_or(dts, |prev| dts.max(prev + 1))
+            last_dts.map_or(dts, |prev| dts.max(prev + gap))
         };
         let mut dts = settle(lead);
         // **Three fields per level is a guess at how far apart the pictures
@@ -1590,7 +1622,7 @@ impl Writer {
             self.pending
                 .iter()
                 .zip(1..)
-                .any(|(p, k): (&Emitted, i64)| dts + k > p.display)
+                .any(|(p, k): (&Emitted, i64)| dts + k * gap > p.display)
         };
         if crowds(dts) {
             dts = settle(lead.min(past));
@@ -1609,7 +1641,48 @@ impl Writer {
         e.packet.set_stream(0);
         e.packet.set_pts(Some(e.display * self.field_ticks));
         e.packet.set_dts(Some(dts * self.field_ticks));
-        e.packet.set_duration(e.fields * self.field_ticks);
+        // Matroska takes the file's length from the latest any block is up
+        // until, the ones before the last included. On a variable recording
+        // a picture's coded length is a frame of the average, and the picture
+        // before the last one -- 33 ms before the end of a range of
+        // pictures in bursts averaging 1.19 a second -- said 0.84 s: the
+        // file ran 0.78 s past the range on a frozen picture, whatever the
+        // last block was held to (see [`Writer::ends`]). Where a picture
+        // shown after it is still waiting, its length is no more than the
+        // gap; where one was written already -- the P picture a B picture is
+        // decoded after -- no more than up to that one. The last B of a
+        // range ending in motion, 33 ms before a P picture held to the end,
+        // otherwise said the average's 0.2 s and the file ran 133 ms past
+        // the range. Only where the last picture is held to the end at all:
+        // everywhere else the coded length is the gap.
+        //
+        // An MP4 is the same: its edit list ends where the latest picture
+        // is up until, and a range of that recording re-encoded whole,
+        // `--keep 1-3.9`, ran on the same 133 ms.
+        //
+        // The last picture written of all, once [`Writer::flush`] knows where
+        // the pictures end, is up until there: in decode order it is the B
+        // picture that [`Writer::flush`] stretches for an MP4's decode
+        // times, and capped here it would lose that again; left at its coded
+        // length, the average's frame, it passed the end.
+        let mut fields = e.fields;
+        if self.keep_last
+            && matches!(self.octx.format().name(), "matroska" | "webm" | "mp4" | "mov" | "ipod")
+        {
+            match self.ends {
+                Some(end) if self.pending.is_empty() && end > e.display => fields = end - e.display,
+                _ => {
+                    let waiting =
+                        self.pending.iter().map(|p| p.display).filter(|&d| d > e.display).min();
+                    // Includes this picture by now, hence the strict test.
+                    let written = self.top_written.filter(|&t| t > e.display);
+                    if let Some(next) = waiting.into_iter().chain(written).min() {
+                        fields = fields.min(next - e.display);
+                    }
+                }
+            }
+        }
+        e.packet.set_duration(fields * self.field_ticks);
         e.packet.set_position(-1);
         e.packet.rescale_ts(self.our_tb, self.out_tb);
         // The muxer refuses a picture whose timestamps it cannot place and
@@ -1670,7 +1743,8 @@ impl Writer {
         }
         // The last picture shown, where it is still waiting: up until the
         // pictures end. See [`Writer::ends`].
-        if let Some(ends) = self.ends.take() {
+        // Read and left for [`Writer::emit_one`] until the last picture is out.
+        if let Some(ends) = self.ends {
             let top = self.top_written;
             let unwritten = |e: &Emitted| top.is_none_or(|t| e.display > t) && ends > e.display;
             let last = (0..self.pending.len()).max_by_key(|&k| self.pending[k].display);
@@ -1694,6 +1768,7 @@ impl Writer {
         while !self.pending.is_empty() {
             self.emit_one()?;
         }
+        self.ends = None;
         Ok(())
     }
 
@@ -12567,8 +12642,13 @@ fn cut_into(
     // Last, because the tables just went in between the packets: a `.m2ts`
     // of its own has the arrival times libavformat made up, which step
     // backwards. A clip on a disc is stamped by `crate::bdav` instead.
-    if crate::m2ts::standalone(output) {
-        crate::m2ts::restamp(output)?;
+    // The cut is all written by now, and a pass over its arrival times that
+    // fails part way leaves every 188-byte packet as it was: a note, not a
+    // failure that removes the file (as in `crate::sound`).
+    if crate::m2ts::standalone(output, opts.disc_clip) {
+        if let Err(e) = crate::m2ts::restamp(output) {
+            crate::say!("note: the arrival times in {output} were left as written: {e:#}");
+        }
     }
 
     // Whichever pass was the last one, ending on the end of it. A cut whose

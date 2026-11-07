@@ -3121,21 +3121,34 @@ fn run() -> Result<()> {
     } else {
         ""
     };
-    tell!(
-        "         {kept_audio} of {} sound track(s), {kept_caps} of {} caption \
-         stream(s){graphics}{subpictures}{data}{}",
-        src.audios.len(),
-        src.captions.len(),
-        // A recording that is not a transport stream has no tables of its
-        // own to keep or to pare down: the muxer writes them whatever was asked.
-        match (to_ts, smartcut_core::tables_for(&out, tables)) {
-            (true, _) if !src.on_a_ts => ", tables left to the muxer",
-            (true, smartcut_core::si::Tables::Partial) => ", written as a partial transport stream",
-            (true, smartcut_core::si::Tables::Broadcast) => ", the broadcast's own tables",
-            (true, smartcut_core::si::Tables::Muxer) => ", tables left to the muxer",
-            (false, _) => "",
-        },
-    );
+    // A file of sound alone is one track and nothing else (`sound::write`):
+    // none of the lines below reaches it. Said with them, a `--sound-only -o
+    // x.ts` promised its captions and the broadcast's own tables, and a
+    // recording of two tracks "2 of 2 sound track(s)" over a note that only
+    // the first is written.
+    if sound_only {
+        tell!(
+            "         {} of {} sound track(s), and nothing else",
+            kept_audio.min(1),
+            src.audios.len()
+        );
+    } else {
+        tell!(
+            "         {kept_audio} of {} sound track(s), {kept_caps} of {} caption \
+             stream(s){graphics}{subpictures}{data}{}",
+            src.audios.len(),
+            src.captions.len(),
+            // A recording that is not a transport stream has no tables of its
+            // own to keep or to pare down: the muxer writes them whatever was asked.
+            match (to_ts, smartcut_core::tables_for(&out, tables)) {
+                (true, _) if !src.on_a_ts => ", tables left to the muxer",
+                (true, smartcut_core::si::Tables::Partial) => ", written as a partial transport stream",
+                (true, smartcut_core::si::Tables::Broadcast) => ", the broadcast's own tables",
+                (true, smartcut_core::si::Tables::Muxer) => ", tables left to the muxer",
+                (false, _) => "",
+            },
+        );
+    }
     // The recordings written after this one, each taken whole. What --keep
     // and --cut name is a range of the first; a command line that gave every
     // file its own ranges would be a project file with a worse syntax, and
@@ -3659,6 +3672,10 @@ fn run() -> Result<()> {
             chapters: if chapters_wanted { marks.clone() } else { Vec::new() },
             plan: opts.clone(),
             replanned: Some(replanned.clone()),
+            // The disc's stream is stamped by `bdav::write` below; any other
+            // `.m2ts`, wherever it was named, has its arrival times written
+            // by the cut.
+            disc_clip: onto.is_some(),
             ..Default::default()
         },
     );

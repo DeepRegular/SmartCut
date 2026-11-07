@@ -32,23 +32,21 @@ const ATS_MASK: u32 = 0x3FFF_FFFF;
 /// The clock reference's whole range in 27 MHz ticks: 33 bits of 90 kHz.
 const PCR_WRAP: u64 = (1u64 << 33) * 300;
 
-/// Whether `path` is a `.m2ts` written on its own, and not a clip in a
-/// disc's folder (`BDAV/STREAM/00001.m2ts`), whose times
-/// [`crate::bdav::stamp`] writes.
-pub fn standalone(path: &str) -> bool {
-    let p = Path::new(path);
-    let upper = |q: Option<&Path>| {
-        q.and_then(|q| q.file_name())
-            .and_then(|n| n.to_str())
-            .map(str::to_ascii_uppercase)
-    };
-    let m2ts = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("m2ts"));
-    let on_a_disc = upper(p.parent()).as_deref() == Some("STREAM")
-        && upper(p.parent().and_then(|q| q.parent())).as_deref() == Some("BDAV");
-    m2ts && !on_a_disc
+/// Whether the file a run has just written to `path` is a `.m2ts` written on
+/// its own, whose arrival times are this module's to write again.
+///
+/// `disc_clip` is the run's own answer: whether it is writing a clip into a
+/// disc's folder (`--bdav`, or a disc made from the window), whose times
+/// [`crate::bdav::stamp`] writes afterwards. Asked of the run and not of the
+/// name: a `.m2ts` typed by hand as `-o x/BDAV/STREAM/00001.m2ts` is not a
+/// disc's clip -- nothing stamps it, and nothing lists it in a disc's index
+/// -- and it was left with the times that step backwards.
+pub fn standalone(path: &str, disc_clip: bool) -> bool {
+    !disc_clip
+        && Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("m2ts"))
 }
 
 /// Write the arrival times of a finished standalone `.m2ts` again, from its
@@ -292,10 +290,12 @@ mod tests {
 
     #[test]
     fn only_standalone_m2ts() {
-        assert!(standalone("/out/cut.m2ts"));
-        assert!(standalone("cut.M2TS"));
-        assert!(!standalone("/out/cut.ts"));
-        assert!(!standalone("/out/BDAV/STREAM/00001.m2ts"));
-        assert!(!standalone("/out/bdav/stream/00001.m2ts"));
+        assert!(standalone("/out/cut.m2ts", false));
+        assert!(standalone("cut.M2TS", false));
+        assert!(!standalone("/out/cut.ts", false));
+        // Decided by the run, not by the folder it is named into.
+        assert!(standalone("/out/BDAV/STREAM/00001.m2ts", false));
+        assert!(standalone(r"C:\out\bdmv\stream\00001.m2ts", false));
+        assert!(!standalone("/out/BDAV/STREAM/00001.m2ts", true));
     }
 }

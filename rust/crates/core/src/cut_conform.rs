@@ -268,6 +268,27 @@ fn pictures_afresh(
     let mut held_at = f64::NAN;
     let mut next_free = 0i64;
 
+    // **A fade on a reel whose pictures vary is fitted to the stretch it
+    // has.** Its frames are counted off in the master's, but the stretch
+    // runs between two of the reel's own pictures -- where the body before
+    // it ends, where the body after it opens -- and on a recording whose
+    // pictures vary that is not a whole number of frames. The last frame
+    // laid ran up to a frame past it, and the pictures after it were written
+    // after that frame. On the side coming in, the sound, cut against the
+    // range's start, was not: a phone clip faded in from black after another
+    // showed every picture of the rest of it 30-38 ms behind its sound, and
+    // a screen recording averaging 1.2 a second 575 ms. On the side going
+    // out the next reel was pushed along with its sound, which then opened
+    // that much before its range (the same recording: 0.54 s of what was
+    // cut away). So there the fade's frames, as many as ever and each the
+    // picture it was, share out the stretch it really has, on a master whose
+    // timeline is divided finely enough to state it (see `Grid`). Worked out
+    // once, where the first picture lands: `(frames, units)`.
+    let fitted_fade = matches!(retouch, Some(crate::plan::Retouch::Tint { .. }))
+        && src.video.variable_rate
+        && per_frame > 2;
+    let mut fitted: Option<Option<(i64, i64)>> = None;
+
     // Write the held picture at every output instant up to `before`.
     macro_rules! lay {
         ($before:expr) => {{
@@ -302,7 +323,27 @@ fn pictures_afresh(
                         if !due(a + made as f64 * step) {
                             break;
                         }
-                        (made * per_frame, per_frame)
+                        let fit = *fitted.get_or_insert_with(|| {
+                            if !fitted_fade {
+                                return None;
+                            }
+                            let mut frames = 0i64;
+                            while a + frames as f64 * step < until - slack {
+                                frames += 1;
+                            }
+                            let units = ((until - a) / field).round() as i64;
+                            let over = frames as f64 * step - (until - a);
+                            (frames > 0 && units >= frames && frames * per_frame > units && over > slack)
+                                .then_some((frames, units))
+                        });
+                        match fit {
+                            Some((frames, units)) if made < frames => {
+                                let from = made * units / frames;
+                                let to = (made + 1) * units / frames;
+                                (from, (to - from).max(1))
+                            }
+                            _ => (made * per_frame, per_frame),
+                        }
                     };
                     let display = ctx.display_base + offset;
                     placed.insert(fed, (display, length));

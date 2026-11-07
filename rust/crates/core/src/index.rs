@@ -420,10 +420,19 @@ fn varies(shown: &[f64], fd: f64) -> bool {
     // The average can hide repeated holds: 40/40/80 ms averages to
     // 53 ms, below the old 1.75-frame threshold. Use the typical measured
     // gap as well; a 2:3 cadence and millisecond rounding still fit.
+    //
+    // **Only for the long side.** The short side asks whether a picture
+    // comes closer than the grid a constant recording is cut on, and that
+    // grid is the average's, so it is asked against the average. Asked
+    // against the typical gap it never fires where most gaps are the fast
+    // ones: a screen recording remuxed into Matroska (its rate stated as
+    // the average) that moves at 30 a second for four seconds and then
+    // holds for ten has under 1% of its gaps long, and was called constant
+    // at its 10.4 average -- 150 of 195 pictures written.
     let mut gaps: Vec<f64> = shown.windows(2)
         .map(|w| w[1] - w[0]).filter(|g| g.is_finite() && *g > 0.0).collect();
     gaps.sort_by(f64::total_cmp);
-    let fd = gaps.get(gaps.len().saturating_sub(1) / 2).copied().map_or(fd, |g| fd.min(g));
+    let typical = gaps.get(gaps.len().saturating_sub(1) / 2).copied().map_or(fd, |g| fd.min(g));
     let (mut held, mut dense, mut counted) = (0usize, 0usize, 0usize);
     for w in shown.windows(2) {
         let gap = w[1] - w[0];
@@ -431,9 +440,11 @@ fn varies(shown: &[f64], fd: f64) -> bool {
             continue;
         }
         counted += 1;
-        if gap > fd * 1.75 {
+        // Not `else`: 1.75 of the typical gap can be under half the average.
+        if gap > typical * 1.75 {
             held += 1;
-        } else if gap < fd * 0.5 {
+        }
+        if gap < fd * 0.5 {
             dense += 1;
         }
     }
@@ -627,7 +638,10 @@ impl IndexSource for ContainerIndex {
         if !video.variable_rate && !video.interlaced() && video.has_b_frames > 0
             && video.base_rate > video.frame_rate * 1.01 && video.base_rate < 1000.0
         {
-            bail!("reordered pictures below the declared rate need their display times scanned");
+            bail!(
+                "the container's seek table cannot say how long these pictures are shown (B \
+                 pictures, averaging below the declared rate); --index scan or auto reads them"
+            );
         }
         // How long the recording is, by the container's own reckoning. Only
         // used to ask whether the table below covers it, so a container that
@@ -2099,6 +2113,22 @@ mod tests {
             film.push(film.last().unwrap() + if i % 2 == 0 { 0.04 } else { 0.06 });
         }
         assert!(!varies(&film, 0.04));
+    }
+
+    #[test]
+    fn fast_pictures_between_long_holds_still_vary() {
+        // 30 a second for four seconds, then ten seconds held, twice: the
+        // average is about 10.4, the typical gap a 30th, and one gap in 121
+        // is long -- under the share a hold needs.
+        let mut shown = vec![0.0];
+        for _ in 0..2 {
+            for _ in 0..120 {
+                shown.push(shown.last().unwrap() + 1.0 / 30.0);
+            }
+            shown.push(shown.last().unwrap() + 10.0);
+        }
+        let average = shown.last().unwrap() / (shown.len() - 1) as f64;
+        assert!(varies(&shown, average));
     }
 
     /// Entry points every `every` seconds from `from` to `to`.
