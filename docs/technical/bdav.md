@@ -222,6 +222,37 @@ is the one mistake in this file that matters. On the same recording written
 the way above, none of them do and the decoder's lead sits between 0.42 and
 0.66 seconds from one end to the other.
 
+### A `.m2ts` written on its own
+
+A `.m2ts` cut to a file of its own, outside a disc's folder, has the same four
+bytes in front of every packet and got the same backward counter from
+libavformat. Through 0.8.40 it kept it: cut from a broadcast with two ranges,
+776,511 of 779,470 packets arrived before the one in front of them, by up to
+14.4 seconds.
+
+[`m2ts::restamp`](../../rust/crates/core/src/m2ts.rs) writes them again once the
+file is complete, after the tables have gone in. It does less than
+`bdav::stamp`, because there is no clip index here declaring a rate for the
+times to keep to:
+
+- A packet carrying a clock reference arrives at that reference.
+- The packets between two references are spread evenly over the time between
+  them.
+- The packets before the first reference and after the last carry on at the
+  rate of the nearest pair. With one reference, they all arrive with it.
+- Every 188-byte packet, the clock references included, is left as it was, and
+  so are the two copy-permission bits above the time.
+
+This is the interpolation the previous section turned down for a disc, and it
+has the same bursts in it. That matters where an index promises a rate and a
+player holds the stream to it; a file on its own makes no such promise.
+
+A stream with no clock reference, or whose references step backwards, has
+nothing to stamp from. It is left as written with a note, rather than failing a
+cut that is otherwise complete. A clip in `BDAV/STREAM/` is not touched by this
+at all: `bdav::stamp` writes its times, and `--bdav` output is byte-identical to
+0.8.40.
+
 ### The stream is padded to where a recorder stops
 
 A Blu-ray reads and writes a stream 32 source packets — 6144 bytes — at a

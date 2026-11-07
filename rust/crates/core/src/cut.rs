@@ -12564,6 +12564,13 @@ fn cut_into(
         }
     }
 
+    // Last, because the tables just went in between the packets: a `.m2ts`
+    // of its own has the arrival times libavformat made up, which step
+    // backwards. A clip on a disc is stamped by `crate::bdav` instead.
+    if crate::m2ts::standalone(output) {
+        crate::m2ts::restamp(output)?;
+    }
+
     // Whichever pass was the last one, ending on the end of it. A cut whose
     // tables were not going back in never left the first.
     if let Some(report) = &progress {

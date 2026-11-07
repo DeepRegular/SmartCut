@@ -804,6 +804,11 @@ fn run(
         }
     }
     octx.write_trailer()?;
+    drop(octx);
+    // See the same step in `crate::cut`.
+    if crate::m2ts::standalone(output) {
+        crate::m2ts::restamp(output)?;
+    }
     say(ranges_in_all);
     Ok(())
 }

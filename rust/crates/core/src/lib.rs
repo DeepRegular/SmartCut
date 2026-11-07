@@ -38,6 +38,7 @@ pub mod latm;
 pub(crate) mod leadrefs;
 pub mod log;
 pub mod logo;
+pub mod m2ts;
 pub mod mediainfo;
 pub mod netpath;
 pub mod nice;
