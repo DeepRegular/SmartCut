@@ -151,8 +151,8 @@ function stageWidth() {
   return Math.max(160, Math.round(box.width * dpr));
 }
 
-/// The rate the preview is walked at. The clip before the join's own, because
-/// that is the rate the joined file is written at where it is the master.
+/// The rate the preview is walked at: the master's, which is the rate the
+/// joined file is written at (see `cross_load`).
 const fps = () => (facts && facts.fps > 0 ? facts.fps : 30);
 
 /// Which clip the instant `t` belongs to, for the line on the picture.

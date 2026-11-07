@@ -5516,10 +5516,33 @@ async function refreshPlan() {
 // last picture to put OUT at, so "cut to the end" would always leave that one
 // picture behind -- a stray frame at the end of the output. The two ends
 // therefore snap to the bounds of the timeline.
-const atFirstPicture = (o) => outToSrc(o) <= headTime() + frame() / 2;
+const atFirstPicture = (o) => outToSrc(o) <= headTime() + endHalf();
 // Where the last picture is known and stands further back than that, OUT on
 // it is at the end all the same: past it there is only sound. See `tailSrc`.
-const atLastPicture = (o) => o >= Math.min(outDur - frame() * 1.5, lastOut() - frame() / 2);
+// On a recording whose pictures come closer than half its average, the same
+// rule before the last picture is known (`lastOut` is the end then): the
+// picture and a half of the average there reached back over the picture
+// before the last, and O on it pressed in the moment between the walk
+// landing and `learnTail`'s answer was taken for the end -- ✂ took the last
+// picture too. Not snapped then, OUT is asked about again by ✂, by which
+// time the last picture is known (`cutSelection`).
+const atLastPicture = (o) =>
+  endHalf() < frame() / 2
+    ? o >= lastOut() - endHalf()
+    : o >= Math.min(outDur - frame() * 1.5, lastOut() - frame() / 2);
+
+/// How near an end a mark is on the first or last picture: half a frame, or
+/// on a variable recording half the closest its pictures come, where that is
+/// known (`pictureFloor`). Half the average is not one picture there: a
+/// screen recording averaging 1.2 a second whose first nine come 33 ms apart
+/// had IN on any of them taken for the head, and ✂ took the pictures before
+/// IN as well, which the editor showed as kept; OUT on the picture before
+/// the last, 33 ms before it on a recording averaging 10.9, went to the end.
+function endHalf() {
+  if (!src || !src.variable || src.pulldown || !walked()) return frame() / 2;
+  const floor = pictureFloor();
+  return floor > 0 ? Math.min(frame(), floor) / 2 : frame() / 2;
+}
 
 // Marking one end leaves the other where it was: IN..OUT is a range you build
 // up by putting down one end and then the other, and moving one of them is no
@@ -6542,7 +6565,10 @@ function scheduleZoom(again = false) {
   if (again) zoomShown = null;
   zoomAsk = setTimeout(async () => {
     const want = playhead;
-    if (zoomShown !== null && Math.abs(zoomShown - want) < frame() / 2) return;
+    // Within half the closest two pictures come on a variable recording
+    // (`endHalf`): half its average is several pictures on a screen
+    // recording, and a step to the next one left the magnifier on the last.
+    if (zoomShown !== null && Math.abs(zoomShown - want) < endHalf()) return;
     const token = ++zoomToken;
     try {
       const shot = await invoke("zoom_shot", { time: want });

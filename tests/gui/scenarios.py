@@ -1702,6 +1702,73 @@ def seam_vfr_reel_after(cfg, t):
                   name="seam_vfr_reel_after")
 
 
+def seam_rate_follows_master(cfg, t):
+    """継ぎ目の編集 on the VFR screen recording (averaging about 9 a second)
+    joined to a.ts (29.97), the .ts named 基準クリップ: the window walks the
+    crossing at the master's 29.97, the rate the joined file writes it at --
+    its counter's total over the preview's length, and one 1 フレーム進む is
+    one frame of it. With the default master (the VFR clip before the join)
+    it walks at that clip's own average. (45th pass, stage 2: CrossInfo.fps
+    was always the clip before's.)"""
+    v = _vfr_screen(cfg)
+
+    def rate(master):
+        extra = {} if master is None else {"master": master}
+        with App(cfg, f"seam_rate_follows_master_{master}", [{"path": v}, {"path": cfg.a}],
+                 {"joinAll": True, **extra}) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 90)
+            app.s.click('button.tab[data-screen="outset"]')
+            wait_for("the seam button", lambda: app.s.js(
+                "const r = document.getElementById('row-cross');"
+                "const b = document.getElementById('open-cross');"
+                "return !!r && !r.hidden && !!b && !b.disabled;"), 90)
+            handles = set(app.s.handles())
+            app.s.click("#open-cross")
+            seam = wait_for("the seam window", lambda: (
+                [h for h in app.s.handles() if h not in handles] or [None])[0], 60)
+            app.s.switch(seam)
+            wait_for("the join loaded", lambda: app.s.js(
+                "return document.getElementById('out-clip-time').textContent") not in
+                ("--:--:--.--", "00:00:00.00"), 60)
+            app.s.js(
+                "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+                "k.dispatchEvent(new Event('change', {bubbles: true}));")
+            time.sleep(1.5)
+            read = lambda: app.s.js(  # noqa: E731
+                "return [document.getElementById('ovl-frame').textContent,"
+                " document.getElementById('ovl-time').textContent]")
+            app.s.click("#go-end")
+            time.sleep(1.5)
+            frame, clock = read()
+            n, of = (int(x) for x in frame.split("/"))
+            h, m, sec = clock.split(":")
+            seconds = int(h) * 3600 + int(m) * 60 + float(sec)
+            app.s.click("#go-start")
+            time.sleep(1)
+            app.s.click("#step-fwd")
+            time.sleep(1.2)
+            stepped = read()[0]
+            try:
+                app.s.click("#cross-ok")
+            except WebDriverError:
+                pass
+            wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+            app.s.switch(app.main)
+            return (of / seconds if seconds > 0 else 0.0), n == of, stepped, f"{frame} over {clock}"
+
+    got, at_end, stepped, said = rate(1)
+    t.check("45r seam_rate_follows_master: the .ts as master -> walked at its 29.97",
+            27.0 < got < 33.0 and at_end and stepped.startswith("1 /"),
+            f"{got:.2f}/s ({said}); one step -> {stepped}")
+    got, at_end, stepped, said = rate(None)
+    t.check("45r seam_rate_follows_master: the VFR clip as master -> walked at its average",
+            0.0 < got < 20.0 and at_end and stepped.startswith("1 /"),
+            f"{got:.2f}/s ({said}); one step -> {stepped}")
+
+
 def seam_sar_reels(cfg, t, before="~/media/sd43.ts", after="~/media/sd169.ts",
                    master=None, want=4 / 3, name="seam_sar_reels"):
     """継ぎ目の編集 on an ORDINARY join of two recordings of one size and
@@ -2917,6 +2984,119 @@ def disc_fit_nothing_to_shrink(cfg, t):
             not shared and "超過しています" in note and "MPEG-2 以外" in note and "下限" not in note
             and whats == ["合計"],
             f"gauge {note!r} bars {whats}; share in the log {shared}")
+    shutil.rmtree(base, ignore_errors=True)
+
+
+def _arrivals(path):
+    """A `.m2ts`'s arrival times read back: (packets, steps back, PCR packets,
+    PCR packets whose arrival is not their PCR). The times are 30 bits of the
+    27 MHz clock; a step forward across the wrap is not a step back."""
+    back = pcrs = off = n = 0
+    was = None
+    with open(path, "rb") as f:
+        while True:
+            frame = f.read(192)
+            if len(frame) < 192:
+                break
+            n += 1
+            ats = int.from_bytes(frame[:4], "big") & 0x3FFFFFFF
+            if was is not None and (ats - was) % (1 << 30) >= (1 << 29):
+                back += 1
+            was = ats
+            p = frame[4:]
+            if p[3] & 0x20 and p[4] >= 7 and p[5] & 0x10:
+                base = (p[6] << 25) | (p[7] << 17) | (p[8] << 9) | (p[9] << 1) | (p[10] >> 7)
+                pcr = base * 300 + (((p[10] & 1) << 8) | p[11])
+                pcrs += 1
+                off += (pcr & 0x3FFFFFFF) != ats
+    return n, back, pcrs, off
+
+
+def m2ts_plain_and_disc(cfg, t):
+    """Who writes a `.m2ts`'s arrival times (45th pass): a disc's stream is
+    stamped by the disc's index pass, any other `.m2ts` by the cut itself
+    (`m2ts::restamp`, each PCR packet arriving at its PCR), and the cut asks
+    the window which it is (`disc_slot`: a stream `bdav_prepare` handed out
+    and nobody has finished or taken back). Two disc runs into one folder, a
+    disc run stopped at once, then a plain `.m2ts` written by hand into the
+    disc's STREAM folder under the number the stopped run had been given:
+    every file goes forwards, the plain one is the cut's own stamping, and
+    the window holds no stream of any of those runs afterwards (`bdav_used`
+    counts every byte on the disc)."""
+    base = os.path.join(cfg.work, "m2ts_plain_and_disc")
+    shutil.rmtree(base, ignore_errors=True)
+    disc = os.path.join(base, "disc")
+    plain = os.path.join(base, "plain")
+    os.makedirs(disc)
+    os.makedirs(plain)
+    stream = os.path.join(disc, "BDAV", "STREAM")
+    used = lambda app: app.s.js("return window.__TAURI__.core.invoke('bdav_used', {dir: arguments[0]})", disc)
+
+    with App(cfg, "m2ts_plain_and_disc/file", [{"path": cfg.a}],
+             {"container": "m2ts", "number": False}) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        files = app.export()
+        outs = [f for f in files if f.endswith(".m2ts")]
+        got = _arrivals(outs[0]) if outs else None
+        t.check("45a plain .m2ts: forwards, each PCR packet at its PCR",
+                got is not None and got[0] > 0 and got[1] == 0 and got[2] > 0 and got[3] == 0,
+                f"{outs} (packets, back, pcrs, pcr off) {got}")
+        for f in files:
+            os.remove(f)
+
+    # The row is a.ts under the name the third disc number will have.
+    named = os.path.join(plain, "00003.ts")
+    os.symlink(cfg.a, named)
+    with App(cfg, "m2ts_plain_and_disc/disc", [{"path": named}],
+             {"mode": "bdav", "dir": disc, "subfolder": "", "discTitle": "M", "image": "",
+              "container": "m2ts", "number": False, "prefix": ""}) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 120, 0.5)
+        app.export()
+        app.export()
+        names = sorted(os.listdir(stream)) if os.path.isdir(stream) else []
+        got = [_arrivals(os.path.join(stream, n)) for n in names]
+        t.check("45a two disc runs: two streams, both forwards",
+                names == ["00001.m2ts", "00002.m2ts"] and all(g[0] > 0 and g[1] == 0 for g in got),
+                f"{names} {got}")
+        t.check("45a after two disc runs the window holds no stream", used(app) == _bdav_bytes(disc),
+                f"bdav_used {used(app)} disc {_bdav_bytes(disc)}")
+        # Stopped as soon as it starts: its number (00003) is given back.
+        app.to_list()
+        app.s.click('button.tab[data-screen="out"]')
+        label = wait_for("the start button", lambda: app.s.js(
+            "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 30)
+        app.s.js("const b = document.getElementById('run-export'); b.click();"
+                 " setTimeout(() => b.click(), 50);")
+        wait_for("the stopped run to finish", lambda: app.s.js(
+            "return document.getElementById('run-export').innerText") == label, 300, 0.5)
+        time.sleep(1.0)
+        names = sorted(os.listdir(stream))
+        t.check("45a stopped disc run: nothing left, nothing held",
+                names == ["00001.m2ts", "00002.m2ts"] and used(app) == _bdav_bytes(disc),
+                f"{names}; bdav_used {used(app)} disc {_bdav_bytes(disc)}")
+        # Asked for once more and taken back by hand, as a run's own would be.
+        slot = app.s.js("return window.__TAURI__.core.invoke('bdav_prepare', {dir: arguments[0], n: 1})", disc)[0]
+        app.s.js("return window.__TAURI__.core.invoke('bdav_discard', {dir: arguments[0], clips: [arguments[1]]})",
+                 disc, slot["clip"])
+        # The same window (the same list of handed-out streams), the file
+        # tab, the folder typed as the disc's STREAM: `00003.m2ts` there is a
+        # file of the user's, and the cut stamps it.
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        app.s.js("document.querySelector('.modes .tab[data-mode=\"file\"]').click();")
+        time.sleep(0.5)
+        app.s.js("const i = document.getElementById('out-dir'); i.value = arguments[0];"
+                 " i.dispatchEvent(new Event('input', {bubbles: true}));"
+                 " i.dispatchEvent(new Event('change', {bubbles: true}));", stream)
+        time.sleep(1.0)
+        app.export()
+        hand = os.path.join(stream, "00003.m2ts")
+        got = _arrivals(hand) if os.path.exists(hand) else None
+        t.check("45a .m2ts typed into BDAV/STREAM by hand: the cut stamps it",
+                slot["clip"] == "00003" and got is not None and got[1] == 0 and got[2] > 0 and got[3] == 0,
+                f"slot {slot['clip']}; {sorted(os.listdir(stream))} {got}")
     shutil.rmtree(base, ignore_errors=True)
 
 
@@ -7403,6 +7583,158 @@ def vfr_del_twice_then_ok(cfg, t):
                 len(c1) == 1 and abs(c1[0][0] - 1.9) < 1e-3 and abs(c1[0][1] - 9.0667) < 2e-3, f"cuts {c1}")
 
 
+def vfr_end_pictures(cfg, t):
+    """IN on the second picture and OUT on the one before the last of a
+    variable recording whose pictures there come closer than half its
+    average (hold.mp4: 33 ms apart, averaging 10.9 a second, so half a frame
+    is 46 ms). `atFirstPicture` took IN on the second picture for the head
+    and ✂ took the first picture as well, which the editor showed as kept;
+    `atLastPicture` took OUT on the picture before the last for the end, and
+    ✂ took the last picture too. (45th pass.) And the two ends themselves
+    still snap: IN on the first picture cuts from the head, OUT by End on the
+    last picture cuts to the end. (45th pass, second stage.)"""
+    v = _hold_mp4(cfg)
+    with App(cfg, "vfr_end_pictures", [{"path": v}] * 4) as app:
+        def jump(text):
+            app.s.keys("j")
+            wait_for("the jump box", lambda: app.s.js(
+                "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+            app.s.keys("Control+a")
+            app.s.type(text)
+            app.s.keys("Enter")
+            want = float(text.split(":")[-1])
+            # Not `or -1`: the head is at 0.0, which is falsy.
+            def there():
+                at = _counter_time(app)
+                return at is not None and abs(at - want) < 0.02
+            wait_for(f"the playhead on {text}", there, 10)
+            time.sleep(1.5)
+        for n, (a, b) in ((1, ("00:00:00.0333", "00:00:00.10")), (2, ("00:00:10.90", "00:00:10.9667")),
+                          (3, ("00:00:00.00", "00:00:00.10")), (4, ("00:00:10.90", None))):
+            app.to_list()
+            app.open_row(n, "hold.mp4", wait=False)
+            app.to_editor()
+            wait_for("the walk", lambda: "hold.mp4" in app.state()["title"] and app.s.js(
+                "const k = document.getElementById('ovl-kind'); return !!k && k.innerText !== ''"
+                " && !k.innerText.includes('解析中')"), 120, 0.3)
+            time.sleep(3.0)
+            jump(a)
+            app.s.keys("i")
+            if b is None:
+                app.s.keys("End")
+                time.sleep(2.0)
+            else:
+                jump(b)
+            app.s.keys("o")
+            time.sleep(2.0)
+            app.s.keys("Delete")
+            time.sleep(3.0)
+            app.ok()
+            app.gone()
+        proj = app.save()
+        c1, c2, c3, c4 = (cuts_of(proj, n) for n in (1, 2, 3, 4))
+        t.check("45m1 ✂ with IN on the second picture keeps the first",
+                len(c1) == 1 and abs(c1[0][0] - 1 / 30) < 2e-3 and abs(c1[0][1] - 4 / 30) < 2e-3, f"cuts {c1}")
+        t.check("45m2 ✂ with OUT on the picture before the last keeps the last",
+                len(c2) == 1 and abs(c2[0][0] - 10.9) < 2e-3 and abs(c2[0][1] - 11.0) < 2e-3, f"cuts {c2}")
+        t.check("45m3 ✂ with IN on the first picture cuts from the head",
+                len(c3) == 1 and c3[0][0] < 1e-3 and abs(c3[0][1] - 4 / 30) < 2e-3, f"cuts {c3}")
+        t.check("45m4 ✂ with OUT by End on the last picture cuts to the end",
+                len(c4) == 1 and abs(c4[0][0] - 10.9) < 2e-3 and c4[0][1] > 11.0 + 1e-3, f"cuts {c4}")
+
+
+def vfr_marks_near(cfg, t):
+    """The other "half the average frame is one picture" tests in main.js on
+    a variable recording (45th pass, third stage; hold.mp4 as in
+    `vfr_end_pictures`: 33 ms apart, half its average 46 ms). A cut of the
+    first picture alone opens a join at the head, which a constant-rate
+    recording (a.ts) marks; two marks on two pictures next to each other are
+    two marks there; and OUT on the picture before the last, pressed as soon
+    as the walk lands (before the last picture is asked for, `learnTail`),
+    keeps the last. 45n2 FAILS on purpose: a known S3 left after the 45th
+    pass (main.js's "one mark to a picture" tests still take half the
+    average; marks within 0.5 s are one chapter anyway, `chaptersFor`)."""
+    v = _hold_mp4(cfg)
+
+    def jump(app, text):
+        app.s.keys("j")
+        wait_for("the jump box", lambda: app.s.js(
+            "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+        app.s.keys("Control+a")
+        app.s.type(text)
+        app.s.keys("Enter")
+        want = float(text.split(":")[-1])
+        wait_for(f"the playhead on {text}", lambda: (lambda at: at is not None and abs(at - want) < 0.02)(
+            _counter_time(app)), 10, 0.05)
+
+    def walk(app, n):
+        app.to_list()
+        app.open_row(n, "hold.mp4", wait=False)
+        app.to_editor()
+        wait_for("the walk", lambda: "hold.mp4" in app.state()["title"] and app.s.js(
+            "const k = document.getElementById('ovl-kind'); return !!k && k.innerText !== ''"
+            " && !k.innerText.includes('解析中')"), 120, 0.05)
+
+    with App(cfg, "vfr_marks_near", [{"path": cfg.a}, {"path": v}, {"path": v}, {"path": v}]) as app:
+        app.open_row(1, "a.ts")
+        k0 = app.state()["keys"]
+        app.cut(0, 0)
+        time.sleep(1.0)
+        k1 = app.state()["keys"]
+        app.ok()
+        app.gone()
+        walk(app, 2)
+        time.sleep(3.0)
+        j0 = app.state()["keys"]
+        jump(app, "00:00:00.00")
+        time.sleep(1.0)
+        app.s.keys("i")
+        jump(app, "00:00:00.0333")
+        time.sleep(1.0)
+        app.s.keys("o")
+        time.sleep(1.0)
+        app.s.keys("Delete")
+        time.sleep(2.0)
+        j1 = app.state()["keys"]
+        app.ok()
+        app.gone()
+        t.check("45n1 a head cut of one picture marks the join, as on a constant-rate recording",
+                (k0 != k1) == (j0 != j1), f"a.ts marks {k0!r} -> {k1!r}; hold.mp4 {j0!r} -> {j1!r}")
+        walk(app, 3)
+        time.sleep(3.0)
+        m0 = app.state()["keys"]
+        jump(app, "00:00:00.50")
+        time.sleep(1.0)
+        app.s.keys("k")
+        time.sleep(0.5)
+        m1 = app.state()["keys"]
+        jump(app, "00:00:00.5333")
+        time.sleep(1.0)
+        app.s.keys("k")
+        time.sleep(0.5)
+        m2 = app.state()["keys"]
+        t.check("45n2 two marks on adjacent pictures (KNOWN S3, 45th)",
+                m0 != m1 and m1 != m2, f"marks {m0!r} -> {m1!r} -> {m2!r}")
+        app.ok()
+        app.gone()
+        walk(app, 4)
+        landed = time.time()
+        jump(app, "00:00:10.90")
+        app.s.keys("i")
+        jump(app, "00:00:10.9667")
+        app.s.keys("o")
+        pressed = time.time() - landed
+        time.sleep(2.0)
+        app.s.keys("Delete")
+        time.sleep(3.0)
+        app.ok()
+        app.gone()
+        c = cuts_of(app.save(), 4)
+        t.check("45n3 OUT on the picture before the last, straight after the walk, keeps the last",
+                len(c) == 1 and abs(c[0][0] - 10.9) < 2e-3 and abs(c[0][1] - 11.0) < 2e-3,
+                f"cuts {c}; O pressed {pressed:.2f} s after the walk landed")
+
+
 def preview_subs_playback(cfg, t):
     """Preview subtitles up while playing (ab6daa3): an ARIB recording and a
     PGS one, the first track put up from the 表示 menu, then played. The
@@ -7784,6 +8116,7 @@ SCENARIOS = [
     seam_vfr_reel,
     seam_vfr_reel_master_ts,
     seam_vfr_reel_after,
+    seam_rate_follows_master,
     seam_sar_reels,
     seam_sar_reels_master_after,
     seam_master_changed,
@@ -7792,6 +8125,7 @@ SCENARIOS = [
     vfr_hold_arrows,
     vfr_del_then_ok,
     vfr_del_twice_then_ok,
+    vfr_end_pictures,
     preview_subs_playback,
     vfr_key_out,
     disc_refuses_opus,
@@ -7854,11 +8188,12 @@ SCENARIOS = [
     disc_index_fails,
     read_project_not_a_file,
     disc_fit_nothing_to_shrink,
+    m2ts_plain_and_disc,
 ]
 
 
 # Selectable by name, not run by default.
-EXTRA = [av1_whole_verify, seam_sar_av1_mp4, ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
+EXTRA = [vfr_marks_near, av1_whole_verify, seam_sar_av1_mp4, ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
          disc_seam_gap_chapters, disc_seam_join_chapters, disc_plays_rows, disc_plays_switch,
          disc_plays_recount, disc_plays_due, disc_plays_trim_first,
          real_old_projects_ok_unchanged, disc_plays_trim_left,

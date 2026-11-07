@@ -2494,9 +2494,10 @@ fn close_cross(app: tauri::AppHandle) {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CrossInfo {
-    /// The rate the preview is walked at, which is the clip before the join's
-    /// own: the joined file is written at the master's rate, and the clip
-    /// before is the master unless somebody says otherwise.
+    /// The rate the preview is walked at, which is the master's: the joined
+    /// file is written at its rate, crossings and all. The clip before the
+    /// join's own where that is the master, or where the master named could
+    /// not be read (see [`CrossPair::shaped_like`]).
     fps: f64,
     before_duration: f64,
     after_duration: f64,
@@ -2560,7 +2561,13 @@ async fn cross_load(
 
 fn info_of_pair(pair: &CrossPair) -> CrossInfo {
     CrossInfo {
-        fps: pair.before.video.frame_rate,
+        // Not the clip before's own where the list names another master: a
+        // reel joined onto a 29.97 master is written at 29.97 through the
+        // crossing, and walked at a phone clip's 1.2 a second the window
+        // showed about one picture of a 1 s dissolve, each step 0.84 s.
+        fps: pair
+            .shaped_like()
+            .map_or(pair.before.video.frame_rate, |m| m.video.frame_rate),
         before_duration: pair.before.duration,
         after_duration: pair.after.duration,
         before_audio: pair.before.audio.is_some(),
@@ -6285,6 +6292,7 @@ async fn export(
             poster,
             chapters: chapters.unwrap_or_default(),
             replanned: Some(replanned.clone()),
+            disc_clip: disc_slot(&output),
             ..Default::default()
         };
         if sound_only {
@@ -6874,6 +6882,7 @@ async fn export_joined(
                 ..Default::default()
             },
             replanned: Some(replanned.clone()),
+            disc_clip: disc_slot(&output),
             ..Default::default()
         };
         if sound_only {
@@ -7058,6 +7067,15 @@ async fn bdav_prepare(dir: String, n: usize) -> Result<Vec<BdavSlot>, String> {
 /// stream in place and wrote its index over -- or, where the index failed,
 /// deleted it.
 static HANDED_OUT: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
+
+/// Whether `output` is a disc's stream this run was handed by
+/// [`bdav_prepare`]: what `bdav_finish` stamps once it is written. Any other
+/// `.m2ts` has its arrival times written by the cut itself, whatever folder
+/// it was named into (see `smartcut_core::m2ts`).
+fn disc_slot(output: &str) -> bool {
+    let at = std::path::Path::new(output);
+    locked(&HANDED_OUT).iter().any(|p| p == at)
+}
 
 /// Take back the streams of the recordings a run did not finish.
 ///
