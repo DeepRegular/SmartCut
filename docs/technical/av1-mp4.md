@@ -52,6 +52,14 @@ because the pictures exceed it (a source that understates its level), it
 is opened again without one. This applies to every output container, so
 in Matroska and WebM these seams now state the source's level as well.
 
+The boundary encoder is also told where the recording's chroma samples sit.
+AV1 states that position in the sequence header itself, so a recording
+written by libaom with a chroma sample position of 1 or 2 used to meet
+seams that said 0, and the selection went to the retry below. SVT-AV1 and
+rav1e write the position they are given, and the copied middle is kept.
+libaom ignores it; a libaom seam that differs is still caught by the check
+and retried.
+
 FFmpeg 7.1's MOV/MP4 writer emits one `stsd` entry. A `NEW_EXTRADATA` side
 datum updates its configuration, but cannot assign a second sample entry to
 the changed samples. If the fields cannot be aligned during an MP4 export, the failed
@@ -82,8 +90,8 @@ bash tests/run_av1_mp4_tests.sh
 Python 3.11+, FFmpeg/ffprobe with libaom-av1, librav1e and libsvtav1 are
 required. The suite checks 18 MP4 exports and three Matroska controls.
 The rav1e level-31 and finite Level 4.0 cases require mixed output with
-the copied key packets and pixels intact. An input with colocated chroma
-requires exactly one full-video retry. MP4 checks include strict decoding, frame counts, display PTS,
+the copied key packets and pixels intact, and so does an input with
+colocated chroma, whose seams must state the same position. MP4 checks include strict decoding, frame counts, display PTS,
 DTS, video duration, `av1C` against the independent CBS `trace_headers`
 reader, and packet/pixel equality inside the declared copied intervals.
 The Matroska controls assert that no configuration retry was added; they
