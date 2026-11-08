@@ -5637,6 +5637,23 @@ fn open_encoder_as(
             crate::raw_enum(std::ptr::addr_of!((*p).color_space)),
         );
         (*e).color_range = (*p).color_range;
+        // Where the chroma samples sit, as the recording states it. AV1 puts
+        // this in the sequence header itself, so a libaom recording written
+        // with `chroma-sample-position` 1 or 2 met seams that said 0, the
+        // two could not share one MP4 sample description, and the guard sent
+        // the whole selection back to be re-encoded. The encoders that write
+        // it (SVT-AV1, rav1e, libaom, x265) read it from here.
+        //
+        // Left is passed on for AV1 only. There it is position 1, not the
+        // default; for H.264 and HEVC it is the default, and the decoders
+        // report it whether or not the stream says so. Told it, x265 writes
+        // a `chroma_loc_info` the copied pictures do not carry.
+        let chroma = crate::raw_enum(std::ptr::addr_of!((*p).chroma_location));
+        if chroma != ff::ffi::AVChromaLocation::AVCHROMA_LOC_LEFT as i32
+            || params.id() == ff::codec::Id::AV1
+        {
+            crate::set_raw_enum(std::ptr::addr_of_mut!((*e).chroma_sample_location), chroma);
+        }
         (*e).profile = (*p).profile;
         // **A level is not one number across codecs, and two of these count
         // it differently at each end.** What a decoder puts in `level` for
