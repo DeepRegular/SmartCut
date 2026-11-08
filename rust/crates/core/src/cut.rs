@@ -5641,8 +5641,9 @@ fn open_encoder_as(
         // this in the sequence header itself, so a libaom recording written
         // with `chroma-sample-position` 1 or 2 met seams that said 0, the
         // two could not share one MP4 sample description, and the guard sent
-        // the whole selection back to be re-encoded. The encoders that write
-        // it (SVT-AV1, rav1e, libaom, x265) read it from here.
+        // the whole selection back to be re-encoded. SVT-AV1, rav1e, x264
+        // and x265 read it from here and write it; libaom does not, and a
+        // libaom seam that differs is caught by the AV1 guard.
         //
         // Left is passed on for AV1 only. There it is position 1, not the
         // default; for H.264 and HEVC it is the default, and the decoders
@@ -5778,9 +5779,11 @@ fn open_encoder_as(
     }
 
     let mut eopts = ff::Dictionary::new();
-    // mpeg2video and mpeg4 refuse a closed GOP while scene-change detection
-    // is live; a partial GOP is short enough that losing it costs nothing.
-    if matches!(v.codec.as_str(), "mpeg2video" | "mpeg4") {
+    // mpeg1video, mpeg2video and mpeg4 refuse a closed GOP while
+    // scene-change detection is live; a partial GOP is short enough that
+    // losing it costs nothing. (Left out, every MPEG-1 cut with a seam
+    // stopped at "cannot open encoder: Not yet implemented in FFmpeg".)
+    if matches!(v.codec.as_str(), "mpeg1video" | "mpeg2video" | "mpeg4") {
         eopts.set("sc_threshold", "1000000000");
     }
     // What the three open encoders are worth being asked to spend.

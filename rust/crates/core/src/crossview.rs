@@ -449,23 +449,54 @@ fn overlay_of(transition: &Transition, shape: (u32, u32)) -> Result<Option<Laid>
 /// For scrubbing: each call seeks both clips, which is what makes it answer a
 /// pointer being dragged rather than a clock. Playback reads forwards instead
 /// -- see [`play`].
+///
+/// **Each clip's picture is the one [`play`] shows at the same instant**: the
+/// one on screen then, read by the same [`Reader`] with the same slack, which
+/// is the cutter's rule too. This used to take the picture *nearest* the
+/// instant, and an instant past half a picture's interval got the next one:
+/// a 29.97 reel after a 25p master showed a different picture from playback
+/// and the output at three steps in five, and a 59.94p clip with a 10 second
+/// dissolve one picture later at every step before and into the crossing.
 pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>> {
     crate::init()?;
     let shape = seam.shape(width);
     let look = window.look(t);
     let laid = overlay_of(&seam.transition, shape).ok().flatten();
-    let mut near_scale = None;
-    let mut far_scale = None;
-    let near = look
-        .near
-        .and_then(|at| crate::preview::picture_at(seam.before, at).ok())
-        .map(|(_, f)| reshape(&f, shape, &mut near_scale))
-        .transpose()?;
-    let far = look
-        .far
-        .and_then(|at| crate::preview::picture_at(seam.after, at).ok())
-        .map(|(_, f)| reshape(&f, shape, &mut far_scale))
-        .transpose()?;
+    // The master's frame, as `play` is handed it: only the slack depends on it.
+    let fps = seam.shaped_like.unwrap_or(seam.before).video.frame_rate;
+    let step = 1.0 / if fps.is_finite() && fps > 0.0 { fps.clamp(1.0, 1000.0) } else { 30.0 };
+    // Read from the entry point the picture is decoded from, as
+    // `picture_at` reads it: playback's seek margin is three GOPs before the
+    // instant, and a still read from there took twice the time. A landing
+    // past that entry point is read again from the margin, as `picture_at`
+    // reads it again.
+    let standing = |src: &Source, at: f64| {
+        let half = src.video.frame_duration() / 2.0;
+        if let Some(entry) = crate::index::entry_before(&src.points, at, 1e-6) {
+            // Past where a recorder's stretch stops and before the next one
+            // has a picture, the reader -- which knows nothing of seams --
+            // shows a picture the stretch runs on with past its end, which
+            // the cut never writes. `picture_at` reads a seam as the cut does.
+            if src.joins.iter().any(|j| entry.time < j.time && at >= j.ends.min(j.time)) {
+                return crate::preview::picture_at(src, at)
+                    .ok()
+                    .and_then(|(_, f)| reshape(&f, shape, &mut None).ok());
+            }
+            if let Ok(mut reader) = Reader::on_entry(src, at, shape, step) {
+                if let Ok(shown) = reader.at(at).map(|f| f.cloned()) {
+                    if reader.first.is_some_and(|first| first <= entry.time + half) {
+                        return shown;
+                    }
+                }
+            }
+        }
+        Reader::open(src, at, shape, step)
+            .and_then(|mut reader| Ok(reader.at(at)?.cloned()))
+            .ok()
+            .flatten()
+    };
+    let near = look.near.and_then(|at| standing(seam.before, at));
+    let far = look.far.and_then(|at| standing(seam.after, at));
     let picture = compose(near.as_ref(), far.as_ref(), &look, laid.as_ref(), shape)?;
     crate::preview::jpeg_of(&picture, 1.0, shape.0)
 }
@@ -494,10 +525,39 @@ struct Reader {
     spent: bool,
     /// Whether the decoder has been told the stream is over. See `pull`.
     drained: bool,
+    /// The instant of the first picture decoded, which says whether the seek
+    /// landed late. See [`shot`].
+    first: Option<f64>,
 }
 
 impl Reader {
     fn open(src: &Source, from: f64, shape: (u32, u32), step: f64) -> Result<Reader> {
+        // Back a little, because the picture wanted at the first instant is
+        // the one standing there, which may have been coded before it.
+        Reader::aimed(src, shape, step, |ictx| {
+            seek_near(ictx, src, (from - src.seek_margin).max(0.0))
+        })
+    }
+
+    /// As [`Reader::open`], put on the entry point the picture at `at` is
+    /// decoded from rather than a seek margin before it: by its byte where
+    /// the index has one, as [`crate::preview::picture_at`] seeks. Whether it
+    /// landed there is for the caller to check, by its `first`.
+    fn on_entry(src: &Source, at: f64, shape: (u32, u32), step: f64) -> Result<Reader> {
+        Reader::aimed(src, shape, step, |ictx| {
+            if crate::index::seek_to_entry(ictx, src, at).is_none() {
+                let entry = crate::index::entry_before(&src.points, at, 1e-6);
+                seek_near(ictx, src, entry.map_or(0.0, |p| p.time));
+            }
+        })
+    }
+
+    fn aimed(
+        src: &Source,
+        shape: (u32, u32),
+        step: f64,
+        seek: impl FnOnce(&mut crate::input::Demux),
+    ) -> Result<Reader> {
         let mut ictx = crate::input::demux(&src.input.url)?;
         let ist = src.video.stream_index;
         let stream = ictx
@@ -506,15 +566,7 @@ impl Reader {
         let in_tb = f64::from(stream.time_base());
         let params = stream.parameters();
         let decoder = crate::video_decoder(params)?;
-        // Back a little, because the picture wanted at the first instant is
-        // the one standing there, which may have been coded before it.
-        let landing = (from - src.seek_margin).max(0.0);
-        let target = if src.points.first().is_none_or(|p| landing <= p.time) {
-            i64::MIN / 2
-        } else {
-            ((landing + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64
-        };
-        let _ = ictx.seek(target, ..target);
+        seek(&mut ictx);
         crate::input::keep_only(&mut ictx, &[ist]);
         Ok(Reader {
             ictx,
@@ -529,6 +581,7 @@ impl Reader {
             slack: on_screen_slack(in_tb, step),
             spent: false,
             drained: false,
+            first: None,
         })
     }
 
@@ -570,6 +623,7 @@ impl Reader {
             if self.decoder.receive_frame(&mut frame).is_ok() {
                 let Some(pts) = frame.pts() else { continue };
                 let t = pts as f64 * self.in_tb - self.start_time;
+                self.first.get_or_insert(t);
                 return Ok(Some((t, reshape(&frame, self.shape, &mut self.rescale)?)));
             }
             // The decoder told the stream is over, which is not the same as
@@ -593,6 +647,17 @@ impl Reader {
             let _ = self.decoder.send_packet(&packet);
         }
     }
+}
+
+/// A timestamp seek to `landing`, or to the very start where nothing before
+/// the first entry point could be decoded anyway.
+fn seek_near(ictx: &mut crate::input::Demux, src: &Source, landing: f64) {
+    let target = if src.points.first().is_none_or(|p| landing <= p.time) {
+        i64::MIN / 2
+    } else {
+        ((landing + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64
+    };
+    let _ = ictx.seek(target, ..target);
 }
 
 /// How far after an instant of the preview a clip's picture may arrive and

@@ -41,12 +41,16 @@ const PCR_WRAP: u64 = (1u64 << 33) * 300;
 /// name: a `.m2ts` typed by hand as `-o x/BDAV/STREAM/00001.m2ts` is not a
 /// disc's clip -- nothing stamps it, and nothing lists it in a disc's index
 /// -- and it was left with the times that step backwards.
+///
+/// By the name's ending, as libavformat decides to write the four bytes at
+/// all: a file called just `.m2ts` has no extension to `Path`, and was
+/// written with them and left with the times that step backwards.
 pub fn standalone(path: &str, disc_clip: bool) -> bool {
     !disc_clip
         && Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("m2ts"))
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.to_ascii_lowercase().ends_with(".m2ts"))
 }
 
 /// Write the arrival times of a finished standalone `.m2ts` again, from its
@@ -293,6 +297,13 @@ mod tests {
         assert!(standalone("/out/cut.m2ts", false));
         assert!(standalone("cut.M2TS", false));
         assert!(!standalone("/out/cut.ts", false));
+        assert!(standalone("/out/.m2ts", false));
+        assert!(!standalone("/out/m2ts", false));
+        // As libavformat matches the ending: the last dot of the name.
+        assert!(standalone("/out/a.b.m2ts", false));
+        assert!(!standalone("/out/cut.m2ts ", false));
+        assert!(!standalone("/out/foo.m2ts/bar", false));
+        assert!(!standalone("/out/cut.m2ts.ts", false));
         // Decided by the run, not by the folder it is named into.
         assert!(standalone("/out/BDAV/STREAM/00001.m2ts", false));
         assert!(standalone(r"C:\out\bdmv\stream\00001.m2ts", false));
