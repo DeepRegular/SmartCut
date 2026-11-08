@@ -265,8 +265,12 @@ def main():
                                     assert observed[oi]['data_hash'] == packets[si]['data_hash'], 'copied header changed'
                                     assert made_pixels[oi] == source_pixels[si], 'copied picture changed'
                         if name == 'chroma':
-                            assert row['full_video_fallback'], 'incompatible chroma must retry'
-                            assert log.count(b'The entire selected video is re-encoded') == 1
+                            # The seam encoder is told where the source's chroma
+                            # samples sit (42b2a44), so its sequence header matches
+                            # the copied pictures and the copied middle is kept.
+                            assert not row['full_video_fallback'], 'chroma position must reach the seam encoder'
+                            assert log.count(b'The entire selected video is re-encoded') == 0
+                            assert config(source)[:3] == config(out)[:3], 'chroma position must match the copied source'
                     row['frames'] = len(observed)
                     row['passed'] = True
                     print('ok', row['name'], flush=True)

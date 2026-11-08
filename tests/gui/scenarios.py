@@ -728,6 +728,81 @@ def divide_then_edit_part(cfg, t):
             os.remove(f)
 
 
+def divide_copy_remove_undo(cfg, t):
+    """(46th pass, appjs) The list's own edits one after another, then what a
+    run writes: row 1 divided in two, part 2 duplicated (複製) and the copy
+    cut and OK'd; part 1 removed and put back (削除を元に戻す), part 2
+    removed and put back, 全削除 and put back. Each row keeps its own cuts
+    (the copy's cut is not part 2's), and the run writes four files, each
+    with the pictures its row showed, under four names."""
+    with App(cfg, "divide_copy_remove_undo", clips(cfg)) as app:
+        app.to_list()
+        app.s.click("#cliplist > li:nth-child(1) .nm")
+        wait_for("分割 to be offered", lambda: app.s.js(
+            "return !document.getElementById('divide-clip').disabled"), 60)
+        app.s.click("#divide-clip")
+        wait_for("the divide box", lambda: app.s.js(
+            "return !document.getElementById('divide').hidden"), 5)
+        app.s.js("const f = document.getElementById('divide-rule'); f.value = 'parts';"
+                 "f.dispatchEvent(new Event('change'));"
+                 "const v = document.getElementById('divide-value'); v.value = '2';"
+                 "v.dispatchEvent(new Event('input'));")
+        wait_for("分割 to be pressable", lambda: app.s.js(
+            "return !document.getElementById('divide-ok').disabled"), 30)
+        app.s.click("#divide-ok")
+        wait_for("three rows", lambda: app.rows() == 3, 10)
+        app.open_row(1, "a.ts")
+        one = app.state()["frames"]
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+        app.open_row(2, "a.ts")
+        two = app.state()["frames"]
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+        app.to_list()
+        app.s.click("#cliplist > li:nth-child(2) .nm")
+        wait_for("複製", lambda: not app.s.js(
+            "return document.getElementById('duplicate-clip').disabled"), 15)
+        app.s.click("#duplicate-clip")
+        wait_for("four rows", lambda: app.rows() == 4, 10)
+        app.open_row(3, "a.ts")
+        copied = app.state()["frames"]
+        left = app.cut(10, 20)
+        app.ok()
+        app.gone()
+
+        def remove_then_undo(row, button, rows_after):
+            app.to_list()
+            if row:
+                app.s.click(f"#cliplist > li:nth-child({row}) .nm")
+                wait_for("クリップ削除", lambda: not app.s.js(
+                    f"return document.getElementById('{button}').disabled"), 15)
+            app.s.click(f"#{button}")
+            wait_for(f"{rows_after} rows", lambda: app.rows() == rows_after, 10)
+            wait_for("削除を元に戻す", lambda: not app.s.js(
+                "return document.getElementById('undo-remove').disabled"), 15)
+            app.s.click("#undo-remove")
+            wait_for("four rows again", lambda: app.rows() == 4, 10)
+
+        remove_then_undo(1, "remove-clip", 3)
+        remove_then_undo(2, "remove-clip", 3)
+        remove_then_undo(None, "remove-all", 0)
+        p = app.save()
+        c = [cuts_of(p, n) for n in (1, 2, 3, 4)]
+        t.check("46a each row keeps its cuts through remove/undo",
+                one + two in (FRAMES, FRAMES + 1) and copied == two and len(c[1]) == 1
+                and len(c[2]) == 2 and len(c[0]) == 1 and len(c[3]) == 0,
+                f"parts {one} + {two}, copy {copied} -> {left}; cuts {[fmt(x) for x in c]}")
+        files = app.export()
+        got = sorted(pictures(f) or 0 for f in files)
+        want = sorted([one, two, left, FRAMES])
+        t.check("46a four files, each with its row's pictures",
+                len(set(files)) == 4 and got == want,
+                f"outputs {[os.path.basename(f) for f in files]} have {got} (want {want})")
+        for f in files:
+            os.remove(f)
+
+
 # -- 14 --------------------------------------------------------------------
 def audio_tracks(path):
     out = subprocess.run(
@@ -8092,6 +8167,7 @@ SCENARIOS = [
     double_press_first_open,
     ok_then_other_row,
     divide_then_edit_part,
+    divide_copy_remove_undo,
     waveform_keeps_env_prefs,
     join_verify,
     mode_switch_during_run,
