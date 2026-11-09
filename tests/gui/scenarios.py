@@ -19,6 +19,7 @@ driver first.
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -1118,6 +1119,112 @@ def seam_window(cfg, t):
         after = app.save()["clips"][0].get("after") or {}
         t.check("18 キャンセル keeps what OK wrote", after.get("kind") == "dissolve",
                 repr(after))
+
+
+def seam_play_again(cfg, t):
+    """継ぎ目の設定: a playback left to run to its end, then 再生 pressed
+    again, plays the preview again from its start. Playback stops a picture
+    short of the end of the preview, so the playhead it leaves is not "at the
+    end" by cross.js's test, and before the 47th pass the second press played
+    that one picture and stopped. (47th pass)"""
+    with App(cfg, "seam_play_again", clips(cfg), {"joinAll": True}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled;"), 60)
+        before = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+        app.s.switch(seam)
+        wait_for("the join loaded", lambda: app.s.js(
+            "return document.getElementById('out-clip-time').textContent") not in
+            ("--:--:--.--", "00:00:00.00"), 60)
+        time.sleep(1)
+        state = lambda: app.s.js(  # noqa: E731
+            "return [document.getElementById('play').textContent,"
+            " document.getElementById('ovl-time').textContent,"
+            " document.getElementById('out-clip-time').textContent]")
+        app.s.click("#play")
+        wait_for("the first playback to run out", lambda: state()[0] == "▶", 40)
+        time.sleep(1)
+        ended = state()
+        app.s.click("#play")
+        time.sleep(1.5)
+        again = state()
+        t.check("47 再生 after a playback ran to its end plays from the start",
+                again[0] == "■" and again[1] < ended[1],
+                f"ended {ended}; one and a half seconds after 再生 {again}")
+        app.s.click("#play")
+        time.sleep(0.5)
+        try:
+            app.s.click("#cross-cancel")
+        except WebDriverError:
+            pass
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+
+
+def seam_play_resume(cfg, t):
+    """継ぎ目の設定: the two presses of 再生 the 47th pass's ranOutAt must
+    leave alone. A playback stopped by hand and 再生 pressed again goes on
+    from where it stopped; a playback left to run out, then one step back,
+    then 再生, plays from the step -- not from the start. (47th pass, p2check)"""
+    with App(cfg, "seam_play_resume", clips(cfg), {"joinAll": True}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled;"), 60)
+        before = set(app.s.handles())
+        app.s.click("#open-cross")
+        seam = wait_for("the seam window", lambda: (
+            [h for h in app.s.handles() if h not in before] or [None])[0], 60)
+        app.s.switch(seam)
+        wait_for("the join loaded", lambda: app.s.js(
+            "return document.getElementById('out-clip-time').textContent") not in
+            ("--:--:--.--", "00:00:00.00"), 60)
+        time.sleep(1)
+
+        def state():
+            play, at = app.s.js("return [document.getElementById('play').textContent,"
+                                " document.getElementById('ovl-time').textContent]")
+            h, m, sec = at.split(":")
+            return play, int(h) * 3600 + int(m) * 60 + float(sec)
+
+        app.s.click("#play")
+        time.sleep(2.0)
+        app.s.click("#play")
+        time.sleep(1.0)
+        stopped = state()
+        app.s.click("#play")
+        time.sleep(0.6)
+        resumed = state()
+        t.check("47 再生 after a stop by hand goes on from where it stopped",
+                stopped[0] == "▶" and stopped[1] > 0.5 and resumed[1] >= stopped[1],
+                f"stopped {stopped}; 0.6 s after 再生 {resumed}")
+        wait_for("the playback to run out", lambda: state()[0] == "▶", 40)
+        time.sleep(1)
+        ended = state()
+        app.s.click("#step-back")
+        time.sleep(1.0)
+        stepped = state()
+        app.s.click("#play")
+        time.sleep(0.4)
+        again = state()
+        t.check("47 a step back after a playback ran out, then 再生, plays from the step",
+                0 < stepped[1] < ended[1] and again[1] >= stepped[1],
+                f"ended {ended}; stepped {stepped}; 0.4 s after 再生 {again}")
+        if state()[0] == "■":
+            app.s.click("#play")
+        time.sleep(0.5)
+        try:
+            app.s.click("#cross-cancel")
+        except WebDriverError:
+            pass
+        wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
 
 
 # -- 28 --------------------------------------------------------------------
@@ -8148,6 +8255,847 @@ def av1_whole_verify(cfg, t):
         for f in files:
             os.remove(f)
 
+
+# -- 47th pass (mainjs): ordinary material through the editor ----------------
+#
+# Every picture of these recordings carries its own number in a strip along
+# the bottom (four blocks, a base-8 digit each, as a grey level), so what the
+# editor's picture shows at IN and OUT and what the output holds can be read
+# back and compared picture by picture.
+
+STRIP = 64
+ORD_JA = "テスト 動画 'q' \"dq\".mp4"
+ORD_CHAPTERS = {"chapters": ((0, 3000), (3000, 6000), (6000, 10000)),
+                "chapters2": ((0, 2500), (2500, 5250), (5250, 10000))}
+
+
+def _ord_dir(cfg):
+    return os.path.join(cfg.work, "media47")
+
+
+def _ord_specs():
+    """name -> (width, height, rate, seconds, video args, audio args, format args, extra)"""
+    x264 = lambda g, bf=3: ["-c:v", "libx264", "-preset", "veryfast", "-g", str(g), "-bf", str(bf),
+                            "-pix_fmt", "yuv420p"]
+    aac = ["-c:a", "aac", "-b:a", "128k"]
+    return {
+        "vcd.mpg": (352, 240, "30000/1001", 10,
+                    ["-c:v", "mpeg1video", "-g", "15", "-bf", "2", "-b:v", "1150k"],
+                    ["-c:a", "mp2", "-b:a", "224k", "-ar", "44100"], ["-f", "mpeg"], None),
+        "dvd.vob": (720, 480, "30000/1001", 10,
+                    ["-c:v", "mpeg2video", "-g", "15", "-bf", "2", "-b:v", "5M"],
+                    ["-c:a", "ac3", "-b:a", "192k"], ["-f", "vob"], None),
+        "cam.MTS": (1920, 1080, "25", 8,
+                    x264(25) + ["-flags", "+ildct+ilme", "-x264-params", "tff=1", "-b:v", "8M"],
+                    ["-c:a", "ac3", "-b:a", "256k"], ["-f", "mpegts", "-mpegts_m2ts_mode", "1"], None),
+        "pal25.mp4": (720, 576, "25", 10, x264(50), aac, ["-f", "mp4"], None),
+        "slow120.mp4": (1280, 720, "120", 5, x264(120), aac, ["-f", "mp4"], None),
+        "yt.webm": (640, 360, "30", 10,
+                    ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-g", "150",
+                     "-b:v", "1M"],
+                    ["-c:a", "libopus", "-b:a", "96k"], ["-f", "webm"], None),
+        "chap.mp4": (1280, 720, "24000/1001", 10, x264(48), aac, ["-f", "mp4"], "chapters"),
+        "chap2.mkv": (640, 360, "30000/1001", 10, x264(30), aac, ["-f", "matroska"], "chapters2"),
+        "short.mp4": (640, 360, "30", 0.8, x264(30), aac, ["-f", "mp4"], None),
+        ORD_JA: (640, 360, "30000/1001", 10, x264(30), aac, ["-f", "mp4"], None),
+    }
+
+
+def _ord_make(cfg):
+    d = _ord_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    specs = _ord_specs()
+    for f in os.listdir(d):
+        if f not in specs:
+            os.remove(os.path.join(d, f))
+    for name, (w, h, r, sec, v, a, fmt_, extra) in specs.items():
+        out = os.path.join(d, name)
+        if os.path.exists(out):
+            continue
+        graph = (f"testsrc2=s={w}x{h - STRIP}:r={r}:d={sec}[a];"
+                 f"color=c=black:s={w}x{STRIP}:r={r}:d={sec},format=yuv420p,"
+                 f"geq=lum='16+28*mod(floor(N/pow(8\\,floor(X*4/W)))\\,8)':cb=128:cr=128[s];"
+                 f"[a][s]vstack,format=yuv420p[v]")
+        cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+               "-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate=48000"]
+        meta = None
+        if extra in ORD_CHAPTERS:
+            meta = out + ".meta"
+            with open(meta, "w") as f:
+                f.write(";FFMETADATA1\n")
+                for i, (s0, s1) in enumerate(ORD_CHAPTERS[extra]):
+                    f.write(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={s0}\nEND={s1}\ntitle=C{i + 1}\n")
+            cmd += ["-i", meta]
+        cmd += ["-filter_complex", graph, "-map", "[v]", "-map", "0:a"]
+        if meta:
+            cmd += ["-map_chapters", "1"]
+        cmd += v + a + ["-shortest"] + fmt_ + [out + ".part"]
+        subprocess.run(cmd, check=True)
+        if meta:
+            os.remove(meta)
+        os.replace(out + ".part", out)
+    return d
+
+
+def _ord_clear(cfg):
+    d = _ord_dir(cfg)
+    specs = _ord_specs()
+    for f in os.listdir(d):
+        if f not in specs:
+            p = os.path.join(d, f)
+            if os.path.isdir(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
+
+
+def _numbers(path):
+    """The number every picture of `path` carries, in display order."""
+    raw = subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-map", "0:v:0", "-fps_mode", "passthrough",
+         "-vf", f"crop=iw:{STRIP - 16}:0:ih-{STRIP - 8},scale=4:1:flags=area,format=gray",
+         "-f", "rawvideo", "-"], capture_output=True).stdout
+    out = []
+    for i in range(0, len(raw) - 3, 4):
+        n = 0
+        for k in range(4):
+            n += max(0, min(7, round(raw[i + k] * 219 / 255 / 28))) * 8 ** k
+        out.append(n)
+    return out
+
+
+def _strip_number(raw):
+    n = 0
+    for k in range(4):
+        n += max(0, min(7, round(raw[k] * 219 / 255 / 28))) * 8 ** k
+    return n
+
+
+def _shown_number(app, height):
+    """The number the editor's picture carries, read off the screen: the
+    <img> as WebDriver photographs it (its pixels cannot be read from the
+    page: the shot: scheme is another origin), with the readouts that sit
+    over the foot of the picture put away for the moment it takes."""
+    import base64
+    import struct
+    js = ("const img = document.getElementById('preview');"
+          "return img && img.complete && img.naturalWidth ? [img.src, img.naturalWidth, img.naturalHeight] : null;")
+    last = None
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        time.sleep(0.4)
+        v = app.s.js(js)
+        if v is not None and v == last:
+            break
+        last = v
+    if not last:
+        return None
+    _, nw, nh = last
+    was = app.s.js("const o = document.getElementById('overlay'); const w = o.hidden; o.hidden = true; return w;")
+    try:
+        png = base64.b64decode(app.s._("GET", f"/element/{app.s.find('#preview')}/screenshot"))
+    finally:
+        app.s.js("document.getElementById('overlay').hidden = arguments[0];", was)
+    wp, hp = struct.unpack(">II", png[16:24])
+    k = min(wp / nw, hp / nh)
+    cw, ch = nw * k, nh * k
+    x0, y0 = (wp - cw) / 2, (hp - ch) / 2
+    y = int(y0 + ch * (1 - (STRIP - 8) / height))
+    hh = max(1, int(ch * (STRIP - 16) / height))
+    raw = subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-i", "-", "-vf",
+         f"crop={int(cw)}:{hh}:{int(x0)}:{y},scale=4:1:flags=area,format=gray",
+         "-f", "rawvideo", "-"], input=png, capture_output=True).stdout
+    return _strip_number(raw) if len(raw) >= 4 else None
+
+
+def _ord_mark(app, frame, key, height):
+    app.goto(frame)
+    n = _shown_number(app, height)
+    app.s.keys(key)
+    return n
+
+
+def _ord_outputs(app):
+    by = {}
+    for f in os.listdir(app.out):
+        m = re.match(r"cut_(\d+)_", f)
+        if m:
+            by.setdefault(int(m.group(1)), []).append(os.path.join(app.out, f))
+    return by
+
+
+def ordinary_material_cuts(cfg, t):
+    """(47th pass, mainjs.) Ordinary recordings no pass had driven through the
+    editor -- MPEG-1 .mpg, DVD .vob, AVCHD .MTS (1080i), 25p PAL mp4, 120 fps
+    mp4, VP9/Opus .webm, an mp4 with chapters, a 0.8 s clip, a name with
+    Japanese, spaces and quotes. Each gets two cuts in the editor (IN, OUT,
+    Del) at pictures inside GOPs, OK, 出力開始; the output must hold exactly
+    the pictures the editor did not show as cut: the picture shown at IN and
+    at OUT gone, the ones next to them kept."""
+    d = _ord_make(cfg)
+    _ord_clear(cfg)
+    specs = _ord_specs()
+    names = list(specs)
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    with App(cfg, "ordinary_material_cuts", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            h = specs[name][1]
+            src = _numbers(os.path.join(d, name))
+            app.to_list()
+            app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(1)
+            st = app.state()
+            total = st["frames"]
+            if total < 60:
+                plan = [(5, 9)]
+            else:
+                plan = [(int(total * 0.2) + 1, int(total * 0.35) + 2),
+                        (int(total * 0.6) + 3, int(total * 0.7) + 1)]
+            removed = []
+            for a, b in plan:
+                left = app.state()["frames"]
+                na = _ord_mark(app, a, "i", h)
+                nb = _ord_mark(app, b, "o", h)
+                app.s.keys("Delete")
+                wait_for(f"{name} cut {a}-{b}", lambda: app.state()["frames"] == left - (b - a + 1), 10)
+                removed.append((na, nb))
+            shown[i] = (name, src, total, removed)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=900)
+        outs = _ord_outputs(app)
+        for i, (name, src, total, removed) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            gone = set()
+            ok_marks = True
+            for na, nb in removed:
+                if na is None or nb is None or na not in src or nb not in src:
+                    ok_marks = False
+                    continue
+                gone.update(src[src.index(na):src.index(nb) + 1])
+            want = [n for n in src if n not in gone]
+            good = ok_marks and got == want
+            detail = (f"src {len(src)} pictures, counter {total}, shown cut {removed}, "
+                      f"cuts {fmt(cuts_of(p, i))}, outputs {[os.path.basename(f) for f in files]}")
+            if got is not None and got != want:
+                diff = [(k, a, b) for k, (a, b) in enumerate(zip(got, want)) if a != b][:4]
+                detail += f"; got {len(got)} want {len(want)}; first differences {diff}"
+                if not diff:
+                    detail += f"; tail got {got[len(want):][:6]} want {want[len(got):][:6]}"
+            t.check(f"47m {name}: output = what the editor left", good, detail)
+            if specs[name][7] in ORD_CHAPTERS and len(vids) == 1:
+                ch = subprocess.run(["ffprobe", "-v", "error", "-show_chapters", "-of", "csv=p=0",
+                                     vids[0]], capture_output=True, text=True).stdout
+                print(f"        chapters of {os.path.basename(vids[0])}: {ch.strip()!r}", flush=True)
+            for f in files:
+                os.remove(f)
+
+
+def ordinary_material_keys(cfg, t):
+    """(47th pass, mainjs.) The other ways the editor cuts, on the same
+    ordinary recordings: a cut taken back with Ctrl+Z and put again with
+    Ctrl+Y, a head cut (IN on picture 0), Ctrl+Del (the inside of IN..OUT),
+    a cut to the end (OUT by End); the three detections run on material
+    with nothing to find. The output must hold exactly the pictures the
+    editor did not show as cut."""
+    d = _ord_make(cfg)
+    _ord_clear(cfg)
+    specs = _ord_specs()
+    names = ["dvd.vob", "cam.MTS", "yt.webm", "slow120.mp4", "vcd.mpg"]
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    with App(cfg, "ordinary_material_keys", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            h = specs[name][1]
+            src = _numbers(os.path.join(d, name))
+            app.to_list()
+            app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(1)
+            total = app.state()["frames"]
+            gone = []
+            notes = []
+            # A cut, taken back, put again.
+            na = _ord_mark(app, 40, "i", h)
+            nb = _ord_mark(app, 70, "o", h)
+            app.s.keys("Delete")
+            wait_for("the cut", lambda: app.state()["frames"] == total - 31, 10)
+            app.s.keys("Control+z")
+            wait_for("取消", lambda: app.state()["frames"] == total, 10)
+            app.s.keys("Control+y")
+            wait_for("やり直し", lambda: app.state()["frames"] == total - 31, 10)
+            gone.append(("del", na, nb))
+            # The head.
+            left = app.state()["frames"]
+            na = _ord_mark(app, 0, "i", h)
+            nb = _ord_mark(app, 9, "o", h)
+            app.s.keys("Delete")
+            wait_for("the head cut", lambda: app.state()["frames"] == left - 10, 10)
+            gone.append(("del", na, nb))
+            # The inside of IN..OUT.
+            left = app.state()["frames"]
+            na = _ord_mark(app, 50, "i", h)
+            nb = _ord_mark(app, 80, "o", h)
+            app.s.keys("Control+Delete")
+            wait_for("the inner cut", lambda: app.state()["frames"] == left - 29, 10)
+            gone.append(("inner", na, nb))
+            # To the end.
+            left = app.state()["frames"]
+            na = _ord_mark(app, left - 15, "i", h)
+            app.s.keys("End")
+            time.sleep(0.8)
+            nb = _shown_number(app, h)
+            app.s.keys("o")
+            app.s.keys("Delete")
+            wait_for("the tail cut", lambda: app.state()["frames"] == left - 15, 10)
+            gone.append(("del", na, nb))
+            if i == 1:
+                for key, what in (("Control+b", "blank"), ("Control+q", "quiet"), ("Control+d", "cm")):
+                    was = app.state()
+                    app.s.keys(key)
+                    try:
+                        wait_for(f"the {what} detection to say something",
+                                 lambda: app.state()["status"] != was["status"], 60, 0.5)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    time.sleep(2)
+                    now = app.state()
+                    notes.append(f"{what}: {now['status']!r} keys {was['keys']!r}->{now['keys']!r} "
+                                 f"frames {was['frames']}->{now['frames']}")
+            shown[i] = (name, src, total, gone, notes)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=900)
+        outs = _ord_outputs(app)
+        for i, (name, src, total, gone, notes) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            drop = set()
+            ok_marks = True
+            for kind, na, nb in gone:
+                if na is None or nb is None or na not in src or nb not in src:
+                    ok_marks = False
+                    continue
+                a, b = src.index(na), src.index(nb)
+                if kind == "inner":
+                    a, b = a + 1, b - 1
+                drop.update(src[a:b + 1])
+            want = [n for n in src if n not in drop]
+            detail = (f"src {len(src)}, counter {total}, shown {gone}, cuts {fmt(cuts_of(p, i))}, "
+                      f"outputs {[os.path.basename(f) for f in files]}")
+            if got is not None and got != want:
+                diff = [(k, a, b) for k, (a, b) in enumerate(zip(got, want)) if a != b][:4]
+                detail += f"; got {len(got)} want {len(want)}; first differences {diff}"
+                if not diff:
+                    detail += f"; tail got {got[len(want):][:6]} want {want[len(got):][:6]}"
+            t.check(f"47k {name}: output = what the editor left", ok_marks and got == want, detail)
+            for n in notes:
+                t.check(f"47k {name}: detection leaves the edit alone", "frames" in n and
+                        n.split("frames ")[1].split("->")[0] == n.split("->")[-1], n)
+            for f in files:
+                os.remove(f)
+
+
+def ordinary_ask_then_switch(cfg, t):
+    """(47th pass, mainjs.) Escape on a row with a cut puts the question
+    up; while it is up, another row is double-clicked in the list; then the
+    question is answered. Whatever the answer, the window must end on the
+    new row, untouched, and the first row must end with one of the two
+    states the hand could have meant -- its cut, or none -- never another
+    row's edit and never a closed window with the new row lost."""
+    d = _ord_make(cfg)
+    _ord_clear(cfg)
+    names = ["dvd.vob", "yt.webm"]
+    for yes in (True, False):
+        rows = [{"path": os.path.join(d, n)} for n in names]
+        with App(cfg, f"ordinary_ask_then_switch/{int(yes)}", rows) as app:
+            app.open_row(1, names[0])
+            _walk_done(app)
+            time.sleep(1)
+            app.cut(40, 70)
+            time.sleep(0.5)
+            app.s.keys("Escape")
+            wait_for("the question", lambda: app.dialogs(), 10, 0.2)
+            app.open_row(2, names[1], wait=False)
+            time.sleep(2)
+            asked = app.answer(yes, timeout=5)
+            time.sleep(1)
+            up = app.editor() is not None
+            st = None
+            if up:
+                try:
+                    app.editor_ready(names[1], timeout=60)
+                    st = app.state()
+                except Exception as e:  # noqa: BLE001
+                    st = {"title": f"not ready: {e}"}
+            p = app.save()
+            c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+            good = up and st is not None and names[1] in st.get("title", "") and c2 == [] and len(c1) <= 1
+            t.check(f"47q answer {'yes' if yes else 'no'} after another row was sent", good,
+                    f"window {'up' if up else 'gone'} on {st and st.get('title')!r}; asked {asked}; "
+                    f"row 1 {fmt(c1)} row 2 {fmt(c2)}")
+            if up:
+                app.to_editor()
+                app.escape(discard=True, expect_dialog=False)
+
+
+def _jump_text(app, text):
+    app.s.keys("j")
+    wait_for("the jump box", lambda: app.s.js(
+        "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+    app.s.keys("Control+a")
+    app.s.type(text)
+    app.s.keys("Enter")
+    time.sleep(1.0)
+
+
+def ordinary_play_marks(cfg, t):
+    """(47th pass, mainjs.) IN and OUT put down the ways a hand puts them
+    that J-and-a-number does not: on the picture playback stopped on, on a
+    time typed into J (h:mm:ss.ff), and after steps with the arrow key. The
+    picture shown at each must be the one the cut takes, the steps must be a
+    picture each, and J's time must land on the first picture at or after it."""
+    d = _ord_make(cfg)
+    _ord_clear(cfg)
+    specs = _ord_specs()
+    names = ["pal25.mp4", "slow120.mp4", "yt.webm", "cam.MTS", "dvd.vob"]
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    with App(cfg, "ordinary_play_marks", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            h = specs[name][1]
+            num, den = (specs[name][2].split("/") + ["1"])[:2]
+            fps = int(num) / int(den)
+            src = _numbers(os.path.join(d, name))
+            app.to_list()
+            app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(1.5)
+            total = app.state()["frames"]
+            gone = []
+            notes = []
+            # Playback, stopped; IN there. Then on, stopped again; OUT there.
+            app.goto(int(total * 0.1))
+            app.s.keys(" ")
+            time.sleep(1.0)
+            app.s.keys(" ")
+            time.sleep(1.0)
+            na = _shown_number(app, h)
+            at_a = app.state()["at"]
+            app.s.keys("i")
+            app.s.keys(" ")
+            time.sleep(0.8)
+            app.s.keys(" ")
+            time.sleep(1.0)
+            nb = _shown_number(app, h)
+            at_b = app.state()["at"]
+            app.s.keys("o")
+            left = app.state()["frames"]
+            app.s.keys("Delete")
+            try:
+                wait_for("the played cut", lambda: app.state()["frames"] < left, 10)
+            except Exception:  # noqa: BLE001
+                pass
+            cut_n = left - app.state()["frames"]
+            notes.append(f"play: counter {at_a}..{at_b} shown {na}..{nb}, cut {cut_n}")
+            t.check(f"47p {name}: the counter says the picture playback stopped on",
+                    na is not None and nb is not None and cut_n == at_b - at_a + 1 and nb - na == at_b - at_a,
+                    notes[-1])
+            gone.append((na, nb))
+            # J with a time, then four steps right.
+            secs = round(total / fps * 0.62, 2)
+            txt = f"0:{int(secs // 60):02d}:{secs % 60:05.2f}"
+            _jump_text(app, txt)
+            nj = _shown_number(app, h)
+            app.s.keys("i")
+            for _ in range(4):
+                app.s.keys("Right")
+                time.sleep(0.5)
+            time.sleep(0.8)
+            nk = _shown_number(app, h)
+            app.s.keys("o")
+            left = app.state()["frames"]
+            app.s.keys("Delete")
+            wait_for("the jump cut", lambda: app.state()["frames"] == left - 5, 10)
+            gone.append((nj, nk))
+            kept = [n for n in src if not (na is not None and nb is not None and na <= n <= nb)]
+            want_j = kept[math.ceil(secs * fps - 1e-6)]
+            t.check(f"47p {name}: J {txt} and four steps", nj == want_j and nk == (nj or 0) + 4,
+                    f"shown {nj}..{nk} (want {want_j}..{want_j + 4})")
+            shown[i] = (name, src, total, gone, notes)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=900)
+        outs = _ord_outputs(app)
+        for i, (name, src, total, gone, notes) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            drop = set()
+            ok_marks = True
+            for na, nb in gone:
+                if na is None or nb is None or na not in src or nb not in src:
+                    ok_marks = False
+                    continue
+                drop.update(src[src.index(na):src.index(nb) + 1])
+            want = [n for n in src if n not in drop]
+            detail = (f"src {len(src)}, counter {total}, shown {gone}, cuts {fmt(cuts_of(p, i))}, "
+                      f"outputs {[os.path.basename(f) for f in files]}")
+            if got is not None and got != want:
+                diff = [(k, a, b) for k, (a, b) in enumerate(zip(got, want)) if a != b][:4]
+                detail += f"; got {len(got)} want {len(want)}; first differences {diff}"
+            t.check(f"47p {name}: output = what the editor left", ok_marks and got == want, detail)
+            for f in files:
+                os.remove(f)
+
+
+def ordinary_chapter_marks(cfg, t):
+    """(47th pass, mainjs.) A recording's own chapters come up as marks;
+    Ctrl+→ walks to them and IN/OUT go down there, the way a hand cuts out
+    a chapter. A chapter between two pictures (3.000 s at 23.976, 2.5 s at
+    29.97) must show the picture nearest it, the counter must say that
+    picture, and the cut must take exactly what was shown."""
+    d = _ord_make(cfg)
+    _ord_clear(cfg)
+    specs = _ord_specs()
+    names = ["chap.mp4", "chap2.mkv"]
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    with App(cfg, "ordinary_chapter_marks", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            h = specs[name][1]
+            num, den = (specs[name][2].split("/") + ["1"])[:2]
+            fps = int(num) / int(den)
+            src = _numbers(os.path.join(d, name))
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(1.5)
+            st = app.state()
+            chapters = [a / 1000 for a, _ in ORD_CHAPTERS[specs[name][7]] if a > 0]
+            app.goto(5)
+            app.s.keys("Control+Right")
+            time.sleep(1.2)
+            na = _shown_number(app, h)
+            at_a = app.state()["at"]
+            app.s.keys("i")
+            app.s.keys("Control+Right")
+            time.sleep(1.2)
+            nb = _shown_number(app, h)
+            at_b = app.state()["at"]
+            app.s.keys("o")
+            left = app.state()["frames"]
+            app.s.keys("Delete")
+            wait_for("the chapter cut", lambda: app.state()["frames"] < left, 10)
+            # The first picture at or after each chapter, on the file's own
+            # clock (a Matroska file's first picture is not at 0).
+            pts = sorted(float(x.strip(",")) for x in subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "frame=best_effort_timestamp_time", "-of", "csv=p=0", os.path.join(d, name)],
+                capture_output=True, text=True).stdout.split() if x.strip())
+            # The picture nearest the chapter: what the stage shows for a mark
+            # between two pictures (a player may show either of the two).
+            want = [src[min(range(len(pts)), key=lambda k: abs(pts[k] - c))] for c in chapters]
+            t.check(f"47c {name}: the marks stand on the chapters' pictures",
+                    [na, nb] == want[:2] and [at_a, at_b] == want[:2],
+                    f"marks {st['keys']!r}; shown {na}, {nb} counter {at_a}, {at_b} (chapters {chapters}: want {want[:2]})")
+            shown[i] = (name, src, [(na, nb)])
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=600)
+        outs = _ord_outputs(app)
+        for i, (name, src, gone) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            drop = set()
+            for na, nb in gone:
+                if na in src and nb in src:
+                    drop.update(src[src.index(na):src.index(nb) + 1])
+            want = [n for n in src if n not in drop]
+            ch = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "chapter=start_time",
+                                 "-of", "csv=p=0", vids[0]], capture_output=True, text=True).stdout.split() if vids else []
+            t.check(f"47c {name}: output = what the editor left", bool(drop) and got == want,
+                    f"cuts {fmt(cuts_of(p, i))}; got {len(got or [])} want {len(want)}; chapters out {ch}")
+            for f in files:
+                os.remove(f)
+
+
+def ordinary_trim_roundtrip(cfg, t):
+    """(47th pass, mainjs.) Cuts written beside the recording as a Trim line
+    (Ctrl+Shift+H) and marks as a .keyframe (K, Ctrl+H), under names with
+    Japanese, spaces and quotes, at 25p, 120p and on a ms clock; a fresh
+    start of the program on the same recordings reads them back. The second
+    run's output must be the first's cut, picture for picture."""
+    d = _ord_make(cfg)
+    _ord_clear(cfg)
+    specs = _ord_specs()
+    names = [ORD_JA, "pal25.mp4", "slow120.mp4", "yt.webm"]
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    first = {}
+    with App(cfg, "ordinary_trim_roundtrip/1", rows) as app:
+        for i, name in enumerate(names, 1):
+            h = specs[name][1]
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(1)
+            total = app.state()["frames"]
+            gone = []
+            for a, b in ((int(total * 0.2) + 1, int(total * 0.3) + 2), (int(total * 0.6) + 3, int(total * 0.7))):
+                left = app.state()["frames"]
+                na = _ord_mark(app, a, "i", h)
+                nb = _ord_mark(app, b, "o", h)
+                app.s.keys("Delete")
+                wait_for("the cut", lambda: app.state()["frames"] == left - (b - a + 1), 10)
+                gone.append((na, nb))
+            app.goto(int(total * 0.1))
+            app.s.keys("k")
+            app.goto(int(total * 0.4))
+            app.s.keys("k")
+            time.sleep(0.5)
+            app.s.keys("Control+Shift+h")
+            time.sleep(1.5)
+            said_trim = app.state()["status"]
+            app.s.keys("Control+h")
+            time.sleep(1.5)
+            said_keys = app.state()["status"]
+            first[i] = (name, gone, app.state()["frames"], said_trim, said_keys)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+    base = {n: os.path.join(d, n.rsplit(".", 1)[0]) for n in names}
+    for i, (name, gone, frames, said_trim, said_keys) in first.items():
+        trim = os.path.join(d, name) + ".trim.avs"
+        kf = base[name] + ".keyframe"
+        t.check(f"47t {name}: both files written beside it", os.path.exists(trim) and os.path.exists(kf),
+                f"{said_trim!r} / {said_keys!r}; trim {os.path.exists(trim)} keyframe {os.path.exists(kf)}")
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    # Only one of the files is read where both are there (環境設定, which
+    # puts the .keyframe first); the Trim line is the one under test.
+    for name in names:
+        if os.path.exists(base[name] + ".keyframe"):
+            os.remove(base[name] + ".keyframe")
+    with App(cfg, "ordinary_trim_roundtrip/2", rows) as app:
+        again = {}
+        for i, name in enumerate(names, 1):
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(2)
+            st = app.state()
+            again[i] = st
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        files = []
+        if any(cuts_of(p, i) for i in first):
+            app.export(timeout=900)
+        outs = _ord_outputs(app)
+        for i, (name, gone, frames, _, _) in first.items():
+            src = _numbers(os.path.join(d, name))
+            fl = outs.get(i, [])
+            vids = [f for f in fl if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            drop = set()
+            for na, nb in gone:
+                if na in src and nb in src:
+                    drop.update(src[src.index(na):src.index(nb) + 1])
+            want = [n for n in src if n not in drop]
+            st = again[i]
+            t.check(f"47t {name}: read back, the second run writes the first's cut",
+                    # The counter may come back one lower: a Trim line stops at the
+                    # last picture, and the first visit counted the container's
+                    # length (the known "N / M" count), not the pictures.
+                    got == want and frames - 1 <= st["frames"] <= frames,
+                    f"second visit {st['frames']} pictures (first left {frames}), marks {st['keys']!r}, "
+                    f"status {st['status']!r}; cuts {fmt(cuts_of(p, i))}; got {len(got or [])} want {len(want)}")
+            files += fl
+        for f in files:
+            os.remove(f)
+
+
+def ordinary_short_clip(cfg, t):
+    """(47th pass, mainjs.) A 0.8 s clip (24 pictures, one GOP) cut down to
+    almost nothing three ways: everything after the first picture (IN 1,
+    End, OUT, Del), one picture in the middle kept (IN = OUT, 範囲外を削除),
+    and the inside taken out leaving the two ends (IN 0, OUT on the last,
+    Ctrl+Del). Each output holds exactly those pictures."""
+    d = _ord_make(cfg)
+    _ord_clear(cfg)
+    h = _ord_specs()["short.mp4"][1]
+    path = os.path.join(d, "short.mp4")
+    rows = [{"path": path}, {"path": path}, {"path": path}]
+    src = _numbers(path)
+    with App(cfg, "ordinary_short_clip", rows) as app:
+        want = {}
+        # 1: all but the first.
+        app.open_row(1, "short.mp4")
+        _walk_done(app)
+        time.sleep(1)
+        n0 = _ord_mark(app, 1, "i", h)
+        app.s.keys("End")
+        time.sleep(1)
+        n1 = _shown_number(app, h)
+        app.s.keys("o")
+        app.s.keys("Delete")
+        time.sleep(1)
+        want[1] = [n for n in src if not (n0 is not None and n1 is not None and n0 <= n <= n1)]
+        st1 = app.state()
+        app.ok()
+        app.gone()
+        time.sleep(0.5)
+        # 2: one picture in the middle.
+        app.open_row(2, "short.mp4")
+        _walk_done(app)
+        time.sleep(1)
+        app.goto(12)
+        m = _shown_number(app, h)
+        app.s.keys("i")
+        app.s.keys("o")
+        app.s.click("#cut-outside")
+        time.sleep(1)
+        want[2] = [m]
+        st2 = app.state()
+        app.ok()
+        app.gone()
+        time.sleep(0.5)
+        # 3: the two ends.
+        app.open_row(3, "short.mp4")
+        _walk_done(app)
+        time.sleep(1)
+        a = _ord_mark(app, 0, "i", h)
+        app.s.keys("End")
+        time.sleep(1)
+        b = _shown_number(app, h)
+        app.s.keys("o")
+        app.s.keys("Control+Delete")
+        time.sleep(1)
+        want[3] = [a, b]
+        st3 = app.state()
+        app.ok()
+        app.gone()
+        p = app.save()
+        app.export(timeout=600)
+        outs = _ord_outputs(app)
+        for i, st in ((1, st1), (2, st2), (3, st3)):
+            fl = outs.get(i, [])
+            got = _numbers(fl[0]) if len(fl) == 1 else None
+            t.check(f"47s short clip row {i}", got == want[i] and st["frames"] == len(want[i]),
+                    f"editor {st['frames']} pictures; got {got} want {want[i]}; cuts {fmt(cuts_of(p, i))}; "
+                    f"outputs {[os.path.basename(f) for f in fl]}")
+            for f in fl:
+                os.remove(f)
+
+
+def _ord_edits(cfg):
+    """Two .mp4s whose edit lists move the pictures: one cut out of pal25.mp4
+    by a stream copy from 1.3 s (the way ffmpeg -ss -c copy, and a phone's
+    own trim, write one: the GOP from its key picture, the pictures before
+    1.3 s hidden by the edit list), and one whose pictures begin 0.5 s after
+    its sound (an empty edit)."""
+    d = _ord_make(cfg)
+    x = os.path.join(cfg.work, "media47x")
+    os.makedirs(x, exist_ok=True)
+    for f in os.listdir(x):
+        if f not in ("trimmed.mp4", "late.mp4"):
+            os.remove(os.path.join(x, f))
+    pal = os.path.join(d, "pal25.mp4")
+    ff = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error"]
+    out = os.path.join(x, "trimmed.mp4")
+    if not os.path.exists(out):
+        subprocess.run(ff + ["-ss", "1.3", "-i", pal, "-t", "6", "-c", "copy", "-f", "mp4", out + ".part"], check=True)
+        os.replace(out + ".part", out)
+    out = os.path.join(x, "late.mp4")
+    if not os.path.exists(out):
+        subprocess.run(ff + ["-itsoffset", "0.5", "-i", pal, "-i", pal, "-map", "0:v", "-map", "1:a",
+                             "-c", "copy", "-f", "mp4", out + ".part"], check=True)
+        os.replace(out + ".part", out)
+    return x
+
+
+def ordinary_edit_lists(cfg, t):
+    """(47th pass, mainjs.) Ordinary .mp4s with edit lists (see `_ord_edits`):
+    the editor's first picture must be the first one a player shows, and two
+    cuts must take exactly the pictures shown at IN and OUT -- one of them
+    inside the first GOP, whose hidden pictures the copy carries."""
+    x = _ord_edits(cfg)
+    h = _ord_specs()["pal25.mp4"][1]
+    names = ["trimmed.mp4", "late.mp4"]
+    rows = [{"path": os.path.join(x, n)} for n in names]
+    with App(cfg, "ordinary_edit_lists", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            src = _numbers(os.path.join(x, name))
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(1)
+            total = app.state()["frames"]
+            app.goto(0)
+            n_first = _shown_number(app, h)
+            gone = []
+            for a, b in ((0, 1), (3, 9), (int(total * 0.5), int(total * 0.5) + 20)):
+                left = app.state()["frames"]
+                na = _ord_mark(app, a, "i", h)
+                nb = _ord_mark(app, b, "o", h)
+                app.s.keys("Delete")
+                try:
+                    wait_for("the cut", lambda: app.state()["frames"] == left - (b - a + 1), 10)
+                except Exception:  # noqa: BLE001
+                    st = app.state()
+                    print(f"        {name}: cut {a}-{b} of {left}: now {st['frames']}, "
+                          f"status {st['status']!r}, counter {st['at']}", flush=True)
+                gone.append((na, nb))
+            t.check(f"47e {name}: picture 0 is the first a player shows", n_first == src[0],
+                    f"shown {n_first}, decoded first {src[0]}; counter {total}, decoded {len(src)}")
+            shown[i] = (name, src, gone)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=600)
+        outs = _ord_outputs(app)
+        for i, (name, src, gone) in shown.items():
+            fl = outs.get(i, [])
+            got = _numbers(fl[0]) if len(fl) == 1 else None
+            drop = set()
+            for na, nb in gone:
+                if na in src and nb in src:
+                    drop.update(src[src.index(na):src.index(nb) + 1])
+            want = [n for n in src if n not in drop]
+            detail = f"shown {gone}; cuts {fmt(cuts_of(p, i))}; got {len(got or [])} want {len(want)}"
+            if got and got != want:
+                detail += f"; got head {got[:6]} want {want[:6]}; first differences " + str(
+                    [(k, a, b) for k, (a, b) in enumerate(zip(got, want)) if a != b][:4])
+            t.check(f"47e {name}: output = what the editor left", bool(drop) and got == want, detail)
+            for f in fl:
+                os.remove(f)
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -8174,6 +9122,8 @@ SCENARIOS = [
     cut_shapes_export,
     disc_fields_under_hand,
     seam_window,
+    seam_play_again,
+    seam_play_resume,
     ctrl_h_before_marks_read,
     marks_over_recording,
     rename_during_run,
@@ -8265,6 +9215,14 @@ SCENARIOS = [
     read_project_not_a_file,
     disc_fit_nothing_to_shrink,
     m2ts_plain_and_disc,
+    ordinary_material_cuts,
+    ordinary_material_keys,
+    ordinary_ask_then_switch,
+    ordinary_play_marks,
+    ordinary_chapter_marks,
+    ordinary_trim_roundtrip,
+    ordinary_short_clip,
+    ordinary_edit_lists,
 ]
 
 
