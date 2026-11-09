@@ -1654,6 +1654,17 @@ by decoding nothing. Until 0.8.3 that nothing was passed over, and the line it
 should have taken down stood until the next one arrived. It now clears the
 plane at the moment the unit is shown.
 
+**Where the erase sits in the file is its own time, too.** A unit that names
+its stop was timed right, but until 0.8.42 the display sets that take it down
+were written only when the next unit was read — on a pressed DVD often half a
+minute later. The muxer holds ten seconds of the other streams for a late
+subtitle and then lets them go, so a set due at 6 s reached a `.ts`, `.m2ts`
+or BDAV clip behind 15 s of pictures, and a player kept the line up until it
+got there. The sets are now written as the pictures being written pass the stop
+(`Writer::converted_due`, two seconds behind the pictures' clock, since a
+disc muxes its pictures a little ahead of its subtitles). Their times,
+numbering and bytes are what they were; only their place in the file moved.
+
 #### A Blu-ray's subtitles, written as a DVD's
 
 The same journey the other way, and for the other reason: a pair beside the cut

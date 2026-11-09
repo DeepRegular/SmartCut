@@ -378,7 +378,13 @@ clock the stretches take: 0.7% on one recorder title with 19.4 seconds of them,
 most of the hundredth kept back. The pictures' rate, and the file's where that
 is not known, are now scaled by the clock over what is written
 (`fit::written_scale`), which is 1 for every recording without seams.
-Dividing a row by size uses the same scale.
+Dividing a row by size uses the same scale, and since 0.8.43 prices lossy
+sound the same way too (`audio_rate`, from `divide::weight`). Until then a
+track with no stated rate was priced as linear PCM: Matroska and WebM state
+none for Opus or Vorbis, so such a track weighed some 1.5 Mbit/s against the
+0.1 or so it is, and a `.webm` divided every 10 MB came out in parts of 2.5
+to 3. A lossless track with no rate still takes the PCM price, which is the
+most it can be.
 
 **A disc already in the folder is measured, not estimated.** Writing into a
 folder that holds a disc adds to it, and what the list has is the room the disc

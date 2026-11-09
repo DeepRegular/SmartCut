@@ -124,7 +124,7 @@ other row, and gets `_1`, `_2` the way duplicates do.
 |---|---|
 | **Into equal parts** | 2 to 999 parts of the same length |
 | **Every so long** | `00:10:00`, `10:00` or `600`. The last part is whatever is left |
-| **Every so many bytes** | In MiB or GiB. The last part is whatever is left. A part's size is reckoned from the pictures as the index counted them and the sound, with 5% for the container, so it comes out at or a little under the size asked for |
+| **Every so many bytes** | In MiB or GiB. The last part is whatever is left. A part's size is reckoned from the pictures as the index counted them and the sound, with 5% for the container (compressed sound the file states no rate for, such as Opus or Vorbis in a `.webm` or `.mkv`, is counted at what that codec usually runs at, as for fitting a disc), so it comes out at or a little under the size asked for |
 
 - **What is divided is what the cuts leave.** A clip with its commercials cut is
   divided by its programme, not by the file. On a recorder's title, the time

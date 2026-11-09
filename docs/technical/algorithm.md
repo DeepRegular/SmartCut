@@ -419,3 +419,15 @@ waiting pictures show that one of them would have no room, the decode time goes
 back to where the picture `depth` places earlier in display order was shown, which
 is always early enough (`Writer::emit_one`). A recording the old lead-in suited
 never gets there, and is written byte for byte as before.
+
+**A program stream of MPEG-1 or MPEG-2 takes the MPEG model's decode times
+instead** (`.mpg`, `.vob`, `.m2p`; `Writer::mpeg_model`). A B picture is decoded
+as it is shown, and an I or P picture where the picture `depth` places before
+it in display order is shown. A PS demuxer assumes exactly that of a picture
+whose PES header carries no time, and libavformat's PS muxer stamps only the
+first picture to start in a PES and packs small ones several to one. With
+three fields a level, every B picture was decoded half a frame before it was
+shown, and the unstamped ones read back half a frame early, two at one
+instant or going backwards: 39 of 291 pictures of a VCD-shaped `.mpg` until
+0.8.42. A transport stream stamps every PES, and every other output keeps the
+lead-in above.

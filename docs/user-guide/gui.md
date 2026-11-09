@@ -82,6 +82,12 @@ These are the files it can read:
 
 Drop anything else and it says it ignored them; the list does not change.
 
+These are containers. A bare video stream with no container around it — an
+MPEG-1 stream (`.m1v`, or the same bytes saved as `.mpg`), an MPEG-4 Part 2,
+VC-1, H.263 or AVS stream, as well as `.m2v`, `.h264` and `.hevc` — has no
+times of its own to cut by, and is refused when it is opened with
+`no random access points found`.
+
 ### Discs: Blu-ray and DVD
 
 **A disc can be opened as it is.** A folder holding a `BDAV`, `BDMV` or
