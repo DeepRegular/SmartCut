@@ -58,6 +58,13 @@ let playRun = 0;
 /// not put back on the stage.
 let playAt = -Infinity;
 let playUrl = null;
+/// Where a playback that ran to its end left the playhead, until anything
+/// else moves it. The last instant played is a picture short of the end of
+/// the preview -- playback stops before `span.seconds`, never on it -- so the
+/// test against the end alone missed it, and 再生 pressed again played that
+/// one picture and stopped: the preview could not be played twice without
+/// first going back to its start by hand.
+let ranOutAt = null;
 /// Set while the list has not answered yet. See `announceReady`.
 let answered = false;
 
@@ -430,7 +437,8 @@ function startPlay() {
   if (!spec) return;
   // From the top again where the playhead is sitting at the end: pressing 再生
   // on a preview that has just finished means "again", not "nothing".
-  if (head >= span.seconds - 1e-3) head = 0;
+  if (head >= span.seconds - 1e-3 || head === ranOutAt) head = 0;
+  ranOutAt = null;
   setPlaying(true);
   playAt = -Infinity;
   const run = ++playRun;
@@ -499,6 +507,7 @@ async function showJoin() {
   drawPattern();
   paintLive();
   head = 0;
+  ranOutAt = null;
   span = null;
   // The pair the backend holds is the join before's until the load below is
   // in; nothing is asked of it for this join until then.
@@ -1172,6 +1181,7 @@ if (listen) {
     } else {
       // Left standing on the last instant, which is what somebody watching a
       // crossing end is looking at.
+      ranOutAt = head;
       showFrame(head);
     }
   });

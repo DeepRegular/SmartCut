@@ -318,17 +318,24 @@ fn walk_keyframes<T: Send + 'static>(
     let duration = src.duration.max(1e-9);
     let mut pending: Vec<ff::Packet> = Vec::new();
     for (n, start) in starts.iter().enumerate() {
+        // Where a seek by byte put a program stream, whose entry picture can
+        // come with the next picture's time; not a transport stream, whose
+        // pictures carry their own. See [`crate::preview::Landed`].
+        let mut landed = None;
         if let Some(at) = *start {
             // Seek with the streams back, then throw them away again: the
             // recording is seeked by one of them. See
             // [`crate::input::keep_only`].
             crate::input::keep_everything(&mut ictx);
-            let placed = crate::index::seek_to_entry(&mut ictx, src, at).is_some();
+            let placed = crate::index::seek_to_entry(&mut ictx, src, at);
             crate::input::keep_only(&mut ictx, &[idx]);
-            if !placed {
+            let Some(entry) = placed else {
                 // The index could not place it, and reading on from wherever
                 // the file stands would sample the same stretch twice.
                 continue;
+            };
+            if !src.on_a_ts {
+                landed = crate::preview::Landed::at(src, entry);
             }
         }
         // A seek leaves whatever was half sent behind it.
@@ -337,10 +344,11 @@ fn walk_keyframes<T: Send + 'static>(
         let mut took = 0usize;
         // One picture's packets: the key packet, and the one behind it where
         // the material is field coded and the picture is two.
-        for (stream, packet) in ictx.read_packets() {
+        for (stream, mut packet) in ictx.read_packets() {
             if stream.index() != idx {
                 continue;
             }
+            crate::preview::Landed::mend(&mut landed, &mut packet, src);
             match entries.step(&packet) {
                 crate::Step::Skip => continue,
                 crate::Step::Half => pending.push(packet),

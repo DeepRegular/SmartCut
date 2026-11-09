@@ -484,7 +484,15 @@ pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>>
             }
             if let Ok(mut reader) = Reader::on_entry(src, at, shape, step) {
                 if let Ok(shown) = reader.at(at).map(|f| f.cloned()) {
-                    if reader.first.is_some_and(|first| first <= entry.time + half) {
+                    // Nor where the entry point's picture comes after the
+                    // instant: a disc's EP map rounds its times down, and an
+                    // instant between the rounded time and the picture has
+                    // the one before on screen, which this landing never read.
+                    let slack = reader.slack;
+                    if reader
+                        .first
+                        .is_some_and(|first| first <= entry.time + half && first <= at + slack)
+                    {
                         return shown;
                     }
                 }
@@ -509,7 +517,9 @@ pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>>
 /// reading forwards and holding the last one gives. The one read ahead is
 /// what says when the held one stops being the answer. The cutter's own far
 /// side works the same way and for the same reason.
-struct Reader {
+struct Reader<'s> {
+    /// The clip being read, for [`crate::preview::Landed::mend`].
+    src: &'s Source,
     ictx: crate::input::Demux,
     ist: usize,
     decoder: ff::decoder::Video,
@@ -528,14 +538,18 @@ struct Reader {
     /// The instant of the first picture decoded, which says whether the seek
     /// landed late. See [`shot`].
     first: Option<f64>,
+    /// Where a seek by byte put a program stream, for its entry picture's
+    /// time. See [`crate::preview::Landed`].
+    landed: Option<crate::preview::Landed>,
 }
 
-impl Reader {
-    fn open(src: &Source, from: f64, shape: (u32, u32), step: f64) -> Result<Reader> {
+impl<'s> Reader<'s> {
+    fn open(src: &'s Source, from: f64, shape: (u32, u32), step: f64) -> Result<Reader<'s>> {
         // Back a little, because the picture wanted at the first instant is
         // the one standing there, which may have been coded before it.
         Reader::aimed(src, shape, step, |ictx| {
-            seek_near(ictx, src, (from - src.seek_margin).max(0.0))
+            seek_near(ictx, src, (from - src.seek_margin).max(0.0));
+            None
         })
     }
 
@@ -543,21 +557,33 @@ impl Reader {
     /// decoded from rather than a seek margin before it: by its byte where
     /// the index has one, as [`crate::preview::picture_at`] seeks. Whether it
     /// landed there is for the caller to check, by its `first`.
-    fn on_entry(src: &Source, at: f64, shape: (u32, u32), step: f64) -> Result<Reader> {
+    fn on_entry(src: &'s Source, at: f64, shape: (u32, u32), step: f64) -> Result<Reader<'s>> {
         Reader::aimed(src, shape, step, |ictx| {
-            if crate::index::seek_to_entry(ictx, src, at).is_none() {
-                let entry = crate::index::entry_before(&src.points, at, 1e-6);
-                seek_near(ictx, src, entry.map_or(0.0, |p| p.time));
+            match crate::index::seek_to_entry(ictx, src, at) {
+                // A program stream's entry picture, read from its byte, can
+                // come with the next picture's time, and the landing was then
+                // judged late and read again from the margin. Only there: a
+                // transport stream stamps every picture itself, and a disc's
+                // entry point map keeps its times 512 ticks coarse, so its
+                // stated time is not the picture's. See
+                // [`crate::preview::Landed`].
+                Some(entry) if !src.on_a_ts => crate::preview::Landed::at(src, entry),
+                Some(_) => None,
+                None => {
+                    let entry = crate::index::entry_before(&src.points, at, 1e-6);
+                    seek_near(ictx, src, entry.map_or(0.0, |p| p.time));
+                    None
+                }
             }
         })
     }
 
     fn aimed(
-        src: &Source,
+        src: &'s Source,
         shape: (u32, u32),
         step: f64,
-        seek: impl FnOnce(&mut crate::input::Demux),
-    ) -> Result<Reader> {
+        seek: impl FnOnce(&mut crate::input::Demux) -> Option<crate::preview::Landed>,
+    ) -> Result<Reader<'s>> {
         let mut ictx = crate::input::demux(&src.input.url)?;
         let ist = src.video.stream_index;
         let stream = ictx
@@ -566,9 +592,10 @@ impl Reader {
         let in_tb = f64::from(stream.time_base());
         let params = stream.parameters();
         let decoder = crate::video_decoder(params)?;
-        seek(&mut ictx);
+        let landed = seek(&mut ictx);
         crate::input::keep_only(&mut ictx, &[ist]);
         Ok(Reader {
+            src,
             ictx,
             ist,
             decoder,
@@ -582,6 +609,7 @@ impl Reader {
             spent: false,
             drained: false,
             first: None,
+            landed,
         })
     }
 
@@ -632,7 +660,7 @@ impl Reader {
             // the end of a clip. Marking the reader spent here, as this used
             // to, left those unread and the preview stopped short of the
             // clip's end. `FarSide` in the cutter keeps the two apart too.
-            let Some((stream, packet)) = self.ictx.read_packets().next() else {
+            let Some((stream, mut packet)) = self.ictx.read_packets().next() else {
                 if !self.drained {
                     self.drained = true;
                     self.decoder.send_eof()?;
@@ -643,6 +671,7 @@ impl Reader {
             if stream.index() != self.ist {
                 continue;
             }
+            crate::preview::Landed::mend(&mut self.landed, &mut packet, self.src);
             // A packet the decoder will not take is not a reason to stop.
             let _ = self.decoder.send_packet(&packet);
         }

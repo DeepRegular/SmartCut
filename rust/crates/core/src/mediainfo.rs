@@ -254,7 +254,10 @@ pub fn media_info(path: &str) -> Result<MediaInfo> {
                     let n = unsafe {
                         ff::ffi::av_channel_layout_describe(&raw.ch_layout, buf.as_mut_ptr(), buf.len())
                     };
-                    let layout = if n > 0 { unsafe { name_of(buf.as_ptr()) } } else { None };
+                    // A layout with no order of its own is described as
+                    // "1 channels", which only says the count again.
+                    let layout = if n > 0 { unsafe { name_of(buf.as_ptr()) } } else { None }
+                        .filter(|l| *l != format!("{} channels", raw.ch_layout.nb_channels));
                     push(
                         &mut facts,
                         "channels",
@@ -276,7 +279,12 @@ pub fn media_info(path: &str) -> Result<MediaInfo> {
             }
             _ => {}
         }
-        if raw.bit_rate > 0 {
+        // MPEG-1 video writes its rate into the sequence header, and all
+        // ones there (0x3FFFF units of 400 bit/s) is its way of saying the
+        // rate varies. libavcodec hands that on as a rate: an `.mpg` was
+        // listed at 104.86 Mbps.
+        let variable = id == ff::codec::Id::MPEG1VIDEO && raw.bit_rate == 0x3FFFF * 400;
+        if raw.bit_rate > 0 && !variable {
             push(&mut facts, "bitrate", bits(raw.bit_rate as f64));
         }
         let length = s.duration();

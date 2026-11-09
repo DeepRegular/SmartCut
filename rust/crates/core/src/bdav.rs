@@ -989,6 +989,12 @@ fn survey(
     let mut shown: Vec<Option<u64>> = Vec::new();
     let mut map_pid: Option<u16> = None;
     let mut video: Option<u16> = None;
+    // Whether a map has been read that names no picture coding. libavformat
+    // writing a `.m2ts` has no Blu-ray stream type for MPEG-1 pictures and
+    // declares them private data (0x06), and a map read for a coding alone
+    // then found no pictures at all: every entry point of an MPEG-1 disc
+    // said its picture ran to the end of the stream.
+    let mut unnamed = false;
     let (mut i, mut wrap, mut was) = (0u32, 0i64, -1i64);
     loop {
         match src.read_exact(&mut frame) {
@@ -1004,7 +1010,16 @@ fn survey(
         if video.is_none() {
             match map_pid {
                 None if pid == 0 => map_pid = section(p).and_then(map_of),
-                Some(on) if pid == on => video = section(p).and_then(video_of),
+                Some(on) if pid == on => {
+                    let sec = section(p);
+                    video = sec.and_then(video_of);
+                    unnamed |= video.is_none() && sec.and_then(|s| s.first()) == Some(&0x02);
+                }
+                // Then the pictures are the PID whose payload says it is
+                // video: a PES of stream id 0xE0 to 0xEF.
+                _ if unnamed && pes_stream_id(p).is_some_and(|id| id & 0xF0 == 0xE0) => {
+                    video = Some(pid)
+                }
                 _ => {}
             }
         }
@@ -1053,6 +1068,19 @@ fn pes_pts(p: &[u8]) -> Option<u64> {
             | u64::from(b[3]) << 7
             | u64::from(b[4] >> 1),
     )
+}
+
+/// The stream id of the PES packet a transport stream packet begins.
+fn pes_stream_id(p: &[u8]) -> Option<u8> {
+    if p[1] & 0x40 == 0 {
+        return None;
+    }
+    let payload = match (p[3] >> 4) & 0x03 {
+        1 => p.get(4..)?,
+        3 => p.get(5 + *p.get(4)? as usize..)?,
+        _ => return None,
+    };
+    (payload.get(..3)? == [0, 0, 1]).then(|| payload.get(3).copied()).flatten()
 }
 
 /// The section a packet begins, past the pointer that says where it starts.
@@ -1291,9 +1319,15 @@ fn read_clip(
     if shown.codec == "mpeg2video" && !shown.interlaced() && interlaced_sequence == Some(true) {
         shown.field_order = 2; // AV_FIELD_TT
     }
+    // As for the sound below, "private data" names no coding: it is what
+    // libavformat declares MPEG-1 pictures as in a `.m2ts`, and written into
+    // the index it said the disc's pictures were not pictures.
     streams.push(Carried {
         pid: video_pid,
-        coding: declared(video_pid, video_coding(&src.video.codec)),
+        coding: match declared(video_pid, 0) {
+            0 | 0x06 => video_coding(&src.video.codec),
+            named => named,
+        },
         attributes: video_attributes(&shown),
     });
     // What the sound is, rather than what it is where the clip opens.
@@ -2578,5 +2612,47 @@ mod tests {
         std::fs::remove_dir_all(&at).unwrap();
         assert_eq!(image_in_the_way(&at), None, "a folder at the image's name");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Pictures a map declares as private data -- libavformat's MPEG-1 in a
+    /// `.m2ts` -- are found by their PES, so every entry point still says
+    /// where its picture ends; and a map that names them is read as before.
+    #[test]
+    fn pictures_declared_as_private_data_are_found() {
+        let source = |payload: &[u8], pid: u16, start: bool| {
+            let mut f = vec![0u8; 4];
+            let first = (pid >> 8) as u8 | if start { 0x40 } else { 0 };
+            f.extend_from_slice(&[0x47, first, pid as u8, 0x10]);
+            f.extend_from_slice(payload);
+            f.resize(SOURCE_PACKET, 0xFF);
+            f
+        };
+        let pat = [0x00, 0x00, 0xB0, 0x0D, 0, 1, 0xC1, 0, 0, 0, 1, 0xF0, 0x00, 0, 0, 0, 0];
+        let pmt = |video: u8| {
+            vec![
+                0x00, 0x02, 0xB0, 0x17, 0, 1, 0xC1, 0, 0, 0xF0, 0x11, 0xF0, 0x00, video, 0xF0,
+                0x11, 0xF0, 0x00, 0x06, 0xF1, 0x00, 0xF0, 0x00, 0, 0, 0, 0,
+            ]
+        };
+        let video_pes = [0, 0, 1, 0xE0, 0, 0, 0x80, 0x00, 0x00];
+        let audio_pes = [0, 0, 1, 0xC0, 0, 0, 0x80, 0x00, 0x00];
+        let dir = std::env::temp_dir().join(format!("bdav-mpeg1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (video, name) in [(0x06u8, "a.m2ts"), (0x02, "b.m2ts")] {
+            let frames = [
+                source(&pat, 0, true),
+                source(&pmt(video), 0x1000, true),
+                source(&audio_pes, 0x1100, true),
+                source(&video_pes, 0x1011, true),
+                source(&[0xFF; 4], 0x1011, false),
+                source(&video_pes, 0x1011, true),
+                source(&audio_pes, 0x1100, true),
+            ];
+            let path = dir.join(name);
+            std::fs::write(&path, frames.concat()).unwrap();
+            let (_, _, pictures, _) = survey(&path, &mut |_| {}).unwrap();
+            assert_eq!(pictures, vec![3, 5], "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

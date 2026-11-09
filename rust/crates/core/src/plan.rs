@@ -1281,17 +1281,28 @@ pub fn clean_start(src: &crate::Source, from: f64, until: f64) -> Option<f64> {
         // does not -- an MP4 or a Matroska file. Asked with `?`, as this used
         // to be, the first entry point without a byte ended the search, and
         // `--clean-joins` did nothing at all on those containers.
-        if crate::index::seek_to_entry(&mut ictx, src, want).is_none() {
-            let target = ((want + src.start_time) * ffmpeg_next::ffi::AV_TIME_BASE as f64) as i64;
-            if ictx.seek(target, ..target).is_err() {
-                continue;
+        let mut landed = match crate::index::seek_to_entry(&mut ictx, src, want) {
+            // A program stream's entry picture read from its byte can come
+            // with the next picture's time, and was judged a misread. Not a
+            // transport stream's: see `Reader::on_entry` in
+            // [`crate::crossview`] and [`crate::preview::Landed`].
+            Some(entry) if !src.on_a_ts => crate::preview::Landed::at(src, entry),
+            Some(_) => None,
+            None => {
+                let target =
+                    ((want + src.start_time) * ffmpeg_next::ffi::AV_TIME_BASE as f64) as i64;
+                if ictx.seek(target, ..target).is_err() {
+                    continue;
+                }
+                None
             }
-        }
+        };
         let mut clean = false;
-        for (stream, packet) in ictx.read_packets() {
+        for (stream, mut packet) in ictx.read_packets() {
             if stream.index() != idx {
                 continue;
             }
+            crate::preview::Landed::mend(&mut landed, &mut packet, src);
             let Some(pts) = packet.pts() else { continue };
             let t = pts as f64 * tb - src.start_time;
             // Past the picture asked about, which means the seek landed late

@@ -269,6 +269,11 @@ impl<'a> Picture<'a> {
                     if !head.extended {
                         return Err(Error::NotAPicture);
                     }
+                    // The macroblocks are walked as 4:2:0, and a 4:2:2 one
+                    // read that way loses its place -- or, worse, does not.
+                    if shape.chroma_format != 1 {
+                        return Err(Error::Chroma);
+                    }
                     pic.parts.push(Part::Bytes(copied, at as u32 + 4));
                     let index = pic.slices.len() as u32;
                     pic.read_slice(t, (at as u32 + 4) * 8, until * 8, &head, shape)?;

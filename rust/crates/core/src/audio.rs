@@ -659,6 +659,25 @@ fn channel_mut(frame: &mut ff::frame::Audio, ch: usize) -> &mut [f32] {
     }
 }
 
+/// The decoder a [`Reencoder`] reads a track with, told the time base its
+/// packets are stamped in.
+///
+/// Without that, libavcodec drops the samples a packet asks to have skipped
+/// -- an Opus track's pre-skip in Matroska or WebM, the part of a frame an
+/// MP4 edit list starts inside -- and leaves the frame's stamp where the
+/// packet's was ("Could not update timestamps for skipped samples"). Laid by
+/// that stamp, everything after came out early by the skip: a .webm's Opus
+/// re-encoded from its head (to .wav, or joined onto an AAC recording) ran
+/// 6.5 ms ahead of its pictures. The packets are read in the stream's own
+/// time base, which is what `audio.time_base` is.
+fn track_decoder(params: ff::codec::Parameters, audio: &AudioInfo) -> Result<ff::decoder::Audio> {
+    let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder();
+    if audio.time_base > 0.0 && audio.time_base.is_finite() {
+        decoder.set_packet_time_base(ff::Rational::from(audio.time_base));
+    }
+    Ok(decoder.audio()?)
+}
+
 pub struct Reencoder {
     decoder: ff::decoder::Audio,
     encoder: ff::encoder::Audio,
@@ -766,9 +785,7 @@ impl Reencoder {
         bit_rate: usize,
         framing: Option<Framing>,
     ) -> Result<Self> {
-        let decoder = ff::codec::context::Context::from_parameters(params.clone())?
-            .decoder()
-            .audio()?;
+        let decoder = track_decoder(params.clone(), audio)?;
         let like = like.unwrap_or_else(|| sample_format(&params));
         // The track's own arrangement where it keeps its count; a fold
         // goes to the plain one for the count it folds to.
@@ -875,9 +892,7 @@ impl Reencoder {
     /// What is kept is everything that describes the output -- the encoder,
     /// the count, and the samples already decoded and not yet framed.
     pub fn retune(&mut self, params: ff::codec::Parameters, audio: &AudioInfo) -> Result<()> {
-        self.decoder = ff::codec::context::Context::from_parameters(params)?
-            .decoder()
-            .audio()?;
+        self.decoder = track_decoder(params, audio)?;
         self.last_pts = None;
         self.last_pos = -1;
         self.last_frames.clear();

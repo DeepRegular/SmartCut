@@ -664,6 +664,54 @@ fn h264_sequence_shape(nal: &[u8]) -> Option<Option<FieldShape>> {
     }))
 }
 
+/// Whether an H.264 sequence header allows lossless coding
+/// (`qpprime_y_zero_transform_bypass_flag`), which is what x264 writes for
+/// `-qp 0` / `-crf 0` and nothing else in practice does. `None` where `nal`
+/// is not a sequence header or cannot be read.
+///
+/// **libavcodec cannot go from a lossy picture to a lossless one.** A
+/// stream that opens on pictures coded against a header without the flag
+/// and goes on to ones coded against a header with it -- a seam encoded at
+/// a bit rate, then the recording's own copied pictures -- decodes the
+/// lossless ones wrong (about 10 dB), parameter sets restated and all; the
+/// other way round, and lossless after lossless, decode right. So a seam in
+/// front of such a recording has to be lossless itself.
+pub fn h264_transform_bypass(nal: &[u8]) -> Option<bool> {
+    if !is_h264_sps(nal) {
+        return None;
+    }
+    let mut b = Bits::new(nal.get(1..)?);
+    let profile = b.u(8)?;
+    b.skip(16)?;
+    b.ue()?;
+    if !H264_CHROMA_PROFILES.contains(&profile) {
+        return Some(false);
+    }
+    if b.ue()? == 3 {
+        b.skip(1)?; // separate_colour_plane_flag
+    }
+    b.ue()?; // bit_depth_luma_minus8
+    b.ue()?; // bit_depth_chroma_minus8
+    Some(b.u(1)? == 1)
+}
+
+/// Whether the sequence header an H.264 stream's extradata carries -- an
+/// `avcC`, or the Annex-B parameter sets a transport stream's probe leaves
+/// there -- allows lossless coding. See [`h264_transform_bypass`]. False
+/// where there is no sequence header to read.
+pub fn h264_record_lossless(extradata: &[u8]) -> bool {
+    let sets = match framing_from_extradata("h264", extradata) {
+        NalFraming::Length(_) => parameter_sets("h264", extradata),
+        NalFraming::AnnexB => nal_payloads(extradata, NalFraming::AnnexB)
+            .into_iter()
+            .map(<[u8]>::to_vec)
+            .collect(),
+    };
+    sets.iter()
+        .find_map(|nal| h264_transform_bypass(nal))
+        .unwrap_or(false)
+}
+
 /// What a packet says again of the sequence its pictures are read by, where
 /// it says it: `Some(Some(shape))` from a sequence header that allows field
 /// pictures, `Some(None)` from one whose every picture is a whole frame, and
@@ -1120,6 +1168,43 @@ fn short_term_ref_pic_set(b: &mut Bits, idx: usize, sets: usize, deltas: &[u32])
 
 #[cfg(test)]
 mod tests {
+    /// The sequence headers of three x264 encodes: `-qp 0` (lossless, High
+    /// 4:4:4 Predictive with 4:2:0), `-qp 20` (High) and a lossy 4:4:4.
+    #[test]
+    fn lossless_h264_is_told_by_its_sequence_header() {
+        let hex = |s: &str| -> Vec<u8> {
+            (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        };
+        let lossless = hex("67f4001eaeb201405ff2e022000003000200000300641e2c5c90");
+        let high = hex("6764001eacd940a02ff97011000003000100000300320f162d96");
+        let lossy444 = hex("67f4001e919b281405ff1380880000030008000003019078b16cb0");
+        assert_eq!(h264_transform_bypass(&lossless), Some(true));
+        assert_eq!(h264_transform_bypass(&high), Some(false));
+        assert_eq!(h264_transform_bypass(&lossy444), Some(false));
+        assert_eq!(h264_transform_bypass(&[0x68, 0xee]), None); // a picture parameter set
+        assert_eq!(h264_transform_bypass(&lossless[..4]), None);
+        // The same headers as a track's record would hold them, and as a
+        // transport stream's probe leaves them.
+        let avcc = |sps: &[u8]| -> Vec<u8> {
+            let mut r = vec![1, sps[1], sps[2], sps[3], 0xFF, 0xE1];
+            r.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+            r.extend_from_slice(sps);
+            r.extend_from_slice(&[1, 0, 2, 0x68, 0xee]);
+            r
+        };
+        let annexb = |sps: &[u8]| -> Vec<u8> {
+            let mut r = vec![0, 0, 0, 1];
+            r.extend_from_slice(sps);
+            r.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xee]);
+            r
+        };
+        assert!(h264_record_lossless(&avcc(&lossless)));
+        assert!(h264_record_lossless(&annexb(&lossless)));
+        assert!(!h264_record_lossless(&avcc(&high)));
+        assert!(!h264_record_lossless(&annexb(&lossy444)));
+        assert!(!h264_record_lossless(&[]));
+    }
+
     use super::*;
 
     /// A sequence extension saying progressive, and a picture as libavcodec

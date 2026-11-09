@@ -292,11 +292,26 @@ fn without(keeps: &[(f64, f64)], holes: &[(f64, f64)]) -> Vec<(f64, f64)> {
 /// with packets that carry nothing, and a part is written without them: on
 /// a recording that was half padding, every part came out half the size
 /// asked for.
+///
+/// **A lossy track is priced as `--fit` prices it** ([`crate::fit::audio_rate`]):
+/// its stated rate, or what the codec is worth at that many channels where
+/// it states none or a probe's guess. Priced as linear PCM, an Opus or a
+/// Vorbis track -- Matroska and WebM state no rate for either, and a video
+/// site's download is exactly that -- weighed 1.5 Mbit/s against the 0.1 or
+/// so it is, and a YouTube `.webm` divided every 10 MB came out in parts of
+/// 2.5 to 3; an AAC track in Matroska, which states no rate either, weighed
+/// what its samples would. A lossless one with no rate keeps the PCM price,
+/// which is the most it can be: on a ceiling that is the side to err on.
 pub fn weight(src: &crate::Source) -> Result<f64> {
+    let lossy = |codec: &str| {
+        codec.starts_with("aac")
+            || matches!(codec, "ac3" | "eac3" | "mp1" | "mp2" | "mp3" | "opus" | "vorbis")
+    };
     let sound: f64 = src
         .audios
         .iter()
         .map(|a| match a.bit_rate {
+            _ if lossy(&a.codec) => crate::fit::audio_rate(a),
             Some(r) if r > 0 => r as f64,
             _ => f64::from(a.sample_rate) * f64::from(a.channels) * f64::from(a.bits),
         })

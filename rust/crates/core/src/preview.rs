@@ -381,7 +381,7 @@ fn entry_packets(
     keep: impl Fn(f64) -> bool,
 ) -> Result<EntryRun> {
     let mut ictx = crate::input::demux(&src.input.url)?;
-    place(&mut ictx, src, from, margin)?;
+    let mut landed = place(&mut ictx, src, from, margin)?;
     let idx = src.video.stream_index;
     // After the seek, for the reason [`crate::input::keep_only`] gives.
     crate::input::keep_only(&mut ictx, &[idx]);
@@ -395,10 +395,11 @@ fn entry_packets(
     let mut pending: Vec<ff::Packet> = Vec::new();
     let mut at: Option<f64> = None;
     let mut stretches = Stretches::new(src);
-    for (stream, packet) in ictx.read_packets() {
+    for (stream, mut packet) in ictx.read_packets() {
         if stream.index() != idx {
             continue;
         }
+        Landed::mend(&mut landed, &mut packet, src);
         // A half held from the stretch before has no partner after the seam:
         // dropped, as [`walk`] drops it there. See `thumbs::build_with_sound`.
         if stretches.reach(packet.position()) {
@@ -1643,14 +1644,19 @@ fn encode_still(picture: &ff::frame::Video, id: ff::codec::Id) -> Result<Vec<u8>
 /// whole of it, so that they all land in the same place: the two of them
 /// disagreeing is a run of pictures that is a GOP out on one path and not on
 /// the other.
-fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -> Result<()> {
+///
+/// Answers where a seek by byte put it (see [`Landed`]); `None` after a seek
+/// by the clock.
+fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -> Result<Option<Landed>> {
     // The index knows the byte `from` begins at, so on the first attempt
     // there is nothing to approximate and no margin to spend. The timestamp
     // seek below is what is left for the containers and indexes that cannot
     // say -- and for the second attempt, which only happens now when the
     // first somehow still landed late.
-    if margin == 0.0 && crate::index::seek_to_entry(ictx, src, from).is_some() {
-        return Ok(());
+    if margin == 0.0 {
+        if let Some(at) = crate::index::seek_to_entry(ictx, src, from) {
+            return Ok(Landed::at(src, at));
+        }
     }
     let landing = (from - margin).max(0.0);
     // Asking for the beginning has to mean the beginning, exactly as in
@@ -1671,7 +1677,84 @@ fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -
         ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
     };
     let _ = ictx.seek(target, ..target);
-    Ok(())
+    Ok(None)
+}
+
+/// The entry point a seek by byte ([`crate::index::seek_to_entry`]) put a
+/// read at: its picture's instant and the byte the index found it at.
+///
+/// **An MPEG program stream read from there times its entry picture with the
+/// next picture's time.** `ffmpeg -f mpeg` / `-f vob` -- and a VCD's or an
+/// old capture's `.mpg` -- packs the pictures into PES packets without
+/// regard for where they begin, so the packet an I picture begins in opens
+/// on the tail of the picture before it. Read on from an earlier picture the
+/// parser knows that tail is the old picture's and gives the I its PES's
+/// time. Read from that byte, it hands the tail over as a packet of its own,
+/// the PES's time goes with it, and the I picture is given the time of the
+/// PES after -- the next P picture's, which then comes out a second time
+/// under its own. A frame asked for at that P was answered with the I, the
+/// strip's cell there was the I, and played from a range head the I was
+/// shown first and then the head again: one picture a GOP of an MPEG-1
+/// `.mpg` or a `.vob` rip, where [`crate::cut`], which reads on from a
+/// margin before, wrote the right one. A DVD's own `.VOB` begins every GOP
+/// on a pack of its own, as a transport stream begins every picture on a PES
+/// of its own, and is not touched: there the entry picture carries its own
+/// time already.
+#[derive(Clone, Copy)]
+pub(crate) struct Landed {
+    time: f64,
+    pos: i64,
+}
+
+impl Landed {
+    /// The entry point at `time`, as [`crate::index::seek_to_entry`]
+    /// answers it, where it has a byte.
+    ///
+    /// `None` on a transport stream, which begins every picture on a PES of
+    /// its own and so never hands the entry picture over mistimed -- and
+    /// whose entry points can be the ones that are off: a Blu-ray's map
+    /// keeps a time to 512 ticks of 90 kHz (5.7 ms), and at 59.94 frames a
+    /// second that is more than the quarter of a frame `mend` allows. Mended
+    /// to the map's time, a BS4K recorder title's entry picture -- one in
+    /// four of them -- was answered 5 ms before it is shown.
+    pub(crate) fn at(src: &Source, time: f64) -> Option<Landed> {
+        if src.on_a_ts {
+            return None;
+        }
+        src.points
+            .iter()
+            .rev()
+            .find(|p| p.time == time && p.pos >= 0)
+            .map(|p| Landed { time: p.time, pos: p.pos })
+    }
+
+    /// Give the entry picture's packet the entry point's own time, if the
+    /// read handed it over with another one. For each packet of the pictures
+    /// in turn, from the landing; it stops looking at the first picture that
+    /// opens a GOP, or once the read is past the entry point's byte without
+    /// one -- a packet the demuxer read from the file itself, there, is
+    /// timed by the file and left as it is.
+    pub(crate) fn mend(slot: &mut Option<Landed>, packet: &mut ff::Packet, src: &Source) {
+        let Some(at) = *slot else { return };
+        let pos = packet.position() as i64;
+        if !packet.is_key() {
+            if pos > at.pos {
+                *slot = None;
+            }
+            return;
+        }
+        *slot = None;
+        if pos >= 0 && pos != at.pos {
+            return;
+        }
+        let tb = src.video.time_base;
+        let quarter = src.video.frame_duration() / 4.0;
+        let stated = packet.pts().map(|p| p as f64 * tb - src.start_time);
+        if stated.is_some_and(|t| (t - at.time).abs() <= quarter) || tb.is_nan() || tb <= 0.0 {
+            return;
+        }
+        packet.set_pts(Some(((at.time + src.start_time) / tb).round() as i64));
+    }
 }
 
 /// How many cores [`walk`] decodes on.
@@ -1727,7 +1810,7 @@ fn walk(
     let mut ictx = crate::input::demux(&src.input.url)?;
     let idx = src.video.stream_index;
     let in_tb = src.video.time_base;
-    place(&mut ictx, src, from, margin)?;
+    let mut landed = place(&mut ictx, src, from, margin)?;
     // Nothing but the pictures is read here, and on some recordings a stream
     // left switched on costs the pictures themselves. See
     // [`crate::input::keep_only`], and note that it goes after the seek.
@@ -1810,10 +1893,11 @@ fn walk(
     let outside =
         |t: f64, since: Option<f64>, stop: Option<f64>| off_stretch(t, since, stop, quarter, tol);
     let mut packets = ictx.read_packets();
-    'outer: for (stream, packet) in packets.by_ref() {
+    'outer: for (stream, mut packet) in packets.by_ref() {
         if stream.index() != idx {
             continue;
         }
+        Landed::mend(&mut landed, &mut packet, src);
         if packet.position() >= 0 {
             read_at = Some(packet.position() as u64);
         }

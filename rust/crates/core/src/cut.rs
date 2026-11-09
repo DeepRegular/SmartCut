@@ -1549,6 +1549,15 @@ impl Writer {
         ((tick / self.field_ticks as f64).ceil() as i64).max(1)
     }
 
+    /// Whether the decode times are those of the MPEG model itself: MPEG-1
+    /// or MPEG-2 pictures into a program stream. See [`Writer::emit_one`].
+    fn mpeg_model(&self) -> bool {
+        matches!(self.octx.format().name(), "mpeg" | "vob" | "dvd" | "svcd" | "vcd")
+            && self.octx.stream(0).is_some_and(|s| {
+                matches!(s.parameters().id(), ff::codec::Id::MPEG1VIDEO | ff::codec::Id::MPEG2VIDEO)
+            })
+    }
+
     fn emit_one(&mut self) -> Result<()> {
         let Some(mut e) = self.pending.pop_front() else {
             return Ok(());
@@ -1568,23 +1577,7 @@ impl Writer {
         // belongs to, the muxer refuses `pts < dts` outright, and the whole
         // cut stopped over it. A picture is never decoded after it is shown,
         // so that is the ceiling.
-        let lead = next_in_display - self.depth * 3 * self.sub;
-        // And never behind the picture before it. The value above is the
-        // smallest display position still waiting, which climbs while the
-        // pictures arrive in one of the orders a coder produces and does not
-        // where a damaged stretch hands them over out of any order at all.
-        let last_dts = self.last_dts;
-        // One unit apart is apart on the timeline, and not always in the
-        // file: a recording on a 10 MHz or 90 kHz clock is counted in units
-        // finer than the 90 kHz a transport stream keeps (see
-        // [`Grid::on_clock`]), and two decode times a unit apart came out as
-        // one there -- the muxer refused the cut with "Invalid argument".
-        let gap = self.dts_gap();
-        let settle = |c: i64| {
-            let dts = c.min(e.display);
-            last_dts.map_or(dts, |prev| dts.max(prev + gap))
-        };
-        let mut dts = settle(lead);
+        //
         // **Three fields per level is a guess at how far apart the pictures
         // are, and a variable-rate recording that holds some of them breaks
         // it.** What the depth really bounds is a count of pictures: none is
@@ -1618,6 +1611,41 @@ impl Writer {
         while self.shown.len() as i64 > self.depth.max(0) {
             self.shown.pop_front();
         }
+        // **A program stream of MPEG-1/MPEG-2 is given the MPEG model's own
+        // decode times**: a B picture is decoded as it is shown, and an I or
+        // P picture as the one `depth` places before it in display order is
+        // shown -- `past`, which is what the model's buffer does and which
+        // holds under pulldown as well. That is also what a PS demuxer
+        // assumes of a picture whose PES header carries no time, and
+        // libavformat's PS muxer stamps only the first picture to start in a
+        // PES and packs small pictures several to one. Three fields put
+        // every B picture's decode time half a frame before its display, and
+        // the unstamped ones were read back half a frame early, twice at the
+        // same instant or going backwards -- 39 of 291 pictures of a VCD-shape
+        // `.mpg`, and a DVD title's slice cut to `.vob` read pictures twice.
+        // A transport stream stamps every PES, and everything else keeps the
+        // three fields.
+        let lead = if self.mpeg_model() {
+            past
+        } else {
+            next_in_display - self.depth * 3 * self.sub
+        };
+        // And never behind the picture before it. The value above is the
+        // smallest display position still waiting, which climbs while the
+        // pictures arrive in one of the orders a coder produces and does not
+        // where a damaged stretch hands them over out of any order at all.
+        let last_dts = self.last_dts;
+        // One unit apart is apart on the timeline, and not always in the
+        // file: a recording on a 10 MHz or 90 kHz clock is counted in units
+        // finer than the 90 kHz a transport stream keeps (see
+        // [`Grid::on_clock`]), and two decode times a unit apart came out as
+        // one there -- the muxer refused the cut with "Invalid argument".
+        let gap = self.dts_gap();
+        let settle = |c: i64| {
+            let dts = c.min(e.display);
+            last_dts.map_or(dts, |prev| dts.max(prev + gap))
+        };
+        let mut dts = settle(lead);
         let crowds = |dts: i64| {
             self.pending
                 .iter()
@@ -4161,6 +4189,42 @@ fn convert_subpicture(
     Ok(())
 }
 
+/// How far behind the pictures the clock a converted subtitle is taken down
+/// by runs. See [`Writer::converted_due`].
+///
+/// A disc's subtitle is muxed ahead of its time, but the pictures are muxed
+/// further ahead still, so a unit can be read after pictures shown a little
+/// later than it. Taken down by the pictures' own clock, a line whose stop
+/// falls after the next unit's start would be taken down first and the
+/// next one put up after it, late. Two seconds is far more than a DVD's
+/// buffers allow either stream, and far less than the ten the muxer holds
+/// the pictures for, so the set still lands where its time says.
+const DUE_BEHIND: f64 = 2.0;
+
+impl Writer {
+    /// Write the set that takes a converted subtitle down once the pictures
+    /// have passed the stop its own unit named. `now` is on the clock the
+    /// units are stamped on: see [`take_subpicture`].
+    ///
+    /// Left to the next unit of the stream, the set was written only when
+    /// that unit was read -- on a pressed DVD often half a minute later --
+    /// and the muxer, which holds ten seconds of the other streams for it,
+    /// had let them go by then: a set due at 6 s sat behind 15 s of
+    /// pictures, and a player kept the line up until it got there. The
+    /// sets and their times are those [`crate::pgs::write::Composer::show`]
+    /// would have written; only where they sit in the file changes.
+    fn converted_due(&mut self, now: f64) -> Result<()> {
+        for which in 0..self.converted.len() {
+            let c = &mut self.converted[which];
+            let (track, sets) = (c.track, c.composer.due(c.screen, now - DUE_BEHIND));
+            for held in &sets {
+                self.push_graphics(track, held, 0.0, false)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// How far past a range's start the pictures may run, in a look back for
 /// subtitles, before the look back is over. Leeway for a stream that is
 /// muxed a little ahead of the pictures it goes with.
@@ -4451,6 +4515,13 @@ fn copy_segment(
     // lost in a fifteen-second recut. Asked only where the recording's own
     // sequence allows fields at all, as [`crate::index::walk`] asks it.
     let mut shape = src.video.field_shape;
+    // The MPEG-4 Part 2 headers this recording's pictures are decoded by,
+    // owed in front of the copy's first picture. See [`mpeg4_config`].
+    let mut config_owed = if src.video.codec == "mpeg4" {
+        mpeg4_config(&ictx.stream(ist_index).unwrap().parameters())
+    } else {
+        None
+    };
 
     let mut started = false;
     let mut overshot = false;
@@ -4570,6 +4641,11 @@ fn copy_segment(
         }
         let Some(pts) = packet.pts() else { continue };
         let t = pts as f64 * in_tb - src.start_time;
+        // A converted subtitle whose stop the pictures have passed comes down
+        // here, not when the next one arrives. See [`Writer::converted_due`].
+        if !writer.converted.is_empty() && t >= seg.start && t < seg.end {
+            writer.converted_due(t + ctx.offset)?;
+        }
 
         if !started {
             // Roll forward to the entry point.
@@ -4784,6 +4860,16 @@ fn copy_segment(
                      header ({e}); that one is left as the recording states it"
                 ));
                 packet
+            }
+            _ => packet,
+        };
+        let packet = match config_owed.take() {
+            Some(config) if !mpeg4_has_vol(packet.data().unwrap_or(&[])) => {
+                let mut data = config;
+                data.extend_from_slice(packet.data().unwrap_or(&[]));
+                let mut out = ff::Packet::copy(&data);
+                out.set_flags(packet.flags());
+                out
             }
             _ => packet,
         };
@@ -5523,6 +5609,49 @@ fn encoders_for(id: ff::codec::Id) -> &'static [&'static str] {
     }
 }
 
+/// The headers an MPEG-4 Part 2 recording keeps out of band -- the visual
+/// object sequence, the object and its object layer -- when they include a
+/// VOL to restate.
+///
+/// **A VOL configures every picture after it, and a seam writes its own.**
+/// What the encoder at a seam puts in its VOL is libavcodec's defaults: its
+/// own time resolution, H.263 quantisation, no quarter-pel. An MP4 or a
+/// Matroska file keeps the recording's VOL in its codec record only, so the
+/// copy after a seam was decoded by the seam's VOL instead: an Xvid recording
+/// cut in two places lost 8 of 205 pictures and decoded at 19 dB, one written
+/// with MPEG quantisation at 43 dB. Restated in front of the copy's first
+/// picture, as the H.264 sets are (see [`Reframe`]), the copy is read by its
+/// own again.
+fn mpeg4_config(params: &ff::codec::Parameters) -> Option<Vec<u8>> {
+    let record = unsafe {
+        let p = params.as_ptr();
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            return None;
+        }
+        std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+    };
+    mpeg4_has_vol(record).then(|| record.to_vec())
+}
+
+/// Whether an MPEG-4 Part 2 packet states a video object layer before its
+/// first picture.
+fn mpeg4_has_vol(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 4 <= data.len() {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            match data[i + 3] {
+                0x20..=0x2F => return true,
+                0xB6 => return false,
+                _ => {}
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 /// Build an encoder whose output splices onto the copied pictures.
 ///
 /// Each candidate from [`encoders_for`] is tried in turn, because an encoder
@@ -5779,11 +5908,24 @@ fn open_encoder_as(
     }
 
     let mut eopts = ff::Dictionary::new();
-    // mpeg1video, mpeg2video and mpeg4 refuse a closed GOP while
+    // libavcodec's own MPEG-family encoders (MPEG-1/2/4, H.263 and its
+    // Flash, DivX 3 and WMV 7/8 cousins) refuse a closed GOP while
     // scene-change detection is live; a partial GOP is short enough that
-    // losing it costs nothing. (Left out, every MPEG-1 cut with a seam
-    // stopped at "cannot open encoder: Not yet implemented in FFmpeg".)
-    if matches!(v.codec.as_str(), "mpeg1video" | "mpeg2video" | "mpeg4") {
+    // losing it costs nothing. (Left out, every cut with a seam of one of
+    // them stopped at "cannot open encoder: Not yet implemented in FFmpeg".)
+    if matches!(
+        v.codec.as_str(),
+        "mpeg1video"
+            | "mpeg2video"
+            | "mpeg4"
+            | "h263"
+            | "h263p"
+            | "flv1"
+            | "msmpeg4v2"
+            | "msmpeg4v3"
+            | "wmv1"
+            | "wmv2"
+    ) {
         eopts.set("sc_threshold", "1000000000");
     }
     // What the three open encoders are worth being asked to spend.
@@ -5816,6 +5958,26 @@ fn open_encoder_as(
             eopts.set("row-mt", "1");
         }
         _ => {}
+    }
+    // **A lossless x264 recording takes a lossless seam.** libavcodec cannot
+    // decode lossless pictures that follow lossy ones in the same stream,
+    // parameter sets restated and all, so a seam written at a bit rate in
+    // front of a `-qp 0` / `-crf 0` capture (OBS's lossless setting among
+    // them) turned every copied picture after it to noise, about 10 dB. A
+    // seam at qp 0 is lossless too, and the copies after it decode right.
+    // See [`crate::bitstream::h264_transform_bypass`].
+    if codec.name() == "libx264" && params.id() == ff::codec::Id::H264 {
+        let record = unsafe {
+            let p = params.as_ptr();
+            if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+            }
+        };
+        if crate::bitstream::h264_record_lossless(record) {
+            eopts.set("qp", "0");
+        }
     }
     if codec.name() == "libx265" {
         let mut x265: Vec<String> = Vec::new();
@@ -5853,8 +6015,60 @@ fn open_encoder_as(
             eopts.set("x265-params", &x265.join(":"));
         }
     }
-    enc.open_as_with(codec, eopts)
-        .map_err(|e| anyhow!("cannot open encoder: {e}"))
+    // FFV1 from version 2 on keeps its slices, coder and quantisation tables
+    // in the stream's extradata, and every picture is decoded against that
+    // one record: a seam written to a record of its own decodes as
+    // "slice count 0 is invalid" beside the copies. The common shape
+    // (`-level 3`, the rest left alone) is asked for, and anything that still
+    // comes out differently is refused rather than written broken.
+    let ffv1_record = (params.id() == ff::codec::Id::FFV1)
+        .then(|| unsafe {
+            let p = params.as_ptr();
+            if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                Vec::new()
+            } else {
+                std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+            }
+        })
+        .filter(|record| !record.is_empty());
+    if ffv1_record.is_some() {
+        eopts.set("level", "3");
+    } else if params.id() == ff::codec::Id::FFV1
+        && unsafe { (*params.as_ptr()).bits_per_raw_sample } > 0
+    {
+        // Versions 0 and 1 keep their configuration in each key picture
+        // instead, and differ in one thing a decoder holds against them:
+        // version 1 states its sample depth and version 0 leaves it to the
+        // container, which a Matroska or AVI file does not state. So a seam
+        // written as 0 -- the encoder's own choice at 8 bits -- in front of
+        // a version-1 recording's copies read as a depth of none, and every
+        // copied picture after it was "Invalid change of global parameters"
+        // (55 of 105 pictures left). Only version 1 states a depth for the
+        // probe to read back; version 0 recordings are left as they were.
+        eopts.set("level", "1");
+    }
+    let enc = enc
+        .open_as_with(codec, eopts)
+        .map_err(|e| anyhow!("cannot open encoder: {e}"))?;
+    if let Some(record) = ffv1_record {
+        let written = unsafe {
+            let e = enc.as_ptr();
+            if (*e).extradata.is_null() || (*e).extradata_size <= 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts((*e).extradata, (*e).extradata_size as usize)
+            }
+        };
+        if written != record.as_slice() {
+            bail!(
+                "this FFV1 recording's pictures are written against a configuration (its slices, \
+                 coder and tables) the encoder here does not reproduce, so the partial GOPs at the \
+                 ends of a range cannot be re-encoded. A range whose ends fall on the recording's \
+                 own entry points can still be cut"
+            );
+        }
+    }
+    Ok(enc)
 }
 
 /// How finely the output timeline is divided where a recording needs it.
@@ -6761,6 +6975,15 @@ fn reencode_segment(
         // SmartCut re-encoded -- and are refused for that alone. Counted,
         // a correct re-cut of such a cut said two dozen packets in each
         // re-encoded stretch were damaged and their pictures missing.
+        // As in [`copy_segment`]: a converted subtitle's stop is written as
+        // the pictures pass it. See [`Writer::converted_due`].
+        if !writer.converted.is_empty() {
+            if let Some(t) = packet.pts().map(|p| p as f64 * in_tb - src.start_time) {
+                if t >= seg.start && t < seg.end {
+                    writer.converted_due(t + ctx.offset)?;
+                }
+            }
+        }
         if !run_up.passes(&packet, in_tb, src.start_time) {
             continue;
         }

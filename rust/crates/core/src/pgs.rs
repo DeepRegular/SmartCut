@@ -890,6 +890,24 @@ pub mod write {
             erase(screen, self.number, when, window)
         }
 
+        /// The set that takes down a picture whose own time to go has come
+        /// by `now`, timed at that time; nothing otherwise.
+        ///
+        /// For a reader to ask as its clock moves on. A DVD's unit says when
+        /// it comes down, and left to [`Composer::show`] the set that says so
+        /// was written only when the next unit arrived -- on a disc, half a
+        /// minute later at times. The muxer holds ten seconds of the other
+        /// streams for it and then lets them go, so a set due at 6 s reached
+        /// the file at 15 s, and a player kept the line up until it got there.
+        /// Asked as the pictures pass, it is written where it is due, and the
+        /// numbering and the bytes are those `show` would have written.
+        pub fn due(&mut self, screen: (u16, u16), now: f64) -> Vec<Held> {
+            match self.standing {
+                Some((_, Some(until))) if until <= now => self.take_down(screen, until),
+                _ => Vec::new(),
+            }
+        }
+
         /// Whether anything is on screen.
         pub fn standing(&self) -> bool {
             self.standing.is_some()
@@ -1214,6 +1232,43 @@ mod tests {
         assert!((last[0].pts - 9.0).abs() < 1e-9);
         assert!(!composer.standing());
         assert!(composer.take_down((720, 480), 10.0).is_empty());
+    }
+
+    /// A picture that says when it goes is taken down once the clock has
+    /// passed that, at that time, and the bytes are those the next picture
+    /// would have brought with it.
+    #[test]
+    fn a_picture_that_names_its_end_comes_down_as_the_clock_passes_it() {
+        let indices = [1u8; 4];
+        let palette = [(0, 0, 0, 0), (255, 255, 255, 255)];
+        let picture = write::Picture {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            indices: &indices,
+            palette: &palette,
+        };
+        let screen = (720, 480);
+        let mut late = write::Composer::default();
+        let mut asked = write::Composer::default();
+        late.show(screen, 1.0, Some(4.0), &picture);
+        asked.show(screen, 1.0, Some(4.0), &picture);
+        assert!(asked.due(screen, 3.9).is_empty(), "not yet");
+        let cleared = asked.due(screen, 4.1);
+        assert_eq!(cleared.len(), 3);
+        assert!(asked.due(screen, 30.0).is_empty(), "once");
+        let then = late.show(screen, 30.0, None, &picture);
+        let now = asked.show(screen, 30.0, None, &picture);
+        let bytes = |sets: &[Held]| -> Vec<(u64, Vec<u8>)> {
+            sets.iter().map(|h| (h.pts.to_bits(), h.data.clone())).collect()
+        };
+        assert_eq!(bytes(&then[..3]), bytes(&cleared));
+        assert_eq!(bytes(&then[3..]), bytes(&now));
+        // One that says nothing stands until the next.
+        let mut open = write::Composer::default();
+        open.show(screen, 1.0, None, &picture);
+        assert!(open.due(screen, 1e6).is_empty());
     }
 
     /// A part-read set says so, which is how a reader knows not to stop in

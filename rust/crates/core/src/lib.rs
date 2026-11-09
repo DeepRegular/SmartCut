@@ -1215,6 +1215,11 @@ pub fn scan(path: &str) -> Result<Source> {
 /// [`Source::byte_seekable`].
 const BYTE_SEEKABLE: [&str; 5] = ["mpegts", "mpeg", "h264", "hevc", "mpegvideo"];
 
+/// libavformat's names for a bare video elementary stream: pictures and
+/// nothing to time them by. See [`outline_of`].
+const RAW_VIDEO: [&str; 8] =
+    ["mpegvideo", "h264", "hevc", "m4v", "cavsvideo", "vc1", "h261", "h263"];
+
 /// One sound track per PID, and what that leaves out.
 ///
 /// A PID is how a transport stream names a track, and a cut puts each stream
@@ -1720,6 +1725,22 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         .name()
         .split(',')
         .any(|n| BYTE_SEEKABLE.contains(&n.trim()));
+    // **A bare video elementary stream carries no times of its own**, and
+    // what libavformat makes up for one is not a recording's clock: an MPEG-1
+    // stream (`.m1v`, or the same bytes saved as `.mpg`, which libav reads by
+    // its contents) came out with times on its B pictures only, was cut with
+    // every I and P picture missing, and checked as right. The others of the
+    // kind (`.m2v`, `.h264`) were already refused by the walk for having no
+    // entry point with a time; all of them are now, before anything is
+    // planned, in the same words.
+    if ictx
+        .format()
+        .name()
+        .split(',')
+        .any(|n| RAW_VIDEO.contains(&n.trim()))
+    {
+        return Err(anyhow!("no random access points found in {path}"));
+    }
     // The container's own chapter list, where it has one. Only the starts:
     // they become marks, and a mark is an instant.
     let mut chapters: Vec<f64> = ictx
