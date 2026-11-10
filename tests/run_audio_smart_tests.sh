@@ -74,9 +74,23 @@ for codec in aac ac3 eac3 mp2; do
   src="$OUT/tone-$codec.ts"
   clip "$FX/tone.nut" "$codec" "$src" || { bad "$codec fixture" "ffmpeg"; continue; }
 
-  # One range, both edges off the frame grid on purpose.
+  # One range, both edges off the SOUND frame grid on purpose, and on
+  # pictures: a range's sound runs from its first picture to the end of its
+  # last, so an edge between pictures would move the sound's end and this
+  # test would measure that instead. Where the pictures sit depends on the
+  # codec (its priming moves the file's start), so the edges are the 39th
+  # and 348th picture of this fixture, about 1.3 s and 11.6 s in.
+  pic0=$(python3 -c '
+import json, subprocess, sys
+r = lambda *a: json.loads(subprocess.run(["ffprobe", "-v", "error", "-of", "json", *a, sys.argv[1]],
+                                         capture_output=True, text=True).stdout)
+start = float(r("-show_entries", "format=start_time")["format"]["start_time"])
+pts = min(float(p["pts_time"]) for p in r("-select_streams", "v:0", "-read_intervals", "%+2",
+                                           "-show_entries", "packet=pts_time")["packets"])
+print(f"{(pts - start) % (1 / 30):.6f}")' "$src")
+  edges=$(python3 -c "o=$pic0; print(f'{o + 39/30:.4f}-{o + 348/30:.4f}')")
   for mode in copy smart; do
-    SMARTCUT_DEBUG=1 "$BIN" "$src" --keep 1.3-11.7 --audio-mode "$mode" \
+    SMARTCUT_DEBUG=1 "$BIN" "$src" --keep "$edges" --audio-mode "$mode" \
       -o "$OUT/$codec-$mode.ts" >"$OUT/$codec-$mode.log" 2>&1 \
       || bad "$codec $mode ran" "$(tail -2 "$OUT/$codec-$mode.log")"
   done

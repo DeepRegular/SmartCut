@@ -9096,6 +9096,671 @@ def ordinary_edit_lists(cfg, t):
                 os.remove(f)
 
 
+
+# -- 48th pass (mainjs): program streams and more ordinary material ----------
+
+
+def _m48_dir(cfg):
+    return os.path.join(cfg.work, "media48")
+
+
+def _m48_specs():
+    """name -> (width, height, rate, seconds, video args, audio args, format args, kind)"""
+    aac = ["-c:a", "aac", "-b:a", "128k"]
+    m2 = lambda g, b: ["-c:v", "mpeg2video", "-g", str(g), "-bf", "2", "-b:v", b]
+    il = ["-flags", "+ildct+ilme", "-top", "1"]
+    return {
+        # MPEG-1 system stream, PAL VCD.
+        "vcdpal.mpg": (352, 288, "25", 20,
+                       ["-c:v", "mpeg1video", "-g", "12", "-bf", "2", "-b:v", "1150k"],
+                       ["-c:a", "mp2", "-b:a", "224k", "-ar", "44100"], ["-f", "mpeg"], None),
+        # MPEG-2 program stream as a DVD camcorder writes one: 50i, open GOPs.
+        "cam50i.mpg": (720, 576, "25", 20, m2(12, "6M") + il,
+                       ["-c:a", "mp2", "-b:a", "256k", "-ar", "48000"], ["-f", "vob"], None),
+        # MPEG-2 in the MPEG-1 system layer (ffmpeg -f mpeg), 29.97p.
+        "m2sys1.mpg": (720, 480, "30000/1001", 16, m2(15, "5M"),
+                       ["-c:a", "mp2", "-b:a", "192k", "-ar", "48000"], ["-f", "mpeg"], None),
+        # ffmpeg -f vob, NTSC, AC-3.
+        "ffvob.vob": (720, 480, "30000/1001", 20, m2(15, "5M"),
+                      ["-c:a", "ac3", "-b:a", "192k"], ["-f", "vob"], None),
+        # The DVD title: ffmpeg -f dvd, split in two VOBs, tables by dvd_index.py.
+        "dvd": (720, 480, "30000/1001", 24, m2(15, "5M"),
+                ["-c:a", "mp2", "-b:a", "192k", "-ar", "48000"], ["-f", "dvd"], "dvd"),
+        # Not program streams: ordinary material no pass drove through the editor.
+        "pal50i.ts": (720, 576, "25", 12, m2(12, "6M") + il,
+                      ["-c:a", "mp2", "-b:a", "256k", "-ar", "48000"], ["-f", "mpegts"], None),
+        "prores.mov": (1280, 720, "25", 6, ["-c:v", "prores_ks", "-profile:v", "2",
+                                             "-pix_fmt", "yuv422p10le"],
+                       ["-c:a", "pcm_s16le"], ["-f", "mov"], None),
+        "mjpeg.mov": (640, 480, "30", 8, ["-c:v", "mjpeg", "-q:v", "3", "-pix_fmt", "yuvj420p"],
+                      ["-c:a", "pcm_s16le"], ["-f", "mov"], "full"),
+        "phonefull.mp4": (1280, 720, "30", 10,
+                          ["-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-bf", "0",
+                           "-pix_fmt", "yuvj420p", "-color_range", "pc"],
+                          aac, ["-f", "mp4"], "full"),
+        # Xvid-tagged MPEG-4 Part 2 with B pictures. libavcodec's own encoder:
+        # ffmpeg's libxvid wrapper stamps the B pictures of an .mkv wrongly
+        # (its own decode of the file goes backwards), which no real file has.
+        "xvid.mkv": (640, 360, "25", 10, ["-c:v", "mpeg4", "-vtag", "XVID", "-g", "25", "-bf", "2",
+                                          "-b:v", "1500k"],
+                     ["-c:a", "libmp3lame", "-b:a", "128k"], ["-f", "matroska"], None),
+        "xvid.avi": (640, 360, "25", 10, ["-c:v", "mpeg4", "-g", "25", "-bf", "2", "-b:v", "1500k",
+                                          "-vtag", "XVID"],
+                     ["-c:a", "libmp3lame", "-b:a", "128k"], ["-f", "avi"], None),
+        "tiny.mp4": (640, 360, "25", 0.6,
+                     ["-c:v", "libx264", "-preset", "veryfast", "-g", "25", "-bf", "2", "-pix_fmt", "yuv420p"],
+                     aac, ["-f", "mp4"], None),
+    }
+
+
+def _m48_title(cfg):
+    """(VIDEO_TS dir, the title's path as the list names it, the whole stream)."""
+    vts = os.path.join(_m48_dir(cfg), "dvd", "VIDEO_TS")
+    with open(os.path.join(vts, "title.txt")) as f:
+        last = f.read().strip()
+    return vts, os.path.join(vts, "VTS_01_1.VOB") + f"@0-{last}", os.path.join(_m48_dir(cfg), "dvd.whole.vob")
+
+
+def _m48_make(cfg):
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    specs = _m48_specs()
+    keep = set(specs) | {"dvd.whole.vob"}
+    for f in os.listdir(d):
+        if f not in keep:
+            p = os.path.join(d, f)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+    for name, (w, h, r, sec, v, a, fmt_, kind) in specs.items():
+        out = os.path.join(d, name)
+        if kind == "dvd":
+            if os.path.exists(os.path.join(out, "VIDEO_TS", "title.txt")):
+                continue
+            shutil.rmtree(out, ignore_errors=True)
+            os.makedirs(os.path.join(out, "VIDEO_TS"))
+            out = os.path.join(d, "dvd.whole.vob")
+        elif os.path.exists(out):
+            continue
+        tail = "format=yuv420p"
+        if kind == "full":
+            tail = "scale=out_range=full,format=yuvj420p"
+        graph = (f"testsrc2=s={w}x{h - STRIP}:r={r}:d={sec}[a];"
+                 f"color=c=black:s={w}x{STRIP}:r={r}:d={sec},format=yuv420p,"
+                 f"geq=lum='16+28*mod(floor(N/pow(8\\,floor(X*4/W)))\\,8)':cb=128:cr=128[s];"
+                 f"[a][s]vstack,format=yuv420p,{tail}[v]")
+        cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+               "-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate=48000",
+               "-filter_complex", graph, "-map", "[v]", "-map", "0:a"]
+        cmd += v + a + ["-shortest"] + fmt_ + [out + ".part"]
+        subprocess.run(cmd, check=True)
+        os.replace(out + ".part", out)
+        if kind == "dvd":
+            vts = os.path.join(d, name, "VIDEO_TS")
+            size = os.path.getsize(out)
+            half = size // 2 // 2048 * 2048
+            with open(out, "rb") as f:
+                body = f.read()
+            with open(os.path.join(vts, "VTS_01_1.VOB"), "wb") as f:
+                f.write(body[:half])
+            with open(os.path.join(vts, "VTS_01_2.VOB"), "wb") as f:
+                f.write(body[half:])
+            here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            said = subprocess.run(["python3", os.path.join(here, "dvd_index.py"), vts, "4", "4"],
+                                  capture_output=True, text=True, check=True).stdout
+            last = [ln.split()[3] for ln in said.splitlines() if ln.startswith("cell 4 ")][0]
+            with open(out, "wb") as f:
+                for part in ("VTS_01_1.VOB", "VTS_01_2.VOB"):
+                    with open(os.path.join(vts, part), "rb") as g:
+                        f.write(g.read())
+            with open(os.path.join(vts, "title.txt"), "w") as f:
+                f.write(last)
+    return d
+
+
+def _m48_clear(cfg):
+    """Everything a run left beside the recordings (mark files, stills)."""
+    d = _m48_dir(cfg)
+    keep = set(_m48_specs()) | {"dvd.whole.vob"}
+    for f in os.listdir(d):
+        if f not in keep:
+            p = os.path.join(d, f)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+    vts = os.path.join(d, "dvd", "VIDEO_TS")
+    if os.path.isdir(vts):
+        for f in os.listdir(vts):
+            if not re.match(r"(VTS_01_[0-9]\.(VOB|IFO|BUP)|VIDEO_TS\.(IFO|BUP)|title\.txt)$", f):
+                os.remove(os.path.join(vts, f))
+
+
+def _keys_of(path):
+    """Display indices of the I pictures of `path`."""
+    raw = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "frame=pict_type", "-of", "csv=p=0", path],
+                         capture_output=True, text=True).stdout
+    return [i for i, p in enumerate(x.strip().strip(",") for x in raw.splitlines()) if p == "I"]
+
+
+def _number_of_png(png, nw, nh, height):
+    """The number on a picture of natural size nw x nh, photographed into
+    `png` (letterboxed to fit), whose recording is `height` lines tall."""
+    import struct
+    wp, hp = struct.unpack(">II", png[16:24])
+    k = min(wp / nw, hp / nh)
+    cw, ch = nw * k, nh * k
+    x0, y0 = (wp - cw) / 2, (hp - ch) / 2
+    y = int(y0 + ch * (1 - (STRIP - 8) / height))
+    hh = max(1, int(ch * (STRIP - 16) / height))
+    raw = subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-i", "-", "-vf",
+         f"crop={int(cw)}:{hh}:{int(x0)}:{y},scale=4:1:flags=area,format=gray",
+         "-f", "rawvideo", "-"], input=png, capture_output=True).stdout
+    return _strip_number(raw) if len(raw) >= 4 else None
+
+
+def _url_number(app, url, height):
+    """The number on the picture behind a shot: URL, drawn large on its own
+    for a moment (the strip's cells are too small to read)."""
+    import base64
+    app.s.js("let p = document.getElementById('__probe48');"
+             "if (!p) { p = document.createElement('img'); p.id = '__probe48';"
+             "  Object.assign(p.style, {position: 'fixed', left: '0', top: '0', width: '300px', height: 'auto',"
+             "    zIndex: '99999', background: '#000'});"
+             "  document.body.append(p); }"
+             "p.removeAttribute('data-ok'); p.onload = () => p.setAttribute('data-ok', '1');"
+             "p.src = arguments[0];", url)
+    try:
+        wait_for("the probe picture", lambda: app.s.js(
+            "const p = document.getElementById('__probe48');"
+            "return p.getAttribute('data-ok') && p.naturalWidth ? [p.naturalWidth, p.naturalHeight] : null;"), 10, 0.1)
+    except Failure:
+        return None
+    # Loaded is not yet painted: a photograph taken at once was now and then
+    # of the picture before.
+    app.s.js("return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))));")
+    time.sleep(0.2)
+    nw, nh = app.s.js("const p = document.getElementById('__probe48'); return [p.naturalWidth, p.naturalHeight];")
+    png = base64.b64decode(app.s._("GET", f"/element/{app.s.find('#__probe48')}/screenshot"))
+    if os.environ.get("DBG48"):
+        k = len([f for f in os.listdir(app.dir) if f.startswith("probe")])
+        with open(os.path.join(app.dir, f"probe{k:03d}_{nw}x{nh}.png"), "wb") as f:
+            f.write(png)
+    return _number_of_png(png, nw, nh, height)
+
+
+def _probe_away(app):
+    app.s.js("const p = document.getElementById('__probe48'); if (p) p.remove();")
+
+
+def _strip_numbers(app, height):
+    """The numbers of the frame strip's visible cells, left to right (frame
+    mode: one cell a picture). The cells' own pictures are 200 pixels wide,
+    too small to read the number off reliably, so each cell's time (the
+    instant it stands for in the recording) is asked of `thumbs_at` again,
+    the command the strip asks, at a width the number can be read at."""
+    times = app.s.js(
+        "const s = document.getElementById('strip').getBoundingClientRect();"
+        "return [...document.querySelectorAll('#strip figure')].filter((f) => {"
+        "  const r = f.getBoundingClientRect(); return r.right > s.left && r.left < s.right; })"
+        ".map((f) => (f.querySelector('img') && f.dataset.src !== undefined ? Number(f.dataset.src) : null));")
+    ask = [x for x in times if x is not None]
+    got = app.s.js(
+        "return window.__TAURI__.core.invoke('thumbs_at', {times: arguments[0], width: 640})"
+        ".then((r) => r.map((x) => x && x.url), (e) => String(e));", ask) if ask else []
+    if not isinstance(got, list):
+        return [f"thumbs_at: {got}"]
+    urls = iter(got)
+    out = [(_url_number(app, next(urls), height) if x is not None else None) for x in times]
+    _probe_away(app)
+    return out
+
+
+def _frame_strip(app):
+    app.s.js("const s = document.getElementById('strip-step'); s.value = 'frame';"
+             "s.dispatchEvent(new Event('change'));")
+
+
+def _still_hook(app):
+    pass
+
+
+def _still_number(app, to, height):
+    """フレーム画像保存 at the playhead, the native save dialog answered with
+    `to` by xdotool; the number on the picture written."""
+    if os.path.exists(to):
+        os.remove(to)
+    app.s.js("document.getElementById('still-save').click();")
+    try:
+        w = wait_for("the save dialog", lambda: (app.dialogs() or [None])[0], 15, 0.2)
+        time.sleep(0.8)
+        sh(f"xdotool windowactivate --sync {w}", app.env)
+        time.sleep(0.3)
+        sh("xdotool key --clearmodifiers ctrl+a", app.env)
+        sh(f"xdotool type --delay 5 '{to}'", app.env)
+        time.sleep(0.3)
+        sh("xdotool key --clearmodifiers Return", app.env)
+        wait_for("the still", lambda: os.path.exists(to) and os.path.getsize(to) > 0
+                 and "保存" in (app.state()["status"] or ""), 30, 0.2)
+    except Failure:
+        print(f"        still: status {app.state()['status']!r} exists {os.path.exists(to)} "
+              f"dialogs {app.dialogs()}", flush=True)
+        for d in app.dialogs():
+            sh(f"xdotool windowactivate --sync {d} key Escape", app.env)
+        return None
+    time.sleep(0.3)
+    got = _numbers(to)
+    os.remove(to)
+    return got[0] if got else None
+
+
+def _m48_src(cfg, name):
+    if name == "dvd":
+        return _m48_title(cfg)[2]
+    return os.path.join(_m48_dir(cfg), name)
+
+
+def _m48_row(cfg, name):
+    if name == "dvd":
+        return {"path": _m48_title(cfg)[1]}
+    return {"path": os.path.join(_m48_dir(cfg), name)}
+
+
+def _m48_label(name):
+    return "VTS_01_1" if name == "dvd" else name
+
+
+PS48 = ["vcdpal.mpg", "cam50i.mpg", "m2sys1.mpg", "ffvob.vob", "dvd"]
+
+
+def _shown_at(app, frame, h):
+    """J to `frame`; the number on the picture shown -- or, where the counter
+    never says `frame`, what it says instead (as a string)."""
+    try:
+        app.goto(frame)
+    except Failure:
+        return f"counter {app.state()['at']}"
+    return _shown_number(app, h)
+
+
+def ps_heads_exact(cfg, t):
+    """(48th pass, mainjs.) Program streams (MPEG-1 .mpg, a camcorder's
+    MPEG-2 50i .mpg, MPEG-2 in the MPEG-1 system layer, ffmpeg -f vob, a DVD
+    title out of a VIDEO_TS folder) since the 47th's change to the pictures a
+    byte seek lands on (preview.rs Landed). Each row is visited twice -- fresh
+    and from the index the first visit saved. Every picture J lands on at and
+    around the key pictures, four steps each way across a GOP head, the frame
+    strip at a GOP head (one cell a picture: none repeated, none skipped) and
+    a still saved there must be the recording's own picture; then a cut of a
+    whole GOP (IN on a key picture, OUT on the picture before the next) by
+    Del, a cut from inside a GOP to a key picture by ✂, Ctrl+Z / Ctrl+Y, and
+    the pictures shown either side of each join (and a still there) must be
+    the ones the output carries there."""
+    d = _m48_make(cfg)
+    _m48_clear(cfg)
+    specs = _m48_specs()
+    names = list(PS48)
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    rows = [_m48_row(cfg, n) for n in names]
+    still = os.path.join(cfg.work, "runs", "ps_heads_exact", "still.png")
+    with App(cfg, "ps_heads_exact", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            h = specs[name][1]
+            path = _m48_src(cfg, name)
+            src = _numbers(path)
+            keys = [k for k in _keys_of(path) if 3 <= k < len(src) - 3]
+            label = _m48_label(name)
+            for visit in (1, 2):
+                app.to_list()
+                app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+                app.open_row(i, label)
+                _walk_done(app)
+                time.sleep(1.5)
+                total = app.state()["frames"]
+                _still_hook(app)
+                bad = []
+                # J at, before and after key pictures.
+                for k in keys[1:4] + keys[-2:]:
+                    for f in (k - 1, k, k + 1):
+                        n = _shown_at(app, f, h)
+                        if n != src[f]:
+                            bad.append((f, n, src[f]))
+                t.check(f"48p {name} v{visit}: J at/around key pictures shows the recording's picture",
+                        not bad, f"counter {total} src {len(src)} keys {keys[:6]}... wrong {bad[:6]}")
+                # Steps across a GOP head, each way.
+                k = keys[2]
+                steps = []
+                app.goto(k - 2)
+                steps.append(_shown_number(app, h))
+                for _ in range(4):
+                    app.s.keys("Right")
+                    time.sleep(0.6)
+                    steps.append(_shown_number(app, h))
+                want = src[k - 2:k + 3]
+                back = []
+                app.goto(k + 2)
+                back.append(_shown_number(app, h))
+                for _ in range(4):
+                    app.s.keys("Left")
+                    time.sleep(0.6)
+                    back.append(_shown_number(app, h))
+                t.check(f"48p {name} v{visit}: → and ← across the key picture at {k}",
+                        steps == want and back == want[::-1], f"→ {steps} ← {back} want {want}")
+                # The frame strip around a key picture, and a still there.
+                _frame_strip(app)
+                app.goto(keys[3])
+                time.sleep(3)
+                cells = _strip_numbers(app, h)
+                run = [c for c in cells if c is not None]
+                at = src[keys[3]]
+                ok_strip = (len(run) >= 3 and at in run
+                            and all(b - a == 1 for a, b in zip(run, run[1:])))
+                t.check(f"48p {name} v{visit}: frame strip at key {keys[3]}: one picture a cell",
+                        ok_strip, f"cells {cells} (shown {at})")
+                n_still = _still_number(app, still, h)
+                t.check(f"48p {name} v{visit}: still at key {keys[3]}", n_still == at,
+                        f"still {n_still} picture {at}")
+                if visit == 1:
+                    app.ok()
+                    app.gone()
+                    time.sleep(0.5)
+            # The cuts (second visit, from the saved index).
+            ka, kb, kc = keys[1], keys[2], keys[-2]
+            na = _ord_mark(app, ka, "i", h)
+            nb = _ord_mark(app, kb - 1, "o", h)
+            app.s.keys("Delete")
+            wait_for(f"{name} GOP cut", lambda: app.state()["frames"] == total - (kb - ka), 10)
+            left = app.state()["frames"]
+            # ✂ from inside a GOP onto a key picture (in output numbers now).
+            c0, c1 = kc - (kb - ka) - 4, kc - (kb - ka)
+            nc = _ord_mark(app, c0, "i", h)
+            nd = _ord_mark(app, c1, "o", h)
+            app.s.js("document.getElementById('cut-range').click();")
+            wait_for(f"{name} ✂", lambda: app.state()["frames"] == left - 5, 10)
+            app.s.keys("Control+z")
+            wait_for("取消", lambda: app.state()["frames"] == left, 10)
+            app.s.keys("Control+y")
+            wait_for("やり直し", lambda: app.state()["frames"] == left - 5, 10)
+            gone = set(src[src.index(na):src.index(nb) + 1]) if na in src and nb in src else None
+            if gone is not None and nc in src and nd in src:
+                gone |= set(src[src.index(nc):src.index(nd) + 1])
+            want = [n for n in src if gone is not None and n not in gone]
+            joins = []
+            for j in (ka, c0):
+                if 0 < j < len(want):
+                    a = _shown_at(app, j - 1, h)
+                    b = _shown_at(app, j, h)
+                    s = _still_number(app, still, h)
+                    joins.append((j, a, b, s))
+            t.check(f"48p {name}: the cuts took what was shown",
+                    gone is not None and (na, nb, nc, nd) == (src[ka], src[kb - 1], src[kc - 4], src[kc]),
+                    f"IN/OUT shown {na}..{nb}, {nc}..{nd}; want {src[ka]}..{src[kb - 1]}, "
+                    f"{src[kc - 4]}..{src[kc]}")
+            shown[i] = (name, src, want, joins)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=900)
+        outs = _ord_outputs(app)
+        for i, (name, src, want, joins) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            detail = f"src {len(src)}, cuts {fmt(cuts_of(p, i))}, outputs {[os.path.basename(f) for f in files]}"
+            if got is not None and got != want:
+                diff = [(k, a, b) for k, (a, b) in enumerate(zip(got, want)) if a != b][:4]
+                detail += f"; got {len(got)} want {len(want)}; first differences {diff}"
+            t.check(f"48p {name}: output = what the editor left", got == want and bool(want), detail)
+            jb = [(j, a, b, s, got[j - 1] if got and j - 1 < len(got) else None,
+                   got[j] if got and j < len(got) else None) for j, a, b, s in joins]
+            t.check(f"48p {name}: either side of each join (and its still) = the output there",
+                    got is not None and all(a == ga and b == gb and s == gb for j, a, b, s, ga, gb in jb),
+                    f"(join, shown before, shown after, still, output before, output after) {jb}")
+            for f in files:
+                os.remove(f)
+
+
+
+def ok_while_marks_read(cfg, t):
+    """(48th pass, mainjs.) A first visit to a row whose mark file beside it
+    takes a while to read (a share that is slow to answer; here a 20 MB
+    `.keyframe` of one repeated number): the row's timeline is up, the files
+    are still being read, a cut is made (I, O, Del on picture 0) and OK
+    pressed at once. The cut is the row's and must reach the list -- it went
+    nowhere: `captureEdit` sends nothing while `swapping`, and `swapping`
+    lasts until the files are read, after the row's timeline replaced the
+    last one's."""
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    e = os.path.join(d, "slowmarks.ts")
+    side = os.path.join(d, "slowmarks.keyframe")
+    shutil.copyfile(cfg.a, e)
+    try:
+        with App(cfg, "ok_while_marks_read", [{"path": cfg.a}, {"path": e}]) as app:
+            app.open_row(1, "a.ts")
+            _walk_done(app)
+            time.sleep(1)
+            with open(side, "w") as f:
+                f.write("1\n" * 10_000_000)
+            app.open_row(2, "slowmarks.ts", wait=False)
+            app.to_editor()
+            wait_for("row 2's timeline", lambda: (lambda st: "slowmarks" in st["title"]
+                                                   and st["frames"] is not None)(app.state()), 60, 0.02)
+            st0 = app.state()
+            app.s.keys("i")
+            app.s.keys("o")
+            app.s.keys("Delete")
+            time.sleep(0.15)
+            st1 = app.state()
+            app.ok()
+            app.gone(timeout=120)
+            time.sleep(1)
+            p = app.save()
+            c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+            took = st1["frames"] is not None and st0["frames"] is not None and st1["frames"] < st0["frames"]
+            t.check("48o OK while the mark file is read keeps the cut made then",
+                    (not took) or len(c2) == 1,
+                    f"counter {st0['frames']} -> {st1['frames']} (cut {'taken' if took else 'not taken'}); "
+                    f"status {st1['status']!r}; row 1 {fmt(c1)} row 2 {fmt(c2)}")
+            print(f"        (the cut was {'made' if took else 'NOT made in time: inconclusive'})", flush=True)
+    finally:
+        for f in (e, side):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+
+def ok_wait_then_row(cfg, t):
+    """(48th pass, p2check.) `ok_while_marks_read`'s wait seen from the other
+    side. OK is pressed on a first visit whose mark file is still being read
+    (the 20 MB `.keyframe`), so the window waits up to 5 s before it closes --
+    and in that wait the list is a window of its own and still takes a
+    double-click. Row 3 double-clicked then is the row somebody now wants to
+    edit: the editor must stay up on it, and row 2's cut must still reach the
+    list. Then the same with OK pressed twice in the wait (one close, the cut
+    kept)."""
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    e = os.path.join(d, "slowmarks.ts")
+    side = os.path.join(d, "slowmarks.keyframe")
+    o = os.path.join(d, "other48.ts")
+    for f in (e, o):
+        shutil.copyfile(cfg.a, f)
+
+    def slow_then_cut(app):
+        with open(side, "w") as f:
+            f.write("1\n" * 10_000_000)
+        app.open_row(2, "slowmarks.ts", wait=False)
+        app.to_editor()
+        wait_for("row 2's timeline", lambda: (lambda st: "slowmarks" in st["title"]
+                                               and st["frames"] is not None)(app.state()), 60, 0.02)
+        st0 = app.state()
+        app.s.keys("i")
+        app.s.keys("o")
+        app.s.keys("Delete")
+        time.sleep(0.15)
+        st1 = app.state()
+        return st0["frames"] is not None and st1["frames"] is not None and st1["frames"] < st0["frames"]
+
+    try:
+        rows = [{"path": cfg.a}, {"path": e}, {"path": o}]
+        with App(cfg, "ok_wait_then_row", rows) as app:
+            app.open_row(1, "a.ts")
+            _walk_done(app)
+            time.sleep(1)
+            took = slow_then_cut(app)
+            app.ok()
+            app.open_row(3, "other48.ts", wait=False)
+            time.sleep(7)
+            up = app.editor() is not None
+            title = ""
+            if up:
+                app.to_editor()
+                title = (app.state() or {}).get("title", "")
+            t.check("48p a row double-clicked during OK's wait stays up in the editor",
+                    (not took) or (up and "other48" in title),
+                    f"cut {'taken' if took else 'not taken'}; editor up {up}; title {title!r}")
+            if up:
+                app.ok()
+                app.gone(timeout=30)
+            time.sleep(1)
+            p = app.save()
+            c2 = cuts_of(p, 2)
+            t.check("48p ...and row 2's cut reached the list", (not took) or len(c2) == 1,
+                    f"row 2 {fmt(c2)} row 3 {fmt(cuts_of(p, 3))}")
+        if os.path.exists(side):
+            os.remove(side)
+        with App(cfg, "ok_wait_twice", rows) as app:
+            app.open_row(1, "a.ts")
+            _walk_done(app)
+            time.sleep(1)
+            took = slow_then_cut(app)
+            app.ok()
+            time.sleep(0.3)
+            if app.editor():
+                app.to_editor()
+                app.ok()
+            app.gone(timeout=30)
+            time.sleep(1)
+            p = app.save()
+            c2 = cuts_of(p, 2)
+            t.check("48p OK twice during the wait: closed once, the cut kept", (not took) or len(c2) == 1,
+                    f"cut {'taken' if took else 'not taken'}; row 2 {fmt(c2)}")
+    finally:
+        for f in (e, side, o):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+ORD48 = ["pal50i.ts", "prores.mov", "mjpeg.mov", "phonefull.mp4", "xvid.mkv", "tiny.mp4", "xvid.avi"]
+
+
+def ordinary_more_material(cfg, t):
+    """(48th pass, mainjs.) Ordinary recordings no pass had driven through the
+    editor: a 50i PAL MPEG-2 .ts, ProRes 422 and MJPEG .mov (every picture a
+    key picture), a full-range (yuvj) H.264 phone .mp4, Xvid with B pictures
+    in .mkv, a 0.6 s clip, and an Xvid .avi (a project naming one). J at and
+    around key pictures shows the recording's picture; a cut with IN on a key
+    picture and one inside a GOP (seams), OK, 出力開始: the output holds
+    exactly the pictures the editor left. The .avi must be refused with a
+    message, or cut like the rest."""
+    d = _m48_make(cfg)
+    _m48_clear(cfg)
+    specs = _m48_specs()
+    names = list(ORD48)
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    rows = [_m48_row(cfg, n) for n in names]
+    with App(cfg, "ordinary_more_material", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            h = specs[name][1]
+            path = _m48_src(cfg, name)
+            src = _numbers(path)
+            keys = _keys_of(path)
+            app.to_list()
+            app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+            try:
+                app.open_row(i, name, wait=True)
+                _walk_done(app)
+            except Exception as e:  # noqa: BLE001
+                said = ""
+                try:
+                    said = app.state()["status"] if app.editor() else ""
+                except Exception:  # noqa: BLE001
+                    pass
+                app.to_list()
+                row = app.s.js(f"return document.querySelector('#cliplist > li:nth-child({i})').innerText")
+                t.check(f"48m {name}: refused with a message", bool(said or row),
+                        f"{type(e).__name__}: {e}; editor status {said!r}; row {row!r}")
+                if app.editor():
+                    app.to_editor()
+                    app.escape(discard=True, expect_dialog=False)
+                    app.gone()
+                continue
+            time.sleep(1.5)
+            total = app.state()["frames"]
+            mid = [k for k in keys if 3 <= k < len(src) - 3]
+            probe = sorted({f for k in (mid[1:3] if len(mid) > 3 else mid[:2]) for f in (k - 1, k, k + 1)}
+                           | {len(src) // 3, len(src) - 1})
+            bad = []
+            for f in probe:
+                if 0 <= f < len(src):
+                    n = _shown_at(app, f, h)
+                    if n != src[f]:
+                        bad.append((f, n, src[f]))
+            t.check(f"48m {name}: J shows the recording's picture", not bad,
+                    f"counter {total} src {len(src)} keys {keys[:5]} wrong {bad[:6]}")
+            if total < 40:
+                plan = [(3, 5)]
+            else:
+                big = [k for k in keys if total * 0.2 < k < total * 0.5]
+                ka = big[0] if big else int(total * 0.3)
+                plan = [(ka, ka + 7), (int(total * 0.6) + 3, int(total * 0.75) + 1)]
+            removed = []
+            off = 0
+            for a, b in plan:
+                left = app.state()["frames"]
+                na = _ord_mark(app, a - off, "i", h)
+                nb = _ord_mark(app, b - off, "o", h)
+                app.s.keys("Delete")
+                wait_for(f"{name} cut {a}-{b}", lambda: app.state()["frames"] == left - (b - a + 1), 10)
+                removed.append((na, nb, src[a], src[b]))
+                off += b - a + 1
+            shown[i] = (name, src, removed)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=900)
+        outs = _ord_outputs(app)
+        for i, (name, src, removed) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            gone = set()
+            for na, nb, wa, wb in removed:
+                gone.update(src[src.index(wa):src.index(wb) + 1])
+            want = [n for n in src if n not in gone]
+            marks_ok = all(na == wa and nb == wb for na, nb, wa, wb in removed)
+            detail = (f"src {len(src)}, shown/wanted at IN/OUT {removed}, cuts {fmt(cuts_of(p, i))}, "
+                      f"outputs {[os.path.basename(f) for f in files]}")
+            if got is not None and got != want:
+                diff = [(k, a, b) for k, (a, b) in enumerate(zip(got, want)) if a != b][:4]
+                detail += f"; got {len(got)} want {len(want)}; first differences {diff}"
+            t.check(f"48m {name}: output = what the editor left", marks_ok and got == want, detail)
+            if len(vids) == 1:
+                info = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                       "stream=codec_name,pix_fmt,color_range,field_order", "-of", "csv=p=0",
+                                       vids[0]], capture_output=True, text=True).stdout.strip()
+                print(f"        {os.path.basename(vids[0])}: {info}", flush=True)
+            for f in files:
+                os.remove(f)
+
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -9223,6 +9888,10 @@ SCENARIOS = [
     ordinary_trim_roundtrip,
     ordinary_short_clip,
     ordinary_edit_lists,
+    ps_heads_exact,
+    ok_while_marks_read,
+    ordinary_more_material,
+    ok_wait_then_row,
 ]
 
 

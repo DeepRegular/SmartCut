@@ -165,11 +165,15 @@ fi
 
 # --- the cut -------------------------------------------------------------
 # The claim the whole feature makes: reading a title out of a folder, out of
-# an image, or reading the stream itself, are the same read.
+# an image, or reading the stream itself, are the same read. Compared packet
+# by packet rather than byte for byte: a title read off a disc names its
+# sound languages from the IFO, so its map differs from the bare stream's.
 cut_md5() { # <input> <out> [args...]
   local src=$1 out=$2; shift 2
   "$BIN" "$src" -o "$OUT/$out" --keep 2.0-8.0 "$@" >/dev/null 2>&1
-  md5sum "$OUT/$out" 2>/dev/null | cut -c1-12
+  [ -s "$OUT/$out" ] || return 0
+  ffmpeg -nostdin -v error -i "$OUT/$out" -map 0 -c copy -f framemd5 - 2>/dev/null \
+    | grep -v '^#' | md5sum | cut -c1-12
 }
 plain=$(cut_md5 "$OUT/whole.vob" plain.ts)
 folder=$(cut_md5 "$ONE" folder.ts --title 1)

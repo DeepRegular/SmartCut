@@ -25,7 +25,13 @@ python3 -c "import numpy" 2>/dev/null || { echo "  SKIP  numpy not installed"; e
 # Two kept ranges either side of one cut, on access points so the copy is
 # clean; the second range is what a seam error would show up in.
 RANGES=(--keep 0.665-400.0 --keep 700.0-1100.0)
-PROBES=(100:99.335 300:299.335 800:499.335 1000:699.335)
+# Where each probe lands in the output is where its PICTURE lands. 700.0
+# falls between pictures: the second range opens on the picture at 700.031,
+# right after the first range's 399.332 s of pictures, so source 800 sits at
+# 800 - 700.031 + 399.332. (Placing it at 800 - 700 + 399.335 measured the
+# sound against the bound instead of the picture, and asked the re-encoded
+# sound to start 31 ms before its first picture.)
+PROBES=(100:99.335 300:299.335 800:499.301 1000:699.301)
 
 pass=0; fail=0
 run() {
