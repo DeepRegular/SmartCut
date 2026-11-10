@@ -82,11 +82,20 @@ These are the files it can read:
 
 Drop anything else and it says it ignored them; the list does not change.
 
-These are containers. A bare video stream with no container around it — an
-MPEG-1 stream (`.m1v`, or the same bytes saved as `.mpg`), an MPEG-4 Part 2,
-VC-1, H.263 or AVS stream, as well as `.m2v`, `.h264` and `.hevc` — has no
-times of its own to cut by, and is refused when it is opened with
+These are containers. A bare video stream with no container around it has no
+times of its own to cut by. Under its own extension — `.m1v`, `.m2v`, `.h264`,
+`.hevc` — it is not on the list above and is ignored like anything else. Saved
+under one that is — an MPEG-1 stream as `.mpg`, an MPEG-4 Part 2 stream as
+`.m4v` — it comes in as a row and is refused when it is opened, with
 `no random access points found`.
+
+**A program stream holding two recordings one after the other is refused too.**
+Two `.mpg` files joined end to end (`cat`, `copy /b`), the `.VOB` files of a
+DVD whose set holds more than one title, and a DVD recorder's `.VRO` each start
+their clock again partway through, and cannot be cut as one recording. The
+message names the byte where the clock starts again. Open the files as they
+were before they were joined, or the DVD's folder (or its `.iso`) rather than
+its `.VOB` files: a disc is read title by title and opens as before.
 
 ### Discs: Blu-ray and DVD
 

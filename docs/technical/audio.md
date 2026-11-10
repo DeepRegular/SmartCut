@@ -31,6 +31,19 @@ Audio is handled **per kept interval** rather than per video segment. Each inter
 audio is anchored to the output time where that interval's video starts, so drift
 across intervals cannot happen by construction — or so it seemed.
 
+**Where the video starts is its first picture, not the bound asked for.** A
+range given in seconds on the command line need not start on a picture:
+`--keep 3.05-9` of a 5 fps recording re-encodes from 3.05, and its first
+picture is the one at 3.2. Until 2026-11-10 the sound was laid from 3.05, and
+the whole range, copied stretch and all, ran 150 ms behind its pictures — up to
+a frame on any range that opened between two pictures. A range's sound now
+starts on its first picture and ends on the first picture at or after its end,
+where the last picture stops being shown (`cut::sound_span`). Only a
+re-encoded end can sit between pictures, since a copy starts and stops on entry
+points; a bound on a picture, which is what the editor sends, comes back as it
+went in, and a reel written afresh on the master's frames keeps the range's own
+times.
+
 There was a trap. **An MP4 audio track expresses time through sample durations
 (`stts`); it does not keep a timestamp per packet.** All it keeps is the track's start
 offset, and the samples are laid out back to back after that. So dropping a single
@@ -1237,6 +1250,19 @@ so the fix is to believe it: drop what lands before zero and take the timestamp 
 position. The A/V length skew in `run_audio_tests.sh` under `reencode`, which peaked at
 21.3 ms — exactly one frame — now peaks at 16.0 ms and averages 6.4 ms.
 
+Two encoders do not stamp what they hold, and each is corrected by hand in
+`audio::Reencoder`. **libavcodec's DTS encoder** runs its input through a
+512-sample analysis bank and declares a delay of nought, so every packet holds
+the frame fed before it, stamped as its own: a track re-encoded as DTS was
+10.7 ms behind its pictures end to end and lost its last frame. Its packets are
+now placed 512 samples earlier (`undeclared_delay`), and a frame of silence at
+the end pushes the last of the track out. **An Opus encoder** states its delay
+a second time, as the pre-skip in its `OpusHead`, for a player to drop off the
+head; the packet that delay sits in is never written here, so a whole track
+re-encoded as Opus played 6.5 ms early. The pre-skip is written as nought.
+Every other encoder here declares its delay exactly, measured with an impulse
+at 48 and 44.1 kHz.
+
 ## Verifying real material's audio
 
 Impulse material can only answer "how does it behave on material we made". "When a real
@@ -1339,11 +1365,13 @@ frame away from the cut's. The first frame's offset is now counted the way the
 cut counts it, and where a range's ends sit on pictures (as the editor sets
 them) every range after the first opens on the frame the cut opens it on.
 (Times on a millisecond clock, as in a `.mkv`, still part by a fraction of a
-millisecond a range, and over many ranges a head can come out a frame off. A
-command-line range whose ends fall inside a picture, `--keep 5-12` say, is
-counted by the cut in whole pictures and by the sound-only writer in seconds,
-so its later heads can still open a frame apart.) The first range's own head
-keeps its own rule (below).
+millisecond a range, and over many ranges a head can come out a frame off.) A
+command-line range whose ends fall between pictures, `--keep 5-12` say, is
+moved onto them first, as the cut with pictures moves its sound
+(`on_its_pictures`, which plans the range as the cut does and asks
+`cut::sound_span`): until 2026-11-10 the cut counted such a range in whole
+pictures and the sound-only writer in seconds, and its later heads could open
+a frame apart. The first range's own head keeps its own rule (below).
 
 A hole in the track is never taken for drift. Where a range's own sound starts
 late (the recording's sound begins after its pictures, or the track breaks off

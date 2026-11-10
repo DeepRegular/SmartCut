@@ -191,6 +191,20 @@ Measured: full-range black (0) joined into an eight-bit studio master came out
 at 16, and at 64 into a ten-bit one; the other way, a studio test pattern at
 40..888 spread to 0..965 in a full-range master.
 
+**The YUV matrix is converted the same way.** A picture scaled from one size to
+another keeps the samples of the matrix it was made with, and libswscale
+converts between matrices only when it is told both. Left to itself, a
+standard-definition reel (BT.601) written into a high-definition master
+(BT.709) went out as it was and was shown through the other matrix: the green
+of a test card a seventh darker, reds turned orange — every DVD or SD broadcast
+joined to an HD recording. Now `cut_conform::matrices` reads the picture's
+matrix and the master's, and where they differ `convert_matrices` hands both
+(and both ranges) to the scaler, as `-vf
+scale=in_color_matrix=..:out_color_matrix=..` does. An unstated matrix is read
+by size, as mpv reads it: BT.709 at 1280 across or more than 576 lines, BT.601
+below, so a 720p film cropped to 1280x536 counts as HD. A reel whose matrix
+agrees with the master's is written as before.
+
 ### What actually differs, measured
 
 A month of broadcast: 1186 recordings off 32 channels, read with `conformdiag
@@ -623,6 +637,11 @@ hold the two answers together.
 | Composited into | the preview's own size, `yuv420p` | the master clip's shape |
 | Scaler | `FAST_BILINEAR` — a picture is looked at once and dropped | `BICUBIC` — it is paid for the length of the reel |
 | Sound | the two clips in turn to one output device (`play_audio_across`), each on the track in the place the master's first kept track holds (`heard_nth`) | the same order and the same track (`Threads`), written |
+
+A reel of another matrix is scaled into the preview through the same
+`cut_conform::matrices` and `convert_matrices` the output uses, with the
+master's matrix as the one to reach, so an SD reel joined to an HD one shows
+in the window in the colours it is written in.
 
 The composite is done in studio-range `yuv420p` and the conversion to JPEG
 comes after it. The other way round, the studio black `Shade::yuv` gives

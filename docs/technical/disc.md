@@ -513,6 +513,23 @@ recording on a disc is opened, matched on PID, and the map the cut writes
 carries an ISO 639 descriptor for each. Only where the stream itself declared
 none: a broadcast that said so said it nearer the sound than any index does.
 
+A DVD title's sound is filled in the same way, from its IFO, matched on the
+substream id the list shows it under (`dvd::sound_of`); until 2026-11-10 only
+its subtitles were, and a bilingual disc's cut had two anonymous AC-3 tracks.
+**The IFO writes ISO 639-1**, two letters, and handed `en` the transport stream
+muxer writes no descriptor at all and a clip index got `en` and a zero. So
+every language written into a `.ts`, a `.m2ts`, a disc of recordings or a
+`.mkv` goes through `dvd::three_letters`, which gives the ISO 639-2/B code a
+broadcast and a Blu-ray write (`eng`, `jpn`, `ger`, `fre`), takes two letters
+it does not know for no language rather than `und`, and hands three letters
+back as they came. The `.idx` beside a cut keeps the disc's two. A DVD's
+subtitles converted into a Blu-ray's carry their language into a `.m2ts` and a
+disc of recordings as well: libavformat's muxer writes none for that stream
+type, so the map of the file just written is given an ISO 639 descriptor for
+each converted stream in place (`name_converted` in `cut.rs`), a packet at a
+time and only where the section still fits its packet, so no arrival time,
+clock reference or entry point moves.
+
 ### A track is named by its PID
 
 The chooser answers **before anything is open**, whereas a stream index is
@@ -1497,6 +1514,23 @@ a DVD — four gigabytes with a discontinuity in the tail — it came back with
 and now reports it, as `index::Index::end`; the container's own answer is kept
 wherever it is the longer of the two, so a container that knows its length
 keeps it.
+
+Nor does a program stream say **where one recording ends and another
+begins.** Two `.mpg` files joined with `cat` or `copy /b`, the `.VOB` files of a
+set holding more than one title, and a DVD recorder's `.VRO` each start their
+clock again from near nought partway through. Read as one recording, their
+entry points sorted by time were the two interleaved: a cut of the whole kept
+half the pictures, and a cut from 2 to 4 s wrote the first recording's pictures
+while the preview showed the second's. Such a file is now refused when it is
+opened (`index::clock_restart`, asked in `assemble` of a fresh walk and of a
+held `.scix` alike), with the byte where the clock starts again. The entry
+points are taken in byte order and compared with the latest time so far: a
+step back of more than a second is a restart, and so is a leap forward of more
+than half the 33-bit clock, which is what libavformat makes of a restart when
+the first picture is more than a minute into its clock and it takes the new
+clock for a wrap. A title read off a disc never holds one, because a title is
+cut into rows wherever its clock leaves off by more than a second
+(`dvd::runs_of`), so a DVD's folder or `.iso` opens as before.
 
 ### The container's seek table has to cover the recording, not just reach the end
 
