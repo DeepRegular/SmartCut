@@ -6177,15 +6177,6 @@ async fn export(
         // name a share: `smb://nas/rec` lands on the mount the same way an
         // input does. A plain path is handed back untouched.
         let output = local_path(&output)?.to_string_lossy().into_owned();
-        // The folder the cut goes in may not exist yet -- a run writing into
-        // a folder of its own makes one that was named on the settings
-        // screen and has never been anywhere else. Made here rather than
-        // before the run, so that a folder is made for a cut that is
-        // actually about to be written and not for one that failed to open.
-        if let Some(dir) = std::path::Path::new(&output).parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("making {}: {e}", dir.display()))?;
-        }
         // Owned either way, so the recording's lock is not held for the
         // minutes the cut takes: the editor has to keep answering while its
         // own output runs.
@@ -6213,6 +6204,17 @@ async fn export(
                 &src.joins.clone(),
             )
             .map_err(|e| e.to_string())?;
+        }
+        // The folder the cut goes in may not exist yet -- a run writing into
+        // a folder of its own makes one that was named on the settings
+        // screen and has never been anywhere else. Made here rather than
+        // before the run, so that a folder is made for a cut that is
+        // actually about to be written and not for one that failed to open:
+        // made before the open, a recording gone from a share that had
+        // dropped left the run's folder behind, empty.
+        if let Some(dir) = std::path::Path::new(&output).parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("making {}: {e}", dir.display()))?;
         }
         // 環境設定's answer about a plan, as this cut is planned with it, and
         // kept for the check that reads the file back. See [`PLANNED_WITH`].
@@ -6728,13 +6730,6 @@ async fn export_joined(
             return Err("nothing to write: the list is empty".to_string());
         }
         let output = local_path(&output)?.to_string_lossy().into_owned();
-        if let Some(dir) = std::path::Path::new(&output)
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("making {}: {e}", dir.display()))?;
-        }
         // Every recording opened and planned before the first byte, because
         // the shape of the output depends on all of them: which sound tracks
         // are written afresh is an answer over the whole list. See
@@ -6758,6 +6753,15 @@ async fn export_joined(
                 .map_err(|e| e.to_string())?;
             }
             sources.push(src);
+        }
+        // Once every recording has opened, as in `export`: a folder is made
+        // for a cut that is about to be written.
+        if let Some(dir) = std::path::Path::new(&output)
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("making {}: {e}", dir.display()))?;
         }
         // 環境設定's answer about a plan, read once: the plans below are made
         // with it and the engine is handed it to plan what a transition

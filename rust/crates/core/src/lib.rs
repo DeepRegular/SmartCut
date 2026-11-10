@@ -1088,7 +1088,7 @@ pub fn video_decoder_with(
     params: ff::codec::Parameters,
     threads: usize,
 ) -> Result<ff::decoder::Video> {
-    let mut ctx = ff::codec::context::Context::from_parameters(params)?;
+    let mut ctx = video_context(params)?;
     // ffmpeg-next's `set_threading` writes the kind as well as the count, and
     // naming one kind is exactly how a codec that only has the other ends up
     // single threaded anyway. The count is the one field that needs saying:
@@ -1097,6 +1097,24 @@ pub fn video_decoder_with(
         (*ctx.as_mut_ptr()).thread_count = threads as i32;
     }
     Ok(ctx.decoder().video()?)
+}
+
+/// A video decoder's context for `params`, told what libavcodec cannot
+/// work out for itself before it opens: the IDCT of an MPEG-quantised Xvid
+/// recording (see [`cut::xvid_mpeg_quant`]). Every video decoder here is
+/// opened through it, so the cut, its seams, the check and the previews all
+/// see the same pictures.
+pub(crate) fn video_context(
+    params: ff::codec::Parameters,
+) -> Result<ff::codec::context::Context> {
+    let xvid = cut::xvid_mpeg_quant(&params);
+    let mut ctx = ff::codec::context::Context::from_parameters(params)?;
+    if xvid {
+        unsafe {
+            (*ctx.as_mut_ptr()).idct_algo = ff::ffi::FF_IDCT_XVID;
+        }
+    }
+    Ok(ctx)
 }
 
 /// What a pass that decodes only entry pictures has to hand its decoder.
@@ -1412,6 +1430,24 @@ fn assemble(
     let mut points = idx.points;
     if points.is_empty() {
         return Err(anyhow!("no random access points found in {path}"));
+    }
+    // **Two recordings in one program stream** cannot be read as one; see
+    // [`index::clock_restart`]. Here, where a held index (.scix) arrives as
+    // well as a walk, so that one written before this was asked is refused
+    // the same. A program stream is the byte-seekable kind that is not a
+    // transport stream (the bare elementary streams are refused already).
+    if byte_seekable && !on_a_ts {
+        if let Some((pos, at, latest)) = index::clock_restart(&points) {
+            return Err(anyhow!(
+                "{path}: the pictures' clock starts again part-way through the file (at byte \
+                 {pos}, {at:.3}s comes after {latest:.3}s), so it holds more than one recording \
+                 one after another -- files joined end to end (cat, copy /b), the .VOB files of \
+                 a DVD set holding more than one title, or a DVD recorder's .VRO -- and it \
+                 cannot be cut as one. Open each recording on its own: the files as they were \
+                 before they were joined, or a DVD's folder (VIDEO_TS) rather than its .VOB \
+                 files."
+            ));
+        }
     }
     // Times are rebased by the container's start time, and the first picture
     // can land a fraction of a microsecond below zero when the two disagree

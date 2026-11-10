@@ -764,6 +764,26 @@ pub struct Reencoder {
     /// arrangement libav hands back as the default for that many. See
     /// [`encoder_layout`].
     layout: ff::channel_layout::ChannelLayout,
+    /// The delay the encoder has and does not declare. See
+    /// [`undeclared_delay`].
+    hidden: i64,
+}
+
+/// How many samples late an encoder's output is beyond the delay it declares.
+///
+/// libavcodec's DTS encoder (`dca`) runs its input through a 512-sample
+/// analysis bank and says its delay is nought: every packet it hands back
+/// holds the frame fed one before it, stamped as though it held its own.
+/// Laid by those stamps, a track re-encoded as DTS (`--audio-codec dts`, a
+/// `.dts` written from AAC) was 10.7 ms behind its pictures from end to end
+/// and lost its last frame of sound. Every other encoder here declares its
+/// delay exactly (measured with an impulse at 48 and 44.1 kHz).
+fn undeclared_delay(id: ff::codec::Id) -> i64 {
+    if encoder_for(id) == ff::codec::Id::DTS {
+        512
+    } else {
+        0
+    }
 }
 
 impl Reencoder {
@@ -867,6 +887,7 @@ impl Reencoder {
             fixed,
             short_last,
             layout,
+            hidden: undeclared_delay(target),
         })
     }
 
@@ -955,6 +976,23 @@ impl Reencoder {
             // sound came out as nothing a decoder could read.
             if matches!(self.framing, Some(Framing::Latm(_))) {
                 (*par.as_mut_ptr()).codec_id = ff::codec::Id::AAC_LATM.into();
+            }
+            // An Opus encoder states its delay as the stream's pre-skip, in
+            // its OpusHead, for a player to drop off the head. The packet
+            // that delay sits in is never written (see `collect`): the first
+            // one written already opens on the track's first sample. Left
+            // stated, a player dropped 6.5 ms of the sound itself, and a
+            // `.opus` or `.mka` re-encoded whole played that much early.
+            let raw = &mut *par.as_mut_ptr();
+            if raw.codec_id == ff::ffi::AVCodecID::AV_CODEC_ID_OPUS {
+                raw.initial_padding = 0;
+                if !raw.extradata.is_null() && raw.extradata_size >= 12 {
+                    let head = std::slice::from_raw_parts_mut(raw.extradata, 12);
+                    if &head[..8] == b"OpusHead" {
+                        head[10] = 0;
+                        head[11] = 0;
+                    }
+                }
             }
         }
         par
@@ -1349,6 +1387,16 @@ impl Reencoder {
             }
             self.drain(out)?;
         }
+        // An encoder holding back more than it declared holds the last of
+        // the track as well, and has no flush to give it back: a frame of
+        // silence after it pushes it out. The packet that held only priming
+        // was not written (see `collect`), so the track keeps its length.
+        if self.hidden > 0 {
+            for ch in 0..self.channels {
+                self.ready[ch].extend(std::iter::repeat_n(0.0, self.hidden as usize));
+            }
+            self.drain(out)?;
+        }
         self.encoder.send_eof()?;
         self.collect(out)
     }
@@ -1362,7 +1410,8 @@ impl Reencoder {
             // The priming packet holds the encoder's warm-up and the lead of
             // silence, and nothing of the audio, so there is nothing in it to
             // write. The rest are stamped from the first sample of the track.
-            let Some(pts) = at_sample(&packet).map(|p| p - self.lead).filter(|&p| p >= 0) else {
+            let Some(pts) = at_sample(&packet).map(|p| p - self.lead - self.hidden).filter(|&p| p >= 0)
+            else {
                 continue;
             };
             // Nothing to write, and nothing that can be: FLAC's encoder ends
@@ -3127,5 +3176,13 @@ mod tests {
         let mut s = vec![1.0f32; 1024];
         mask(&mut s, 4096, (0, 1 << 30));
         assert!(s.iter().all(|&v| v == 1.0));
+    }
+
+    #[test]
+    fn only_the_dts_encoder_holds_back_a_frame_it_does_not_declare() {
+        assert_eq!(undeclared_delay(ff::codec::Id::DTS), 512);
+        for id in [ff::codec::Id::AAC, ff::codec::Id::AC3, ff::codec::Id::OPUS, ff::codec::Id::FLAC] {
+            assert_eq!(undeclared_delay(id), 0);
+        }
     }
 }

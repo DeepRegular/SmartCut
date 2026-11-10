@@ -1589,7 +1589,9 @@ fn track_end(ictx: &crate::input::Demux, video: Option<usize>) -> Option<f64> {
         return Some((start + d) as f64 * tb);
     }
     if name.contains("matroska") {
-        let tag = s.metadata().get("DURATION")?.to_string();
+        // Through `crate::tag`, which checks the bytes: `get` hands them
+        // back as a `str` unchecked (see there).
+        let tag = crate::tag(&s.metadata(), "DURATION")?;
         let mut secs = 0.0;
         for part in tag.split(':') {
             secs = secs * 60.0 + part.trim().parse::<f64>().ok()?;

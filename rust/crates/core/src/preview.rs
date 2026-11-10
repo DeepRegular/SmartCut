@@ -1537,14 +1537,18 @@ fn to_rgb(picture: &ff::frame::Video, width: u32, height: u32) -> Result<ff::fra
     use ff::ffi;
     let full = crate::blend::full_range_frame(picture);
     // What the picture says it is, or by its size where it says nothing: HD
-    // and up is BT.709, anything smaller BT.601.
+    // and up is BT.709, anything smaller BT.601. HD by the rule the cut uses
+    // for the same question ([`crate::cut_conform::matrices`], mpv's): 1280
+    // across or more than 576 lines. By line count alone a 720p film cropped
+    // to 1280x536 was saved as a still through BT.601 while its cut, and
+    // every player, read it as BT.709.
     let space = match picture.color_space() {
         ff::color::Space::BT709 => ffi::SWS_CS_ITU709,
         ff::color::Space::BT2020NCL | ff::color::Space::BT2020CL => ffi::SWS_CS_BT2020,
         ff::color::Space::FCC => ffi::SWS_CS_FCC,
         ff::color::Space::SMPTE240M => ffi::SWS_CS_SMPTE240M,
         ff::color::Space::BT470BG | ff::color::Space::SMPTE170M => ffi::SWS_CS_ITU601,
-        _ if picture.height() >= 720 => ffi::SWS_CS_ITU709,
+        _ if picture.width() >= 1280 || picture.height() > 576 => ffi::SWS_CS_ITU709,
         _ => ffi::SWS_CS_ITU601,
     };
     let mut out = ff::frame::Video::new(ff::format::Pixel::RGB24, width, height);
@@ -1740,8 +1744,35 @@ impl Landed {
         if !packet.is_key() {
             if pos > at.pos {
                 *slot = None;
+                return;
             }
-            return;
+            // A field picture's second field in front of the entry picture.
+            // The PES the entry point begins in can open on the second field
+            // of the pair before the I -- an MPEG-2 broadcast remuxed into a
+            // program stream codes its pictures as fields -- and read from
+            // that byte the parser takes the lone field for the first of a
+            // pair and hands it over joined to the I picture, as a packet
+            // that is not marked key and is timed as the field was. Fed to
+            // the decoder, the I was lost with it and every picture of the
+            // GOP came out a grey field: a frame asked for there, the still
+            // saved there and a range played from there (one GOP of a
+            // minute's remux of a BS recording). The field belongs to the
+            // GOP before, which nothing read from here shows; what is left
+            // from the entry picture's own headers on is its packet.
+            let mpeg = matches!(src.video.codec.as_str(), "mpeg1video" | "mpeg2video");
+            match packet.data().filter(|_| mpeg).and_then(entry_start) {
+                Some(start) => {
+                    let Some(data) = packet.data() else { return };
+                    let mut own = ff::Packet::copy(&data[start..]);
+                    own.set_stream(packet.stream());
+                    own.set_pts(packet.pts());
+                    own.set_dts(packet.dts());
+                    own.set_position(packet.position());
+                    own.set_flags(packet.flags() | ff::packet::Flags::KEY);
+                    *packet = own;
+                }
+                None => return,
+            }
         }
         *slot = None;
         if pos >= 0 && pos != at.pos {
@@ -1755,6 +1786,31 @@ impl Landed {
         }
         packet.set_pts(Some(((at.time + src.start_time) / tb).round() as i64));
     }
+}
+
+/// Where an MPEG-1/2 entry picture's own headers begin inside a packet that
+/// holds something else in front of them (see [`Landed::mend`]): the sequence
+/// header, else the GOP header, before the first I picture, else that
+/// picture's own header. `None` where the packet holds no I picture, or
+/// nothing stands in front of it.
+fn entry_start(data: &[u8]) -> Option<usize> {
+    // Start codes: 00 00 01 xx. A picture header's coding type is three bits
+    // after its ten-bit temporal reference; 1 is an I picture.
+    let codes = || {
+        data.windows(4)
+            .enumerate()
+            .filter(|(_, w)| w[0] == 0 && w[1] == 0 && w[2] == 1)
+            .map(|(i, w)| (i, w[3]))
+    };
+    let picture = codes()
+        .find(|&(i, c)| c == 0x00 && data.get(i + 5).is_some_and(|b| (b >> 3) & 7 == 1))?
+        .0;
+    let start = codes()
+        .take_while(|&(i, _)| i < picture)
+        .find(|&(_, c)| c == 0xB3)
+        .or_else(|| codes().take_while(|&(i, _)| i < picture).find(|&(_, c)| c == 0xB8))
+        .map_or(picture, |(i, _)| i);
+    (start > 0).then_some(start)
 }
 
 /// How many cores [`walk`] decodes on.
@@ -1821,9 +1877,7 @@ fn walk(
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
         .parameters();
     let mut decoder = match cores {
-        Cores::One => ff::codec::context::Context::from_parameters(params)?
-            .decoder()
-            .video()?,
+        Cores::One => crate::video_context(params)?.decoder().video()?,
         Cores::All => crate::video_decoder(params)?,
         Cores::Steady => steady_decoder(params)?,
     };
@@ -2248,7 +2302,7 @@ pub(crate) fn steady_decoder(params: ff::codec::Parameters) -> Result<ff::decode
             | ff::codec::Id::MPEG4
             | ff::codec::Id::H263
     );
-    let mut ctx = ff::codec::context::Context::from_parameters(params)?;
+    let mut ctx = crate::video_context(params)?;
     unsafe {
         let c = ctx.as_mut_ptr();
         (*c).thread_count = if conceals { 1 } else { 0 };
@@ -2397,6 +2451,27 @@ mod tests {
         let mut s = Stretches::of(&twins, fd);
         s.reach(100);
         assert!(s.outside(11.0) && !s.outside(12.0) && !s.outside(50.0));
+    }
+
+    /// A lone second field joined in front of an entry picture's headers is
+    /// found and left behind; a packet that opens on them, one with no I
+    /// picture, and the headers of a B picture are left as they are.
+    #[test]
+    fn an_entry_picture_behind_a_stray_field() {
+        let field_b = [0, 0, 1, 0x00, 0x12, 0x18, 0, 0, 0, 0, 1, 0xB5, 0x8F, 0, 0, 1, 0x01, 0xAA, 0xBB];
+        let seq = [0, 0, 1, 0xB3, 0x5A, 0x04, 0x38, 0x33];
+        let gop = [0, 0, 1, 0xB8, 0, 8, 0, 0];
+        let i_pic = [0, 0, 1, 0x00, 0x00, 0x08, 0xFF, 0xF8, 0, 0, 1, 0x01, 0x11];
+        let p_pic = [0, 0, 1, 0x00, 0x00, 0x50, 0, 0, 0, 0, 1, 0x01, 0x22];
+        let join = |parts: &[&[u8]]| parts.concat();
+        let fl = field_b.len();
+        assert_eq!(entry_start(&join(&[&field_b, &seq, &gop, &i_pic, &p_pic])), Some(fl));
+        assert_eq!(entry_start(&join(&[&field_b, &gop, &i_pic])), Some(fl));
+        assert_eq!(entry_start(&join(&[&field_b, &i_pic, &seq])), Some(fl));
+        assert_eq!(entry_start(&join(&[&seq, &gop, &i_pic])), None);
+        assert_eq!(entry_start(&join(&[&field_b, &p_pic])), None);
+        assert_eq!(entry_start(&[0, 0, 1]), None);
+        assert_eq!(entry_start(&[]), None);
     }
 
     #[test]

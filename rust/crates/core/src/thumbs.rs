@@ -925,9 +925,7 @@ pub fn differences_near(src: &Source, at: f64, window: f64) -> Result<Vec<(f64, 
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?
         .parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?
-        .decoder()
-        .video()?;
+    let mut decoder = crate::video_context(params)?.decoder().video()?;
 
     let mut seen: Vec<(f64, [u8; SIG])> = Vec::new();
     // The last picture before the window, on a recording with seams: where a
@@ -1121,9 +1119,7 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?
         .parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?
-        .decoder()
-        .video()?;
+    let mut decoder = crate::video_context(params)?.decoder().video()?;
 
     let mut seen: Vec<(f64, [u8; SIG])> = Vec::new();
     decode_on(src, &mut ictx, &mut decoder, landed, |t, frame| {

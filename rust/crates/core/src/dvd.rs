@@ -708,6 +708,39 @@ pub struct Subtitles {
 /// whose name does not carry the sectors it plays. See
 /// [`crate::input::Input`] for the shape of one.
 pub fn subtitles_of(spec: &str) -> Option<Subtitles> {
+    let (ifo, first) = title_index_of(spec)?;
+    let streams = tracks(&ifo, controls_of(&ifo, first).as_ref())
+        .into_iter()
+        .filter(|t| t.kind == "subtitle")
+        .map(|t| (t.pid as u8, t.language))
+        .collect();
+    Some(Subtitles {
+        streams,
+        palette: palette_of(&ifo, first).unwrap_or_else(crate::vobsub::Palette::grey),
+    })
+}
+
+/// The sound of the title a recording's own name points at, as the list
+/// names it: by the substream id, with the language the index declared.
+///
+/// `None` for a recording that is not a DVD title, as [`subtitles_of`].
+/// Asked when a title is opened, so that a cut of a bilingual disc says which
+/// of its two AC-3 tracks is which -- the stream itself says nothing, and the
+/// list did show `en` and `ja` while the cut came out with two anonymous
+/// tracks. See [`crate::disc::carry_disc_languages`].
+pub fn sound_of(spec: &str) -> Option<Vec<Track>> {
+    let (ifo, first) = title_index_of(spec)?;
+    Some(
+        tracks(&ifo, controls_of(&ifo, first).as_ref())
+            .into_iter()
+            .filter(|t| t.kind == "audio")
+            .collect(),
+    )
+}
+
+/// The title set index a title's name points at, and the sector the title
+/// starts at: what [`subtitles_of`] and [`sound_of`] ask their questions of.
+fn title_index_of(spec: &str) -> Option<(Vec<u8>, Option<u64>)> {
     let (base, first) = spec.rsplit_once('@').map(|(b, r)| {
         let first = r.split('-').next().and_then(|n| n.parse::<u64>().ok());
         (b, first)
@@ -718,15 +751,7 @@ pub fn subtitles_of(spec: &str) -> Option<Subtitles> {
     if !ifo.starts_with(b"DVDVIDEO-VTS") {
         return None;
     }
-    let streams = tracks(&ifo, controls_of(&ifo, first).as_ref())
-        .into_iter()
-        .filter(|t| t.kind == "subtitle")
-        .map(|t| (t.pid as u8, t.language))
-        .collect();
-    Some(Subtitles {
-        streams,
-        palette: palette_of(&ifo, first).unwrap_or_else(crate::vobsub::Palette::grey),
-    })
+    Some((ifo, first))
 }
 
 /// Split `<disc>/VIDEO_TS/VTS_02_1.VOB` into the disc and the title set
@@ -956,6 +981,71 @@ fn video_detail(attr: &[u8]) -> String {
 fn language(raw: &[u8]) -> Option<String> {
     let code: String = raw.iter().map(|&b| b as char).collect();
     code.chars().all(|c| c.is_ascii_lowercase()).then_some(code)
+}
+
+/// The three letters a written stream names a language by, for the two a
+/// DVD's index names it by.
+///
+/// **A DVD says `en`; a transport stream, a clip index and libavformat's own
+/// metadata say `eng`.** The IFO writes ISO 639-1, and handed that, the
+/// transport stream muxer writes no language descriptor at all (it takes three
+/// letters or nothing) and a clip index got `en` and a zero. So a bilingual
+/// disc cut into a `.ts`, a `.m2ts` or a disc of recordings arrived with two
+/// sound tracks nobody could tell apart, where the same tracks off a Blu-ray,
+/// whose index already says `eng`, did not.
+///
+/// ISO 639-2/B, the form a broadcast and a Blu-ray write (`ger`, `fre`,
+/// `chi`), and libavformat's own. Two letters that are not a language this
+/// knows are no language: `und` filled in from nowhere would say something
+/// the disc did not. Anything else -- three letters already, from a
+/// broadcast, a Blu-ray or a Matroska file -- is handed back as it came, so
+/// what those write does not move. The `.idx` beside a cut keeps the two
+/// letters the disc gave; see [`crate::vobsub`].
+pub fn three_letters(language: &str) -> Option<String> {
+    let two = language.len() == 2 && language.bytes().all(|b| b.is_ascii_lowercase());
+    if !two {
+        return Some(language.to_string());
+    }
+    // ISO 639-1 in alphabetical order, and the three codes of 1988 a disc
+    // mastered before they were withdrawn can still carry (`iw`, `in`, `ji`).
+    const TABLE: &[(&str, &str)] = &[
+        ("aa", "aar"), ("ab", "abk"), ("ae", "ave"), ("af", "afr"), ("ak", "aka"), ("am", "amh"),
+        ("an", "arg"), ("ar", "ara"), ("as", "asm"), ("av", "ava"), ("ay", "aym"), ("az", "aze"),
+        ("ba", "bak"), ("be", "bel"), ("bg", "bul"), ("bh", "bih"), ("bi", "bis"), ("bm", "bam"),
+        ("bn", "ben"), ("bo", "tib"), ("br", "bre"), ("bs", "bos"), ("ca", "cat"), ("ce", "che"),
+        ("ch", "cha"), ("co", "cos"), ("cr", "cre"), ("cs", "cze"), ("cu", "chu"), ("cv", "chv"),
+        ("cy", "wel"), ("da", "dan"), ("de", "ger"), ("dv", "div"), ("dz", "dzo"), ("ee", "ewe"),
+        ("el", "gre"), ("en", "eng"), ("eo", "epo"), ("es", "spa"), ("et", "est"), ("eu", "baq"),
+        ("fa", "per"), ("ff", "ful"), ("fi", "fin"), ("fj", "fij"), ("fo", "fao"), ("fr", "fre"),
+        ("fy", "fry"), ("ga", "gle"), ("gd", "gla"), ("gl", "glg"), ("gn", "grn"), ("gu", "guj"),
+        ("gv", "glv"), ("ha", "hau"), ("he", "heb"), ("hi", "hin"), ("ho", "hmo"), ("hr", "hrv"),
+        ("ht", "hat"), ("hu", "hun"), ("hy", "arm"), ("hz", "her"), ("ia", "ina"), ("id", "ind"),
+        ("ie", "ile"), ("ig", "ibo"), ("ii", "iii"), ("ik", "ipk"), ("io", "ido"), ("is", "ice"),
+        ("it", "ita"), ("iu", "iku"), ("ja", "jpn"), ("jv", "jav"), ("ka", "geo"), ("kg", "kon"),
+        ("ki", "kik"), ("kj", "kua"), ("kk", "kaz"), ("kl", "kal"), ("km", "khm"), ("kn", "kan"),
+        ("ko", "kor"), ("kr", "kau"), ("ks", "kas"), ("ku", "kur"), ("kv", "kom"), ("kw", "cor"),
+        ("ky", "kir"), ("la", "lat"), ("lb", "ltz"), ("lg", "lug"), ("li", "lim"), ("ln", "lin"),
+        ("lo", "lao"), ("lt", "lit"), ("lu", "lub"), ("lv", "lav"), ("mg", "mlg"), ("mh", "mah"),
+        ("mi", "mao"), ("mk", "mac"), ("ml", "mal"), ("mn", "mon"), ("mr", "mar"), ("ms", "may"),
+        ("mt", "mlt"), ("my", "bur"), ("na", "nau"), ("nb", "nob"), ("nd", "nde"), ("ne", "nep"),
+        ("ng", "ndo"), ("nl", "dut"), ("nn", "nno"), ("no", "nor"), ("nr", "nbl"), ("nv", "nav"),
+        ("ny", "nya"), ("oc", "oci"), ("oj", "oji"), ("om", "orm"), ("or", "ori"), ("os", "oss"),
+        ("pa", "pan"), ("pi", "pli"), ("pl", "pol"), ("ps", "pus"), ("pt", "por"), ("qu", "que"),
+        ("rm", "roh"), ("rn", "run"), ("ro", "rum"), ("ru", "rus"), ("rw", "kin"), ("sa", "san"),
+        ("sc", "srd"), ("sd", "snd"), ("se", "sme"), ("sg", "sag"), ("si", "sin"), ("sk", "slo"),
+        ("sl", "slv"), ("sm", "smo"), ("sn", "sna"), ("so", "som"), ("sq", "alb"), ("sr", "srp"),
+        ("ss", "ssw"), ("st", "sot"), ("su", "sun"), ("sv", "swe"), ("sw", "swa"), ("ta", "tam"),
+        ("te", "tel"), ("tg", "tgk"), ("th", "tha"), ("ti", "tir"), ("tk", "tuk"), ("tl", "tgl"),
+        ("tn", "tsn"), ("to", "ton"), ("tr", "tur"), ("ts", "tso"), ("tt", "tat"), ("tw", "twi"),
+        ("ty", "tah"), ("ug", "uig"), ("uk", "ukr"), ("ur", "urd"), ("uz", "uzb"), ("ve", "ven"),
+        ("vi", "vie"), ("vo", "vol"), ("wa", "wln"), ("wo", "wol"), ("xh", "xho"), ("yi", "yid"),
+        ("yo", "yor"), ("za", "zha"), ("zh", "chi"), ("zu", "zul"), ("iw", "heb"), ("in", "ind"),
+        ("ji", "yid"),
+    ];
+    TABLE
+        .iter()
+        .find(|(two, _)| *two == language)
+        .map(|(_, three)| three.to_string())
 }
 
 /// A `dvd_time_t`: hours, minutes and seconds in binary coded decimal, and a
@@ -1343,6 +1433,22 @@ mod tests {
         // A sector no chain plays leaves the numbering as the list has it.
         let listed = tracks(&ifo, controls_of(&ifo, Some(99_999)).as_ref());
         assert_eq!(named(&listed, "subtitle"), vec![0x20, 0x21, 0x22]);
+    }
+
+    #[test]
+    fn a_disc_language_is_written_in_three_letters() {
+        assert_eq!(three_letters("en").as_deref(), Some("eng"));
+        assert_eq!(three_letters("ja").as_deref(), Some("jpn"));
+        assert_eq!(three_letters("de").as_deref(), Some("ger"));
+        assert_eq!(three_letters("zh").as_deref(), Some("chi"));
+        assert_eq!(three_letters("iw").as_deref(), Some("heb"));
+        // Two letters that name nothing are nothing, not `und`.
+        assert_eq!(three_letters("qq"), None);
+        // What already has three letters, or is not a DVD's code at all,
+        // goes out as it came.
+        assert_eq!(three_letters("jpn").as_deref(), Some("jpn"));
+        assert_eq!(three_letters("und").as_deref(), Some("und"));
+        assert_eq!(three_letters("EN").as_deref(), Some("EN"));
     }
 
     #[test]

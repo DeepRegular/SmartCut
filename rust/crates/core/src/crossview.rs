@@ -76,7 +76,12 @@ impl Seam<'_> {
     /// The size the preview's pictures are composited at: the master's
     /// shape, at most `width` wide. See [`shape_for`].
     pub fn shape(&self, width: u32) -> (u32, u32) {
-        shape_for(self.shaped_like.unwrap_or(self.before), width)
+        shape_for(self.master(), width)
+    }
+
+    /// The recording the joined file is written in the shape of.
+    fn master(&self) -> &Source {
+        self.shaped_like.unwrap_or(self.before)
     }
 
     /// How much of each clip the crossing really takes.
@@ -330,12 +335,20 @@ pub fn shape_for(src: &Source, width: u32) -> (u32, u32) {
 /// these for the same reason.
 struct Rescale {
     was: (u32, u32, ff::format::Pixel, bool),
+    /// The matrices it converts between; see [`crate::cut::matrices`].
+    matrices: Option<(i32, i32)>,
     ctx: crate::blend::Scaler,
 }
 
+/// `master` is the recording the joined file is written in the shape of
+/// ([`Seam::master`]): a reel whose samples were made with another YUV matrix
+/// than the master's is converted to the master's, as the cut converts it,
+/// and a standard-definition reel joined onto a high-definition master was
+/// shown in other colours from the ones the file has. `None` converts none.
 fn reshape(
     frame: &ff::frame::Video,
     (w, h): (u32, u32),
+    master: Option<&crate::VideoInfo>,
     rescale: &mut Option<Rescale>,
 ) -> Result<ff::frame::Video> {
     // Every picture brought to studio levels, whatever range it was in. The
@@ -348,21 +361,27 @@ fn reshape(
     // picture in.
     let full = crate::blend::full_range_frame(frame);
     let have = (frame.width(), frame.height(), frame.format(), full);
-    if have == (w, h, SHAPE, false) {
+    let swap = master.and_then(|m| crate::cut::matrices(frame, m));
+    if swap.is_none() && have == (w, h, SHAPE, false) {
         return Ok(frame.clone());
     }
-    if rescale.as_ref().is_none_or(|r| r.was != have) {
+    if rescale.as_ref().is_none_or(|r| r.was != have || r.matrices != swap) {
+        let mut ctx = crate::blend::Scaler::with_flags(
+            have,
+            (w, h, SHAPE, false),
+            // A preview is thrown away the instant after it is looked at,
+            // and at playback it is one of thirty a second: the cutter's
+            // bicubic buys a quality nobody sees here and costs time that
+            // is the difference between playing and stuttering.
+            ff::software::scaling::Flags::FAST_BILINEAR,
+        )?;
+        if let Some(swap) = swap {
+            crate::cut::convert_matrices(&mut ctx, swap, full, false);
+        }
         *rescale = Some(Rescale {
             was: have,
-            ctx: crate::blend::Scaler::with_flags(
-                have,
-                (w, h, SHAPE, false),
-                // A preview is thrown away the instant after it is looked at,
-                // and at playback it is one of thirty a second: the cutter's
-                // bicubic buys a quality nobody sees here and costs time that
-                // is the difference between playing and stuttering.
-                ff::software::scaling::Flags::FAST_BILINEAR,
-            )?,
+            matrices: swap,
+            ctx,
         });
     }
     let mut out = ff::frame::Video::new(SHAPE, w, h);
@@ -460,10 +479,11 @@ fn overlay_of(transition: &Transition, shape: (u32, u32)) -> Result<Option<Laid>
 pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>> {
     crate::init()?;
     let shape = seam.shape(width);
+    let master = &seam.master().video;
     let look = window.look(t);
     let laid = overlay_of(&seam.transition, shape).ok().flatten();
     // The master's frame, as `play` is handed it: only the slack depends on it.
-    let fps = seam.shaped_like.unwrap_or(seam.before).video.frame_rate;
+    let fps = master.frame_rate;
     let step = 1.0 / if fps.is_finite() && fps > 0.0 { fps.clamp(1.0, 1000.0) } else { 30.0 };
     // Read from the entry point the picture is decoded from, as
     // `picture_at` reads it: playback's seek margin is three GOPs before the
@@ -480,9 +500,9 @@ pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>>
             if src.joins.iter().any(|j| entry.time < j.time && at >= j.ends.min(j.time)) {
                 return crate::preview::picture_at(src, at)
                     .ok()
-                    .and_then(|(_, f)| reshape(&f, shape, &mut None).ok());
+                    .and_then(|(_, f)| reshape(&f, shape, Some(master), &mut None).ok());
             }
-            if let Ok(mut reader) = Reader::on_entry(src, at, shape, step) {
+            if let Ok(mut reader) = Reader::on_entry(src, at, shape, master, step) {
                 if let Ok(shown) = reader.at(at).map(|f| f.cloned()) {
                     // Nor where the entry point's picture comes after the
                     // instant: a disc's EP map rounds its times down, and an
@@ -498,7 +518,7 @@ pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>>
                 }
             }
         }
-        Reader::open(src, at, shape, step)
+        Reader::open(src, at, shape, master, step)
             .and_then(|mut reader| Ok(reader.at(at)?.cloned()))
             .ok()
             .flatten()
@@ -529,6 +549,8 @@ struct Reader<'s> {
     ahead: Option<(f64, ff::frame::Video)>,
     rescale: Option<Rescale>,
     shape: (u32, u32),
+    /// The recording the joined file takes its shape from; see [`reshape`].
+    master: &'s crate::VideoInfo,
     /// How far after an instant a picture may arrive and still be the one on
     /// screen at it. See [`on_screen_slack`].
     slack: f64,
@@ -544,10 +566,16 @@ struct Reader<'s> {
 }
 
 impl<'s> Reader<'s> {
-    fn open(src: &'s Source, from: f64, shape: (u32, u32), step: f64) -> Result<Reader<'s>> {
+    fn open(
+        src: &'s Source,
+        from: f64,
+        shape: (u32, u32),
+        master: &'s crate::VideoInfo,
+        step: f64,
+    ) -> Result<Reader<'s>> {
         // Back a little, because the picture wanted at the first instant is
         // the one standing there, which may have been coded before it.
-        Reader::aimed(src, shape, step, |ictx| {
+        Reader::aimed(src, shape, master, step, |ictx| {
             seek_near(ictx, src, (from - src.seek_margin).max(0.0));
             None
         })
@@ -557,8 +585,14 @@ impl<'s> Reader<'s> {
     /// decoded from rather than a seek margin before it: by its byte where
     /// the index has one, as [`crate::preview::picture_at`] seeks. Whether it
     /// landed there is for the caller to check, by its `first`.
-    fn on_entry(src: &'s Source, at: f64, shape: (u32, u32), step: f64) -> Result<Reader<'s>> {
-        Reader::aimed(src, shape, step, |ictx| {
+    fn on_entry(
+        src: &'s Source,
+        at: f64,
+        shape: (u32, u32),
+        master: &'s crate::VideoInfo,
+        step: f64,
+    ) -> Result<Reader<'s>> {
+        Reader::aimed(src, shape, master, step, |ictx| {
             match crate::index::seek_to_entry(ictx, src, at) {
                 // A program stream's entry picture, read from its byte, can
                 // come with the next picture's time, and the landing was then
@@ -581,6 +615,7 @@ impl<'s> Reader<'s> {
     fn aimed(
         src: &'s Source,
         shape: (u32, u32),
+        master: &'s crate::VideoInfo,
         step: f64,
         seek: impl FnOnce(&mut crate::input::Demux) -> Option<crate::preview::Landed>,
     ) -> Result<Reader<'s>> {
@@ -605,6 +640,7 @@ impl<'s> Reader<'s> {
             ahead: None,
             rescale: None,
             shape,
+            master,
             slack: on_screen_slack(in_tb, step),
             spent: false,
             drained: false,
@@ -652,7 +688,8 @@ impl<'s> Reader<'s> {
                 let Some(pts) = frame.pts() else { continue };
                 let t = pts as f64 * self.in_tb - self.start_time;
                 self.first.get_or_insert(t);
-                return Ok(Some((t, reshape(&frame, self.shape, &mut self.rescale)?)));
+                let shaped = reshape(&frame, self.shape, Some(self.master), &mut self.rescale)?;
+                return Ok(Some((t, shaped)));
             }
             // The decoder told the stream is over, which is not the same as
             // the decoder having nothing left: it is holding its reorder
@@ -732,6 +769,7 @@ pub fn play(
 ) -> Result<()> {
     crate::init()?;
     let shape = seam.shape(width);
+    let master = &seam.master().video;
     let laid = overlay_of(&seam.transition, shape).ok().flatten();
     // Held to the rates a recording can have (see where `frame_rate` is
     // worked out). The rate arrives from the window, and a huge one made the
@@ -741,7 +779,8 @@ pub fn play(
     // Opened where each clip is first wanted rather than at the head of the
     // preview: the clip after the join is not on screen for the first half of
     // it, and a reader that started there would decode that half to drop it.
-    let mut near = Reader::open(seam.before, window.look(from).near.unwrap_or(0.0), shape, step)?;
+    let mut near =
+        Reader::open(seam.before, window.look(from).near.unwrap_or(0.0), shape, master, step)?;
     let mut far: Option<Reader> = None;
     let mut t = from;
     while t < window.seconds - 1e-9 {
@@ -761,7 +800,7 @@ pub fn play(
         let far_frame = match look.far {
             Some(at) => {
                 if far.is_none() {
-                    far = Some(Reader::open(seam.after, at, shape, step)?);
+                    far = Some(Reader::open(seam.after, at, shape, master, step)?);
                 }
                 far.as_mut().expect("just set").at(at)?.cloned()
             }
@@ -1013,9 +1052,9 @@ mod tests {
             f
         };
         let mut rescale = None;
-        let out = reshape(&picture(0, true), (16, 8), &mut rescale).unwrap();
+        let out = reshape(&picture(0, true), (16, 8), None, &mut rescale).unwrap();
         assert_eq!(out.data(0)[0], 16);
-        let out = reshape(&picture(16, false), (16, 8), &mut rescale).unwrap();
+        let out = reshape(&picture(16, false), (16, 8), None, &mut rescale).unwrap();
         assert_eq!(out.data(0)[0], 16);
     }
 }

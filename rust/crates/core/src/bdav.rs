@@ -1580,10 +1580,13 @@ pub(crate) fn video_attributes(v: &crate::VideoInfo) -> Vec<u8> {
 /// where the recording never said.
 ///
 /// A language filled in from nowhere would have a bilingual disc claiming
-/// both its tracks were Japanese.
+/// both its tracks were Japanese. A DVD's two letters are written as the
+/// three they stand for -- `en` and a zero was no language a player knows --
+/// and two that stand for nothing as none; see [`crate::dvd::three_letters`].
 fn language_attribute(language: Option<&str>) -> Vec<u8> {
+    let language = language.and_then(crate::dvd::three_letters);
     let mut three = [0u8; 3];
-    for (slot, b) in three.iter_mut().zip(language.unwrap_or("").bytes()) {
+    for (slot, b) in three.iter_mut().zip(language.as_deref().unwrap_or("").bytes()) {
         *slot = b;
     }
     three.to_vec()
@@ -1611,7 +1614,8 @@ fn audio_attributes(a: &crate::AudioInfo) -> Vec<u8> {
         _ => 1,
     };
     let mut out = vec![(channels << 4) | rate];
-    match a.language.as_deref().filter(|l| !l.trim().is_empty()) {
+    let language = a.language.as_deref().and_then(crate::dvd::three_letters);
+    match language.as_deref().filter(|l| !l.trim().is_empty()) {
         Some(language) => out.extend_from_slice(&language_attribute(Some(language))),
         // The byte both reference discs pad theirs out with.
         None => out.push(0x00),

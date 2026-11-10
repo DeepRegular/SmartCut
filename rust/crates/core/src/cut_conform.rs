@@ -56,7 +56,94 @@ struct Rescale {
     /// Size and format of what it was built for, and whether that was full
     /// range: a range to convert is as much a reason to rebuild as a size.
     was: (u32, u32, ff::format::Pixel, bool),
+    /// The matrices it converts between, picture's and master's; see
+    /// [`matrices`].
+    matrices: Option<(i32, i32)>,
     ctx: crate::blend::Scaler,
+}
+
+/// The YUV matrix a picture's samples were made with and the one the
+/// master's are read with, where the two differ; `None` where they agree or
+/// either is not a YUV matrix this can convert between.
+///
+/// **A picture of one size scaled to another keeps the matrix it was made
+/// with, and is read back with the master's.** libswscale converts between
+/// matrices only when told both: left to itself, a standard-definition reel
+/// (BT.601) scaled into a high-definition master (BT.709) went out with its
+/// samples as they were and was shown through the other matrix -- the
+/// green of a test card a seventh darker, reds turned orange -- and a DVD or
+/// SD broadcast joined to an HD recording played with its colours wrong.
+/// Unstated is read by size, as a player reads it: high definition BT.709,
+/// standard BT.601. High definition is 1280 across or more than 576 lines,
+/// mpv's rule -- a 720p film cropped to 1280x536 is HD material, and by line
+/// count alone it was taken for SD and converted as if it were. Numbers are
+/// `AVColorSpace`'s, which `sws_getCoefficients` takes.
+///
+/// `master` is the recording whose shape the output is written in; the
+/// seam window asks the same of it for its preview (see
+/// [`crate::crossview`]), so the two show a reel in the same colours.
+pub(crate) fn matrices(frame: &ff::frame::Video, master: &crate::VideoInfo) -> Option<(i32, i32)> {
+    use ff::ffi::AVColorSpace as S;
+    let read = |space: i32, width: u32, height: u32| -> Option<i32> {
+        match space {
+            x if x == S::AVCOL_SPC_BT709 as i32 => Some(S::AVCOL_SPC_BT709 as i32),
+            x if x == S::AVCOL_SPC_BT470BG as i32 || x == S::AVCOL_SPC_SMPTE170M as i32 => {
+                Some(S::AVCOL_SPC_SMPTE170M as i32)
+            }
+            x if x == S::AVCOL_SPC_BT2020_NCL as i32 || x == S::AVCOL_SPC_BT2020_CL as i32 => {
+                Some(S::AVCOL_SPC_BT2020_NCL as i32)
+            }
+            x if x == S::AVCOL_SPC_FCC as i32 || x == S::AVCOL_SPC_SMPTE240M as i32 => Some(x),
+            x if x == S::AVCOL_SPC_UNSPECIFIED as i32 => Some(if width >= 1280 || height > 576 {
+                S::AVCOL_SPC_BT709 as i32
+            } else {
+                S::AVCOL_SPC_SMPTE170M as i32
+            }),
+            // RGB, YCgCo, ICtCp and the like: not a matrix to swap.
+            _ => None,
+        }
+    };
+    let yuv = |p: ff::format::Pixel| unsafe {
+        let d = ff::ffi::av_pix_fmt_desc_get(p.into());
+        !d.is_null()
+            && (*d).nb_components >= 3
+            && (*d).flags & (ff::ffi::AV_PIX_FMT_FLAG_RGB as u64) == 0
+    };
+    let want = pixels_of(master).unwrap_or(frame.format());
+    if !yuv(frame.format()) || !yuv(want) {
+        return None;
+    }
+    let space = unsafe { (*frame.as_ptr()).colorspace as i32 };
+    let from = read(space, frame.width(), frame.height())?;
+    let to = read(master.shape.matrix, master.width, master.height)?;
+    (from != to).then_some((from, to))
+}
+
+/// Tell a scaler both matrices of [`matrices`], and both ranges, as
+/// `-vf scale=in_color_matrix=..:out_color_matrix=..` tells it: unity gain,
+/// no brightness. libswscale then goes through RGB on the way.
+pub(crate) fn convert_matrices(
+    ctx: &mut crate::blend::Scaler,
+    (from, to): (i32, i32),
+    full_in: bool,
+    full_out: bool,
+) {
+    unsafe {
+        let c = match ctx {
+            crate::blend::Scaler::Plain(s) => s.as_mut_ptr(),
+            crate::blend::Scaler::Ranged(c) => *c,
+        };
+        ff::ffi::sws_setColorspaceDetails(
+            c,
+            ff::ffi::sws_getCoefficients(from),
+            i32::from(full_in),
+            ff::ffi::sws_getCoefficients(to),
+            i32::from(full_out),
+            0,
+            1 << 16,
+            1 << 16,
+        );
+    }
 }
 
 /// Write one range of a reel that does not match the master.
@@ -656,11 +743,16 @@ pub(crate) fn instants(src: &Source, step: f64, start: f64, end: f64) -> i64 {
 /// reel written afresh into such a master. `None` then, and the caller
 /// keeps the format the pictures decode to.
 fn master_pixels(into: &Shaped) -> Option<ff::format::Pixel> {
-    if into.video.shape.pix_fmt < 0 {
+    pixels_of(into.video)
+}
+
+/// As [`master_pixels`], of any recording.
+fn pixels_of(video: &crate::VideoInfo) -> Option<ff::format::Pixel> {
+    if video.shape.pix_fmt < 0 {
         return None;
     }
     let raw = unsafe {
-        std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(into.video.shape.pix_fmt)
+        std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(video.shape.pix_fmt)
     };
     Some(ff::format::Pixel::from(raw))
 }
@@ -684,16 +776,22 @@ fn reshape(
     let full_in = crate::blend::full_range_frame(frame);
     let full_out = into.video.shape.full_range();
     let have = (frame.width(), frame.height(), frame.format(), full_in);
-    if have == (into.video.width, into.video.height, want, full_out) {
+    let swap = matrices(frame, into.video);
+    if swap.is_none() && have == (into.video.width, into.video.height, want, full_out) {
         return Ok(frame.clone());
     }
-    if rescale.as_ref().is_none_or(|r| r.was != have) {
+    if rescale.as_ref().is_none_or(|r| r.was != have || r.matrices != swap) {
+        let mut ctx = crate::blend::Scaler::new(
+            (have.0, have.1, have.2, full_in),
+            (into.video.width, into.video.height, want, full_out),
+        )?;
+        if let Some(swap) = swap {
+            convert_matrices(&mut ctx, swap, full_in, full_out);
+        }
         *rescale = Some(Rescale {
             was: have,
-            ctx: crate::blend::Scaler::new(
-                (have.0, have.1, have.2, full_in),
-                (into.video.width, into.video.height, want, full_out),
-            )?,
+            matrices: swap,
+            ctx,
         });
     }
     let mut out = ff::frame::Video::new(want, into.video.width, into.video.height);

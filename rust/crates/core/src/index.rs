@@ -1032,6 +1032,54 @@ pub(crate) fn off(key: &str) -> bool {
     )
 }
 
+/// How far a program stream's pictures may go back before their clock is
+/// called one that starts again. See [`clock_restart`].
+const RESTART: f64 = 1.0;
+
+/// Where a program stream's clock starts again, if it does: the byte of the
+/// first entry point that comes back, its time, and the latest time before it.
+///
+/// **Two recordings one after another in one file** -- two `.mpg` joined with
+/// `cat` or `copy /b`, the `.VOB` files of a DVD set holding more than one
+/// title, a DVD recorder's `.VRO` -- each with a clock of its own from near
+/// nought. A program stream has nothing to say where one ends, and read as
+/// one recording its entry points sorted by time were the two interleaved: a
+/// cut of the whole kept half the pictures with only a note about the sound,
+/// and a cut from 2 to 4 s wrote the first recording's pictures while the
+/// preview showed the second's. A transport stream's clock that starts again
+/// is a recorder's seam and has its own answer ([`crate::restamp`]); this is
+/// asked of program streams only.
+///
+/// **In the order the bytes come**, against the latest time so far and not
+/// against the entry point before: the entry points are pictures a GOP apart,
+/// which only go back at such a seam. What a recording does go back by on its
+/// own is far less than [`RESTART`]: B pictures shown before the anchor
+/// before them (not entry points), a camcorder's small step where it paused
+/// (half a second, measured), and the 33-bit clock's wrap, which libavformat
+/// unwraps. A DVD title as this program reads it off a disc is cut into rows
+/// where its clock leaves off by more than a second (`dvd::runs_of`), so a
+/// row never holds one. Points whose byte is unknown (-1) say nothing.
+///
+/// **A restart can also come out as a leap forward.** When the first picture
+/// is more than a minute into its clock, libavformat takes a later clock near
+/// nought for a wrap and adds 2^33 to it, so the second recording reads half a
+/// day *ahead* (a DVD's last `.VOB` opened alone: 2807 s, then 95443 s). No
+/// recording leaps by half the 33-bit clock; a step forward that large is the
+/// same restart.
+pub(crate) fn clock_restart(points: &[AccessPoint]) -> Option<(i64, f64, f64)> {
+    const LEAP: f64 = (1u64 << 32) as f64 / 90_000.0;
+    let mut by_byte: Vec<&AccessPoint> = points.iter().filter(|p| p.pos >= 0).collect();
+    by_byte.sort_by_key(|p| p.pos);
+    let mut latest = f64::NEG_INFINITY;
+    for p in by_byte {
+        if p.time < latest - RESTART || (latest.is_finite() && p.time > latest + LEAP) {
+            return Some((p.pos, p.time, latest));
+        }
+        latest = latest.max(p.time);
+    }
+    None
+}
+
 /// The access point decoding has to begin at to produce the picture at `time`.
 pub fn entry_before(points: &[AccessPoint], time: f64, slack: f64) -> Option<&AccessPoint> {
     points.iter().rev().find(|p| p.time <= time + slack)
@@ -2094,6 +2142,59 @@ pub fn sample_bit_rate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn point(time: f64, pos: i64) -> AccessPoint {
+        AccessPoint {
+            time,
+            lead_start: time,
+            lead_indices: Vec::new(),
+            droppable: true,
+            pos,
+            measured: true,
+        }
+    }
+
+    /// Entry points as an index holds them: sorted by time.
+    fn by_time(mut points: Vec<AccessPoint>) -> Vec<AccessPoint> {
+        points.sort_by(|a, b| a.time.total_cmp(&b.time));
+        points
+    }
+
+    #[test]
+    fn two_recordings_one_after_the_other_are_a_restart() {
+        // 10 s, then a second recording from 0.5 s again, a GOP apart.
+        let mut points: Vec<AccessPoint> =
+            (0..20).map(|i| point(0.5 + i as f64 * 0.5, i * 100_000)).collect();
+        points.extend((0..20).map(|i| point(0.5 + i as f64 * 0.5, 2_000_000 + i * 100_000)));
+        assert_eq!(clock_restart(&by_time(points)), Some((2_000_000, 0.5, 10.0)));
+    }
+
+    #[test]
+    fn a_restart_unwrapped_into_a_leap_forward_is_a_restart() {
+        // 2807 s in, then a clock near nought that libavformat moved on by 2^33.
+        let wrap = (1u64 << 33) as f64 / 90_000.0;
+        let mut points: Vec<AccessPoint> =
+            (0..20).map(|i| point(2800.0 + i as f64 * 0.5, i * 100_000)).collect();
+        points.extend((0..20).map(|i| point(wrap + i as f64 * 0.5, 2_000_000 + i * 100_000)));
+        assert_eq!(clock_restart(&by_time(points)), Some((2_000_000, wrap, 2809.5)));
+    }
+
+    #[test]
+    fn a_small_step_back_a_jump_forward_and_unknown_bytes_are_not() {
+        // A camcorder's half-second step back where it paused.
+        let mut points: Vec<AccessPoint> =
+            (0..20).map(|i| point(0.5 + i as f64 * 0.5, i * 100_000)).collect();
+        points.extend((0..20).map(|i| point(9.6 + i as f64 * 0.5, 2_000_000 + i * 100_000)));
+        assert_eq!(clock_restart(&by_time(points)), None);
+        // A second recording a hundred seconds on.
+        let points: Vec<AccessPoint> = (0..40)
+            .map(|i| point(if i < 20 { i as f64 } else { 100.0 + i as f64 }, i * 100_000))
+            .collect();
+        assert_eq!(clock_restart(&by_time(points)), None);
+        // Going back where the byte is not known says nothing.
+        let points = vec![point(0.0, 0), point(10.0, 100), point(0.5, -1), point(11.0, 300)];
+        assert_eq!(clock_restart(&by_time(points)), None);
+    }
 
     #[test]
     fn repeated_holds_are_not_hidden_by_the_average() {

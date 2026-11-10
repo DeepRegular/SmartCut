@@ -1181,14 +1181,18 @@ async function addPaths(inputs) {
   })();
   fillFirstLook();
   // A path that could not be reached at all is the more useful thing to say,
-  // so it wins the one line there is.
+  // so it wins the one line there is. What an earlier drop said is about that
+  // drop, and goes with this one.
+  if (sticky && sticky === dropSaid) sticky = "";
+  dropSaid = "";
   if (failed.length) {
-    note(failed[0].error + (failed.length > 1 ? t("list.andMore", { n: failed.length - 1 }) : ""));
+    dropSaid = failed[0].error + (failed.length > 1 ? t("list.andMore", { n: failed.length - 1 }) : "");
+    note(dropSaid);
   } else if (skipped.length) {
-    note(
+    dropSaid =
       t("list.unsupported", { names: skipped.slice(0, 3).join(", ") }) +
-        (skipped.length > 3 ? t("list.andMore", { n: skipped.length - 3 }) : "")
-    );
+      (skipped.length > 3 ? t("list.andMore", { n: skipped.length - 3 }) : "");
+    note(dropSaid);
   }
   if (taken.length) pump();
   return taken;
@@ -1660,6 +1664,12 @@ let starting = false;
 /// The last thing worth saying that was not a lane saying it -- an error, or
 /// what 中止 did. Shown when no lane has anything to report.
 let sticky = "";
+/// What the last drop said about what it could not take: a path that could
+/// not be reached, or files of a kind the list does not open. Said once and
+/// then left up, because the rows that did arrive start the lanes, and a lane
+/// that cleared it the moment it began -- which is every drop that brought
+/// anything else -- left nobody told why half of a folder was missing.
+let dropSaid = "";
 
 /// The file the run under way is being written down in, or the last run's
 /// once it is over -- which is what 実行ログを開く opens. "" before the first
@@ -1760,8 +1770,9 @@ async function pumpLane(lane) {
       if (paused) break;
       const next = nextFor(lane);
       if (!next) break;
-      // Whatever the note last said, this lane is working now.
-      sticky = "";
+      // Whatever the note last said, this lane is working now -- except what
+      // the drop that gave it the work said it could not take. See `dropSaid`.
+      if (sticky !== dropSaid) sticky = "";
       await RUN[lane](next);
     }
   } finally {
@@ -1849,6 +1860,9 @@ async function runIndex(clip) {
     } else {
       clip.state = "error";
       clip.error = String(e);
+      // Not 読み込み中 for good beside エラー: the reading is over. As
+      // `clip_gone` leaves a row it marks.
+      clip.phase = "";
       dropBookings(clip);
     }
   }

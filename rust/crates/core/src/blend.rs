@@ -566,9 +566,7 @@ pub fn read_laid(
         .best(ff::media::Type::Video)
         .ok_or_else(|| anyhow::anyhow!("{path} has no picture in it to lay over the transition"))?;
     let index = stream.index();
-    let mut decoder = ff::codec::context::Context::from_parameters(stream.parameters())?
-        .decoder()
-        .video()?;
+    let mut decoder = crate::video_context(stream.parameters())?.decoder().video()?;
     let mut frame = ff::frame::Video::empty();
     let mut got = None;
     for (s, packet) in ictx.read_packets() {

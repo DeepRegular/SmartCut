@@ -514,9 +514,121 @@ struct AudioCtx<'a> {
     /// How far the fade reaches into this range at each end, in samples.
     /// Zero at both ends unless one was asked for; see [`CutOptions::audio_fade`].
     fades: crate::audio::Fades,
-    /// Where the range starts, in seconds.
+    /// Where the range's sound starts, in seconds: where its first picture
+    /// does. See [`sound_span`].
     range_in: f64,
+    /// Where the range's sound ends: where its last picture stops being
+    /// shown, which is the planned end (`planned_out`) unless the range ends
+    /// part-way into a picture. See [`sound_span`].
+    range_out: f64,
+    /// The range's planned end, which is where its last segment ends.
+    planned_out: f64,
     mode: AudioMode,
+}
+
+/// How far a bound may be from a picture and still be that picture's, for
+/// [`sound_span`]: a millisecond, and on a coarse clock the ticks a picture
+/// is stored away from where it is and a bound on it is moved ahead of it.
+///
+/// Not the cutter's thousandth of a frame. The editor's frames are its head
+/// and a count of frames, and an hour into a DVD the pictures' own stamps
+/// have come a tenth of a millisecond away from that count: taken for a
+/// bound between two pictures, the sound of every such cut moved by that
+/// tenth, which nobody hears, and the file was no longer the one the cut
+/// has always written.
+pub(crate) fn on_a_picture_slack(video: &crate::VideoInfo) -> f64 {
+    let fd = video.frame_duration();
+    let tol = (fd * 1e-3).max(1e-3);
+    let tick = video.time_base.min(fd / 12.0);
+    if tick.is_finite() && tick > fd * 0.01 { (3.5 * tick).max(tol) } else { tol }
+}
+
+/// Where a range's sound starts and ends: where its pictures do.
+///
+/// **A range asked for in seconds need not start on a picture.** `--keep
+/// 3.05-9` of a 5 fps recording re-encodes from 3.05, and the first picture
+/// there is the one at 3.2: the pictures of the range are laid from where
+/// that one goes, and the sound, laid from 3.05, ran 150 ms behind them --
+/// the whole range, copied stretch and all, and every range of the cut that
+/// opened between two pictures (a frame at most: 40 ms at 25p, 21-128 ms on
+/// an `ffmpeg`-made .ts whose sound leads its pictures by the encoder's
+/// priming). So the sound starts on that picture. The end is the same at the
+/// other side: the last picture is shown until the next one would have
+/// been, and the sound runs to there rather than stopping part-way into it.
+///
+/// Only a re-encoded end can sit between pictures -- a copy starts on its
+/// entry point and ends on the next one's leading picture -- and only one
+/// written from the recording's own pictures: a reel written afresh on the
+/// master's frames (`afresh`) shows at each frame the picture on screen
+/// there, which at the range's start is the one already up, so its sound
+/// starts where the range does. A transition's stretch is left as it is,
+/// and so is an end within a picture of a recorder's seam, where the next
+/// picture is the next stretch's.
+///
+/// A bound on a picture -- what the editor sends -- comes back as it went
+/// in, to the bit: within a thousandth of a frame of it, or on a coarse
+/// clock within the ticks [`crate::plan::plan_on`] moves such a bound ahead
+/// of its picture by. And a picture further than the closest two come
+/// ([`crate::VideoInfo::least_gap`]) is not the range's first: the cutter
+/// puts the picture already up at the range's own start there (a hold, on a
+/// recording whose pictures do not come at a rate), and the sound starts
+/// with it. See `still_on_screen` in [`reencode_segment`], whose rule this
+/// follows.
+///
+/// The same answer for [`crate::sound`], which opens every range on the
+/// cut's frame.
+pub(crate) fn sound_span(src: &Source, plan: &RangePlan, afresh: bool) -> (f64, f64) {
+    let (mut from, mut to) = (plan.t_in, plan.t_out);
+    if afresh {
+        return (from, to);
+    }
+    let video = &src.video;
+    let fd = video.frame_duration();
+    let least = video.least_gap();
+    if !(fd.is_finite() && fd > 0.0 && least.is_finite() && least > 0.0) {
+        return (from, to);
+    }
+    // The cutter's own slack for a bound on a picture.
+    let tol = fd * 1e-3;
+    let slack = on_a_picture_slack(video);
+    let near_a_seam = |t: f64| src.joins.iter().any(|s| s.time > t - 2.0 * fd && s.time < t + 2.25 * fd);
+    let own = |s: &Segment| s.kind == SegmentKind::Reencode && s.retouch.is_none();
+    // The picture's own stored time: [`crate::plan::picture_after`] answers
+    // with a bound, two ticks ahead of the picture on a coarse clock. The
+    // sound starts on the picture, as it does where a range is copied from
+    // an entry point; a bound so close to a picture that it is one stays as
+    // it is (`slack`).
+    let tick = video.time_base.min(fd / 12.0);
+    let ahead = if tick.is_finite() && tick > fd * 0.01 { 2.0 * tick } else { 0.0 };
+    let after = |t: f64| crate::plan::picture_after(src, t - tol, 0.0).map(|p| p + ahead);
+    // The first picture to begin at `t` or after it, as the re-encode takes
+    // it (`t >= start - tol`), where that is between pictures.
+    let next = |t: f64| -> Option<f64> {
+        let p = after(t)?;
+        (p - t > slack && p - t < least).then_some(p)
+    };
+    if plan.segments.first().is_some_and(own) && !near_a_seam(from) {
+        let held = |p: f64| {
+            // What the cutter does where nothing arrives within the closest
+            // two pictures come of the range's start: a picture held past
+            // its own length goes in at the start.
+            let repeats = video.pulldown
+                || matches!(video.codec.as_str(), "mpeg1video" | "mpeg2video" | "vc1");
+            let reach = if repeats { 1.75 } else { 1.25 } * least;
+            crate::plan::picture_on_screen(src, from).is_none_or(|s| p - (s + ahead) > reach)
+        };
+        if let Some(p) = after(from) {
+            if p - from > slack && (p - from < least || !held(p)) {
+                from = p;
+            }
+        }
+    }
+    if plan.segments.last().is_some_and(own) && !near_a_seam(to) && to < src.duration {
+        if let Some(q) = next(to) {
+            to = q;
+        }
+    }
+    (from, to)
 }
 
 /// Where a caption stream sits on the output timeline.
@@ -2873,7 +2985,10 @@ fn take_audio(
         }
         _ => writer.audio[audio.track].frame_secs,
     };
-    let past_end = t >= seg.end;
+    // The range's last segment runs its sound on to where its last picture
+    // stops being shown. See [`sound_span`].
+    let seg_end = if seg.end >= audio.planned_out { audio.range_out.max(seg.end) } else { seg.end };
+    let past_end = t >= seg_end;
 
     if audio.mode == AudioMode::Reencode {
         // Claim exclusively, exactly as the copy path does, or a frame lying
@@ -2891,9 +3006,9 @@ fn take_audio(
         // `sound::take_range` takes it: left out, the one the range opens in
         // went missing, a whole frame of sound.
         let claimed = if first_segment {
-            (dur <= 0.0 || t + 2.0 * dur > audio.range_in) && t < seg.end
+            (dur <= 0.0 || t + 2.0 * dur > audio.range_in) && t < seg_end
         } else {
-            t >= seg.start && t < seg.end
+            t >= seg.start && t < seg_end
         };
         if claimed {
             let mut out = Vec::new();
@@ -4451,6 +4566,8 @@ struct GraphicsBefore {
 #[path = "cut_conform.rs"]
 mod conformed;
 use conformed::conform_segment;
+// The seam window scales a reel into the master the way the cut does.
+pub(crate) use conformed::{convert_matrices, matrices};
 
 /// Take the segment's packets straight from the source, untouched.
 fn copy_segment(
@@ -4517,7 +4634,16 @@ fn copy_segment(
     let mut shape = src.video.field_shape;
     // The MPEG-4 Part 2 headers this recording's pictures are decoded by,
     // owed in front of the copy's first picture. See [`mpeg4_config`].
-    let mut config_owed = if src.video.codec == "mpeg4" {
+    //
+    // Not where the copy opens the output and the output keeps the record
+    // itself (MP4, Matroska): nothing has been written for the record to be
+    // restated over, and restated in band it is read differently. An Xvid
+    // recording with MPEG quantisation decoded its very first copied GOP at
+    // 41 dB off the source in libavcodec, with no seam anywhere.
+    let opens_output = writer.written == 0
+        && writer.pending.is_empty()
+        && writer.octx.format().flags().contains(ff::format::Flags::GLOBAL_HEADER);
+    let mut config_owed = if src.video.codec == "mpeg4" && !opens_output {
         mpeg4_config(&ictx.stream(ist_index).unwrap().parameters())
     } else {
         None
@@ -5448,8 +5574,8 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
         }
         return out;
     }
-    let Ok(mut decoder) = ff::codec::context::Context::from_parameters(params.clone())
-        .and_then(|c| c.decoder().video())
+    let Ok(mut decoder) = crate::video_context(params.clone())
+        .and_then(|c| Ok(c.decoder().video()?))
     else {
         return out;
     };
@@ -5633,6 +5759,46 @@ fn mpeg4_config(params: &ff::codec::Parameters) -> Option<Vec<u8>> {
     mpeg4_has_vol(record).then(|| record.to_vec())
 }
 
+/// Whether a stream is an Xvid recording written with MPEG quantisation,
+/// which libavcodec decodes wrongly unless it is told the IDCT up front.
+///
+/// **libavcodec reads the codec record's VOL before it knows the encoder.**
+/// It loads the quantisation matrices in the order of the IDCT it opened
+/// with, then meets the "XviD" user data and switches to Xvid's IDCT without
+/// putting the matrices back in that IDCT's order. H.263 quantisation has no
+/// matrices, so only an MPEG-quantised Xvid ("HQ", custom matrices) in an
+/// .mp4 or .mkv is touched: decoded so, the recording came out about 38.8 dB
+/// from what libxvidcore decodes, every seam was re-encoded from those
+/// pictures, and `--verify` compared copies decoded after a restated VOL
+/// (which are right) with source pictures that were not, and called a good
+/// cut a mismatch. Told `FF_IDCT_XVID` before it opens, libavcodec never
+/// switches and decodes the recording as Xvid does. Xvid's own rule for
+/// telling it is an Xvid stream is libavcodec's: the user data, or one of the
+/// fourccs it treats as Xvid.
+pub(crate) fn xvid_mpeg_quant(params: &ff::codec::Parameters) -> bool {
+    if params.id() != ff::codec::Id::MPEG4 {
+        return false;
+    }
+    let (record, tag) = unsafe {
+        let p = params.as_ptr();
+        let tag = (*p).codec_tag;
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            return false;
+        }
+        (std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize), tag)
+    };
+    xvid_mpeg_quant_record(record, tag)
+}
+
+/// [`xvid_mpeg_quant`] on a codec record and its fourcc.
+fn xvid_mpeg_quant_record(record: &[u8], tag: u32) -> bool {
+    let fourcc = [b"XVID", b"XVIX", b"RMP4", b"ZMP4", b"SIPP"]
+        .iter()
+        .any(|t| tag == u32::from_le_bytes(**t));
+    let user_data = record.windows(8).any(|w| w[..4] == [0, 0, 1, 0xB2] && &w[4..] == b"XviD");
+    (fourcc || user_data) && mpeg4_vol(record).is_some_and(|v| v.mpeg_quant)
+}
+
 /// Whether an MPEG-4 Part 2 packet states a video object layer before its
 /// first picture.
 fn mpeg4_has_vol(data: &[u8]) -> bool {
@@ -5650,6 +5816,201 @@ fn mpeg4_has_vol(data: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// What the first video object layer of an MPEG-4 Part 2 record says about
+/// how its pictures are coded, as far as a seam encoder can be told it.
+/// See [`mpeg4_vol`].
+struct Mpeg4Vol {
+    interlaced: bool,
+    /// MPEG quantisation (`quant_type`), with the matrices the VOL loads.
+    /// A matrix not loaded is MPEG-4's default, which the encoder also
+    /// writes when given none.
+    mpeg_quant: bool,
+    intra: Option<[u16; 64]>,
+    inter: Option<[u16; 64]>,
+}
+
+/// Read the first rectangular video object layer of an MPEG-4 Part 2
+/// record. `None` where there is none, or where it cannot be followed as
+/// far as its quantisation.
+///
+/// **A seam is written by libavcodec's own MPEG-4 encoder with its own
+/// defaults, and two of them the recording can say otherwise.**
+/// libavformat states no field order for MPEG-4 Part 2, so an interlaced
+/// capture's seams were coded progressive. And a recording written with MPEG
+/// quantisation (`-mpeg_quant 1`, Xvid's "HQ" and custom-matrix encodes) met
+/// seams with H.263 quantisation: with the recording's VOL restated after
+/// each seam (see [`mpeg4_config`]) a decoder on one thread reads it right,
+/// but libavcodec's frame-threaded decoder -- the default in ffmpeg, mpv and
+/// VLC -- does not follow a quantisation type changing mid-stream, and 104
+/// of 157 pictures of a two-seam cut came out wrong, 35-49 dB.
+fn mpeg4_vol(record: &[u8]) -> Option<Mpeg4Vol> {
+    let at = (0..record.len().saturating_sub(4)).find(|&i| {
+        record[i] == 0 && record[i + 1] == 0 && record[i + 2] == 1
+            && (0x20..=0x2F).contains(&record[i + 3])
+    })?;
+    let body = &record[at + 4..];
+    let mut pos = 0usize;
+    let mut bits = |n: usize| -> Option<u32> {
+        let mut v = 0u32;
+        for _ in 0..n {
+            let byte = *body.get(pos >> 3)?;
+            v = (v << 1) | u32::from((byte >> (7 - (pos & 7))) & 1);
+            pos += 1;
+        }
+        Some(v)
+    };
+    bits(1)?; // random_accessible_vol
+    bits(8)?; // video_object_type_indication
+    let verid = if bits(1)? == 1 {
+        let v = bits(4)?;
+        bits(3)?; // priority
+        v
+    } else {
+        1
+    };
+    if bits(4)? == 15 {
+        bits(16)?; // extended PAR
+    }
+    if bits(1)? == 1 {
+        // vol_control_parameters: chroma format, low delay, and the VBV
+        bits(3)?;
+        if bits(1)? == 1 {
+            bits(79)?;
+        }
+    }
+    if bits(2)? != 0 {
+        return None; // not rectangular
+    }
+    bits(1)?; // marker
+    let resolution = bits(16)?;
+    bits(1)?; // marker
+    if bits(1)? == 1 {
+        let width = (32 - resolution.saturating_sub(1).leading_zeros()).max(1) as usize;
+        bits(width)?;
+    }
+    bits(1)?;
+    bits(13)?; // width
+    bits(1)?;
+    bits(13)?; // height
+    bits(1)?;
+    let interlaced = bits(1)? == 1;
+    bits(1)?; // obmc_disable
+    let sprite = bits(if verid == 1 { 1 } else { 2 })?;
+    if sprite == 1 || sprite == 2 {
+        if sprite == 1 {
+            bits(56)?; // static sprite size and place, with markers
+        }
+        bits(8)?; // warping points (6) and accuracy (2)
+        bits(1)?; // brightness change
+        if sprite == 1 {
+            bits(1)?; // low latency
+        }
+    } else if sprite != 0 {
+        return None;
+    }
+    if bits(1)? == 1 {
+        bits(8)?; // not_8_bit: quant precision, bits per pixel
+    }
+    let mpeg_quant = bits(1)? == 1;
+    let matrix = |bits: &mut dyn FnMut(usize) -> Option<u32>| -> Option<Option<[u16; 64]>> {
+        if bits(1)? == 0 {
+            return Some(None);
+        }
+        // In zigzag order, ending early at a zero: the rest repeat the last.
+        let mut m = [0u16; 64];
+        let mut last = 0u16;
+        let mut i = 0;
+        while i < 64 {
+            let v = bits(8)? as u16;
+            if v == 0 {
+                break;
+            }
+            last = v;
+            m[ZIGZAG[i]] = v;
+            i += 1;
+        }
+        if last == 0 {
+            return None;
+        }
+        for &k in &ZIGZAG[i..] {
+            m[k] = last;
+        }
+        Some(Some(m))
+    };
+    let (intra, inter) = if mpeg_quant {
+        (matrix(&mut bits)?, matrix(&mut bits)?)
+    } else {
+        (None, None)
+    };
+    Some(Mpeg4Vol { interlaced, mpeg_quant, intra, inter })
+}
+
+/// Zigzag scan position to raster position, as MPEG-4 loads its matrices.
+const ZIGZAG: [usize; 64] = [
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27,
+    20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+];
+
+#[cfg(test)]
+mod mpeg4_vol_tests {
+    use super::{mpeg4_vol, xvid_mpeg_quant_record};
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn reads_quantisation_and_interlacing() {
+        // ffmpeg -c:v mpeg4 -mpeg_quant 1 with intra 8..22 and inter 16..30
+        // (rows counting up by one, columns too).
+        let cm = hex(
+            "000001b0f1000001b5a913000001000000012008d48d0800cd14043c1461012121414141616161618181\
+             818181a1a1a1a1a1a1c1c1c1c1c1c1c1e1e1e1e1e1e1e1e202020202020202222222222222424242424\
+             262626262828282a2a2d101111121212131313131414141414151515151515161616161616161717171\
+             717171717181818181818181919191919191a1a1a1a1a1b1b1b1b1c1c1c1d1d1e40f000001b24c617663\
+             36312e31392e313031"
+        );
+        let vol = mpeg4_vol(&cm).unwrap();
+        assert!(vol.mpeg_quant && !vol.interlaced);
+        let (intra, inter) = (vol.intra.unwrap(), vol.inter.unwrap());
+        assert_eq!((intra[0], intra[1], intra[8], intra[63]), (8, 9, 9, 22));
+        assert_eq!((inter[0], inter[7], inter[56], inter[63]), (16, 23, 23, 30));
+        // ffmpeg -c:v mpeg4 -flags +ildct+ilme
+        let il = hex("000001b001000001b58913000001000000012000c48d8800cd14043c1c43000001b24c61766336312e31392e313031");
+        let vol = mpeg4_vol(&il).unwrap();
+        assert!(vol.interlaced && !vol.mpeg_quant && vol.intra.is_none());
+        // Xvid with quarter-pel (a VOL of version 2)
+        let xv = hex("000001b0f5000001b509000001000000012008ca78080d8800ce18a021e0a1c1000001b25876694430303639");
+        let vol = mpeg4_vol(&xv).unwrap();
+        assert!(!vol.interlaced && !vol.mpeg_quant);
+        assert!(mpeg4_vol(&xv[..20]).is_none());
+        assert!(mpeg4_vol(&[]).is_none());
+    }
+
+    #[test]
+    fn tells_an_mpeg_quantised_xvid() {
+        // libxvid -mpeg_quant 1, as an .mp4 keeps it: VOL and "XviD0069".
+        let xm = hex("000001b0f5000001b509000001000000012008bc0406c400670c5010f05263000001b25876694430303639");
+        assert!(mpeg4_vol(&xm).unwrap().mpeg_quant);
+        assert!(xvid_mpeg_quant_record(&xm, 0));
+        // Xvid with H.263 quantisation has no matrices to put out of order.
+        let xv = hex("000001b0f5000001b509000001000000012008ca78080d8800ce18a021e0a1c1000001b25876694430303639");
+        assert!(!xvid_mpeg_quant_record(&xv, 0));
+        // libavcodec's own MPEG quantisation is not Xvid unless its fourcc says so.
+        let cm = hex(
+            "000001b0f1000001b5a913000001000000012008d48d0800cd14043c1461012121414141616161618181\
+             818181a1a1a1a1a1a1c1c1c1c1c1c1c1e1e1e1e1e1e1e1e202020202020202222222222222424242424\
+             262626262828282a2a2d101111121212131313131414141414151515151515161616161616161717171\
+             717171717181818181818181919191919191a1a1a1a1a1b1b1b1b1c1c1c1d1d1e40f000001b24c617663\
+             36312e31392e313031"
+        );
+        assert!(!xvid_mpeg_quant_record(&cm, 0));
+        assert!(xvid_mpeg_quant_record(&cm, u32::from_le_bytes(*b"XVID")));
+        assert!(!xvid_mpeg_quant_record(&[], u32::from_le_bytes(*b"XVID")));
+    }
 }
 
 /// Build an encoder whose output splices onto the copied pictures.
@@ -5713,6 +6074,11 @@ fn open_encoder_as(
         .video()?;
 
     let v = video;
+    // What an MPEG-4 Part 2 recording's own VOL says. See [`mpeg4_vol`].
+    let mpeg4_vol = (params.id() == ff::codec::Id::MPEG4 && codec.name() == "mpeg4")
+        .then(|| mpeg4_config(params))
+        .flatten()
+        .and_then(|record| mpeg4_vol(&record));
     enc.set_width(v.width);
     enc.set_height(v.height);
     // One tick per picture. MPEG-2 writes a frame rate code into its sequence
@@ -5816,6 +6182,12 @@ fn open_encoder_as(
             (*e).flags |= (ff::ffi::AV_CODEC_FLAG_INTERLACED_DCT
                 | ff::ffi::AV_CODEC_FLAG_INTERLACED_ME) as i32;
             (*e).field_order = (*p).field_order;
+        } else if mpeg4_vol.as_ref().is_some_and(|vol| vol.interlaced) {
+            // An interlaced MPEG-4 Part 2 recording states no field order
+            // (see [`mpeg4_vol`]); its VOL says it instead. Each picture's
+            // own top-field-first comes with the decoded frame.
+            (*e).flags |= (ff::ffi::AV_CODEC_FLAG_INTERLACED_DCT
+                | ff::ffi::AV_CODEC_FLAG_INTERLACED_ME) as i32;
         }
         // A partial GOP is re-encoded whole and spliced, so it must not
         // depend on anything outside itself.
@@ -5928,6 +6300,25 @@ fn open_encoder_as(
     ) {
         eopts.set("sc_threshold", "1000000000");
     }
+    // The recording's quantisation, matrices and all. See [`mpeg4_vol`].
+    if let Some(vol) = mpeg4_vol.as_ref().filter(|vol| vol.mpeg_quant) {
+        eopts.set("mpeg_quant", "1");
+        unsafe {
+            let e = enc.as_mut_ptr();
+            for (matrix, field) in [
+                (vol.intra, std::ptr::addr_of_mut!((*e).intra_matrix)),
+                (vol.inter, std::ptr::addr_of_mut!((*e).inter_matrix)),
+            ] {
+                let Some(matrix) = matrix else { continue };
+                // Freed with the context, by libavcodec.
+                let m = ff::ffi::av_mallocz(64 * std::mem::size_of::<u16>()) as *mut u16;
+                if !m.is_null() {
+                    std::ptr::copy_nonoverlapping(matrix.as_ptr(), m, 64);
+                    *field = m;
+                }
+            }
+        }
+    }
     // What the three open encoders are worth being asked to spend.
     //
     // **Their defaults are set for encoding a film, and this is writing a
@@ -5966,6 +6357,21 @@ fn open_encoder_as(
     // them) turned every copied picture after it to noise, about 10 dB. A
     // seam at qp 0 is lossless too, and the copies after it decode right.
     // See [`crate::bitstream::h264_transform_bypass`].
+    // **A Baseline recording takes a Baseline seam.** libx264 is told the
+    // profile through `profile` above, but its wrapper knows Baseline only
+    // by its bare number, and what a decoder reports for nearly every
+    // Baseline stream -- phones, screen and video-call recorders -- is
+    // Constrained Baseline. Left to itself x264 wrote the seam as High, with
+    // CABAC and 8x8 transforms, inside a file whose codec record says
+    // Baseline: a player that sets its decoder up from the record cannot
+    // read those pictures.
+    if codec.name() == "libx264"
+        && params.id() == ff::codec::Id::H264
+        // Baseline, and Constrained Baseline (the same with its constraint bit)
+        && matches!(unsafe { (*params.as_ptr()).profile }, 66 | 578)
+    {
+        eopts.set("profile", "baseline");
+    }
     if codec.name() == "libx264" && params.id() == ff::codec::Id::H264 {
         let record = unsafe {
             let p = params.as_ptr();
@@ -6639,9 +7045,7 @@ fn reencode_segment(
     // whether that picture is in or out.
     let tol = fd * 1e-3;
 
-    let mut decoder = ff::codec::context::Context::from_parameters(params.clone())?
-        .decoder()
-        .video()?;
+    let mut decoder = crate::video_context(params.clone())?.decoder().video()?;
     // MPEG-2 is told how its pictures are shown after it has written them;
     // see [`Mpeg2Display`]. A segment that repeats a field is written as
     // whole frames, which is the only way a picture may repeat one.
@@ -8290,7 +8694,7 @@ fn graft_tables(
                     })
                 })
                 .flatten(),
-            language: setup.info.language.clone(),
+            language: setup.info.language.as_deref().and_then(crate::dvd::three_letters),
             extra: Vec::new(),
         });
     }
@@ -8301,7 +8705,7 @@ fn graft_tables(
             was,
             faithful: true,
             declared: None,
-            language: c.language.clone(),
+            language: c.language.as_deref().and_then(crate::dvd::three_letters),
             extra: Vec::new(),
         });
     }
@@ -8326,7 +8730,7 @@ fn graft_tables(
                 descriptors: Vec::new(),
                 program_info: vec![0x05, 0x04, b'H', b'D', b'M', b'V'],
             }),
-            language: g.language.clone(),
+            language: g.language.as_deref().and_then(crate::dvd::three_letters),
             extra: Vec::new(),
         });
     }
@@ -8345,7 +8749,7 @@ fn graft_tables(
                 descriptors: Vec::new(),
                 program_info: vec![0x05, 0x04, b'H', b'D', b'M', b'V'],
             }),
-            language: c.language.clone(),
+            language: c.language.as_deref().and_then(crate::dvd::three_letters),
             extra: Vec::new(),
         });
     }
@@ -8453,6 +8857,216 @@ fn graft_tables(
             feeds,
         },
     )
+}
+
+/// Name the languages of a DVD's converted subtitles in the map of a `.m2ts`
+/// just written, as `(PID, three letters)`: an ISO 639 descriptor, the one
+/// the graft writes into a `.ts`, added to each of those entries that has
+/// none.
+///
+/// In place, a packet of the map at a time, and only where the longer
+/// section still fits in the packet it was in: no packet is added, moved or
+/// taken away, so the arrival times, the clock references and every byte an
+/// entry point map counts by stay where they were. A map that does not fit,
+/// or is not a whole section in one packet, is left as it was. Returns how
+/// many packets were rewritten.
+fn name_converted(output: &str, named: &[(u16, [u8; 3])]) -> Result<usize> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    const FRAME: usize = 192;
+    const PACKET: usize = 188;
+    fn crc32(data: &[u8]) -> u32 {
+        data.iter().fold(0xFFFF_FFFFu32, |mut crc, &b| {
+            crc ^= u32::from(b) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+            }
+            crc
+        })
+    }
+    // Where the one section of a packet with no adaptation field begins, and
+    // how long it is, where it is whole within the packet.
+    fn section(p: &[u8]) -> Option<(usize, usize)> {
+        if p[1] & 0x40 == 0 || (p[3] >> 4) & 3 != 1 {
+            return None;
+        }
+        let at = 5 + p[4] as usize;
+        let whole = 3 + ((usize::from(p.get(at + 1)? & 0x0F) << 8) | usize::from(*p.get(at + 2)?));
+        (at + whole <= PACKET && whole >= 16 && crc32(&p[at..at + whole]) == 0)
+            .then_some((at, whole))
+    }
+    let with_languages = |p: &[u8]| -> Option<Vec<u8>> {
+        let (at, whole) = section(p)?;
+        let sec = &p[at..at + whole];
+        if sec[0] != 0x02 {
+            return None;
+        }
+        let first = 12 + ((usize::from(sec[10] & 0x0F) << 8) | usize::from(sec[11]));
+        let mut out = sec.get(..first)?.to_vec();
+        let mut n = first;
+        let mut added = false;
+        while n + 5 <= whole - 4 {
+            let pid = (u16::from(sec[n + 1] & 0x1F) << 8) | u16::from(sec[n + 2]);
+            let len = (usize::from(sec[n + 3] & 0x0F) << 8) | usize::from(sec[n + 4]);
+            let loop_bytes = sec.get(n + 5..n + 5 + len)?;
+            let mut descriptors = loop_bytes.to_vec();
+            if let Some((_, three)) = named.iter().find(|(on, _)| *on == pid) {
+                if crate::si::descriptor(loop_bytes, 0x0A).is_none() {
+                    descriptors.extend_from_slice(&[0x0A, 4, three[0], three[1], three[2], 0]);
+                    added = true;
+                }
+            }
+            out.extend_from_slice(&sec[n..n + 3]);
+            out.push(0xF0 | ((descriptors.len() >> 8) as u8 & 0x0F));
+            out.push(descriptors.len() as u8);
+            out.extend_from_slice(&descriptors);
+            n += 5 + len;
+        }
+        if !added || n != whole - 4 || at + out.len() + 4 > PACKET {
+            return None;
+        }
+        let length = out.len() + 4 - 3;
+        out[1] = (out[1] & 0xF0) | ((length >> 8) as u8 & 0x0F);
+        out[2] = length as u8;
+        let crc = crc32(&out);
+        out.extend_from_slice(&crc.to_be_bytes());
+        let mut packet = p.to_vec();
+        packet[at..at + out.len()].copy_from_slice(&out);
+        packet[at + out.len()..].fill(0xFF);
+        Some(packet)
+    };
+
+    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(output)?;
+    let size = f.metadata()?.len();
+    if size % FRAME as u64 != 0 {
+        bail!("it is not a whole number of 192-byte packets");
+    }
+    let mut chunk = vec![0u8; FRAME * 4096];
+    let mut pmt_pid: Option<u16> = None;
+    // The muxer writes the same map every time: the last one seen and what
+    // it became, counter aside.
+    let mut last: Option<(Vec<u8>, Option<Vec<u8>>)> = None;
+    let mut rewritten = 0usize;
+    let mut pos = 0u64;
+    while pos < size {
+        let n = chunk.len().min((size - pos) as usize);
+        f.seek(SeekFrom::Start(pos))?;
+        f.read_exact(&mut chunk[..n])?;
+        let mut dirty = false;
+        for frame in chunk[..n].chunks_mut(FRAME) {
+            let p = &frame[4..];
+            if p[0] != 0x47 {
+                bail!("a packet at byte {pos} is out of sync");
+            }
+            let pid = (u16::from(p[1] & 0x1F) << 8) | u16::from(p[2]);
+            if pid == 0 && pmt_pid.is_none() {
+                // The list of programmes: the first that is not the network's.
+                if let Some((at, whole)) = section(p) {
+                    pmt_pid = (at + 8..at + whole - 7)
+                        .step_by(4)
+                        .map(|i| &p[i..i + 4])
+                        .find(|e| e[0] != 0 || e[1] != 0)
+                        .map(|e| (u16::from(e[2] & 0x1F) << 8) | u16::from(e[3]));
+                }
+                continue;
+            }
+            if Some(pid) != pmt_pid || pid == 0 {
+                continue;
+            }
+            let fresh = match &last {
+                Some((was, became)) if was[4..] == p[4..] => became.clone(),
+                _ => {
+                    let became = with_languages(p);
+                    last = Some((p.to_vec(), became.clone()));
+                    became
+                }
+            };
+            if let Some(mut packet) = fresh {
+                packet[3] = p[3]; // its own continuity count
+                frame[4..].copy_from_slice(&packet);
+                dirty = true;
+                rewritten += 1;
+            }
+        }
+        if dirty {
+            f.seek(SeekFrom::Start(pos))?;
+            f.write_all(&chunk[..n])?;
+        }
+        pos += n as u64;
+    }
+    f.flush()?;
+    Ok(rewritten)
+}
+
+#[cfg(test)]
+mod name_converted_tests {
+    use super::name_converted;
+
+    fn crc(data: &[u8]) -> u32 {
+        data.iter().fold(0xFFFF_FFFFu32, |mut c, &b| {
+            c ^= u32::from(b) << 24;
+            for _ in 0..8 {
+                c = if c & 0x8000_0000 != 0 { (c << 1) ^ 0x04C1_1DB7 } else { c << 1 };
+            }
+            c
+        })
+    }
+
+    fn frame(pid: u16, cc: u8, section: &[u8]) -> Vec<u8> {
+        let mut f = vec![0x12, 0x34, 0x56, 0x78, 0x47, 0x40 | (pid >> 8) as u8, pid as u8, 0x10 | cc, 0];
+        f.extend_from_slice(section);
+        f.resize(192, 0xFF);
+        f
+    }
+
+    fn sealed(mut sec: Vec<u8>) -> Vec<u8> {
+        let length = sec.len() + 4 - 3;
+        sec[1] = 0xB0 | (length >> 8) as u8;
+        sec[2] = length as u8;
+        let c = crc(&sec);
+        sec.extend_from_slice(&c.to_be_bytes());
+        sec
+    }
+
+    #[test]
+    fn the_converted_subtitles_are_named_in_place_and_nothing_else_moves() {
+        let pat = sealed(vec![0, 0, 0, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00]);
+        let pmt = sealed(vec![
+            2, 0, 0, 0, 1, 0xC1, 0, 0, 0xF0, 0x11, 0xF0, 0, // pcr 0x1011, no programme info
+            0x02, 0xF0, 0x11, 0xF0, 0, // pictures
+            0x90, 0xF2, 0x00, 0xF0, 0, // subtitles 0x1200
+            0x90, 0xF2, 0x01, 0xF0, 6, 0x0A, 4, b'e', b'n', b'g', 0, // 0x1201, named already
+        ]);
+        let other = frame(0x1011, 0, &[0xAA; 20]);
+        let file: Vec<u8> = [frame(0, 0, &pat), frame(0x100, 0, &pmt), other.clone(), frame(0x100, 1, &pmt)]
+            .concat();
+        let dir = std::env::temp_dir().join(format!("sc_name_converted_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("x.m2ts");
+        std::fs::write(&path, &file).unwrap();
+        let p = path.to_str().unwrap();
+        let named = [(0x1200, *b"jpn"), (0x1201, *b"jpn")];
+        assert_eq!(name_converted(p, &named).unwrap(), 2);
+        let out = std::fs::read(&path).unwrap();
+        assert_eq!(out.len(), file.len());
+        assert_eq!(out[..192], file[..192]);
+        assert_eq!(out[384..576], other[..]);
+        for (k, at) in [(0u8, 192usize), (1, 576)] {
+            let f = &out[at..at + 192];
+            assert_eq!(f[..4], file[at..at + 4], "arrival time kept");
+            assert_eq!(f[7] & 0x0F, k, "continuity kept");
+            let sec = &f[9..];
+            let whole = 3 + ((usize::from(sec[1] & 0x0F) << 8) | usize::from(sec[2]));
+            assert_eq!(whole, pmt.len() + 6);
+            assert_eq!(crc(&sec[..whole]), 0);
+            assert_eq!(sec[17..28], [0x90, 0xF2, 0x00, 0xF0, 6, 0x0A, 4, b'j', b'p', b'n', 0]);
+            // The one already named keeps its own.
+            assert_eq!(sec[28..39], [0x90, 0xF2, 0x01, 0xF0, 6, 0x0A, 4, b'e', b'n', b'g', 0]);
+            assert!(sec[whole..183].iter().all(|&b| b == 0xFF));
+        }
+        // Nothing to add the second time.
+        assert_eq!(name_converted(p, &named).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Where one kept range sits in its recording, for the data broadcast read
@@ -10106,6 +10720,16 @@ fn cut_into(
     // could carry -- and with the transitions cut into them. A run with
     // neither comes back out of this the plan it went in as.
     let reel_plans: Vec<Vec<RangePlan>> = ranges_with_transitions(reels, master, &fits, opts);
+    // Where each range's sound starts and ends, which is where its pictures
+    // do; see [`sound_span`]. The frames prepared for the boundaries, the
+    // windows a track re-encoded whole is cut to and where every range's
+    // sound is laid all come from here.
+    let sound_spans: Vec<Vec<(f64, f64)>> = reels
+        .iter()
+        .zip(&reel_plans)
+        .enumerate()
+        .map(|(n, (r, plans))| plans.iter().map(|p| sound_span(r.src, p, fits[n].video)).collect())
+        .collect();
     let plans = &reel_plans[master];
     // Every range of every reel, in the order they are written, so that
     // anything counted over the whole job is counted over the whole job.
@@ -10896,6 +11520,8 @@ fn cut_into(
         let has_copy = all_plans().flat_map(|p| &p.segments).any(|s| s.kind == SegmentKind::Copy);
         Some(crate::av1_mp4::Guard::new(&params, has_copy)?)
     } else { None };
+    // The containers that keep a ProRes or HAP fourcc. See `source_tag`.
+    let keeps_fourcc = matches!(octx.format().name(), "mov" | "matroska");
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params.clone());
@@ -10946,10 +11572,29 @@ fn cut_into(
             // An MP4's tags only. Matroska names its codecs by string and has
             // no such distinction to make: sets in the samples are simply
             // read there.
+            // ProRes and HAP are the exception the other way: their fourcc is
+            // part of what the pictures are. libavcodec decodes ProRes 4444
+            // and 4444 XQ at 12 bits only when the tag says `ap4h`/`ap4x`,
+            // and picks HAP's texture format from the tag alone. Left to the
+            // muxer, every ProRes came out `apch` in a .mov and with no
+            // fourcc in a .mkv -- a 4444 cut decoded at 10 bits and failed
+            // its verify -- and every HAP `Hap1`. So the recording's own tag
+            // goes on, where it is one QuickTime names for this codec and
+            // the output is one of the two containers that keep it.
+            let source_tag = (*ost.parameters().as_mut_ptr()).codec_tag;
+            let tag_is_the_codec = matches!(src.video.codec.as_str(), "prores" | "hap")
+                && keeps_fourcc
+                && source_tag != 0
+                && {
+                    let tables = [ff::ffi::avformat_get_mov_video_tags(), std::ptr::null()];
+                    ff::ffi::av_codec_get_id(tables.as_ptr(), source_tag)
+                        == (*ost.parameters().as_mut_ptr()).codec_id
+                };
             (*ost.parameters().as_mut_ptr()).codec_tag = match (&reframe, src.video.codec.as_str())
             {
                 (Some(_), "h264") if mp4ish => u32::from_le_bytes(*b"avc3"),
                 (Some(_), "hevc") if mp4ish => u32::from_le_bytes(*b"hev1"),
+                _ if tag_is_the_codec => source_tag,
                 _ => 0,
             };
             set_pid(&mut ost, to_ts, pids.video(video_pid));
@@ -11071,10 +11716,12 @@ fn cut_into(
         ost.set_time_base(ff::Rational::new(1, setup.sample_rate as i32));
         // Carried across so the muxer writes the language descriptor the
         // recording had; without it the audio arrives anonymous -- and on a
-        // bilingual recording, anonymous twice over.
-        if let Some(lang) = &setup.info.language {
+        // bilingual recording, anonymous twice over. In three letters, the
+        // only form the transport stream muxer writes a descriptor for: a
+        // DVD's index gives two. See [`crate::dvd::three_letters`].
+        if let Some(lang) = setup.info.language.as_deref().and_then(crate::dvd::three_letters) {
             let mut meta = ff::Dictionary::new();
-            meta.set("language", lang);
+            meta.set("language", &lang);
             ost.set_metadata(meta);
         }
         let out_index = ost.index();
@@ -11098,9 +11745,9 @@ fn cut_into(
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params);
         ost.set_time_base(ff::Rational::new(1, 90_000));
-        if let Some(lang) = &info.language {
+        if let Some(lang) = info.language.as_deref().and_then(crate::dvd::three_letters) {
             let mut meta = ff::Dictionary::new();
-            meta.set("language", lang);
+            meta.set("language", &lang);
             ost.set_metadata(meta);
         }
         let out_index = ost.index();
@@ -11127,9 +11774,9 @@ fn cut_into(
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
         ost.set_parameters(params);
         ost.set_time_base(ff::Rational::new(1, 90_000));
-        if let Some(lang) = &info.language {
+        if let Some(lang) = info.language.as_deref().and_then(crate::dvd::three_letters) {
             let mut meta = ff::Dictionary::new();
-            meta.set("language", lang);
+            meta.set("language", &lang);
             ost.set_metadata(meta);
         }
         let out_index = ost.index();
@@ -11157,9 +11804,9 @@ fn cut_into(
         for (nth, info) in subpictures.iter().enumerate() {
             let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
             ost.set_time_base(ff::Rational::new(1, 90_000));
-            if let Some(lang) = &info.language {
+            if let Some(lang) = info.language.as_deref().and_then(crate::dvd::three_letters) {
                 let mut meta = ff::Dictionary::new();
-                meta.set("language", lang);
+                meta.set("language", &lang);
                 ost.set_metadata(meta);
             }
             let out_index = ost.index();
@@ -11413,12 +12060,12 @@ fn cut_into(
                 per_track.push(Default::default());
                 continue;
             };
-            let windows: Vec<(i64, i64)> = reel_plans[n]
+            let windows: Vec<(i64, i64)> = sound_spans[n]
                 .iter()
-                .map(|p| {
+                .map(|&(from, to)| {
                     (
-                        (p.t_in * a.sample_rate as f64).round() as i64,
-                        (p.t_out * a.sample_rate as f64).round() as i64,
+                        (from * a.sample_rate as f64).round() as i64,
+                        (to * a.sample_rate as f64).round() as i64,
                     )
                 })
                 .collect();
@@ -11912,15 +12559,19 @@ fn cut_into(
                 // as it does on the first range.
                 let gap = t.end.is_some_and(|end| end - target_start < -0.5);
                 let drift = if gap { 0.0 } else { t.end.map_or(0.0, |end| end - target_start) };
+                let (sound_in, sound_out) = sound_spans[reel_no][plan_no];
                 let window = (
-                    (plan.t_in * info.sample_rate as f64).round() as i64,
-                    (plan.t_out * info.sample_rate as f64).round() as i64,
+                    (sound_in * info.sample_rate as f64).round() as i64,
+                    (sound_out * info.sample_rate as f64).round() as i64,
                 );
                 if std::env::var("SMARTCUT_DEBUG").is_ok() {
                     crate::say!(
-                        "  range t_in={:.4} target_start={:.4} track=0x{:04x} end={:?} \
-                         drift={:+.4}",
+                        "  range t_in={:.4} t_out={:.4} sound={:.4}-{:.4} target_start={:.4} \
+                         track=0x{:04x} end={:?} drift={:+.4}",
                         plan.t_in,
+                        plan.t_out,
+                        sound_in,
+                        sound_out,
                         target_start,
                         info.pid,
                         t.end.map(|v| (v * 1e4).round() / 1e4),
@@ -11932,10 +12583,10 @@ fn cut_into(
                     info,
                     in_index: info.stream_index,
                     in_tb: info.time_base,
-                    offset: target_start - plan.t_in,
-                    pick_from: plan.t_in + drift,
+                    offset: target_start - sound_in,
+                    pick_from: sound_in + drift,
                     min_start: if t.end.is_none() || gap {
-                        plan.t_in
+                        sound_in
                     } else {
                         f64::NEG_INFINITY
                     },
@@ -11951,7 +12602,9 @@ fn cut_into(
                         ranges_in_all,
                         window,
                     ),
-                    range_in: plan.t_in,
+                    range_in: sound_in,
+                    range_out: sound_out,
+                    planned_out: plan.t_out,
                     mode: t.mode,
                 })
             })
@@ -12879,6 +13532,32 @@ fn cut_into(
                 "note: the cut is written, but the broadcast's own tables could not be put \
                  back: {e}"
             ),
+        }
+    }
+
+    // A DVD's subtitles converted into Blu-ray's own framing, which the map
+    // has to name the language of as the `.ts` above does -- and the muxer
+    // writes none for a graphics stream, and no table of the recording's
+    // goes into a `.m2ts` of a DVD to say it instead. Not through the graft:
+    // into this framing that also moves the clock onto a PID of its own,
+    // which is the disc's stamp's business and not a language's. Only the
+    // map's own packets change, each within itself. See [`name_converted`].
+    if to_ts && tables.is_none() && writing_m2ts(output) && !converted_streams.is_empty() {
+        let named: Vec<(u16, [u8; 3])> = converted_streams
+            .iter()
+            .enumerate()
+            .filter_map(|(n, c)| {
+                let pid = pids.graphics(graphics.len() + n, c.id);
+                let three = c.language.as_deref().and_then(crate::dvd::three_letters)?;
+                let b: [u8; 3] = three.as_bytes().try_into().ok()?;
+                (STREAM_PIDS.contains(&pid) && b.iter().all(u8::is_ascii_alphabetic))
+                    .then_some((pid as u16, b))
+            })
+            .collect();
+        if !named.is_empty() {
+            if let Err(e) = name_converted(output, &named) {
+                crate::say!("note: the subtitles' languages could not be named in {output}: {e:#}");
+            }
         }
     }
 

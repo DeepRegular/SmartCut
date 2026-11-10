@@ -6146,6 +6146,12 @@ async function saveMarks(kind, ask) {
     // dialog. A name that says none of the three is written as it was asked
     // for.
     if (/\.(keyframe|avs|json)$/i.test(to)) kind = kindOf(to);
+    // ...and a name typed as `.json` over a Trim or a keyframe save is the CM
+    // finding, which with nothing found was written as an empty one.
+    if (kind === "cm" && !cmBlocks.length) {
+      el("status").textContent = tr("cm.nothing");
+      return;
+    }
   } else if (!prefs.get("quietOverwrite")) {
     let there = null;
     try {
@@ -7229,6 +7235,8 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // pictures landing after `forgetGlances` below were kept as this one's,
     // and a magnifier's picture put `zoomShown` back on the old frame.
     previewToken++;
+    // ...and a held picture a drag asked for in the wait (`paintFast`).
+    hoverToken++;
     // And a step asked for during the wait above, which is on the last
     // recording's timeline too (`scrubPending` was let go of before it).
     scrubPending = null;
@@ -9622,7 +9630,22 @@ function applyCmBlocks(blocks, marks = true) {
 el("editor-ok").addEventListener("click", async () => {
   // The cut made just before it is part of what OK hands over; see `cutting`.
   if (cutting) await cutting.catch(() => {});
+  // A row whose timeline is up while the files beside it are still being
+  // read (`openPath`: `src` replaced, `swapping` not yet over). What was done
+  // on it then is this row's, and `captureEdit` sends nothing until that read
+  // is over: a cut made in that wait and OK went nowhere. Waited for, within
+  // reason -- a read that never ends leaves things as they were.
+  const about = editId;
+  for (let i = 0; i < 100 && swapping && shownId !== null && shownId === editId; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
   sync();
+  // The list is a window of its own and still takes a double-click during
+  // that wait. A row sent then is the one somebody now wants to edit, and
+  // closing would have shut the editor on it. The `sync` above still sends
+  // the row OK was pressed on, which is on screen until that open replaces
+  // it (`captureEdit`, `showingLeft`).
+  if (editId !== about) return;
   // After the debounce, so the last cut is over the wire before the window
   // that made it goes away.
   setTimeout(() => invoke("close_editor"), 220);

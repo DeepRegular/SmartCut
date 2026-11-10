@@ -515,6 +515,16 @@ pub fn read(at: &Path) -> Result<Disc> {
 /// not on a disc costs a look at two directory names and nothing else.
 pub fn carry_disc_languages(src: &mut crate::Source) {
     let path = src.path.clone();
+    // A DVD's title says it in its IFO, by the substream id the demuxer names
+    // the track by and the list shows it under. Its subtitles are given
+    // theirs where they are found (see [`crate::dvd::subtitles_of`]); its
+    // sound was given nothing, so a bilingual disc's cut had two anonymous
+    // AC-3 tracks. A name that is not a DVD title costs nothing more than a
+    // look for the `@` that carries a title's sectors.
+    if let Some(sound) = crate::dvd::sound_of(&path) {
+        carry_languages(src, &sound);
+        return;
+    }
     let Some((root, clip)) = clip_on_a_disc(&path) else {
         return;
     };

@@ -546,9 +546,11 @@ fn run(
                 (*p).sample_rate = setup.sample_rate as i32;
             }
         }
-        if let Some(lang) = &setup.info.language {
+        // In three letters, as every muxer here wants it: a DVD's index
+        // gives two. See [`crate::dvd::three_letters`].
+        if let Some(lang) = setup.info.language.as_deref().and_then(crate::dvd::three_letters) {
             let mut meta = ff::Dictionary::new();
-            meta.set("language", lang);
+            meta.set("language", &lang);
             ost.set_metadata(meta);
         }
         // The muxer works the tag out for the container it is writing;
@@ -623,6 +625,28 @@ fn run(
         };
         let base = pieces[..n].iter().map(|p| p.ranges.len()).sum::<usize>();
         let mut ranges = kept[n].clone();
+        // Each range's sound where its pictures start and end in the cut
+        // with pictures, which is what that cut lays its sound from. See
+        // [`on_its_pictures`].
+        let afresh = n != master && crate::conform::fit(shape.src, piece.src).video;
+        let count = ranges.len();
+        for (k, range) in ranges.iter_mut().enumerate() {
+            // Not where a transition meets the range: the crossing's own
+            // stretch is left as the picture writer leaves it, and an
+            // overlapping one has moved the range's start already.
+            let entered = k == 0 && n > 0 && pieces[n - 1].after.kind != crate::transition::Crossing::None;
+            let leaves = k + 1 == count && n + 1 < pieces.len() && piece.after.kind != crate::transition::Crossing::None;
+            if piece.ranges.get(k) != Some(&*range) {
+                continue;
+            }
+            let (from, to) = on_its_pictures(piece.src, *range, afresh, &opts.plan);
+            if !entered {
+                range.0 = from;
+            }
+            if !leaves {
+                range.1 = to;
+            }
+        }
         if let Some(head) = ranges.first_mut() {
             head.0 = primed_from(piece.src, &track, *head)?;
         }
@@ -816,6 +840,50 @@ fn run(
     }
     say(ranges_in_all);
     Ok(())
+}
+
+/// Where the cut with pictures lays a range's sound from and to: where the
+/// range's pictures start and end. A range asked for between two pictures
+/// opens on the picture after its start, and the cut starts its sound there
+/// ([`crate::cut::sound_span`]); so does a range whose start is within half
+/// a picture of an entry point, which the cut copies from that point. Read
+/// off the plan the cut makes of the range, and moved only between pictures
+/// of the recording's own: a bound on a picture (what the editor sends) and
+/// a range from the head of the recording (see [`primed_from`]) are kept as
+/// they are.
+///
+/// Planned as the cut plans it ([`crate::plan::plan_on`], with the cut's own
+/// options), which first settles a bound within two ticks of a picture on a
+/// coarse clock as that picture's. Planned from the bound as given, an
+/// editor's bound on a 29.97 Matroska whose head is not on a millisecond --
+/// up to one past the picture's stored time -- read as one between two
+/// pictures, and every range of the sound-only file opened a picture after
+/// the cut's: 35 ms of sound lost at each head, 70 ms behind the cut by the
+/// third range.
+fn on_its_pictures(
+    src: &Source,
+    range: (f64, f64),
+    afresh: bool,
+    opts: &crate::plan::PlanOptions,
+) -> (f64, f64) {
+    let (a, b) = range;
+    let Some(plan) = crate::plan::plan_on(src, &[range], opts).pop() else {
+        return range;
+    };
+    if plan.segments.is_empty() {
+        return range;
+    }
+    let (from, to) = crate::cut::sound_span(src, &plan, afresh);
+    let slack = crate::cut::on_a_picture_slack(&src.video);
+    let least = src.video.least_gap();
+    let moved = |was: f64, now: f64| {
+        let by = (now - was).abs();
+        by > slack && by < least
+    };
+    let first = src.points.first().map_or(0.0, |p| p.time);
+    let from = if a > first + slack && moved(a, from) { from } else { a };
+    let to = if moved(b, to) && to > from { to } else { b };
+    (from, to)
 }
 
 /// Where a range read from the head of a recording starts, where the cut
