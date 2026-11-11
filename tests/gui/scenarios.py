@@ -2089,6 +2089,165 @@ def seam_master_changed(cfg, t):
         app.s.switch(app.main)
 
 
+def _open_seam_window(app):
+    """The list's output settings screen, 継ぎ目の編集 pressed, and the window
+    up with its join loaded. Returns the window's handle, switched to."""
+    app.to_list()
+    app.s.click('button.tab[data-screen="outset"]')
+    wait_for("the seam button", lambda: app.s.js(
+        "const r = document.getElementById('row-cross');"
+        "const b = document.getElementById('open-cross');"
+        "return !!r && !r.hidden && !!b && !b.disabled;"), 90)
+    handles = set(app.s.handles())
+    app.s.click("#open-cross")
+    seam = wait_for("the seam window", lambda: (
+        [h for h in app.s.handles() if h not in handles] or [None])[0], 60)
+    app.s.switch(seam)
+    wait_for("the join loaded", lambda: app.s.js(
+        "return document.getElementById('out-clip-time').textContent") not in
+        ("--:--:--.--", "00:00:00.00"), 60)
+    time.sleep(1)
+    return seam
+
+
+def _seam_secs(text):
+    h, m, s = text.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def _close_seam(app, seam, button="#cross-cancel"):
+    try:
+        app.s.click(button)
+    except WebDriverError:
+        pass
+    wait_for("the seam window to close", lambda: seam not in app.s.handles(), 15)
+    app.s.switch(app.main)
+
+
+def seam_setting_while_playing(cfg, t):
+    """継ぎ目の設定: the crossing made longer while the preview plays. A
+    playback is handed its seam when it starts, and before the 49th pass one
+    left running played the crossing as it was: it ran out at the old end of
+    the preview under a scrubber and readouts that said the new one. Now the
+    playback starts again on the new setting from where it was. (49th pass,
+    shared: a freeze item of the 23rd.)"""
+    with App(cfg, "seam_setting_while_playing", clips(cfg), {"joinAll": True}) as app:
+        seam = _open_seam_window(app)
+        app.s.js(
+            "const k = document.getElementById('x-kind'); k.value = 'dissolve';"
+            "k.dispatchEvent(new Event('change', {bubbles: true}));")
+        time.sleep(1.5)
+
+        def state():
+            play, at, total = app.s.js(
+                "return [document.getElementById('play').textContent,"
+                " document.getElementById('ovl-time').textContent,"
+                " document.getElementById('out-clip-time').textContent]")
+            return play, _seam_secs(at), _seam_secs(total)
+
+        old_total = state()[2]
+        app.s.click("#play")
+        time.sleep(0.8)
+        app.s.js(
+            "const f = document.getElementById('x-secs'); f.value = '4';"
+            "f.dispatchEvent(new Event('change', {bubbles: true}));")
+        time.sleep(1.0)
+        during = state()
+        wait_for("the playback to run out", lambda: state()[0] == "▶", 60, 0.1)
+        ended = state()
+        t.check("49 a setting changed while the seam window plays: playback goes on with it",
+                during[0] == "■" and ended[2] > old_total + 1.0 and ended[1] > old_total + 0.5,
+                f"preview {old_total:.2f} s, then {ended[2]:.2f} s after 4 s was set; "
+                f"1 s after the change {during}; ran out at {ended[1]:.2f} s")
+        _close_seam(app, seam)
+
+
+def seam_crafted_lengths(cfg, t):
+    """継ぎ目の設定 over a project written by hand: a dissolve of 0.02 s and a
+    fade of 0.04 s, which the fields show as 0.1 and 0. Before the 49th pass
+    the preview and OK went on with the file's numbers under the fields'; now
+    what the fields show is what is used and handed back. (49th pass, shared:
+    a freeze item of the 23rd.)"""
+    rows = [dict(c) for c in clips(cfg)]
+    rows[0]["after"] = {"kind": "dissolve", "seconds": 0.02, "curve": "none", "mode": "in",
+                        "image": "", "fadeOut": 0.04, "fadeIn": 0}
+    with App(cfg, "seam_crafted_lengths", rows, {"joinAll": True}) as app:
+        seam = _open_seam_window(app)
+        shown = app.s.js("return [document.getElementById('x-secs').value,"
+                         " document.getElementById('x-fade-out').value]")
+        _close_seam(app, seam, "#cross-ok")
+        after = app.save()["clips"][0].get("after") or {}
+        t.check("49 a hand-written crossing is used as the seam window shows it",
+                [float(x) for x in shown] == [0.1, 0.0]
+                and after.get("seconds") == 0.1 and not after.get("fadeOut"),
+                f"fields {shown}; after OK {after}")
+
+
+def seam_failed_load_sound(cfg, t):
+    """継ぎ目の設定 stepped from a join that loads to one whose recording has
+    gone since the list read it: the window says it cannot read the clips,
+    and the sound's controls are greyed with the rest. Before the 49th pass
+    they stood live as the join before had them. (49th pass, shared: a
+    freeze item of the 21st.)"""
+    os.makedirs(os.path.join(cfg.work, "runs"), exist_ok=True)
+    c = os.path.join(cfg.work, "runs", "seam_failed_load_c.ts")
+    shutil.copyfile(cfg.a, c)
+    rows = [{"path": cfg.a}, {"path": cfg.b}, {"path": c}]
+    try:
+        with App(cfg, "seam_failed_load_sound", rows, {"joinAll": True}) as app:
+            app.to_list()
+            wait_for("rows read", lambda: app.s.js(
+                "return [...document.querySelectorAll('#cliplist > li .badge')]"
+                ".every((b) => b.classList.contains('ready'))"), 120)
+            seam = _open_seam_window(app)
+            live = app.s.js("return !document.getElementById('mute').disabled")
+            os.rename(c, c + ".away")
+            app.s.js("const f = document.getElementById('which-join'); f.focus();"
+                     "f.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true}));")
+            failed = wait_for("the second join's load to fail", lambda: app.s.js(
+                "const n = document.getElementById('note').textContent;"
+                "return n && !/読み込んでいます|Reading/.test(n) ? n : null"), 60)
+            greyed = app.s.js("return [document.getElementById('mute').disabled,"
+                              " document.getElementById('volume').disabled]")
+            t.check("49 the sound's controls are greyed where the join's clips cannot be read",
+                    live and greyed == [True, True],
+                    f"first join live {live}; note {failed!r}; greyed {greyed}")
+            _close_seam(app, seam)
+    finally:
+        for f in (c, c + ".away"):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+def seam_heard_track_missing(cfg, t):
+    """(49th pass, p2guif; the 19th's line, with p2guib's track counts.) The
+    seam window plays the track in the master's first kept track's place
+    (`heard`). c.ts (two sound tracks) is the master with its first switched
+    off, so the second is heard; at the join of a.ts and b.mkv (one track
+    each) nothing is in that place, and the sound's controls must be greyed.
+    At the join of b.mkv and c.ts, c.ts has it: live. Before, both were live
+    (the clips' main tracks were tested)."""
+    off = {"cuts": [], "keyframes": [], "dropStreams": [1]}
+    rows = [{"path": cfg.a}, {"path": cfg.b}, {"path": cfg.c, "edit": off}]
+    with App(cfg, "seam_heard_track_missing", rows, {"joinAll": True, "master": 2}) as app:
+        app.to_list()
+        wait_for("rows read", lambda: app.s.js(
+            "return [...document.querySelectorAll('#cliplist > li .badge')]"
+            ".every((b) => b.classList.contains('ready'))"), 120)
+        seam = _open_seam_window(app)
+        first = app.s.js("return [document.getElementById('mute').disabled,"
+                         " document.getElementById('volume').disabled]")
+        app.s.js("const f = document.getElementById('which-join'); f.focus();"
+                 "f.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true}));")
+        time.sleep(3)
+        second = app.s.js("return [document.getElementById('mute').disabled,"
+                          " document.getElementById('volume').disabled]")
+        t.check("49h the sound's controls follow the track heard at each join",
+                first == [True, True] and second == [False, False],
+                f"a|b (no second track) greyed {first}; b|c greyed {second}")
+        _close_seam(app, seam)
+
+
 def seam_sar_av1_mp4(cfg, t):
     """seam_sar_reels on two AV1 .mp4 reels whose pixel aspect is stated only
     by the container (pasp 4:3, then 1:1; #11's case): the stage is 192x112 at
@@ -7833,9 +7992,9 @@ def vfr_marks_near(cfg, t):
     recording (a.ts) marks; two marks on two pictures next to each other are
     two marks there; and OUT on the picture before the last, pressed as soon
     as the walk lands (before the last picture is asked for, `learnTail`),
-    keeps the last. 45n2 FAILS on purpose: a known S3 left after the 45th
-    pass (main.js's "one mark to a picture" tests still take half the
-    average; marks within 0.5 s are one chapter anyway, `chaptersFor`)."""
+    keeps the last. 45n2 failed until the 49th pass, which moved main.js's
+    "one mark to a picture" tests onto `endHalf` (half the closest the
+    pictures come, not half the average)."""
     v = _hold_mp4(cfg)
 
     def jump(app, text):
@@ -7895,7 +8054,7 @@ def vfr_marks_near(cfg, t):
         app.s.keys("k")
         time.sleep(0.5)
         m2 = app.state()["keys"]
-        t.check("45n2 two marks on adjacent pictures (KNOWN S3, 45th)",
+        t.check("45n2 two marks on adjacent pictures",
                 m0 != m1 and m1 != m2, f"marks {m0!r} -> {m1!r} -> {m2!r}")
         app.ok()
         app.gone()
@@ -9571,6 +9730,62 @@ def ok_while_marks_read(cfg, t):
 
 
 
+def ok_wait_then_escape(cfg, t):
+    """(49th pass, mainjs.) `ok_while_marks_read`'s wait, left the other way:
+    OK pressed on a first visit whose mark file is still being read, then
+    Escape inside the wait and 破棄 answered. The visit is thrown away, and
+    the cut must stay away -- OK's own report, sent once the wait is over,
+    must not put it back on the row after the list has. And then OK alone,
+    as `ok_while_marks_read`, so that a pass here is not a cut never made."""
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    e = os.path.join(d, "slowmarks.ts")
+    side = os.path.join(d, "slowmarks.keyframe")
+    shutil.copyfile(cfg.a, e)
+    try:
+        with App(cfg, "ok_wait_then_escape", [{"path": cfg.a}, {"path": e}]) as app:
+            had = 0
+            for escape in (True, False):
+                # As `ok_wait_then_row`: from another row, whose window is up.
+                app.open_row(1, "a.ts")
+                _walk_done(app)
+                time.sleep(1)
+                with open(side, "w") as f:
+                    f.write("1\n" * 10_000_000)
+                app.open_row(2, "slowmarks.ts", wait=False)
+                app.to_editor()
+                wait_for("row 2's timeline", lambda: (lambda st: "slowmarks" in st["title"]
+                                                       and st["frames"] is not None)(app.state()), 60, 0.02)
+                st0 = app.state()
+                app.s.keys("i")
+                app.s.keys("o")
+                app.s.keys("Delete")
+                time.sleep(0.15)
+                st1 = app.state()
+                app.ok()
+                asked = False
+                if escape:
+                    time.sleep(0.1)
+                    asked = app.escape(discard=True, expect_dialog=False)
+                app.gone(timeout=120)
+                time.sleep(1.5)
+                p = app.save()
+                c2 = cuts_of(p, 2)
+                took = st1["frames"] is not None and st0["frames"] is not None and st1["frames"] < st0["frames"]
+                want = had + (0 if escape else 1)
+                t.check(f"49w OK then {'Escape+discard' if escape else 'nothing'} in the wait: row 2 gains {want - had} cut",
+                        (not took) or len(c2) == want,
+                        f"counter {st0['frames']} -> {st1['frames']} (cut {'taken' if took else 'NOT taken: inconclusive'}); "
+                        f"{'asked' if asked else 'not asked'}; row 2 {fmt(c2)}")
+                had = len(c2)
+                if os.path.exists(side):
+                    os.remove(side)
+    finally:
+        for f in (e, side):
+            if os.path.exists(f):
+                os.remove(f)
+
+
 def ok_wait_then_row(cfg, t):
     """(48th pass, p2check.) `ok_while_marks_read`'s wait seen from the other
     side. OK is pressed on a first visit whose mark file is still being read
@@ -9651,6 +9866,222 @@ def ok_wait_then_row(cfg, t):
         for f in (e, side, o):
             if os.path.exists(f):
                 os.remove(f)
+
+
+def cut_outside_whole_keeps_redo(cfg, t):
+    """(49th pass, p2guif; freeze item.) 範囲外を削除 with the whole recording
+    selected cuts nothing, and must not be a step 取消 takes back either
+    (which also emptied the redo list). IN on the first picture, OUT on the
+    last: the steps 取消 can take are counted (and put back with やり直し);
+    範囲外を削除; the timeline is as it was and 取消 has as many steps as
+    before."""
+    def depth(app):
+        n = 0
+        while app.s.js("return !document.getElementById('undo-cut').disabled") and n < 50:
+            app.s.js("document.getElementById('undo-cut').click();")
+            time.sleep(0.2)
+            n += 1
+        for _ in range(n):
+            app.s.js("document.getElementById('redo-cut').click();")
+            time.sleep(0.2)
+        return n
+
+    with App(cfg, "cut_outside_whole_keeps_redo", clips(cfg)) as app:
+        app.open_row(1, "a.ts")
+        _walk_done(app)
+        whole = app.state()["frames"]
+        app.goto(0)
+        app.s.keys("i")
+        app.goto(whole - 1)
+        app.s.keys("o")
+        time.sleep(0.3)
+        n0 = depth(app)
+        app.s.js("document.getElementById('cut-outside').click();")
+        time.sleep(1.0)
+        st = app.state()
+        n1 = depth(app)
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+        t.check("49g 範囲外を削除 over the whole recording is no step",
+                n1 == n0 and st["frames"] == whole,
+                f"pictures {whole} -> {st['frames']}; 取消 steps {n0} before, {n1} after")
+
+
+def _set_lang(app, lang):
+    app.to_list()
+    app.s.js("const s = document.getElementById('pref-lang'); s.value = arguments[0];"
+             "s.dispatchEvent(new Event('change'));", lang)
+    time.sleep(1.5)
+
+
+def engine_refusal_row_language(cfg, t):
+    """(49th pass, p2guif.) The engine's refusal to open a recording reaches
+    the row as its own English sentence; the row's line says it in the
+    language in force (i18n `engineSays`), and again after a change of
+    language. A program stream whose clock starts again (two .mpg joined end
+    to end, as `cat a.mpg a.mpg` makes them) is refused at the walk."""
+    d = os.path.join(cfg.work, "p2guif")
+    os.makedirs(d, exist_ok=True)
+    one = os.path.join(d, "one.mpg")
+    two = os.path.join(d, "twice.mpg")
+    try:
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", cfg.a, "-c", "copy",
+                        "-f", "vob", one], check=True)
+        with open(two, "wb") as f:
+            for _ in range(2):
+                with open(one, "rb") as g:
+                    shutil.copyfileobj(g, f)
+        with App(cfg, "engine_refusal_row_language", [{"path": cfg.a}, {"path": two}]) as app:
+            line = lambda: app.s.js(
+                "return document.querySelector('#cliplist > li:nth-child(2) .sub').textContent")
+            said = {}
+            for lang in ("ja", "en", "ja"):
+                _set_lang(app, lang)
+                wait_for("row 2 refused", lambda: "twice.mpg" in line() and (
+                    "不連続" in line() or "starts again" in line()), 120, 0.5)
+                said.setdefault(lang, []).append(line())
+            _set_lang(app, "auto")
+            ok = (all("不連続" in s for s in said["ja"])
+                  and all("starts again" in s for s in said["en"]))
+            t.check("49e the row's refusal is said in the language in force", ok,
+                    f"ja {said['ja'][0][:60]!r}... en {said['en'][0][:60]!r}...")
+    finally:
+        for f in (one, two):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+def ok_wait_long_read(cfg, t):
+    """(49th pass, p2guif.) `ok_while_marks_read` with a mark file whose read
+    can outlast OK's wait (5 s): a 60 MB `.keyframe`, the largest read. The
+    cut made on the row's timeline before OK must reach the list, and the
+    next visit must read the file (a `.keyframe` of one mark). Then the same
+    with キャンセル pressed in the wait and its question answered いいえ only
+    after 6 s, past the wait: the wait ran out with the files still being
+    read, and the cut was lost (`captureEdit` sends nothing while
+    `swapping`)."""
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    e = os.path.join(d, "longmarks.ts")
+    side = os.path.join(d, "longmarks.keyframe")
+    try:
+        for keep_asked in (False, True):
+            _ok_wait_long_read(cfg, t, e, side, keep_asked)
+    finally:
+        for f in (e, side):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+def ok_wait_twice(cfg, t):
+    """(49th pass, p3guif.) `ok_wait_long_read` with OK pressed twice in the
+    wait, 0.3 s apart: both waits end, the state is sent (once or twice, the
+    same), the window closes once, and the cut and the next visit's marks
+    are as with one OK."""
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    e = os.path.join(d, "longmarks.ts")
+    side = os.path.join(d, "longmarks.keyframe")
+    try:
+        _ok_wait_long_read(cfg, t, e, side, False, twice=True)
+    finally:
+        for f in (e, side):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+def ok_wait_asked_then_row(cfg, t):
+    """(49th pass, p3guif.) `ok_wait_long_read` with キャンセル pressed in OK's
+    wait, its question left up past the wait's 5 s, another row
+    double-clicked in the list while it is still up, and the question
+    answered いいえ once that row is on screen. The cut made on row 2 before
+    OK must reach the list: the wait for the answer (`while (asking)`) was
+    outside what the `editor-open` handler reads as OK's wait (`okWaiting`),
+    so the open of row 3 sent nothing for row 2, and once row 3 was up
+    nothing said row 2 at all."""
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    e = os.path.join(d, "longmarks.ts")
+    side = os.path.join(d, "longmarks.keyframe")
+    try:
+        _ok_wait_long_read(cfg, t, e, side, True, then_row=True)
+    finally:
+        for f in (e, side):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+def _ok_wait_long_read(cfg, t, e, side, keep_asked, twice=False, then_row=False):
+    shutil.copyfile(cfg.a, e)
+    tag = ("_asked_row" if then_row else "_asked") if keep_asked else "_twice" if twice else ""
+    rows = [{"path": cfg.a}, {"path": e}] + ([{"path": cfg.a}] if then_row else [])
+    with App(cfg, f"ok_wait_long_read{tag}", rows) as app:
+        app.open_row(1, "a.ts")
+        _walk_done(app)
+        time.sleep(1)
+        with open(side, "w") as f:
+            f.write("1\n" * 30_000_000)
+        app.open_row(2, "longmarks.ts", wait=False)
+        app.to_editor()
+        wait_for("row 2's timeline", lambda: (lambda st: "longmarks" in st["title"]
+                                               and st["frames"] is not None)(app.state()), 60, 0.02)
+        st0 = app.state()
+        app.s.keys("i")
+        app.s.keys("o")
+        app.s.keys("Delete")
+        time.sleep(0.15)
+        st1 = app.state()
+        pressed = time.time()
+        app.ok()
+        if twice:
+            time.sleep(0.3)
+            try:
+                app.s.js("const b = document.getElementById('editor-ok'); if (b) b.click();")
+            except Exception:
+                pass  # the first OK's wait was over and the window gone
+        asked = False
+        if keep_asked:
+            # キャンセル pressed in the wait, its question left up past the
+            # wait's 5 s, then answered いいえ (keep editing): what OK
+            # handed over is the cut.
+            time.sleep(0.1)
+            app.s.keys("Escape")
+            time.sleep(6)
+            if then_row:
+                # Row 3 (a.ts again) double-clicked with the question up,
+                # and given the time to come up before it is answered.
+                app.open_row(3, "a.ts", wait=False)
+                time.sleep(6)
+            asked = app.answer(False, timeout=5)
+        if then_row:
+            # The editor stays, on row 3: closed from there with nothing done.
+            time.sleep(1)
+            app.to_editor()
+            wait_for("the editor on row 3", lambda: (lambda st: st and "a.ts" in st["title"]
+                                                       and st["frames"] is not None)(app.state()), 60, 0.2)
+            app.escape(discard=True, expect_dialog=False)
+        app.gone(timeout=120)
+        took_s = time.time() - pressed
+        time.sleep(1)
+        p = app.save()
+        c2 = cuts_of(p, 2)
+        took = st1["frames"] is not None and st0["frames"] is not None and st1["frames"] < st0["frames"]
+        t.check(f"49k OK{' + キャンセル answered いいえ after 6 s' if keep_asked else ' twice' if twice else ''}"
+                f"{', row 3 opened in the question' if then_row else ''} "
+                "keeps the cut made before it",
+                (not took) or len(c2) == 1,
+                f"{'asked' if asked else 'not asked'}; closed {took_s:.1f} s after OK; counter {st0['frames']} -> {st1['frames']} "
+                f"(cut {'taken' if took else 'NOT taken: inconclusive'}); row 2 {fmt(c2)}")
+        with open(side, "w") as f:
+            f.write("1\n")
+        app.open_row(2, "longmarks.ts")
+        time.sleep(3)
+        st2 = app.state()
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+        t.check("49k ...and the next visit reads the mark file it never got to",
+                (not took) or (st2["keys"] or "").strip() != "",
+                f"marks on the second visit {st2['keys']!r}")
 
 
 ORD48 = ["pal50i.ts", "prores.mov", "mjpeg.mov", "phonefull.mp4", "xvid.mkv", "tiny.mp4", "xvid.avi"]
@@ -9811,12 +10242,17 @@ SCENARIOS = [
     seam_sar_reels,
     seam_sar_reels_master_after,
     seam_master_changed,
+    seam_setting_while_playing,
+    seam_crafted_lengths,
+    seam_failed_load_sound,
+    seam_heard_track_missing,
     ctrl_h_after_failed_open,
     ctrl_h_after_other_open,
     vfr_hold_arrows,
     vfr_del_then_ok,
     vfr_del_twice_then_ok,
     vfr_end_pictures,
+    vfr_marks_near,
     preview_subs_playback,
     vfr_key_out,
     disc_refuses_opus,
@@ -9892,11 +10328,17 @@ SCENARIOS = [
     ok_while_marks_read,
     ordinary_more_material,
     ok_wait_then_row,
+    ok_wait_then_escape,
+    ok_wait_long_read,
+    ok_wait_twice,
+    ok_wait_asked_then_row,
+    cut_outside_whole_keeps_redo,
+    engine_refusal_row_language,
 ]
 
 
 # Selectable by name, not run by default.
-EXTRA = [vfr_marks_near, av1_whole_verify, seam_sar_av1_mp4, ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
+EXTRA = [av1_whole_verify, seam_sar_av1_mp4, ok_then_reopen_fast, disc_join_crossing, disc_head_recount, disc_plays,
          disc_seam_gap_chapters, disc_seam_join_chapters, disc_plays_rows, disc_plays_switch,
          disc_plays_recount, disc_plays_due, disc_plays_trim_first,
          real_old_projects_ok_unchanged, disc_plays_trim_left,
