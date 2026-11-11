@@ -23,7 +23,7 @@
 import { fmt, clock, coarse, chLabel, cmNote, esc, size, blankKey, flatKey, noBrowserMenu, noNativeDrag, wireDrops, adoptDrop, dialogOver,
          playsFrom, unplayedOf, cutsBeyond }
   from "./shared.js";
-import { t, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
+import { t, engineSays, applyStatic, preference, currentLang, setLang, onLangChange, tellBackend, confirmWithOs }
   from "./i18n.js";
 import * as prefs from "./prefs.js";
 
@@ -507,7 +507,7 @@ async function edit(clip) {
   // recording that has never been read, showing what it has got to as it
   // goes, so waiting for the list's turn buys nothing.
   if (clip.state === "error") {
-    note(t("list.cannotRead", { clip: clipLabel(clip) }));
+    sayNote("list.cannotRead", { clip: clipLabel(clip) });
     return;
   }
   // And a recording that was there when the row was made and is not there
@@ -531,7 +531,7 @@ async function edit(clip) {
     dropBookings(clip);
     paintRow(clip);
     paintButtons();
-    note(t("list.goneNote", { clip: clipLabel(clip) }));
+    sayNote("list.goneNote", { clip: clipLabel(clip) });
     return;
   }
   // Asked again, because that question was answered on the other side of the
@@ -609,7 +609,7 @@ async function edit(clip) {
     // clip and there will be no `editor-ready` at all.
     tellEditor();
   } catch (e) {
-    note(t("list.cannotOpenEditor", { e }));
+    sayNote("list.cannotOpenEditor", { e });
     editing = null;
     before = null;
   } finally {
@@ -933,6 +933,49 @@ if (listen) {
     clip.edited = wasEdited;
   };
 
+  // OK pressed: what it handed over (the `editor-state` sent just before
+  // this) is what a キャンセル in the close delay that follows -- the same
+  // row opened again at once -- goes back to. Left on the visit's start, the
+  // cut OK had just handed over was dropped with it. See `ok_then_reopen_fast`.
+  listen("editor-ok", (ev) => {
+    const clip = byId((ev.payload || {}).id);
+    if (!clip || clip !== editing) return;
+    before = clip.edit ? JSON.parse(JSON.stringify(clip.edit)) : null;
+    editedBefore = clip.edited;
+    owedBack = null;
+  });
+
+  // A flat (black/white, quiet) detection landed in there. Not an edit, so
+  // キャンセル does not undo it -- as `editor-state` does for a commercial
+  // finding that lands (`landed`): the whole state where nothing else was
+  // done in there, else its marks and its runs onto what cancelling goes
+  // back to, and nothing for a row with nothing to go back to.
+  listen("editor-flat", (ev) => {
+    const state = ev.payload;
+    if (!state || typeof state !== "object") return;
+    const clip = byId(state.id);
+    if (!clip) return;
+    const visit =
+      !state.shown && clip !== editing && editing !== null ? leftVisits.get(clip.id) || null : null;
+    if (clip !== editing && !visit) return;
+    const now = JSON.parse(JSON.stringify(state));
+    delete now.shown;
+    const was = clip === editing ? before : visit.before;
+    let next = was;
+    if (!state.touched) next = now;
+    else if (was) {
+      next = {
+        ...was,
+        keyframes: now.keyframes,
+        activeKey: now.activeKey,
+        detectedWith: now.detectedWith,
+        flatRuns: now.flatRuns,
+      };
+    }
+    if (clip === editing) before = next;
+    else visit.before = next;
+  });
+
   listen("editor-cancel", (ev) => {
     const said = ev.payload !== null && typeof ev.payload === "object" ? ev.payload : { id: ev.payload };
     // What is put back is what the row being edited had: a cancel naming
@@ -1054,6 +1097,14 @@ if (listen) {
     // The row that failed is left as `editor-closed` would leave it.
     if (clips.includes(was)) takePlays(was);
     tellFold();
+    // A finding the list's pass made on this row while the window was on its
+    // way to the other one: owed to the editor, and never told it -- `runCm`
+    // tells only the row being edited, which this was not then. Untold, the
+    // window's next report (its old sentence, with `cmPending` still set)
+    // read as the finding landing, and the older sentence took its place.
+    // Where the row up never finished arriving (`stalledId` in main.js) this
+    // brings it up again, as a second double-click on it would.
+    if (clip.cmPending || clip.cmNothingOwed) tellEditor();
     paintList();
     pump();
   });
@@ -1185,13 +1236,17 @@ async function addPaths(inputs) {
   // drop, and goes with this one.
   if (sticky && sticky === dropSaid) sticky = "";
   dropSaid = "";
+  dropAgain = null;
   if (failed.length) {
-    dropSaid = failed[0].error + (failed.length > 1 ? t("list.andMore", { n: failed.length - 1 }) : "");
-    note(dropSaid);
+    dropAgain = () =>
+      failed[0].error + (failed.length > 1 ? t("list.andMore", { n: failed.length - 1 }) : "");
   } else if (skipped.length) {
-    dropSaid =
+    dropAgain = () =>
       t("list.unsupported", { names: skipped.slice(0, 3).join(", ") }) +
       (skipped.length > 3 ? t("list.andMore", { n: skipped.length - 3 }) : "");
+  }
+  if (dropAgain) {
+    dropSaid = dropAgain();
     note(dropSaid);
   }
   if (taken.length) pump();
@@ -1615,7 +1670,7 @@ function stopSettled() {
   stopping = false;
   // A run started in the meantime has the line for what it is doing, and
   // this sentence would sit over it on the output screen.
-  if (!exporting && !starting) note(t(queuedWork() ? "list.stopped" : "list.stoppedAll"));
+  if (!exporting && !starting) sayNote(queuedWork() ? "list.stopped" : "list.stoppedAll");
   paintButtons();
 }
 
@@ -1670,6 +1725,8 @@ let sticky = "";
 /// that cleared it the moment it began -- which is every drop that brought
 /// anything else -- left nobody told why half of a folder was missing.
 let dropSaid = "";
+/// How `dropSaid` is made, for saying it again in another language.
+let dropAgain = null;
 
 /// The file the run under way is being written down in, or the last run's
 /// once it is over -- which is what 実行ログを開く opens. "" before the first
@@ -1678,12 +1735,49 @@ let runLog = "";
 /// Whether that file is still being written to.
 let runLogging = false;
 
+/// What `sticky` was made of, where it was one sentence of the catalogue:
+/// the key, what was put into it, and the sentence it came to. Kept so that
+/// a change of language says it again in the new one rather than leaving the
+/// line in the old one until something else is said. Only while `sticky` is
+/// still that sentence. See `relocalise`.
+let stickyAgain = null;
+
 function note(text) {
   sticky = text;
+  stickyAgain = null;
   paintQueueNote();
   // What a run says goes into its log as well: the folder it branched to,
   // the disc it could not index, what the image came to. See `runLogLine`.
   if (text && runLog) runLogLine(text);
+}
+
+/// `note` of one sentence of the catalogue, which can be said again in
+/// another language. See `stickyAgain`.
+function sayNote(key, vars) {
+  note(t(key, vars));
+  stickyAgain = { key, vars, text: sticky };
+}
+
+/// `note` of an error as the backend put it, said in the language in force
+/// where it is one of the engine's refusals (`engineSays`), and again after
+/// a change of language.
+function sayRaw(text) {
+  note(engineSays(text));
+  stickyAgain = { raw: text, text: sticky };
+}
+
+/// The note in the language now in force, where it is still the sentence it
+/// was. What the last drop said is made again from what it was made of.
+function relocaliseNote() {
+  if (dropAgain) {
+    const was = dropSaid;
+    dropSaid = dropAgain();
+    if (sticky === was) sticky = dropSaid;
+  }
+  if (stickyAgain && sticky === stickyAgain.text) {
+    sticky = "raw" in stickyAgain ? engineSays(stickyAgain.raw) : t(stickyAgain.key, stickyAgain.vars);
+    stickyAgain.text = sticky;
+  }
 }
 
 /// One line, three lanes. Composed from what is running rather than written
@@ -2059,18 +2153,18 @@ async function restoreFlat(clip, only = null) {
 /// something the cache cannot: whether those blocks have already been shown
 /// to the timeline. The cache can only say that a detection was once run.
 async function restoreCm(clip, pending = null) {
-  if (!invoke) return;
+  if (!invoke) return false;
   let res;
   try {
     res = await invoke("cm_cached", { path: clip.path });
   } catch {
     // A recording that cannot be reached is the index pass's news to break,
     // and it is about to. Nothing here is worth a second line about it.
-    return;
+    return false;
   }
   // Detected while the answer was being fetched, which is a slow share and a
   // quick Ctrl+D. The pass that has just run is the newer answer.
-  if (!res || clip.cmState !== "none") return;
+  if (!res || clip.cmState !== "none") return false;
   clip.cm = res;
   clip.cmState = "done";
   clip.cmInserts = !!res.inserts;
@@ -2083,6 +2177,7 @@ async function restoreCm(clip, pending = null) {
   paintRow(clip);
   paintButtons();
   if (clip.selected) paintProps();
+  return true;
 }
 
 async function runCm(clip) {
@@ -2578,7 +2673,7 @@ function paintRow(clip) {
   setLine(
     li.querySelector(".sub"),
     wrong
-      ? clip.error
+      ? engineSays(clip.error)
       : i
         ? t(cut === null ? "row.sub" : "row.subCut", {
             len: coarse(runs),
@@ -2912,7 +3007,7 @@ function paintProps() {
   if (!i) {
     box.textContent =
       c.state === "error"
-        ? t("props.error", { name: clipName(c), error: c.error })
+        ? t("props.error", { name: clipName(c), error: engineSays(c.error) })
         : t("props.queued", { name: clipName(c) });
     return;
   }
@@ -3434,17 +3529,24 @@ async function divideAll(rows, asked, token) {
     // Overtaken by a later question, or the box closed: the rest of the rows
     // would only be asked for an answer nobody will show.
     if (token !== divideToken) break;
+    const ranges = rangesOf(clip);
     const d = await invoke("divide_clip", {
       path: clip.path,
-      ranges: rangesOf(clip),
+      ranges,
       rule: asked.rule,
       value: asked.value,
       onPoints: asked.onPoints,
     });
-    out.push([clip, d]);
+    out.push([clip, d, JSON.stringify(ranges)]);
   }
   return out;
 }
+
+/// Whether a row's ranges have moved since `found` was worked out for it --
+/// the editor's OK on it, a walk landing -- so that the places it divides at
+/// are about ranges the row no longer has. See `askDivide`'s `ok`.
+const divideStale = (found) =>
+  found.some(([clip, , ranges]) => clips.includes(clip) && JSON.stringify(rangesOf(clip)) !== ranges);
 
 /// Bumped by every question put to the engine from the box, so an answer
 /// that arrives after a later one has been asked is not shown over it.
@@ -3469,7 +3571,7 @@ async function paintDivide(rows) {
     found = await divideAll(rows, asked, token);
   } catch (e) {
     if (token !== divideToken) return undefined;
-    line.textContent = t("divide.failed", { why: String(e) });
+    line.textContent = t("divide.failed", { why: engineSays(String(e)) });
     return null;
   }
   // `undefined` for an answer a later question has overtaken: it says
@@ -3537,6 +3639,9 @@ function askDivide(rows) {
   const done = () => {
     clearTimeout(timer);
     divideToken++;
+    // And a walk of a row with no index the last question set going: the
+    // answer would be shown to nobody (`stop_divide`).
+    invoke("stop_divide").catch(() => {});
     box.hidden = true;
     box.removeEventListener("mousedown", down);
     box.removeEventListener("click", click);
@@ -3550,6 +3655,13 @@ function askDivide(rows) {
   };
   const ok = () => {
     if (!latest || el("divide-ok").disabled) return;
+    // Asked again of the ranges the rows have now, and shown, rather than
+    // divided by an answer about the ones they had.
+    if (divideStale(latest)) {
+      latest = null;
+      repaint(true);
+      return;
+    }
     typed[rule.value] = field.value;
     try {
       localStorage.setItem(
@@ -3683,7 +3795,7 @@ function divideRows(found) {
   renderList();
   made[0].clip.row.scrollIntoView({ block: "nearest" });
   posterInTurn(made.flatMap((m) => [m.clip, ...m.rows]));
-  note(t("list.divided", { m: made.length, n: parts }));
+  sayNote("list.divided", { m: made.length, n: parts });
   pump();
 }
 
@@ -3708,13 +3820,13 @@ async function undivide(taken) {
   const all = taken.divided.flatMap((m) => [m.clip, ...m.rows]);
   if (editing && all.includes(editing)) {
     removed.push(taken);
-    note(t("list.undivideEditing"));
+    sayNote("list.undivideEditing");
     return;
   }
   // Nor while a run is writing them: the run took the parts as they stood.
   if (exporting || starting) {
     removed.push(taken);
-    note(t("list.undivideBusy"));
+    sayNote("list.undivideBusy");
     return;
   }
   const gone = new Set(taken.divided.flatMap((m) => m.rows));
@@ -3736,7 +3848,7 @@ async function undivide(taken) {
   anchor = back.length ? clips.indexOf(back[0]) : -1;
   renderList();
   posterInTurn(back);
-  note(t("list.undivided", { n: back.length }));
+  sayNote("list.undivided", { n: back.length });
   paintQueueNote();
   for (const lane of stops) await invoke("stop_batch", { lane });
   pump();
@@ -3854,7 +3966,7 @@ async function remove(doomed, { undoable = true } = {}) {
   }
   // Said after the line above has been cleared for an empty list, which is
   // where 全削除 leaves it and where the way back matters most.
-  if (taken) note(t("list.removed", { n: taken.rows.length }));
+  if (taken) sayNote("list.removed", { n: taken.rows.length });
   // And now the passes. A clip being read right now has one behind it that
   // has to be told to stop, or it would go on reading a file nothing is
   // listed against. Only the lanes that are on one of these clips: the others
@@ -3946,11 +4058,11 @@ function restoreRemoved() {
   }
   anchor = rows.length ? clips.indexOf(rows[0].clip) : -1;
   if (clash.length) {
-    note(t("list.restoreClash", { names: clash.map((e) => clipLabel(e.clip)).join(t("sep")) }));
+    sayNote("list.restoreClash", { names: clash.map((e) => clipLabel(e.clip)).join(t("sep")) });
   } else if (stopping) {
-    note(t("list.stopping"));
+    sayNote("list.stopping");
   } else if (paused && !exporting && !starting) {
-    note(t(queuedWork() ? "list.stopped" : "list.stoppedAll"));
+    sayNote(queuedWork() ? "list.stopped" : "list.stoppedAll");
   } else if (sticky === t("list.removed", { n: taken.rows.length })) {
     // The sentence the removal left, which is no longer true. Anything else
     // on the line -- an error from before -- is left standing.
@@ -3993,7 +4105,7 @@ el("stop-batch").addEventListener("click", async () => {
   }
   paused = true;
   stopping = true;
-  note(t("list.stopping"));
+  sayNote("list.stopping");
   paintButtons();
   await invoke("stop_batch", { lane: null });
   // Said when the last pass has given up, which may be now.
@@ -4549,12 +4661,21 @@ function undetectSelected(which) {
     // 環境設定 having changed the question. The cache may hold an answer
     // to the question as it is now, as it would for a row just added.
     if (which !== "cm" && state === "none") restoreFlat(c);
+    // The same for a commercial answer: booked while the rows were having
+    // theirs read back (one at a time, after a drop or a project), the read
+    // passed this row over as booked, and taken back the row had nothing to
+    // say, while the cache held an answer.
+    if (which === "cm" && state === "none") {
+      restoreCm(c).then((put) => {
+        if (put && c === editing) tellEditor();
+      });
+    }
   });
   paintList();
   paintQueueNote();
   // Under 解析を中止 the line said the rest could be taken up again; with the
   // last of it taken back there is no rest, as `restoreRemoved` says too.
-  if (paused && !exporting && !starting && !running() && !queuedWork()) note(t("list.stoppedAll"));
+  if (paused && !exporting && !starting && !running() && !queuedWork()) sayNote("list.stoppedAll");
 }
 
 // --- the edited timeline, without the editor ----------------------------
@@ -4788,10 +4909,16 @@ function takePlays(clip) {
 /// `selEnds` in main.js, and `selOnPictures` for the way back.
 function selPictures(clip, edit) {
   if (!Number.isFinite(edit.selA) || !Number.isFinite(edit.selB)) return null;
+  // The head IN and OUT were measured from, where the editor says it was an
+  // outline's rather than the walk's first point (`selOutline` in main.js):
+  // the output began there, not at `first_point`.
+  const head = clip.info ? clip.info.first_point : 0;
+  const outline = Number.isFinite(edit.selOutline) ? edit.selOutline : head;
   let at = 0;
-  const keeps = keptRanges(clip).map((k) => {
+  const keeps = keptRanges(clip).map((k, n) => {
     const r = { ...k, at };
-    at += k.b - k.a;
+    if (n === 0 && Math.abs(k.a - head) < 1e-9 && outline < k.b) r.a = outline;
+    at += r.b - r.a;
     return r;
   });
   if (!keeps.length) return null;
@@ -5300,13 +5427,27 @@ function outputBase(clip) {
 /// alone, are two files, but what is written beside a cut is named after its
 /// stem -- the `.sup`, the `.idx`/`.sub`, the `.keyframe` -- and the second
 /// cut's were written over the first's.
+///
+/// Compared without case: on Windows `Ep` and `ep` are one file. And a
+/// number is not given where another row's own name already is that name: a
+/// list of `x`, `x` and `x_1` numbered the twins `x_1` and `x_2`, and the
+/// third row was refused as written over by this run.
 function outNo(clip) {
+  const fold = (s) => s.toLowerCase();
   const mine = outputBase(clip);
-  const twins = (runOrder || clips).filter((c) => {
-    const it = outputBase(c);
-    return it.dir === mine.dir && it.name === mine.name;
-  });
-  return twins.length > 1 ? String(twins.indexOf(clip) + 1) : "";
+  const bases = (runOrder || clips).map((c) => [c, outputBase(c)]);
+  const here = bases.filter(([, it]) => fold(it.dir) === fold(mine.dir));
+  const twins = here.filter(([, it]) => fold(it.name) === fold(mine.name)).map(([c]) => c);
+  if (twins.length < 2) return "";
+  const k = twins.indexOf(clip);
+  if (k < 0) return "0";
+  const taken = new Set(here.map(([, it]) => fold(it.name)));
+  let n = 0;
+  for (let seen = -1; seen < k; ) {
+    n += 1;
+    if (!taken.has(fold(`${mine.name}_${n}`))) seen += 1;
+  }
+  return String(n);
 }
 
 function outputPath(clip) {
@@ -5506,7 +5647,7 @@ el("out-preset").addEventListener("change", () => {
   showSettings();
   touch();
   tellFold();
-  note(t("outset.presetApplied", { name: p.name }));
+  sayNote("outset.presetApplied", { name: p.name });
 });
 
 /// The name to save the settings on screen under, asked in a box of its own;
@@ -5573,7 +5714,7 @@ el("preset-save").addEventListener("click", async () => {
   presetPicked = name;
   presetNamed = name;
   paintPresets();
-  note(t("outset.presetSaved", { name }));
+  sayNote("outset.presetSaved", { name });
 });
 
 el("preset-delete").addEventListener("click", async () => {
@@ -5584,7 +5725,7 @@ el("preset-delete").addEventListener("click", async () => {
   }
   prefs.set("outputPresets", presets().filter((p) => p.name !== name));
   paintPresets();
-  note(t("outset.presetDropped", { name }));
+  sayNote("outset.presetDropped", { name });
 });
 bindSetting("out-join", "joinAll", "checked");
 
@@ -7907,7 +8048,7 @@ function followCross() {
 async function openCrossWindow(pick = 0) {
   const joins = joinsForWindow();
   if (!joins.length) {
-    note(t("outset.crossNoJoins"));
+    sayNote("outset.crossNoJoins");
     return;
   }
   crossPick = Math.min(Math.max(0, pick), joins.length - 1);
@@ -7924,7 +8065,7 @@ async function openCrossWindow(pick = 0) {
     // be no `cross-ready` at all.
     tellCross();
   } catch (e) {
-    note(t("xw.cannotOpen", { e }));
+    sayNote("xw.cannotOpen", { e });
   } finally {
     crossOpening = false;
   }
@@ -8828,7 +8969,10 @@ function renderOutScreen() {
   // folder of their own is named beside the phrase rather than left out of
   // it, which was this line saying the cuts land somewhere they do not.
   const sub = subfolderNow();
-  el("out-dir-shown").value = bdavMode()
+  // What the run in hand writes, not the tab last pressed: a look at the other
+  // method's settings half way through is not where the files are going. See
+  // `runDisc`.
+  el("out-dir-shown").value = writesDisc()
     ? outDir()
       ? t("outset.discPath", { dir: discDir() })
       : t("outset.discHere")
@@ -8880,7 +9024,7 @@ function renderOutScreen() {
         <span class="nm">${esc(s.name)}</span>
         <span class="len dim">${s.len}</span>
         <span class="pbar"><span></span></span>
-        <span class="note dim" title="${esc(s.out.detail || s.out.note || "")}">${esc(s.out.note || "")}</span>
+        <span class="note dim" title="${esc(engineSays(s.out.detail || s.out.note || ""))}">${esc(engineSays(s.out.note || ""))}</span>
       </li>`
     )
     .join("");
@@ -9256,6 +9400,27 @@ async function verifyWritten(row, out, sent, share, master, sound) {
   }
 }
 
+/// Which way the pictures do not run as the kept ranges do: a stretch of
+/// them missing, or a length outside what the ranges hold (one figure, or
+/// the two it may lie between).
+function keptWrong(r) {
+  const num = (x) => typeof x === "number" && Number.isFinite(x);
+  const to = num(r.keptTo) ? r.keptTo : num(r.keptSeconds) ? r.keptSeconds : null;
+  const from = num(r.keptFrom) ? r.keptFrom : to;
+  const slack = num(r.keptSlack) ? r.keptSlack : 0;
+  const s1 = (x) => x.toFixed(1);
+  const fits = to !== null && num(r.seconds) && r.seconds >= from - slack && r.seconds <= to + slack;
+  if (to !== null && num(r.seconds) && !fits) {
+    return Math.abs(to - from) < 0.05
+      ? t("out.verifyLength", { got: s1(r.seconds), want: s1(to) })
+      : t("out.verifyLengthRange", { got: s1(r.seconds), from: s1(from), to: s1(to) });
+  }
+  if (num(r.gapSeconds) && num(r.gapInSource) && r.gapSeconds > r.gapInSource + slack) {
+    return t("out.verifyGaps", { got: s1(r.gapSeconds), want: s1(r.gapInSource) });
+  }
+  return t("out.verifyRuns");
+}
+
 /// What the check found: `note` as the row puts it, after its 完了 or in
 /// place of it, and `detail` in full, for the row's tooltip and the log.
 function verdict(r) {
@@ -9275,6 +9440,11 @@ function verdict(r) {
       why = t("out.verifyUnlike", { n: r.unlike, at: fmt(r.firstUnlike || 0) });
     } else if (r.pictures && r.produced === 0) {
       why = t("out.verifyNoPictures");
+    } else if (r.runsAsKept === false) {
+      // Every count above right and the pictures still not as long as the
+      // kept ranges hold, or a stretch of them missing: said as that, not
+      // as "0 frames damaged". See `Report::runs_as_kept` in verify.rs.
+      why = keptWrong(r);
     } else {
       why = t("out.verifyDamaged", { n: r.damaged });
     }
@@ -9290,6 +9460,29 @@ function verdict(r) {
     note: t(sound ? "out.verifyOkMind" : "out.verifyOk"),
     detail: sound ? `${ok}${t("out.verifyMind", { what: sound })}` : ok,
   };
+}
+
+/// What `export` / `export_joined` answered: whether the engine wrote the
+/// file by other plans than the plan line showed (`whole`), and the notes it
+/// could say only once the file was written (`left`: an `.m2ts` whose
+/// arrival times could not be stamped). A bare boolean is the answer of a
+/// backend that had no notes to give.
+function engineTold(told) {
+  if (told && typeof told === "object") {
+    return {
+      whole: !!told.replanned,
+      left: Array.isArray(told.notes) ? told.notes.filter((n) => typeof n === "string" && n) : [],
+    };
+  }
+  return { whole: !!told, left: [] };
+}
+
+/// A row's detail with those notes after it, each said in the language in
+/// force where it is one the catalogue knows (`engineSays`).
+function withLeft(detail, left) {
+  if (!left.length) return detail;
+  const said = left.map(engineSays).join("\n");
+  return detail ? `${detail}\n${said}` : said;
 }
 
 /// Write the whole list as one file.
@@ -9378,7 +9571,7 @@ async function writeJoined(list) {
     poster: coverAt(c),
   }));
   try {
-    const whole = await invoke("export_joined", {
+    const told = await invoke("export_joined", {
       clips: sent,
       master: Math.max(0, list.indexOf(master)),
       output: out,
@@ -9413,12 +9606,15 @@ async function writeJoined(list) {
       extra = v.note;
       detail = v.detail;
     }
+    const { whole, left } = engineTold(told);
+    detail = withLeft(detail, left);
     for (const c of list) c.out = { state: "done", progress: 1, note: t("out.done", { extra }), detail };
     runLogLine(`${t("log.wrote")}: ${out}`);
-    note(t("out.joined", { n: list.length, name: nameOf(out) }));
+    sayNote("out.joined", { n: list.length, name: nameOf(out) });
     // Said after the line above, which would otherwise take its place: the
     // engine wrote the file by other plans than the plan line showed.
-    if (whole) note(t("out.av1Whole", { name: nameOf(out) }));
+    if (whole) sayNote("out.av1Whole", { name: nameOf(out) });
+    for (const line of left) sayRaw(line);
     return true;
   } catch (e) {
     for (const c of list) c.out = { state: "error", progress: 0, note: String(e) };
@@ -9444,7 +9640,7 @@ async function runExport() {
     // back the way a run that ends gives it back, so that the lanes are not
     // left stopped and the list does not go on reading as being written.
     jlog(`export: ${e}`);
-    note(String(e));
+    sayRaw(String(e));
     closeRunLog();
     exporting = false;
     writing = null;
@@ -9529,7 +9725,7 @@ async function startExport() {
   // recordings in a list can come from four folders and a disc is one place.
   const disc = bdavMode();
   if (disc && !settings.dir) {
-    note(t("out.needDiscFolder"));
+    sayNote("out.needDiscFolder");
     show("outset");
     el("out-dir").focus();
     return;
@@ -9540,7 +9736,7 @@ async function startExport() {
   // of writing to find out about afterwards.
   const unreadable = disc && list.find((c) => madeOf(c) && !madeParse(madeOf(c)));
   if (unreadable) {
-    note(t("out.madeUnreadable", { name: programmeOf(unreadable) }));
+    sayNote("out.madeUnreadable", { name: programmeOf(unreadable) });
     show("outset");
     el("outset-clip").value = String(unreadable.id);
     renderOutset();
@@ -9569,10 +9765,10 @@ async function startExport() {
       }
       if (!cannot.length) continue;
       const pictures = cannot[0] === lower(facts.codec);
-      note(t(pictures ? "out.discNoVideo" : "out.discNoAudio", {
+      sayNote(pictures ? "out.discNoVideo" : "out.discNoAudio", {
         name: clipLabel(clip),
         codec: cannot[0],
-      }));
+      });
       show("outset");
       el("outset-clip").value = String(clip.id);
       renderOutset();
@@ -9614,7 +9810,7 @@ async function startExport() {
       await askFreeFolder(true);
     } catch (e) {
       // Nothing written yet: a run that did not start, as below.
-      note(t("out.noFreeFolder", { e: String(e) }));
+      sayNote("out.noFreeFolder", { e: String(e) });
       runDir = null;
       runDisc = null;
       runFolder = null;
@@ -9627,7 +9823,7 @@ async function startExport() {
   // Said rather than done quietly. A run that wrote somewhere other than
   // where the screen had been saying is a run somebody would go looking for
   // in the wrong folder.
-  if (runFolder !== asked) note(t("out.branched", { asked, name: runFolder }));
+  if (runFolder !== asked) sayNote("out.branched", { asked, name: runFolder });
 
   // And under which number. Settled before anything is written: the
   // numbering depends on what the disc already holds, and asking a recording
@@ -9653,7 +9849,7 @@ async function startExport() {
     // command line says it.
     const read = imageIsRead(image);
     if (read) {
-      note(t("out.imageIsRead", { image: read }));
+      sayNote("out.imageIsRead", { image: read });
       runDir = null;
       runDisc = null;
       runFolder = null;
@@ -9662,7 +9858,7 @@ async function startExport() {
       return;
     }
     if (image) {
-      note(t("out.imageInTheWay", { image, dir: discDir() }));
+      sayNote("out.imageInTheWay", { image, dir: discDir() });
       runDir = null;
       runDisc = null;
       runFolder = null;
@@ -9673,12 +9869,15 @@ async function startExport() {
   }
   if (disc) {
     try {
-      slots = await invoke("bdav_prepare", { dir: discDir(), n: list.length });
+      // With whether an image is to be made of it, so that an image the run
+      // could not write is refused now rather than after the cut and the
+      // disc (`udfw::refused`).
+      slots = await invoke("bdav_prepare", { dir: discDir(), n: list.length, image: !!settings.image });
     } catch (e) {
       // Nothing has been written yet, so this is a run that did not start
       // rather than one that failed part way: the lanes get their turn back
       // and the list is as it was.
-      note(t("out.bdavFailed", { e: String(e) }));
+      sayNote("out.bdavFailed", { e: String(e) });
       runDir = null;
       runDisc = null;
       runFolder = null;
@@ -9714,7 +9913,7 @@ async function startExport() {
   // Not where none of the pictures can be transcoded: a list that cannot be
   // made to fit is still given the floor (`fitShare`), and "transcoded to
   // 35%" was said over H.264 that is copied as it is.
-  if (share !== null && runShrinks) note(t("out.shrinking", { share: sharePct(share) }));
+  if (share !== null && runShrinks) sayNote("out.shrinking", { share: sharePct(share) });
   // Stopped before a byte was written. The disc's numbers were taken, as
   // empty streams, and are given back.
   if (abort) {
@@ -9838,7 +10037,7 @@ async function startExport() {
       // True where the engine had to write the file again with all of its
       // pictures re-encoded, which the plan shown above did not say: an AV1
       // cut into MP4 whose copies need a second sample description.
-      const whole = await invoke("export", {
+      const told = await invoke("export", {
         path: clip.path,
         ranges,
         output: out,
@@ -9882,7 +10081,8 @@ async function startExport() {
       // frame left standing is the last one the encoder made, rather than
       // whichever one the last progress report happened to fall short of.
       followWrite(1);
-      if (whole) note(t("out.av1Whole", { name: nameOf(out) }));
+      const { whole, left } = engineTold(told);
+      if (whole) sayNote("out.av1Whole", { name: nameOf(out) });
       let extra = "";
       // A disc carries its chapter points in its own playlist, which is
       // where a player looks for them; a file beside the stream would be the
@@ -9945,8 +10145,9 @@ async function startExport() {
         extra += v.note;
         detail = v.detail;
       }
-      clip.out = { state: "done", progress: 1, note: t("out.done", { extra }), detail };
+      clip.out = { state: "done", progress: 1, note: t("out.done", { extra }), detail: withLeft(detail, left) };
       runLogLine(`  ${t("log.wrote")}: ${out}`);
+      for (const line of left) sayRaw(line);
       done++;
     } catch (e) {
       clip.out = { state: "error", progress: 0, note: String(e) };
@@ -9982,11 +10183,11 @@ async function startExport() {
           }
         }
         renderOutScreen();
-        if (gone) note(t("out.bdavDiscarded", { n: gone }));
+        if (gone) sayNote("out.bdavDiscarded", { n: gone });
       } catch (e) {
         // Worth saying and not worth stopping for: the disc is written
         // either way, and what is left behind is a file somebody can delete.
-        note(t("out.bdavLeftover", { e: String(e) }));
+        sayNote("out.bdavLeftover", { e: String(e) });
       }
     }
     if (wrote.length) {
@@ -10058,11 +10259,10 @@ async function startExport() {
         // field emptied for the next run of the same list showed, and wrote,
         // that older name in place of the one just given. See `keptDiscDir`.
         if (keptDiscDir()) discGuess = { of: discGuessKey(list), title: discName, kept: true };
-        note(
-          t("out.bdavDone", {
+        sayNote("out.bdavDone", {
             path: `${discDir()}/BDAV`,
             n: wrote.length,
-          })
+          }
         );
         // And what it came to, against the disc it was meant for. The gauge
         // said what was expected before the run started; this is what
@@ -10111,13 +10311,12 @@ async function startExport() {
                       ? "out.discPriced"
                       : "out.discOver";
           }
-          note(
-            t(said, {
+          sayNote(said, {
               used: discGiB(bytes, 2),
               disc: discGiB(capacity),
               over: discGiB(Math.max(bytes - capacity, 0), 2),
               files: discGiB(files || 0, 2),
-            })
+            }
           );
         };
         if (!imageWeighed) sayDisc(wroteBytes);
@@ -10150,7 +10349,7 @@ async function startExport() {
             });
             const path = made.path;
             finishStep("image", "done");
-            note(t("out.imageDone", { path }));
+            sayNote("out.imageDone", { path });
             if (imageWeighed && access !== "overwritable") sayDisc(Number(made.bytes), wroteBytes);
             // And the folder, if that was asked for. After the image and
             // never instead of it -- the image is made of the folder, so a
@@ -10159,23 +10358,23 @@ async function startExport() {
             // the image it was to make room for is written and whole.
             if (settings.imageOnly) {
               try {
-                note(t("out.folderGone", { path: await invoke("bdav_drop", { dir: discDir() }) }));
+                sayNote("out.folderGone", { path: await invoke("bdav_drop", { dir: discDir() }) });
                 // The folder holds no disc now, and the next run's is a new
                 // one: named by its series, not by the name just set above.
                 if (keptDiscDir()) rereadDiscName(list);
               } catch (e) {
-                note(t("out.folderStays", { e: String(e) }));
+                sayNote("out.folderStays", { e: String(e) });
               }
             }
           } catch (e) {
             finishStep("image", "error");
-            note(t("out.imageFailed", { e: String(e) }));
+            sayNote("out.imageFailed", { e: String(e) });
           }
         }
         if (imageWeighed) sayDisc(wroteBytes);
       } catch (e) {
         finishStep("index", "error");
-        note(t("out.bdavFailed", { e: String(e) }));
+        sayNote("out.bdavFailed", { e: String(e) });
         // And the rows whose recordings it took off the disc: the one that
         // could not be indexed and every one after it (`bdav::write`) -- all
         // of them where the first failed. Left as they were, they said they
@@ -10309,6 +10508,33 @@ function trustShares(paths) {
   if (known.size !== before) prefs.set("trustedShares", [...known]);
 }
 
+/// The hosts a project names shares on that nobody here has added from or
+/// allowed, in lower case. See `sharesAsked`.
+function unknownShares(doc) {
+  const known = new Set(prefs.get("trustedShares"));
+  const named = [];
+  for (const c of doc && Array.isArray(doc.clips) ? doc.clips : []) {
+    // And the still a crossing lays over the join, which the run and the
+    // seam window both read.
+    if (c) named.push(c.path, c.home, c.after && c.after.image);
+  }
+  if (doc && doc.settings && typeof doc.settings === "object") named.push(doc.settings.dir);
+  return [...new Set(named.map(shareHost).filter((h) => h && !known.has(h)))];
+}
+
+/// Remember the shares the list on screen names, as it goes into the queue.
+///
+/// The run does not ask about a host (`runBatch`), and a job naming one not
+/// allowed here fails. Every host in this window's list is this person's: a
+/// recording added from it (`trustShares`), a project opened over the
+/// question (`sharesAsked`), or a folder or a still picked here -- and an
+/// output folder on a share, which nothing else remembers, failed the job
+/// that the tool used to ask about and then write.
+function trustListShares() {
+  const hosts = unknownShares(captureProject(true, true));
+  if (hosts.length) prefs.set("trustedShares", [...new Set(prefs.get("trustedShares")), ...hosts]);
+}
+
 /// Whether a project that names shares nobody here has added from may open.
 ///
 /// Opening one reads every row at once, and on Windows reading a file on a
@@ -10317,14 +10543,7 @@ function trustShares(paths) {
 /// was opened. So a host is asked about once, and remembered when allowed.
 async function sharesAsked(doc) {
   const known = new Set(prefs.get("trustedShares"));
-  const named = [];
-  for (const c of Array.isArray(doc.clips) ? doc.clips : []) {
-    // And the still a crossing lays over the join, which the run and the
-    // seam window both read.
-    if (c) named.push(c.path, c.home, c.after && c.after.image);
-  }
-  if (doc.settings && typeof doc.settings === "object") named.push(doc.settings.dir);
-  const hosts = [...new Set(named.map(shareHost).filter((h) => h && !known.has(h)))];
+  const hosts = unknownShares(doc);
   if (!hosts.length) return true;
   const go = await dialog.ask(t("project.sharesBody", { hosts: hosts.join(t("sep")) }), {
     title: t("project.sharesTitle"),
@@ -10435,7 +10654,7 @@ const EDIT_KEYS = new Set([
   "id", "path", "cuts", "keyframes", "activeKey", "cmBlocks", "cmNote", "cmFinding",
   "detectedWith", "flatRuns", "markFileKind", "chaptersDue", "touched", "dropStreams",
   "poster", "playhead", "selA", "selB", "selGone", "fresh", "partCuts", "unplayed",
-  "playsDue",
+  "playsDue", "selOutline", "filesDue",
 ]);
 
 /// Somebody has just answered for this project's output.
@@ -10516,7 +10735,10 @@ function captureProject(settled = outputSettled, forRun = false) {
       // What the editor handed back the last time this row was in it: the
       // cuts, the marks, and where the playhead was left. Null for a row
       // nobody has opened yet, which is not the same as a row cut to nothing.
-      edit: c.edit && c.asSaved && c.asSaved.edit ? { ...c.asSaved.edit, ...c.edit } : c.edit,
+      // Not the head an unwalked IN and OUT were measured from
+      // (`selOutline`): it is about this session's outline, and a project
+      // opened again reads its selection afresh (`loadProject`).
+      edit: c.edit && { ...(c.asSaved && c.asSaved.edit), ...c.edit, selOutline: undefined },
       // ...and whether any of it was somebody's doing rather than a
       // detection's. Left out on a row nobody has been through, which is what
       // a file written before this existed looks like. See `edited`.
@@ -10649,6 +10871,7 @@ function shapeBody() {
         ...(c.asSaved && c.asSaved.edit),
         ...c.edit,
         touched: undefined, playhead: undefined, selA: undefined, selB: undefined, selGone: undefined,
+        selOutline: undefined,
         // And the two the editor always sends, empty and false on every
         // recording that is not a disc title: a file written before they
         // were kept has neither, and a row from it opened and left with OK
@@ -10853,7 +11076,7 @@ async function offerRecovery() {
     projectPath = project;
     savedShape = "";
     retitleMain();
-    note(t("recover.done", { n }));
+    sayNote("recover.done", { n });
     // This window's own copy before the old one goes, rather than at the
     // first change: until then the work restored would be in memory only,
     // and a crash in those seconds would lose what the offer just saved.
@@ -10927,7 +11150,7 @@ async function writeProject(path) {
   // shape put down is the one written.
   savedShape = moved ? sent : shapeOf();
   retitleMain();
-  note(t("project.saved", { name: nameOf(path) }));
+  sayNote("project.saved", { name: nameOf(path) });
   // 保存 over the job this window was opened on is バッチを上書き by another
   // name, and the tool has to hear about it either way.
   await touchQueuedJob(path);
@@ -10943,7 +11166,7 @@ async function writeProject(path) {
 /// the title could never be cleared.
 async function saveProject(rename = false) {
   if (!clips.length && !projectPath) {
-    note(t("project.nothingToSave"));
+    sayNote("project.nothingToSave");
     return false;
   }
   if (!rename && projectPath) return writeProject(projectPath);
@@ -10955,7 +11178,26 @@ async function saveProject(rename = false) {
   // The picker hands back what was typed, and what was typed is often a name
   // without an extension -- which would make a file its own filter would not
   // show again. So it is put on here rather than trusted to the dialog.
-  return writeProject(extOf(picked) === PROJECT_EXT ? picked : `${picked}.${PROJECT_EXT}`);
+  if (extOf(picked) === PROJECT_EXT) return writeProject(picked);
+  const to = `${picked}.${PROJECT_EXT}`;
+  // And the dialog asked about the name as typed, not the one with the
+  // extension put on: a project already there under that name is asked
+  // about here, as the dialog would have. Anything there that cannot be read
+  // is asked about too -- only "not there" goes ahead without a word.
+  let there = true;
+  try {
+    there = (await invoke("read_sidecar", { path: to })) !== null;
+  } catch {
+    there = true;
+  }
+  if (there && to !== projectPath) {
+    const go = await dialog.ask(t("marks.overwriteBody", { file: nameOf(to) }), {
+      title: t("marks.overwriteTitle"),
+      kind: "warning",
+    });
+    if (!go) return false;
+  }
+  return writeProject(to);
 }
 
 /// Whether it is all right to put the current list down.
@@ -10972,7 +11214,7 @@ async function askReplace(title = t("project.replaceTitle"), body = t("project.r
   // written with the other project's settings -- its container, its prefix,
   // its disc title -- into the folder this one chose.
   if (exporting || starting) {
-    note(t("project.busyWriting"));
+    sayNote("project.busyWriting");
     return false;
   }
   if (!dirty()) return true;
@@ -11026,7 +11268,7 @@ async function newProject() {
   retitleMain();
   show("input");
   renderList();
-  note(t("project.newDone"));
+  sayNote("project.newDone");
 }
 
 async function openProject() {
@@ -11056,7 +11298,7 @@ async function loadProject(path, given = null) {
     try {
       doc = JSON.parse(await invoke("read_project", { path }));
     } catch (e) {
-      note(t("project.cannotOpen", { name: nameOf(path), e }));
+      sayNote("project.cannotOpen", { name: nameOf(path), e });
       return false;
     }
   }
@@ -11064,7 +11306,7 @@ async function loadProject(path, given = null) {
   // what it would lose on the way in is exactly the part it does not
   // recognise. Dropping somebody's cuts quietly is worse than not opening.
   if (!doc || typeof doc.smartcut !== "number" || doc.smartcut > PROJECT_VERSION) {
-    note(t("project.wrongFormat", { name: nameOf(path) }));
+    sayNote("project.wrongFormat", { name: nameOf(path) });
     return false;
   }
   if (!(await sharesAsked(doc))) return false;
@@ -11486,7 +11728,7 @@ async function saveQueue() {
     const kept = new Set(batchJobs.map((j) => j.path));
     for (const p of [...batchKnown]) if (!kept.has(p)) batchKnown.delete(p);
   } catch (e) {
-    note(t("batch.queueFailed", { e: String(e) }));
+    sayNote("batch.queueFailed", { e: String(e) });
   }
 }
 
@@ -11838,16 +12080,16 @@ function renderBatch() {
       // same box in all three, so the rows line up while they fill in.
       const shot = j.shot || look.poster;
       const poster = shot
-        ? `<img class="poster" src="${shot}" alt="" draggable="false">`
+        ? `<img class="poster" src="${esc(shot)}" alt="" draggable="false">`
         : `<span class="poster blank"></span>`;
-      return `<li class="${j.state}${batchPicked.has(j.path) ? " picked" : ""}" data-i="${i}">
+      return `<li class="${esc(j.state)}${batchPicked.has(j.path) ? " picked" : ""}" data-i="${i}">
         <span class="n">${i + 1}</span>
         ${poster}
         <div class="meta">
           <div class="nm">${esc(jobPath(j))}</div>
           <div class="sub">
             <span class="who dim">${esc(jobLine(j))}</span>
-            <span class="doingnow ${j.state}">${esc(j.note || "")}</span>
+            <span class="doingnow ${esc(j.state)}">${esc(j.note || "")}</span>
           </div>
           <div class="say">
             <span class="fill"></span>
@@ -12107,6 +12349,17 @@ async function addPickedProject(path) {
     sayHere(t("batch.already", { name: label }));
     return;
   }
+  // The shares it names, asked about now, while somebody is at the window:
+  // the run does not ask (see `runBatch`), and a question put up there held
+  // a queue left to run overnight at that job until morning. A file that
+  // cannot be read is left to `addBatchJob` to say so.
+  let doc = null;
+  try {
+    doc = JSON.parse(await invoke("read_project", { path }));
+  } catch {
+    doc = null;
+  }
+  if (doc && !(await sharesAsked(doc))) return;
   let copy;
   try {
     copy = await invoke("queue_copy", { path });
@@ -12242,6 +12495,7 @@ async function enlistList() {
     return;
   }
   const label = projectPath ? stemOf(projectPath) : autoProjectStem();
+  trustListShares();
   const path = await projectForQueue();
   if (!path) return;
   await refreshQueue();
@@ -12265,6 +12519,7 @@ async function enlistList() {
 /// edited here does not go back to 待機 on its own: whether it is to be
 /// written again is もう一度出力する, on the row, where it was before.
 async function overwriteQueuedJob() {
+  trustListShares();
   // What the file holds, in the tick it is captured: see `writeProject`.
   const sent = shapeOf();
   if (!(await putProject(queuedJob, true))) return;
@@ -12850,6 +13105,10 @@ async function runBatch() {
     if (job) followJob(job);
     renderBatch();
   }, 1000);
+  // The jobs an earlier run wrote, which this one passes over -- and which
+  // the desktop is not told this run did. Kept by path: the rows are new
+  // objects after every poll. Jobs added while it runs are this run's.
+  const doneBefore = new Set(batchJobs.filter((j) => j.state === "done").map((j) => j.path));
   for (const j of batchJobs) {
     if (j.state === "done") continue;
     j.state = "waiting";
@@ -12884,13 +13143,14 @@ async function runBatch() {
   // somebody stopped is a queue somebody is standing at -- and is not told
   // on the desktop that it has stopped, either.
   if (!batchStopped) {
-    const count = (state) => batchJobs.filter((j) => j.state === state).length;
+    const ran = batchJobs.filter((j) => !doneBefore.has(j.path));
+    const count = (state) => ran.filter((j) => j.state === state).length;
     const bad = count("error");
     tellDone(
       t("notify.batchTitle"),
       t("notify.batchBody", {
         done: count("done"),
-        all: batchJobs.length,
+        all: ran.length,
         failed: bad ? t("notify.failed", { n: bad }) : "",
       })
     );
@@ -12942,7 +13202,22 @@ async function walkQueue() {
     // its one way to start another run switched off, until the tool was
     // killed. Which is the one thing this screen is for: the queue goes on.
     try {
-      if (!(await loadProject(job.path))) {
+      // Not asked about here: nobody need be at the window (the queue runs
+      // overnight), and a question put up stopped the whole queue at this
+      // job until it was answered. A job whose shares were never allowed --
+      // a queue written by hand, or a host taken back out of 環境設定 since --
+      // fails, and says which. `addPickedProject` asks when a job is added.
+      let doc = null;
+      try {
+        doc = JSON.parse(await invoke("read_project", { path: job.path }));
+      } catch {
+        doc = null;
+      }
+      const strange = doc ? unknownShares(doc) : [];
+      if (strange.length) {
+        job.state = "error";
+        job.note = t("batch.sharesUnknown", { hosts: strange.join(t("sep")) });
+      } else if (!(await loadProject(job.path, doc))) {
         job.state = "error";
         job.note = t("batch.cannotOpen");
       } else if (calledOff()) {
@@ -13074,7 +13349,7 @@ function startAfter() {
     );
     if (left <= 0) {
       cancelAfter();
-      invoke("after_batch", { what }).catch((e) => note(t("batch.afterFailed", { e: String(e) })));
+      invoke("after_batch", { what }).catch((e) => sayNote("batch.afterFailed", { e: String(e) }));
       return;
     }
     left -= 1;
@@ -13091,7 +13366,7 @@ function cancelAfter() {
 
 el("batch-after-cancel").addEventListener("click", () => {
   cancelAfter();
-  note(t("batch.afterCancelled"));
+  sayNote("batch.afterCancelled");
 });
 
 /// Which window this is, and what that window shows.
@@ -13777,7 +14052,7 @@ el("pref-forget-output").addEventListener("click", () => {
   // that is what a restart restores, because it is what is now in force.
   showSettings();
   touch();
-  note(t("prefs.forgetOutput"));
+  sayNote("prefs.forgetOutput");
 });
 
 /// The four the engine acts on. Sent as a set rather than one at a time --
@@ -13786,7 +14061,7 @@ el("pref-forget-output").addEventListener("click", () => {
 /// back.
 async function pushPrefs() {
   const failed = await prefs.tellBackend(invoke);
-  if (failed) note(t("prefs.cacheDirFailed", { e: failed }));
+  if (failed) sayNote("prefs.cacheDirFailed", { e: failed });
   return !failed;
 }
 
@@ -13914,7 +14189,7 @@ el("pref-cache-clear").addEventListener("click", async () => {
   try {
     await invoke("clear_cache");
   } catch (e) {
-    note(t("prefs.cacheClearFailed", { e: String(e) }));
+    sayNote("prefs.cacheClearFailed", { e: String(e) });
   }
   // The black/white and silence answers of a row live in that cache and
   // nowhere else the editor reads them from: kept "done" here, the list
@@ -14067,7 +14342,7 @@ function paintMediaInfo() {
   if (!info) {
     const p = document.createElement("p");
     p.className = "dim";
-    p.textContent = error ? t("mi.error", { error }) : t("mi.reading");
+    p.textContent = error ? t("mi.error", { error: engineSays(error) }) : t("mi.reading");
     body.replaceChildren(p);
     return;
   }
@@ -14158,6 +14433,7 @@ function paintBlankLabels() {
 /// alone: this window does not hold what it was made of.
 function relocalise() {
   for (const c of clips) relocaliseRow(c);
+  relocaliseNote();
   renderList();
   renderOutset();
   renderOutScreen();
@@ -14419,7 +14695,7 @@ tellBackend(invoke)
   // start -- an external disk, a share that is not mounted yet. Said on the
   // line the passes report on, because what happens instead is not nothing:
   // the scratch files go back to the place the platform gives.
-  .then((failed) => (failed ? note(t("prefs.cacheDirFailed", { e: failed })) : null))
+  .then((failed) => (failed ? sayNote("prefs.cacheDirFailed", { e: failed }) : null))
   .then(() => invoke("initial_paths"))
   .then(async (paths) => {
     if (!paths || !paths.length) {

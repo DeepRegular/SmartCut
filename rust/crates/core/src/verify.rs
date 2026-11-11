@@ -171,6 +171,13 @@ pub struct Report {
     /// broadcast's sound stops half a second or so before its last picture,
     /// and a recording with no sound at all adds nothing to a join's.
     pub sound_short: f64,
+    /// What the pictures should come to, read off the sources' own pictures
+    /// (see [`Held`]), where every source could be read so. Asked of every
+    /// output, lined up or not: a join that crosses by a transition or one
+    /// conformed to its master's shape has no other count, and a plan that
+    /// shared an error with the index it was made from has the source side
+    /// of the line-up share it too.
+    pub kept: Option<Kept>,
 }
 
 impl Report {
@@ -183,7 +190,19 @@ impl Report {
         // the output.
         let damage = !self.compared || self.damaged <= self.damaged_in_source;
         let present = !self.pictures || self.produced > 0;
-        counted && damage && present && !self.pictures_lost && self.unlike == 0 && self.copies_came_back()
+        counted
+            && damage
+            && present
+            && !self.pictures_lost
+            && self.unlike == 0
+            && self.copies_came_back()
+            && self.runs_as_kept()
+    }
+
+    /// Whether the pictures run as long as the sources' do in the kept
+    /// ranges, and leave no stretch of them out. See [`Report::kept`].
+    pub fn runs_as_kept(&self) -> bool {
+        !self.pictures || self.produced == 0 || self.kept.is_none_or(|k| k.fits(self.seconds) && k.whole())
     }
 
     /// Whether the pictures the plan copied came back as the recording's own.
@@ -291,6 +310,23 @@ impl Report {
                 ));
             }
         }
+        if let Some(k) = self.kept.filter(|_| self.pictures && self.produced > 0) {
+            let length = if (k.to - k.from).abs() < 0.0005 {
+                format!("{:.3}s", k.to)
+            } else {
+                format!("{:.3}s to {:.3}s", k.from, k.to)
+            };
+            out.push(format!(
+                "length   : {:.3}s of pictures, {length} in the source  {}",
+                self.seconds,
+                if k.fits(self.seconds) { "OK" } else { "MISMATCH" }
+            ));
+            if let Some((gone, own)) = k.holes.filter(|_| !k.whole()) {
+                out.push(format!(
+                    "gaps     : {gone:.3}s with no picture, {own:.3}s in the source  MISMATCH"
+                ));
+            }
+        }
         for s in &self.sounds {
             if !s.measured {
                 out.push(format!("sound #{}: not decodable here, not measured", s.index));
@@ -306,7 +342,7 @@ impl Report {
                 self.seconds,
                 // Not for a sliver that prints as nought.
                 if s.short >= 0.0005 {
-                    format!(" (the recording's own sound {:.3}s less)", s.short)
+                    format!(" ({:.3}s with none of this track in the source)", s.short)
                 } else {
                     String::new()
                 },
@@ -521,25 +557,6 @@ pub fn check_placed(
         .flat_map(|p| p.ranges.iter().map(move |r| within(p, r)))
         .sum::<f64>()
         - crossed(heard, after);
-    // How much of that the recordings' own sound does not cover. See
-    // [`Report::sound_short`].
-    let mut sound_short = 0.0;
-    // And what each track lacks at a recorder's seams inside the ranges, per
-    // piece, by the track's place among that piece's own. See
-    // [`seam_missing`].
-    let mut seam_short: Vec<Vec<f64>> = Vec::new();
-    // And what each track lacks where it starts or stops inside a range, the
-    // same way. See [`track_ends`].
-    let mut own_short: Vec<Vec<f64>> = Vec::new();
-    for p in heard {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        let (missing, span) = sound_missing(p, &within);
-        sound_short += missing;
-        seam_short.push(seam_missing(p, span));
-        own_short.push(track_ends(p, span, stop));
-    }
     let fps = pieces.first().map(|p| p.src.video.frame_rate).unwrap_or(0.0);
     // Whether a piece's pictures vary, which is when the average says
     // nothing about how long the last of them is up: see `last_length`.
@@ -599,6 +616,14 @@ pub fn check_placed(
         sounds.push((i, dec, 0, 0.0, None));
     }
     let v_tb = video.and_then(|i| ictx.stream(i)).map(|s| f64::from(s.time_base())).unwrap_or(0.0);
+    // A frame of the output, by its own rate.
+    let a_frame = 1.0 / frame_rate(&ictx, video, fps);
+    // Where the last picture stops being shown: see below.
+    let mut pictures_end: Option<f64> = None;
+    // Time between the output's pictures with none in it, as [`holes`] counts
+    // it, and the last picture's time on the way.
+    let mut gone = 0.0;
+    let mut shown: Option<i64> = None;
     // Where the output's clock starts, which is where a player counts from:
     // a time said in the report is one to go and look at. A transport stream
     // written here opens at 0.05s and an .m2ts at 0.85s, and the raw times
@@ -669,7 +694,10 @@ pub fn check_placed(
         Vec::new()
     };
 
-    std::thread::scope(|scope| -> Result<()> {
+    let measured: Vec<Option<Held>> = std::thread::scope(|scope| -> Result<Vec<Option<Held>>> {
+        // What the ranges hold in the recordings themselves, read beside the
+        // two decodes. See [`Held`].
+        let measuring = scope.spawn(|| heard.iter().map(|p| held_in(p, stop)).collect::<Vec<_>>());
         let source_side = scope.spawn(move || -> Result<()> {
             for (src, ranges) in &owned {
                 for (a, b, head, copies) in ranges {
@@ -717,6 +745,15 @@ pub fn check_placed(
             if let Some(p) = pts {
                 first_pts = Some(first_pts.map_or(p, |f: i64| f.min(p)));
                 last_pts = Some(last_pts.map_or(p, |l: i64| l.max(p)));
+                if let Some(was) = shown.filter(|&w| p > w) {
+                    let gap = (p - was) as f64 * v_tb;
+                    if gap > 2.5 * a_frame {
+                        gone += gap - a_frame;
+                    }
+                }
+                if shown.is_none_or(|w| p > w) {
+                    shown = Some(p);
+                }
             }
             report.produced += 1;
             let broken = damaged(frame);
@@ -875,7 +912,6 @@ pub fn check_placed(
         // that picture 40 ms on. Counted a whole frame of the average past
         // it, the pictures of a faithful .mp4 cut ran 1.1 s longer than they
         // do and its sound was called OFF.
-        let a_frame = 1.0 / frame_rate(&ictx, video, fps);
         let last_length = match (last_pts, track_end(&ictx, video)) {
             (Some(l), Some(end)) => {
                 let held = end - l as f64 * v_tb;
@@ -908,12 +944,74 @@ pub fn check_placed(
         } else {
             kept
         };
-        report.sound_short = sound_short;
         // Where the last picture stops being shown, on the clock the sound's
         // ends are taken on above.
-        let pictures_end = last_pts.filter(|_| report.pictures).map(|l| {
+        pictures_end = last_pts.filter(|_| report.pictures).map(|l| {
             l as f64 * v_tb - origin + last_length
         });
+        source_side.join().map_err(|_| anyhow!("the source side of the check stopped"))??;
+        measuring.join().map_err(|_| anyhow!("the source side of the check stopped"))
+    })?;
+
+    if stop.load(Ordering::Relaxed) {
+        return Err(anyhow!("stopped"));
+    }
+    if let Some(e) = unread {
+        return Err(anyhow!("reading {output} back: {e}"));
+    }
+
+    // What the pictures and each track should come to, from the sources'
+    // own packets where every one of them could be read.
+    let held: Option<Vec<Held>> = measured.into_iter().collect::<Option<Vec<_>>>().filter(|h| !h.is_empty());
+    if let Some(held) = &held {
+        let pictures = held.iter().map(|h| h.pictures).sum::<f64>() - crossed(heard, after);
+        let ranges: usize = held.iter().map(|h| h.ranges).sum();
+        let last_held = held.last().map_or(0.0, |h| h.last_held);
+        // A join that crosses by a transition, read without being told the
+        // crossings, cannot say how much of the pieces an overlap took: held
+        // only to running no longer than they do, and to leaving no stretch
+        // of them out.
+        let crossings_untold = after.is_empty() && compare == Compare::Nothing && pieces.len() > 1;
+        report.kept = Some(Kept {
+            from: if crossings_untold { 0.0 } else { (pictures - last_held).max(0.0) },
+            to: pictures,
+            // Half a second, as the sound is given, and a frame at each
+            // range for where a picture's edge falls.
+            slack: SOUND_SLACK + a_frame * ranges as f64,
+            holes: (!varies).then(|| (gone, held.iter().map(|h| h.holes).sum())),
+        });
+        // A file of sound alone is held to the pictures it was cut on.
+        if !report.pictures {
+            report.seconds = pictures.max(0.0);
+        }
+    }
+    // Otherwise worked out from the ranges, as far as the files' ends and a
+    // recorder's seams say.
+    let mut sound_short = 0.0;
+    let mut seam_short: Vec<Vec<f64>> = Vec::new();
+    let mut own_short: Vec<Vec<f64>> = Vec::new();
+    if held.is_none() {
+        // How much of that the recordings' own sound does not cover. See
+        // [`Report::sound_short`].
+        //
+        // And what each track lacks at a recorder's seams inside the ranges,
+        // per piece, by the track's place among that piece's own. See
+        // [`seam_missing`].
+        //
+        // And what each track lacks where it starts or stops inside a range,
+        // the same way. See [`track_ends`].
+        for p in heard {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let (missing, span) = sound_missing(p, &within);
+            sound_short += missing;
+            seam_short.push(seam_missing(p, span));
+            own_short.push(track_ends(p, span, stop));
+        }
+        report.sound_short = sound_short;
+    }
+    {
         // Each track's place among the master's, for [`Sound::short`]:
         // counted over the tracks that had packets of their own, since the
         // AC-3 a TrueHD track is wrapped around is declared as a stream of
@@ -929,8 +1027,52 @@ pub fn check_placed(
             .iter()
             .map(|s| {
                 let at = places.map_or(place, |p| p.get(place).copied().unwrap_or(place));
+                let order = place;
                 if s.2 > 0 {
                     place += 1;
+                }
+                // **A track that opens and yields nothing** is not one that
+                // cannot be measured: it had packets, a decoder took them,
+                // and not a sample came of them.
+                let measured = s.3 > 0.0 || (s.2 > 0 && s.1.is_some());
+                // Its seconds against the pictures, where the sources were
+                // read: what each piece holds of the track where its
+                // pictures are kept. A piece whose recording has no track in
+                // this place holds none of it.
+                if let Some(held) = &held {
+                    let pictures: f64 = held.iter().map(|h| h.pictures).sum();
+                    let sound: f64 = heard
+                        .iter()
+                        .zip(held)
+                        .map(|(p, h)| {
+                            let n = p.src.audios.len();
+                            if places.is_some() || written >= n {
+                                return h.sound.get(at).copied().unwrap_or(0.0);
+                            }
+                            // Which of the recording's tracks this is cannot
+                            // be told from its place (one was left out and
+                            // nobody said which): one of those it can be by
+                            // order, the one whose length it comes closest to.
+                            let room = n.saturating_sub(written);
+                            h.sound
+                                .iter()
+                                .skip(order)
+                                .take(room + 1)
+                                .copied()
+                                .min_by(|x, y| (x - s.3).abs().total_cmp(&(y - s.3).abs()))
+                                .unwrap_or(0.0)
+                        })
+                        .sum();
+                    return Sound {
+                        index: s.0,
+                        seconds: s.3,
+                        measured,
+                        short: (pictures - sound).max(0.0),
+                        past: match (s.4, pictures_end) {
+                            (Some(e), Some(p)) => (e - p).max(0.0),
+                            _ => 0.0,
+                        },
+                    };
                 }
                 // A recording with no sound at all is in `sound_short`
                 // already.
@@ -969,7 +1111,7 @@ pub fn check_placed(
                 Sound {
                     index: s.0,
                     seconds: s.3,
-                    measured: s.3 > 0.0,
+                    measured,
                     short: sound_short + gap + seams + own,
                     // Only against pictures there are: a file of sound alone
                     // has its length and nothing to be laid against.
@@ -980,20 +1122,278 @@ pub fn check_placed(
                 }
             })
             .collect();
-        source_side.join().map_err(|_| anyhow!("the source side of the check stopped"))??;
-        Ok(())
-    })?;
-
-    if stop.load(Ordering::Relaxed) {
-        return Err(anyhow!("stopped"));
-    }
-    if let Some(e) = unread {
-        return Err(anyhow!("reading {output} back: {e}"));
     }
     if let Some(t) = told.as_mut() {
         t(1.0);
     }
     Ok(report)
+}
+
+/// What one piece's ranges hold in its recording, read off the recording's
+/// own packets rather than worked out from how long the ranges are.
+///
+/// **The source itself is the reference.** The ranges' length says nothing
+/// about a hole in a recording's sound -- a 4K recorder's title whose track
+/// pauses mid-range, a track that ends part-way through a programme -- nor
+/// about a track that vanishes from a range it should run through; and the
+/// plans' ends are the planner's own, so a plan that dropped pictures along
+/// with the index it was made from was held to what it had dropped. Here the
+/// pictures each range holds are taken from where they begin and end in the
+/// file, and each track's sound from the packets of it there.
+struct Held {
+    /// Seconds of pictures: in each range, from the first picture to where
+    /// the last stops being shown.
+    pictures: f64,
+    /// How much of that is the last range's last picture held past a frame:
+    /// a transport stream gives its pictures no length, and a variable
+    /// recording's last picture, held to the range's end in an MP4, is a
+    /// frame long in one. See [`Kept`].
+    last_held: f64,
+    /// Time inside the ranges with no picture: see [`holes`].
+    holes: f64,
+    /// Seconds of each track, by its place in [`Source::audios`], within the
+    /// pictures' stretch of each range.
+    sound: Vec<f64>,
+    /// How many ranges held a picture.
+    ranges: usize,
+}
+
+/// Time with no picture in it among pictures starting at `times`, sorted:
+/// what each gap is longer than two and a half frames by more than a frame.
+/// A picture shown for three fields comes a frame and a half after the one
+/// before, and nothing of a recording that comes at a rate leaves more.
+fn holes(times: &[f64], fd: f64) -> f64 {
+    times
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|&g| g > 2.5 * fd)
+        .map(|g| g - fd)
+        .sum()
+}
+
+/// How long the union of `spans` covers inside `[from, to)`.
+fn covered(spans: &mut [(f64, f64)], from: f64, to: f64) -> f64 {
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut sum = 0.0;
+    let mut reach = from;
+    for &(a, b) in spans.iter() {
+        let (a, b) = (a.max(reach), b.min(to));
+        if b > a {
+            sum += b - a;
+            reach = b;
+        }
+    }
+    sum
+}
+
+/// Read what `p`'s ranges hold in its recording: see [`Held`]. `None` where
+/// the recording cannot be read so, or the check was stopped.
+fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
+    let src = p.src;
+    let tracks: Vec<usize> = src.audios.iter().map(|a| a.stream_index).collect();
+    let video = src.video.stream_index;
+    let fd = src.video.frame_duration();
+    let least = match src.video.least_gap() {
+        g if g > 0.0 && g.is_finite() => g,
+        _ => fd,
+    };
+    let start = src.start_time;
+    let mut held = Held { pictures: 0.0, last_held: 0.0, holes: 0.0, sound: vec![0.0; tracks.len()], ranges: 0 };
+    let mut sought: Option<crate::input::Demux> = None;
+    for &(a, b) in p.ranges {
+        let a = a.max(0.0);
+        // Also a range whose end is not a number.
+        if b.partial_cmp(&a) != Some(std::cmp::Ordering::Greater) {
+            continue;
+        }
+        // From the head as it was opened, which loses nothing ahead of the
+        // first key picture; elsewhere from a second before the access
+        // point before the range. A seek goes by decode time, and on a B
+        // pyramid the key picture after a screen recording's still is
+        // decoded before the still is shown: sought to a second before the
+        // range, the read began on that key and never met the still the
+        // range opens on.
+        let entry = src.points.iter().rev().find(|q| q.time <= a - 0.5).map_or(0.0, |q| q.time);
+        let from = entry.min(a) - 1.0;
+        let mut fresh;
+        let ictx = if from <= 0.0 {
+            fresh = crate::input::demux(&src.input.url).ok()?;
+            &mut fresh
+        } else {
+            if sought.is_none() {
+                sought = Some(crate::input::demux(&src.input.url).ok()?);
+            }
+            let ictx = sought.as_mut()?;
+            crate::input::keep_everything(ictx);
+            let target = ((from + start) * ff::ffi::AV_TIME_BASE as f64) as i64;
+            ictx.seek(target, ..target).ok()?;
+            ictx
+        };
+        let mut keep = tracks.clone();
+        keep.push(video);
+        crate::input::keep_only(ictx, &keep);
+        // Where the planner moves an end onto a picture: half a frame.
+        let (lo, hi) = (a - fd / 2.0, b - fd / 2.0);
+        // Every picture read, by when it is shown, with the end its packet
+        // states; and whether the read ran to the end of the file.
+        let mut shown: Vec<(f64, f64)> = Vec::new();
+        let mut to_the_end = true;
+        let mut sound: Vec<Vec<(f64, f64)>> = vec![Vec::new(); tracks.len()];
+        // A sound packet with no length of its own, until the next one says.
+        let mut open: Vec<Option<f64>> = vec![None; tracks.len()];
+        let mut ends: Vec<Option<f64>> = vec![None; tracks.len()];
+        let frame: Vec<f64> = src
+            .audios
+            .iter()
+            .map(|a| {
+                ictx.stream(a.stream_index)
+                    .map(|s| unsafe {
+                        let par = s.parameters();
+                        let q = par.as_ptr();
+                        if (*q).frame_size > 0 && (*q).sample_rate > 0 {
+                            f64::from((*q).frame_size) / f64::from((*q).sample_rate)
+                        } else {
+                            0.0
+                        }
+                    })
+                    .unwrap_or(0.0)
+            })
+            .collect();
+        let mut packets = ictx.read_packets();
+        for (stream, packet) in packets.by_ref() {
+            if stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            let tb = f64::from(stream.time_base());
+            if stream.index() == video {
+                // By where the file stands, as in [`listen`].
+                if crate::audio::read_reached(&stream, &packet, start).is_some_and(|t| t > b + 1.5) {
+                    to_the_end = false;
+                    break;
+                }
+                let Some(t) = packet.pts().map(|q| q as f64 * tb - start) else { continue };
+                let d = packet.duration();
+                shown.push((t, t + if d > 0 { d as f64 * tb } else { fd }));
+            } else if let Some(k) = tracks.iter().position(|&i| i == stream.index()) {
+                let Some(t) = packet.pts().map(|q| q as f64 * tb - start).or(ends[k]) else { continue };
+                if let Some(o) = open[k].take() {
+                    if t > o {
+                        sound[k].push((o, t.min(o + 0.5)));
+                    }
+                }
+                // Never less than the codec's frame: Matroska states a
+                // 21.333 ms AAC frame as 21 ms, and the third of a
+                // millisecond between each packet's end and the next was
+                // counted as sound the recording lacks -- 1.6 % of every
+                // range, which let a loss that size pass.
+                let d = packet.duration();
+                let length = (if d > 0 { d as f64 * tb } else { 0.0 }).max(frame[k]);
+                if length > 0.0 {
+                    // And a gap under a tick of the clock is the clock's
+                    // rounding, not a hole.
+                    let t = match sound[k].last_mut() {
+                        Some(last) if t > last.1 && t - last.1 <= 1.5 * tb => {
+                            last.1 = t;
+                            t
+                        }
+                        _ => t,
+                    };
+                    sound[k].push((t, t + length));
+                    ends[k] = Some(t + length);
+                } else {
+                    open[k] = Some(t);
+                    ends[k] = None;
+                }
+            }
+        }
+        // A read that stopped on an error says nothing it can be held to.
+        packets.finished().ok()?;
+        drop(packets);
+        // Each picture is up until the next begins: a packet's own length is
+        // its decode slot, which on a B pyramid is not how long it is shown.
+        // The last one read is up as long as its packet says where the file
+        // ended there, and to past the range where the read stopped short
+        // of the next.
+        shown.sort_by(|x, y| x.0.total_cmp(&y.0));
+        shown.dedup_by(|x, y| (x.0 - y.0).abs() < fd * 1e-3);
+        //
+        // **Past a variable recording's last picture** the cut holds that
+        // picture over what the range keeps of the rest of the file, where
+        // that is more than a frame (`past_the_pictures` in
+        // [`crate::cut`]): a screen capture whose screen stood still to the
+        // end, its last sample a frame long.
+        let reach = if src.duration > 0.0 { b.min(src.duration) } else { b };
+        let until = |i: usize| match shown.get(i + 1) {
+            Some(n) => n.0,
+            None if to_the_end => {
+                let stated = shown[i].1;
+                if src.video.variable_rate && reach > stated + fd + fd * 1e-3 {
+                    reach
+                } else {
+                    stated
+                }
+            }
+            None => f64::INFINITY,
+        };
+        let inside: Vec<usize> = (0..shown.len()).filter(|&i| shown[i].0 >= lo && shown[i].0 < hi).collect();
+        let mut times: Vec<f64> = inside.iter().map(|&i| shown[i].0).collect();
+        // **The picture already up where the range opens** is written there
+        // where nothing of the range's own begins within the closest two
+        // pictures come (see [`crate::preview::pictures_in`]): a screen
+        // recording's still, cut into, opens the range on the still. And it
+        // is all the range holds where nothing begins in it at all.
+        let before = (0..shown.len()).rev().find(|&i| shown[i].0 < lo);
+        let first = times.first().copied();
+        let up = before.filter(|&i| until(i) > a && first.is_none_or(|f| f - a >= least));
+        let (first, last_at, last_end) = match (first, inside.last(), up) {
+            (Some(f), Some(&l), None) => (f, shown[l].0, until(l)),
+            (Some(_), Some(&l), Some(_)) => {
+                times.insert(0, a);
+                (a, shown[l].0, until(l))
+            }
+            (None, _, Some(i)) => {
+                times.push(a);
+                (a, a, until(i))
+            }
+            _ => continue,
+        };
+        // A last picture held past the range is kept to the range's end.
+        let end = last_end.min(b.max(last_at + least));
+        held.pictures += end - first;
+        held.last_held = (end - last_at - least).max(0.0);
+        held.holes += holes(&times, fd);
+        for (k, spans) in sound.iter_mut().enumerate() {
+            held.sound[k] += covered(spans, first, end);
+        }
+        held.ranges += 1;
+    }
+    Some(held)
+}
+
+/// What the output's pictures should come to, from [`Held`]: how long they
+/// run, between `from` and `to` seconds -- the lower end leaves room for a
+/// last picture a container gives no length to -- give or take `slack`, and
+/// where the recordings come at a rate, how much time in them has no picture
+/// in the output and in the sources.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Kept {
+    pub from: f64,
+    pub to: f64,
+    pub slack: f64,
+    pub holes: Option<(f64, f64)>,
+}
+
+impl Kept {
+    /// Whether pictures that run `seconds` fit.
+    fn fits(&self, seconds: f64) -> bool {
+        seconds >= self.from - self.slack && seconds <= self.to + self.slack
+    }
+
+    /// Whether the output leaves no more time without pictures than its
+    /// sources do.
+    fn whole(&self) -> bool {
+        self.holes.is_none_or(|(out, src)| out <= src + self.slack)
+    }
 }
 
 /// A piece's ranges as the cut writes them: less [`Source::unwritten`], the
@@ -1612,7 +2012,7 @@ fn frame_rate(ictx: &crate::input::Demux, video: Option<usize>, fallback: f64) -
 
 #[cfg(test)]
 mod tests {
-    use super::{hole_in, Report, Sound};
+    use super::{covered, hole_in, holes, Kept, Report, Sound};
 
     /// A track that holds as much sound as the pictures and is laid well
     /// past them -- frames stamped too far apart -- is off; one that ends
@@ -1660,5 +2060,48 @@ mod tests {
         let across = [(90.0, 110.0)];
         assert!((hole_in(&across, (99.0, 101.5), seam) - 1.5).abs() < 1e-9);
         assert_eq!(hole_in(&across, (100.2, 100.8), seam), 0.0);
+    }
+
+    /// A join that lost a second of its pictures: closed up, it runs a
+    /// second short of what its sources hold; left with the hole, it holds
+    /// a second the sources do not. Either is called out; a faithful one,
+    /// a frame out at each of its two ranges, is not.
+    #[test]
+    fn pictures_lost_from_a_join_are_counted() {
+        let kept = Kept { from: 15.0, to: 15.0, slack: 0.5 + 2.0 / 30.0, holes: Some((0.0, 0.0)) };
+        let report = |seconds: f64, gone: f64| Report {
+            pictures: true,
+            produced: 450,
+            seconds,
+            kept: Some(Kept { holes: Some((gone, 0.0)), ..kept }),
+            ..Default::default()
+        };
+        assert!(report(15.033, 0.0).pictures_ok());
+        assert!(!report(13.967, 0.0).pictures_ok());
+        assert!(!report(15.002, 1.031).pictures_ok());
+        // A last picture a transport stream gives no length to.
+        let ts = Report { kept: Some(Kept { from: 8.333, to: 10.55, ..kept }), ..report(8.333, 0.0) };
+        assert!(ts.pictures_ok());
+    }
+
+    /// Time with no picture is what a gap runs past a frame, and only past
+    /// two and a half: a picture of three fields is no gap.
+    #[test]
+    fn holes_are_gaps_past_a_frame() {
+        let fd = 1.0 / 30.0;
+        let even: Vec<f64> = (0..30).map(|n| n as f64 * fd).collect();
+        assert_eq!(holes(&even, fd), 0.0);
+        let pulled: Vec<f64> = (0..30).map(|n| n as f64 * 1.5 * fd).collect();
+        assert_eq!(holes(&pulled, fd), 0.0);
+        let gap = [0.0, fd, 1.0 + fd, 1.0 + 2.0 * fd];
+        assert!((holes(&gap, fd) - (1.0 - fd)).abs() < 1e-9);
+    }
+
+    /// Sound packets that overlap or leave a hole, inside a stretch.
+    #[test]
+    fn sound_is_counted_where_it_is() {
+        let mut spans = vec![(0.5, 1.0), (0.0, 0.6), (3.0, 4.5)];
+        assert!((covered(&mut spans, 0.2, 4.0) - (0.8 + 1.0)).abs() < 1e-9);
+        assert_eq!(covered(&mut [], 0.0, 1.0), 0.0);
     }
 }

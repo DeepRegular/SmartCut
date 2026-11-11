@@ -280,45 +280,27 @@ pub fn write(
     label: &str,
     on: Option<&(dyn Fn(f64) + Sync)>,
 ) -> Result<u64> {
-    // Never inside the folder it is an image of. Both callers name the image
-    // `<folder>.iso`, and a folder given with a separator at the end made
-    // that `<folder>/.iso`: a hidden image in the disc it holds, left there
-    // when the folder is taken away afterwards.
-    let inside = |dir: &Path| {
-        let (Ok(from), Ok(dir)) = (std::fs::canonicalize(from), std::fs::canonicalize(dir)) else {
-            return false;
-        };
-        dir.starts_with(from)
-    };
-    if to.parent().is_some_and(|p| inside(if p.as_os_str().is_empty() { Path::new(".") } else { p })) {
-        bail!(
-            "{}: the image would be inside {}, the folder it is made of",
-            to.display(),
-            from.display()
-        );
-    }
-    // Nor over an image of another disc, or over anything that is not an
-    // image of this one. A disc is added to, but a disc whose folder
-    // `--iso-only` took away lives on only in its image: the next run into a
-    // folder of that name -- the series name, which is what the window calls
-    // it -- started a disc afresh at 00001 and wrote its image over the last
-    // one, and every recording that was on it went. A file there that is no
-    // disc of recordings at all -- another disc's image, somebody's own file
-    // that happens to have the name -- is not this program's to replace
-    // either.
-    if let Some(why) = not_this_disc(from, to) {
-        bail!(
-            "{} is already there and {why}: written over, it would be lost. Move it away, or \
-             write the disc into another folder",
-            to.display()
-        );
+    if let Some(why) = refused(from, to) {
+        bail!("{why}");
     }
     let mut part = to.as_os_str().to_owned();
     part.push(".part");
     let part = PathBuf::from(part);
-    let mut made = false;
+    let mut made = (false, None);
     match write_to(from, &part, revision, access, label, on, &mut made) {
         Ok((size, held)) => {
+            // Not over another run's. Two runs that both found no `.part`
+            // being written took it away in turn and made their own: the
+            // first then renamed the second's half-written file into place
+            // and said the image was done. What is under the name has to be
+            // the file this run wrote.
+            if !still_at(&held, &part) {
+                bail!(
+                    "{}: another run made an image of this disc there while this one was being \
+                     written; make the image again once it has finished",
+                    to.display()
+                );
+            }
             // A rename that fails -- `to` is a folder, or cannot be replaced
             // -- leaves a whole image under the `.part` name, which is the
             // same gigabytes on the disk and nothing any run will clear up.
@@ -334,13 +316,73 @@ pub fn write(
         }
         Err(e) => {
             // Only what this run made: a `.part` another run is still
-            // writing is that run's to finish.
-            if made {
+            // writing is that run's to finish -- and so is one it made under
+            // the name after this run's was taken away.
+            if made.0 && made.1.as_ref().is_none_or(|mine| still_at(mine, &part)) {
                 let _ = std::fs::remove_file(&part);
             }
             Err(e)
         }
     }
+}
+
+/// Whether `path` still names the file `file` has open (always true where
+/// that cannot be asked).
+fn still_at(file: &std::fs::File, path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (file.metadata(), std::fs::symlink_metadata(path)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, path);
+        true
+    }
+}
+
+/// Why [`write`] would refuse to make an image of the disc in `from` at `to`,
+/// if it would. Asked by [`write`] itself, and by a caller before anything is
+/// cut: refused only once the cut and the index were written, a run whose
+/// image is in the way had done all its work for a disc it could not finish
+/// (the recording stays on the disc in the folder).
+pub fn refused(from: &Path, to: &Path) -> Option<String> {
+    // Never inside the folder it is an image of. Both callers name the image
+    // `<folder>.iso`, and a folder given with a separator at the end made
+    // that `<folder>/.iso`: a hidden image in the disc it holds, left there
+    // when the folder is taken away afterwards.
+    let inside = |dir: &Path| {
+        let (Ok(from), Ok(dir)) = (std::fs::canonicalize(from), std::fs::canonicalize(dir)) else {
+            return false;
+        };
+        dir.starts_with(from)
+    };
+    if to.parent().is_some_and(|p| inside(if p.as_os_str().is_empty() { Path::new(".") } else { p })) {
+        return Some(format!(
+            "{}: the image would be inside {}, the folder it is made of",
+            to.display(),
+            from.display()
+        ));
+    }
+    // Nor over an image of another disc, or over anything that is not an
+    // image of this one. A disc is added to, but a disc whose folder
+    // `--iso-only` took away lives on only in its image: the next run into a
+    // folder of that name -- the series name, which is what the window calls
+    // it -- started a disc afresh at 00001 and wrote its image over the last
+    // one, and every recording that was on it went. A file there that is no
+    // disc of recordings at all -- another disc's image, somebody's own file
+    // that happens to have the name -- is not this program's to replace
+    // either.
+    not_this_disc(from, to).map(|why| {
+        format!(
+            "{} is already there and {why}: written over, it would be lost. Move it away, or \
+             write the disc into another folder",
+            to.display()
+        )
+    })
 }
 
 /// Why what is already at `to` is not an image of the disc in `from` as it
@@ -447,7 +489,7 @@ fn write_to(
     access: Access,
     label: &str,
     on: Option<&(dyn Fn(f64) + Sync)>,
-    made: &mut bool,
+    made: &mut (bool, Option<std::fs::File>),
 ) -> Result<(u64, std::fs::File)> {
     let mut left_out = Vec::new();
     let mut tree = read_disc(from, &mut left_out)?;
@@ -488,7 +530,7 @@ fn write_to(
         .create_new(true)
         .open(to)
         .with_context(|| format!("cannot write {}", to.display()))?;
-    *made = true;
+    *made = (true, dst.try_clone().ok());
     // Held until the caller has renamed it into place; see [`write`]. A
     // filesystem that cannot lock is not a reason to stop.
     let _ = dst.try_lock();
@@ -660,7 +702,8 @@ fn say_what_was_left_out(from: &Path, left_out: &[String]) {
     if !other.is_empty() {
         crate::say!(
             "note: {} file(s) under {} are not in the image: a file another run has not \
-             finished writing (.ats, .part), a link to a folder, or not a file at all: {}",
+             finished writing (.ats, .part, a stream with no index yet), a link to a folder, or not a \
+             file at all: {}",
             other.len(),
             from.display(),
             named(&other),
@@ -806,12 +849,22 @@ fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>, left_out: &mut Vec<Stri
         let linked = e.file_type().is_ok_and(|t| t.is_symlink());
         // What a run that stopped part way leaves behind: a stream being
         // stamped, an image being written.
-        let unfinished = name.ends_with(".ats") || name.ends_with(".part");
+        // And the tables being put back into a clip (`crate::si`, which
+        // writes `<clip>.m2ts.si` beside it and renames it over).
+        let unfinished = name.ends_with(".ats")
+            || name.ends_with(".part")
+            || name.to_ascii_lowercase().ends_with(".m2ts.si");
         // Neither a file nor a folder -- a pipe, a socket, a device -- has no
         // length to copy, and opening a pipe to read it waits for a writer
         // that never comes: the image hung rather than failed.
         let special = !meta.is_dir() && !meta.is_file();
-        if (linked && meta.is_dir()) || unfinished || special {
+        // And a recording's stream with no clip index beside it: a number
+        // another run has reserved and is still cutting into or stamping, or
+        // one a run that was stopped left. The image took it at whatever
+        // length it had when the copy reached it -- a stream on the burned
+        // disc nothing lists, half of somebody's recording.
+        let unindexed = meta.is_file() && unindexed(dir, &name);
+        if (linked && meta.is_dir()) || unfinished || special || unindexed {
             left_out.push(dir.join(&name).to_string_lossy().into_owned());
             continue;
         }
@@ -836,6 +889,28 @@ fn fill(dir: &Path, parent: usize, tree: &mut Vec<Node>, left_out: &mut Vec<Stri
         }
     }
     Ok(())
+}
+
+/// Whether `name` in `dir` is a disc's stream (`STREAM/00001.m2ts`) whose
+/// clip index (`CLIPINF/00001.clpi`) is not there yet. A recording's index is
+/// written once its stream is finished ([`crate::bdav`]), and neither changes
+/// after that.
+fn unindexed(dir: &Path, name: &str) -> bool {
+    if !dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("STREAM")) {
+        return false;
+    }
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    if !ext.eq_ignore_ascii_case("m2ts") || stem.len() != 5 || !stem.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let Some(clipinf) = dir.parent().map(|d| d.join("CLIPINF")) else {
+        return false;
+    };
+    !["clpi", "CLPI"]
+        .iter()
+        .any(|ext| clipinf.join(format!("{stem}.{ext}")).is_file())
 }
 
 /// Give every node its blocks, and the image its length.
@@ -877,6 +952,16 @@ fn lay_out(tree: &mut [Node], access: Access) -> Result<Plan> {
         }
     }
     let meta_used = next as u64;
+    // The metadata file is one extent, and an extent says its length in
+    // thirty bits. A disc of recordings comes nowhere near (99,999
+    // recordings are some 300,000 blocks); a folder that did would have had
+    // its length wrapped into a volume no reader can open.
+    if align(meta_used).max(RECORDER_META_BLOCKS) * SECTOR as u64 > EXTENT_MAX {
+        bail!(
+            "{} files and folders are more than one image's directory can hold",
+            tree.len()
+        );
+    }
     if access == Access::Overwritable {
         return recorder_layout(tree, meta_used);
     }
@@ -1175,6 +1260,14 @@ fn metadata_image(
     );
     put(&mut out, 1, &sized(&terminating(1))?);
 
+    // Each node's parent, found once: asked of the whole tree for every
+    // directory, it was a search of every node per directory.
+    let mut parent_of = vec![0usize; tree.len()];
+    for (i, node) in tree.iter().enumerate().rev() {
+        for &c in &node.children {
+            parent_of[c] = i;
+        }
+    }
     for (i, node) in tree.iter().enumerate() {
         put(&mut out, node.entry, &sized(&file_entry(node, now))?);
         if node.is_dir() {
@@ -1182,11 +1275,7 @@ fn metadata_image(
             // The parent comes first and has no name.
             // The root's parent is the root, which is what a filesystem
             // says when it has run out of upwards.
-            let parent = tree
-                .iter()
-                .find(|n| n.children.contains(&i))
-                .unwrap_or(&tree[0])
-                .entry;
+            let parent = tree[parent_of[i]].entry;
             dir.extend_from_slice(&file_id("", true, true, parent, 0, dir.len(), node.data));
             for &c in &node.children {
                 let child = &tree[c];
@@ -2113,8 +2202,10 @@ mod tests {
         let at = std::env::temp_dir().join(format!("udfw-busy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&at);
         std::fs::create_dir_all(at.join("BDAV/STREAM")).unwrap();
+        std::fs::create_dir_all(at.join("BDAV/CLIPINF")).unwrap();
         std::fs::write(at.join("BDAV/info.bdav"), b"x").unwrap();
         std::fs::write(at.join("BDAV/STREAM/00001.m2ts"), [0u8; 192]).unwrap();
+        std::fs::write(at.join("BDAV/CLIPINF/00001.clpi"), b"i").unwrap();
         let image = PathBuf::from(format!("{}.iso", at.display()));
         let part = PathBuf::from(format!("{}.iso.part", at.display()));
         let _ = std::fs::remove_file(&image);
@@ -2130,6 +2221,65 @@ mod tests {
         assert!(!part.exists());
         assert!(crate::udf::Image::open(&image).unwrap().find("BDAV/STREAM/00001.m2ts").is_some());
         let _ = std::fs::remove_file(&image);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// A stream another run is still writing -- no clip index beside it yet
+    /// -- is not put in the image at the length it happens to have.
+    #[test]
+    fn a_stream_with_no_index_yet_is_left_out() {
+        let at = std::env::temp_dir().join(format!("udfw-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(at.join("BDAV/STREAM")).unwrap();
+        std::fs::create_dir_all(at.join("BDAV/CLIPINF")).unwrap();
+        std::fs::write(at.join("BDAV/info.bdav"), b"x").unwrap();
+        std::fs::write(at.join("BDAV/STREAM/00001.m2ts"), [0u8; 192]).unwrap();
+        std::fs::write(at.join("BDAV/CLIPINF/00001.clpi"), b"i").unwrap();
+        std::fs::write(at.join("BDAV/STREAM/00002.m2ts"), [0u8; 384]).unwrap();
+        let image = PathBuf::from(format!("{}.iso", at.display()));
+        let _ = std::fs::remove_file(&image);
+        write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap();
+        let held = crate::udf::Image::open(&image).unwrap();
+        assert!(held.find("BDAV/STREAM/00001.m2ts").is_some());
+        assert!(held.find("BDAV/STREAM/00002.m2ts").is_none());
+        let left = left_out(&at.join("BDAV")).unwrap();
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert!(left[0].ends_with("00002.m2ts"));
+        let _ = std::fs::remove_file(&image);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// A `.part` taken away and made again under the name by another run is
+    /// not this run's to rename into place or to remove.
+    #[cfg(unix)]
+    #[test]
+    fn a_part_made_again_under_the_name_is_not_ours() {
+        let at = std::env::temp_dir().join(format!("udfw-ours-{}", std::process::id()));
+        std::fs::write(&at, b"mine").unwrap();
+        let mine = std::fs::File::open(&at).unwrap();
+        assert!(still_at(&mine, &at));
+        std::fs::remove_file(&at).unwrap();
+        assert!(!still_at(&mine, &at));
+        std::fs::write(&at, b"theirs").unwrap();
+        assert!(!still_at(&mine, &at));
+        let _ = std::fs::remove_file(&at);
+    }
+
+    /// What `write` would refuse is answered before it is asked to write.
+    #[test]
+    fn a_refusal_is_known_before_the_cut() {
+        let at = std::env::temp_dir().join(format!("udfw-before-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        let image = PathBuf::from(format!("{}.iso", at.display()));
+        std::fs::write(&image, b"somebody's own file").unwrap();
+        let why = refused(&at, &image).expect("refused");
+        assert!(why.contains("is already there"), "{why}");
+        std::fs::create_dir_all(at.join("BDAV/STREAM")).unwrap();
+        std::fs::write(at.join("BDAV/info.bdav"), b"x").unwrap();
+        let e = write(&at, &image, Revision::V250, Access::ReadOnly, "x", None).unwrap_err();
+        assert_eq!(e.to_string(), why);
+        let _ = std::fs::remove_file(&image);
+        assert!(refused(&at, &image).is_none());
         let _ = std::fs::remove_dir_all(&at);
     }
 

@@ -85,8 +85,23 @@ pub fn recovery_put(
             .map(|d| d.as_millis())
             .unwrap_or(0);
         let id = format!("{}-{millis}", std::process::id());
-        let lock = File::create(lock_at(&dir, &id)).map_err(|e| e.to_string())?;
-        lock.try_lock().map_err(|e| e.to_string())?;
+        // Locked under a name [`recovery_orphans`] passes over, and only then
+        // given the name it looks for. Made under that name and locked a
+        // moment later, another window starting up in between took it for
+        // the lock of a window that had gone with nothing left behind, and
+        // deleted it: this window then locked a file that was no longer
+        // there, and every copy it wrote after had no lock beside it -- work
+        // that a crash would have left where no start-up ever looks. The
+        // lock is the file's, not the name's, so the rename keeps it.
+        let making = dir.join(format!("{id}.lock.part"));
+        let lock = File::create(&making).map_err(|e| e.to_string())?;
+        if let Err(e) = lock.try_lock().map_err(|e| e.to_string()).and_then(|()| {
+            std::fs::rename(&making, lock_at(&dir, &id)).map_err(|e| e.to_string())
+        }) {
+            drop(lock);
+            let _ = std::fs::remove_file(&making);
+            return Err(e);
+        }
         *own = Some(Own { id, _lock: lock });
     }
     let id = &own.as_ref().expect("set above").id;
@@ -161,9 +176,14 @@ pub fn recovery_orphans(app: tauri::AppHandle, state: tauri::State<Recovery>) ->
                 claimed.push((id, lock));
             }
             Err(_) => {
-                drop(lock);
-                let _ = std::fs::remove_file(&path);
+                // Removed while still held, so that no other window can take
+                // it in between and find it again.
                 let _ = std::fs::remove_file(dir.join(format!("{id}.part")));
+                let gone = std::fs::remove_file(&path).is_ok();
+                drop(lock);
+                if !gone {
+                    let _ = std::fs::remove_file(&path);
+                }
             }
         }
     }
@@ -177,11 +197,18 @@ pub fn recovery_forget(app: tauri::AppHandle, state: tauri::State<Recovery>, id:
     let Ok(dir) = dir(&app) else { return };
     let mut claimed = locked(&state.claimed);
     let Some(at) = claimed.iter().position(|(c, _)| *c == id) else { return };
-    // The handle goes first: Windows will not remove a file that is open.
-    drop(claimed.remove(at));
+    // The copy goes while the lock is still held. With the lock let go first,
+    // a second list window starting up in between took the lock, found the
+    // copy still there, and offered back work this one had just put back.
     let _ = std::fs::remove_file(body_at(&dir, &id));
     let _ = std::fs::remove_file(dir.join(format!("{id}.part")));
-    let _ = std::fs::remove_file(lock_at(&dir, &id));
+    let (_, lock) = claimed.remove(at);
+    let gone = std::fs::remove_file(lock_at(&dir, &id)).is_ok();
+    drop(lock);
+    // Where an open file cannot be removed, once it is closed.
+    if !gone {
+        let _ = std::fs::remove_file(lock_at(&dir, &id));
+    }
 }
 
 /// On the way out of a window that closed normally: its copy, and its lock.
@@ -195,9 +222,15 @@ pub fn on_exit(app: &tauri::AppHandle) {
     let own = locked(&state.own).take();
     if let Some(own) = own {
         let id = own.id.clone();
-        drop(own);
+        // The copy first and the lock last, as in [`recovery_forget`]: let go
+        // before the copy was gone, a list window starting up just then
+        // offered back work this one had been told to throw away.
         let _ = std::fs::remove_file(body_at(&dir, &id));
         let _ = std::fs::remove_file(dir.join(format!("{id}.part")));
-        let _ = std::fs::remove_file(lock_at(&dir, &id));
+        let gone = std::fs::remove_file(lock_at(&dir, &id)).is_ok();
+        drop(own);
+        if !gone {
+            let _ = std::fs::remove_file(lock_at(&dir, &id));
+        }
     }
 }

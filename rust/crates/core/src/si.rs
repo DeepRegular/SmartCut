@@ -234,6 +234,29 @@ fn payload_start(p: &[u8]) -> Option<usize> {
     (start < PACKET).then_some(start)
 }
 
+/// The presentation time of the picture whose stream this packet opens, in
+/// 90 kHz ticks: only a packet that starts a video PES with a time on it.
+fn video_pts(p: &[u8]) -> Option<i64> {
+    if p[1] & 0x40 == 0 {
+        return None;
+    }
+    let pes = p.get(payload_start(p)?..)?;
+    if pes.len() < 14 || pes[..3] != [0, 0, 1] || !matches!(pes[3], 0xE0..=0xEF | 0xFD) {
+        return None;
+    }
+    if pes[7] & 0x80 == 0 {
+        return None;
+    }
+    let t = &pes[9..14];
+    Some(
+        (i64::from(t[0] >> 1 & 0x07) << 30)
+            | (i64::from(t[1]) << 22)
+            | (i64::from(t[2] >> 1) << 15)
+            | (i64::from(t[3]) << 7)
+            | i64::from(t[4] >> 1),
+    )
+}
+
 /// The program clock reference this packet carries, in 90 kHz ticks.
 ///
 /// The clock is the only timeline the finished file has that can be read
@@ -1423,6 +1446,16 @@ pub struct Snapshot {
     pub sit: Option<Vec<u8>>,
     /// Set where `eit` was worked out of `sit` rather than read off the air.
     pub made_from_sit: bool,
+    /// How many seconds after the range's opening picture is shown the
+    /// section the clock is read from arrived: the time in it is the time
+    /// *then*, not where the range opens. A time table goes out every five
+    /// seconds, so written as the time at the opening it put every range's
+    /// clock up to five seconds ahead. `None` where the window did not say,
+    /// and the clock is written as it was read. See [`graft`].
+    pub clock_after: Option<f64>,
+    /// The same for `sit`, which can stand in for the clock; see
+    /// [`Snapshot::from_partial`].
+    pub sit_after: Option<f64>,
 }
 
 impl Snapshot {
@@ -1467,6 +1500,9 @@ impl Snapshot {
         }
         if self.tot.is_none() && self.tdt.is_none() {
             self.tdt = sit.and_then(clock_from_sit);
+            if self.tdt.is_some() {
+                self.clock_after = self.sit_after;
+            }
         }
     }
 }
@@ -1538,6 +1574,22 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
     // Whether anything at all went by on the event PID. A broadcast sends
     // the guide there many times a second; a partial stream sends nothing.
     let mut eit_pid_heard = false;
+    // When a section arrived, against when the range's opening picture is
+    // shown: the presentation time of the first picture after `pos`, which
+    // is the one the index put there, and the latest clock reference on each
+    // PID. The picture's own PID where that carries the clock, which is the
+    // one counting the same time as its stamps; else the first that does.
+    let mut opening: Option<(u16, i64)> = None;
+    let mut clocks: HashMap<u16, i64> = HashMap::new();
+    let mut first_clock: Option<u16> = None;
+    let since = |opening: Option<(u16, i64)>, clocks: &HashMap<u16, i64>, first: Option<u16>| {
+        let (pid, shown) = opening?;
+        let now = clocks.get(&pid).or_else(|| clocks.get(&first?))?;
+        // The difference on a 33-bit clock, either way round.
+        let d = (now - shown).rem_euclid(1 << 33);
+        let d = if d >= 1 << 32 { d - (1 << 33) } else { d };
+        Some(d as f64 / 90_000.0)
+    };
 
     let mut at = base;
     while at + PACKET <= buf.len() {
@@ -1552,6 +1604,13 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
         }
         let pid = pid_of(p);
         eit_pid_heard |= pid == PID_EIT;
+        if let Some(pcr) = pcr_of(p) {
+            clocks.insert(pid, pcr);
+            first_clock.get_or_insert(pid);
+        }
+        if opening.is_none() {
+            opening = video_pts(p).map(|pts| (pid, pts));
+        }
         match pid {
             PID_EIT => eit.feed(p, |sec| {
                 if sec[0] != TABLE_EIT_PF_ACTUAL || sec.len() < 18 {
@@ -1572,7 +1631,14 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
             // written back (see [`advance_time`]), and taken as the first it
             // would have stood in the way of every whole one after it.
             PID_TDT => tdt.feed(p, |sec| match sec[0] {
-                TABLE_TOT if out.tot.is_none() && sec.len() >= 14 => out.tot = Some(sec.to_vec()),
+                TABLE_TOT if out.tot.is_none() && sec.len() >= 14 => {
+                    out.tot = Some(sec.to_vec());
+                    out.clock_after = since(opening, &clocks, first_clock);
+                }
+                TABLE_TDT if out.tot.is_none() && out.tdt.is_none() && sec.len() >= 8 => {
+                    out.tdt = Some(sec.to_vec());
+                    out.clock_after = since(opening, &clocks, first_clock);
+                }
                 TABLE_TDT if out.tdt.is_none() && sec.len() >= 8 => out.tdt = Some(sec.to_vec()),
                 _ => {}
             }),
@@ -1585,6 +1651,7 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
                     && sit_service(sec).is_some_and(|(id, _)| id == service_id)
                 {
                     out.sit = Some(sec.to_vec());
+                    out.sit_after = since(opening, &clocks, first_clock);
                 }
             }),
             _ => {}
@@ -1793,6 +1860,12 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
     // Which service the tables that arrived were about, for the number to be
     // built from once the button is known.
     let mut saw_service = 0u16;
+    // A network table that arrived before anything said which service the
+    // recording is of. A satellite network describes every stream on it, and
+    // which entry is this one's is settled by the service: read then, it
+    // settled nothing, and counted as read it ended the wait for a number
+    // the next one would have given. Held until the service is known.
+    let mut nit_early: Option<Vec<u8>> = None;
 
     let mut at = base;
     while at + PACKET <= buf.len() {
@@ -1911,12 +1984,25 @@ pub fn programme(input: &crate::input::Input, service_id: u16) -> Result<Program
                 if sec[0] != TABLE_NIT_ACTUAL || sec.len() < 16 {
                     return;
                 }
+                let of = if saw_service != 0 { saw_service } else { want };
+                if of == 0 {
+                    nit_early = Some(sec.to_vec());
+                    return;
+                }
                 saw_nit = true;
-                remote_key = ts_information(sec, saw_service)
+                remote_key = ts_information(sec, of)
                     .as_deref()
                     .and_then(remote_control_key);
             }),
             _ => {}
+        }
+        if saw_service != 0 && remote_key.is_none() {
+            if let Some(sec) = nit_early.take() {
+                saw_nit = true;
+                remote_key = ts_information(&sec, saw_service)
+                    .as_deref()
+                    .and_then(remote_control_key);
+            }
         }
         if out.channel_number == 0 && saw_service != 0 {
             out.channel_number = three_digit(saw_service, remote_key);
@@ -2755,6 +2841,55 @@ fn build_pat(transport_stream_id: u16, service_id: u16, pmt_pid: u16, network_pi
     sec
 }
 
+/// Make each range's present-and-following say it changed where it did.
+///
+/// A receiver keeps the table it has until the version number changes, so a
+/// range whose sections say something else under the version the range
+/// before went out with is never read: the output names the earlier range's
+/// programme over this one. That happens where the two ranges came from far
+/// enough apart that the version, five bits, came round to the same number,
+/// and where a version the recording reused is not the one the output used
+/// last. Such a range goes out under the next version instead, and every
+/// other range as the recording sent it -- the usual case, and the one where
+/// its bytes should travel untouched.
+fn versioned_by_range(mut eit: Vec<Vec<Vec<u8>>>) -> Vec<Vec<Vec<u8>>> {
+    let version = |sec: &[u8]| (sec[5] >> 1) & 0x1F;
+    // What a receiver compares: everything but the version and the CRC.
+    let body = |sec: &[u8]| {
+        let mut b = sec[..sec.len() - 4].to_vec();
+        b[5] &= !0x3E;
+        b
+    };
+    let mut last: Option<usize> = None;
+    for r in 0..eit.len() {
+        if eit[r].is_empty() {
+            continue;
+        }
+        if let Some(l) = last {
+            let had = &eit[l];
+            let clash = eit[r].iter().any(|sec| {
+                had.iter().any(|old| {
+                    old[6] == sec[6] && version(old) == version(sec) && body(old) != body(sec)
+                })
+            });
+            if clash {
+                let used: Vec<u8> = had.iter().map(|sec| version(sec)).collect();
+                let mut next = (used.iter().copied().max().unwrap_or(0) + 1) & 0x1F;
+                while used.contains(&next) {
+                    next = (next + 1) & 0x1F;
+                }
+                for sec in &mut eit[r] {
+                    sec.truncate(sec.len() - 4);
+                    sec[5] = (sec[5] & !0x3E) | (next << 1);
+                    finish_section(sec);
+                }
+            }
+        }
+        last = Some(r);
+    }
+    eit
+}
+
 /// Build the program map the recording had, for the streams that were kept.
 ///
 /// A program map section holds 1021 bytes after its length field, and the
@@ -3259,7 +3394,13 @@ fn advance_time(section: &[u8], seconds: f64) -> Option<Vec<u8>> {
 /// from, and picks its own. Writing the rebuilt map onto the PID it was
 /// asked to use would then leave the muxer's own map in place beside it, on
 /// a PID this never wrote to, and the output would carry two.
-fn output_layout(path: &str) -> Result<(u16, u16)> {
+///
+/// And which service number and transport stream the muxer's list of
+/// programmes gave it, which [`graft`] holds against the service its own
+/// tables name; and how long after the first clock reference the first
+/// picture is shown, in seconds, which is what puts the output's clock
+/// references against the times the ranges begin at.
+fn output_layout(path: &str) -> Result<(u16, u16, u16, u16, Option<f64>)> {
     let mut f = std::fs::File::open(path)?;
     let mut buf = vec![0u8; 4 << 20];
     let n = read_fully(&mut f, &mut buf)?;
@@ -3271,7 +3412,10 @@ fn output_layout(path: &str) -> Result<(u16, u16)> {
     let mut pmt = SectionReader::default();
     let mut pmt_pid = 0u16;
     let mut service_id = 0u16;
+    let mut transport_stream_id = 0u16;
     let mut pcr_pid = 0u16;
+    let mut first_pcr: Option<i64> = None;
+    let mut first_shown: Option<i64> = None;
     let mut at = base;
     while at + PACKET <= buf.len() {
         let p = &buf[at..at + PACKET];
@@ -3284,6 +3428,7 @@ fn output_layout(path: &str) -> Result<(u16, u16)> {
                 if sec[0] != TABLE_PAT || sec.len() < 12 {
                     return;
                 }
+                transport_stream_id = u16::from_be_bytes([sec[3], sec[4]]);
                 let mut i = 8;
                 while i + 4 <= sec.len() - 4 {
                     let number = ((sec[i] as u16) << 8) | sec[i + 1] as u16;
@@ -3302,14 +3447,24 @@ fn output_layout(path: &str) -> Result<(u16, u16)> {
             }),
             _ => {}
         }
-        if pmt_pid != 0 && pcr_pid != 0 {
+        if first_shown.is_none() {
+            first_shown = video_pts(p);
+        }
+        if pcr_pid != 0 && pid_of(p) == pcr_pid && first_pcr.is_none() {
+            first_pcr = pcr_of(p);
+        }
+        if pmt_pid != 0 && pcr_pid != 0 && first_pcr.is_some() && first_shown.is_some() {
             break;
         }
     }
+    let shown_after = first_pcr.zip(first_shown).map(|(pcr, shown)| {
+        let d = (shown - pcr).rem_euclid(1 << 33);
+        (if d >= 1 << 32 { d - (1 << 33) } else { d }) as f64 / 90_000.0
+    });
     if pmt_pid == 0 {
         bail!("{path} carries no program association table");
     }
-    Ok((pmt_pid, pcr_pid))
+    Ok((pmt_pid, pcr_pid, service_id, transport_stream_id, shown_after))
 }
 
 /// How fast the finished cut runs at its fastest, in the 400 bit/s a partial
@@ -3413,7 +3568,8 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
     if g.ranges.is_empty() {
         bail!("nothing to graft onto: no ranges");
     }
-    let (out_pmt_pid, out_pcr_pid) = output_layout(output)?;
+    let (out_pmt_pid, out_pcr_pid, out_service_id, out_transport_stream_id, out_shown_after) =
+        output_layout(output)?;
     let pcr_pid = if out_pcr_pid > 0 {
         out_pcr_pid
     } else {
@@ -3512,14 +3668,29 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
         // partial stream, which is the shape that has an entry the muxer
         // cannot write: programme nought, naming the PID the stream
         // describes itself on. See [`build_pat`].
-        let pat_section = (g.tables == Tables::Partial).then(|| {
-            build_pat(
+        //
+        // And wherever the muxer's list names the service by another number
+        // than the map written below does. The muxer was told the number of
+        // the programme libavformat put the pictures in, and the map, the
+        // service description and the event are of the service
+        // [`read_service`] matched to the pictures; two maps naming the same
+        // pictures, and the two rules could pick different ones. A map whose
+        // number the list does not have is a file a player cannot follow from
+        // one to the other, so the list is written again with the one number
+        // every other table here carries. Where the two agree -- every
+        // recording measured -- the muxer's own list goes out untouched.
+        let pat_section = if g.tables == Tables::Partial {
+            Some(build_pat(
                 g.service.transport_stream_id,
                 g.service.service_id,
                 out_pmt_pid,
                 PID_SIT,
-            )
-        });
+            ))
+        } else if out_service_id != g.service.service_id {
+            Some(build_pat(out_transport_stream_id, g.service.service_id, out_pmt_pid, 0))
+        } else {
+            None
+        };
         let sdt_section = g.service.sdt.clone();
         // What the data broadcast will add to the file, measured off the
         // recording before any of it is added: the one table that states a
@@ -3602,6 +3773,7 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
                     .collect()
             })
             .collect();
+        let eit = versioned_by_range(eit);
         let mut cc: HashMap<u16, u8> = HashMap::new();
         let mut scratch: Vec<u8> = Vec::with_capacity(PACKET * 4);
 
@@ -3979,7 +4151,21 @@ pub fn graft(output: &str, on: Option<&(dyn Fn(f64) + Sync)>, g: &Graft) -> Resu
             if now >= next_tot {
                 if let Some(sec) = snap.tot.as_ref().or(snap.tdt.as_ref()) {
                     next_tot = now + TOT_PERIOD;
-                    let elapsed = now - g.ranges[range].start;
+                    // How far the clock has run since the range's first
+                    // picture was shown. Both ends are put on the pictures:
+                    // here, by how long after the clock reference the
+                    // output's first picture is shown; there, by how long
+                    // after the access point the range opens on the section
+                    // arrived, less how far past that point the range
+                    // begins. See [`Snapshot::clock_after`]. Where either is
+                    // not known, from where the range opens as before.
+                    let skip = g.ranges[range].source.map_or(0.0, |s| s.skip);
+                    let elapsed = match (snap.clock_after, out_shown_after) {
+                        (Some(after), Some(shown)) => {
+                            now - shown - g.ranges[range].start + skip - after
+                        }
+                        _ => now - g.ranges[range].start,
+                    };
                     if let Some(moved) = advance_time(sec, elapsed) {
                         let c = cc.entry(PID_TDT).or_default();
                         scratch.clear();
@@ -5455,5 +5641,139 @@ mod tests {
 
     fn section_length(sec: &[u8]) -> usize {
         ((((sec[1] & 0x0F) as usize) << 8) | sec[2] as usize) + 3
+    }
+
+    fn with_version(mut sec: Vec<u8>, version: u8) -> Vec<u8> {
+        sec.truncate(sec.len() - 4);
+        sec[5] = (sec[5] & !0x3E) | (version << 1);
+        finish_section(&mut sec);
+        sec
+    }
+
+    fn crc_holds(sec: &[u8]) -> bool {
+        let body = sec.len() - 4;
+        crc32(&sec[..body]) == u32::from_be_bytes(sec[body..].try_into().expect("four bytes"))
+    }
+
+    #[test]
+    fn a_range_that_says_something_else_says_so_with_its_version() {
+        let (a, b) = (eit_pf_of(0x400, 0, 1, &[]), eit_pf_of(0x400, 0, 2, &[]));
+        let ranges = vec![
+            vec![with_version(a.clone(), 5)],
+            // Another programme under the same number: the version came
+            // round, and a receiver holding the first would never read it.
+            vec![with_version(b.clone(), 5)],
+            // The same programme again, with what the recording numbered it.
+            vec![with_version(b.clone(), 9)],
+            // Nothing read here: the next is held against the one before.
+            vec![],
+            vec![with_version(a.clone(), 9)],
+        ];
+        let out = versioned_by_range(ranges.clone());
+        let version = |sec: &[u8]| (sec[5] >> 1) & 0x1F;
+        // The first, and every range that does not clash, as it came.
+        assert_eq!(out[0], ranges[0]);
+        assert_eq!(out[2], ranges[2]);
+        assert!(out[3].is_empty());
+        // The clashing ones under the next number, and still sections.
+        assert_eq!(version(&out[1][0]), 6);
+        assert!(crc_holds(&out[1][0]));
+        assert_eq!(&out[1][0][6..out[1][0].len() - 4], &ranges[1][0][6..ranges[1][0].len() - 4]);
+        assert_eq!(version(&out[4][0]), 10);
+        assert!(crc_holds(&out[4][0]));
+        // And the same section twice under one version is left alone.
+        let same = vec![vec![with_version(a.clone(), 3)], vec![with_version(a, 3)]];
+        assert_eq!(versioned_by_range(same.clone()), same);
+    }
+
+    fn pcr_at(pid: u16, seconds: f64) -> [u8; PACKET] {
+        let base = (seconds * 90_000.0) as i64;
+        let pcr = [
+            (base >> 25) as u8,
+            (base >> 17) as u8,
+            (base >> 9) as u8,
+            (base >> 1) as u8,
+            (((base & 1) << 7) as u8) | 0x7E,
+            0,
+        ];
+        pcr_packet(pid, &pcr)
+    }
+
+    #[test]
+    fn the_clock_is_read_as_of_when_it_arrived() {
+        // A time table that goes out 2.4 seconds after the range's opening
+        // picture arrives -- 1.4 after it is shown -- says the time then.
+        // Written as the time at the opening, every range after the first
+        // ran its clock ahead by up to the five seconds between two of them.
+        let mut out = Vec::new();
+        let mut cc = 0u8;
+        for tenth in 0..40 {
+            out.extend_from_slice(&pcr_at(0x1FF, 100.0 + f64::from(tenth) / 10.0));
+            if tenth == 0 {
+                let pts = 101 * 90_000i64;
+                let mut p = vec![0x47, 0x41, 0xFF, 0x10, 0, 0, 1, 0xE0, 0, 0, 0x80, 0x80, 5];
+                p.extend_from_slice(&[
+                    0x21 | (((pts >> 30) & 7) << 1) as u8,
+                    (pts >> 22) as u8,
+                    (((pts >> 15) & 0x7F) << 1) as u8 | 1,
+                    (pts >> 7) as u8,
+                    ((pts & 0x7F) << 1) as u8 | 1,
+                ]);
+                p.resize(PACKET, 0xFF);
+                assert_eq!(video_pts(&p), Some(pts));
+                out.extend_from_slice(&p);
+            }
+            if tenth == 24 {
+                packetize(PID_TDT, &tot(61_000, 9, 0, 0), &mut cc, &mut out);
+            }
+        }
+        let at = std::env::temp_dir().join("smartcut-clock-after.ts");
+        std::fs::write(&at, &out).expect("write the sample");
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+        let snap = snapshot_at(&input, 0, 1).expect("a reading");
+        let _ = std::fs::remove_file(&at);
+        assert!(snap.tot.is_some());
+        let after = snap.clock_after.expect("a picture and a clock to read it by");
+        assert!((after - 1.4).abs() < 1e-3, "{after}");
+    }
+
+    fn nit_of(streams: &[(u16, u8, u16)]) -> Vec<u8> {
+        // Network 0x7FE0, no network descriptors, then a transport stream
+        // each with the information descriptor naming its key and service.
+        let mut entries = Vec::new();
+        for &(tsid, key, service) in streams {
+            let d = [0xCD, 6, key, 0x01, 0x0F, 1, (service >> 8) as u8, service as u8];
+            entries.extend_from_slice(&tsid.to_be_bytes());
+            entries.extend_from_slice(&0x7FE0u16.to_be_bytes());
+            entries.extend_from_slice(&[0xF0, d.len() as u8]);
+            entries.extend_from_slice(&d);
+        }
+        let mut sec = vec![TABLE_NIT_ACTUAL, 0xF0, 0x00, 0x7F, 0xE0, 0xC1, 0x00, 0x00, 0xF0, 0x00];
+        sec.extend_from_slice(&[0xF0 | (entries.len() >> 8) as u8, entries.len() as u8]);
+        sec.extend_from_slice(&entries);
+        finish_section(&mut sec);
+        sec
+    }
+
+    #[test]
+    fn a_network_table_before_the_event_still_gives_the_number() {
+        // Two services' maps, so the file does not say which it is of, and a
+        // network table describing two streams before any event: read then
+        // it could settle nothing, and counted as read it ended the wait.
+        let mut out = Vec::new();
+        let (mut a, mut b, mut c, mut d, mut e) = (0u8, 0u8, 0u8, 0u8, 0u8);
+        packetize(PID_NIT, &nit_of(&[(0x7FE0, 4, 0x0408), (0x7FE1, 6, 0x0410)]), &mut e, &mut out);
+        for _ in 0..4 {
+            packetize(PID_PAT, &pat_of(&[(0x0408, 0x100), (0x0410, 0x110)]), &mut a, &mut out);
+            packetize(0x100, &pmt(0x0408, 0, &[0x200]), &mut b, &mut out);
+            packetize(0x110, &pmt(0x0410, 0, &[0x210]), &mut c, &mut out);
+            packetize(PID_EIT, &eit_pf_of(0x0408, 0, 1, &[]), &mut d, &mut out);
+        }
+        let at = std::env::temp_dir().join("smartcut-nit-first.ts");
+        std::fs::write(&at, &out).expect("write the sample");
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+        let read = programme(&input, 0).expect("a reading");
+        let _ = std::fs::remove_file(&at);
+        assert_eq!(read.channel_number, 41);
     }
 }

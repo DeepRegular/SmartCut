@@ -1270,9 +1270,20 @@ pub(crate) fn filename(name: &str) -> String {
 ///
 /// Each carries how many bytes of index it has read so far; see
 /// [`MAX_INDEX_TOTAL`].
+///
+/// `kept` holds the clip indexes already read. A disc plays one clip from
+/// many playlists -- a pressed disc's "play all" and each episode's own, a
+/// recorder's title and its edits -- and each of them asked for the clip's
+/// index again: a read per playlist per clip, which on a disc on a network
+/// share is a round trip each.
 enum Volume {
     /// A directory, and the path of the `BDAV` or `BDMV` directory inside it.
-    Dir { shape: Shape, dir: PathBuf, spent: u64 },
+    Dir {
+        shape: Shape,
+        dir: PathBuf,
+        spent: u64,
+        kept: HashMap<String, Vec<u8>>,
+    },
     /// An image, the path it was opened from, and the prefix that directory
     /// sits at inside it.
     Image {
@@ -1281,6 +1292,7 @@ enum Volume {
         path: PathBuf,
         prefix: String,
         spent: u64,
+        kept: HashMap<String, Vec<u8>>,
     },
 }
 
@@ -1289,7 +1301,12 @@ impl Volume {
         if at.is_dir() {
             let (shape, dir) = disc_dir(at)
                 .ok_or_else(|| anyhow!("{}: no BDMV or BDAV directory here", at.display()))?;
-            return Ok(Volume::Dir { shape, dir, spent: 0 });
+            return Ok(Volume::Dir {
+                shape,
+                dir,
+                spent: 0,
+                kept: HashMap::new(),
+            });
         }
         // A disc in a folder of an image arrives here as a path through it --
         // `x.iso/DISC`, the part in front of `BDAV/STREAM` of a clip's name --
@@ -1307,6 +1324,7 @@ impl Volume {
             path: file,
             prefix,
             spent: 0,
+            kept: HashMap::new(),
         })
     }
 
@@ -1350,7 +1368,11 @@ impl Volume {
 
     /// Read one of the small index files, named relative to `BDAV` or `BDMV`.
     fn read(&mut self, rel: &str) -> Result<Vec<u8>> {
-        let (Volume::Dir { spent, .. } | Volume::Image { spent, .. }) = self;
+        let keeps = rel.starts_with("CLIPINF/");
+        let (Volume::Dir { spent, kept, .. } | Volume::Image { spent, kept, .. }) = self;
+        if let Some(raw) = kept.get(rel).filter(|_| keeps) {
+            return Ok(raw.clone());
+        }
         if *spent > MAX_INDEX_TOTAL {
             bail!("this disc's index files come to more than {MAX_INDEX_TOTAL} bytes");
         }
@@ -1365,8 +1387,14 @@ impl Volume {
                 image.read(&entry)?
             }
         };
-        let (Volume::Dir { spent, .. } | Volume::Image { spent, .. }) = self;
+        let (Volume::Dir { spent, kept, .. } | Volume::Image { spent, kept, .. }) = self;
         *spent += raw.len() as u64;
+        // Held up to what a real disc's clip indexes come to, so that the
+        // most a damaged disc may read (see [`MAX_INDEX_TOTAL`]) is not also
+        // what it keeps in memory.
+        if keeps && kept.values().map(Vec::len).sum::<usize>() + raw.len() <= MAX_KEPT {
+            kept.insert(rel.to_string(), raw.clone());
+        }
         Ok(raw)
     }
 
@@ -1702,6 +1730,11 @@ const MAX_INDEX: u64 = 64 << 20;
 /// hundred megabytes at the very most, its clip indexes re-read for every
 /// playlist that plays them included.
 const MAX_INDEX_TOTAL: u64 = 4 << 30;
+
+/// The most of a disc's clip indexes [`Volume`] keeps once read. A pressed
+/// 4K disc's two hundred come to under a megabyte; a recorder's are tens of
+/// kilobytes each.
+const MAX_KEPT: usize = 256 << 20;
 
 /// One of a folder disc's index files, whole.
 ///

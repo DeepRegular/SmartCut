@@ -72,6 +72,11 @@ pub const LOOKBACK: f64 = 30.0;
 /// (see [`Reader::fill`]), and reads as little as any other kind.
 pub const TTML_LOOKBACK: f64 = 180.0;
 
+/// The most a window holds of pictures not yet made into PNGs, in bytes;
+/// past it they are made as they are read, as they always were. A Blu-ray's
+/// minute of subtitles is a few megabytes of them.
+const HELD_MOST: usize = 64 << 20;
+
 /// And how far past it the window is read on.
 ///
 /// Long enough that playback crosses a window edge once a minute rather than
@@ -226,9 +231,27 @@ struct Event {
     /// sending the next statement; a disc's subtitle often carries its own
     /// end.
     until: Option<f64>,
-    /// `None` for the statement or the display set that only clears the
+    said: Said,
+}
+
+/// What an [`Event`] puts on screen.
+enum Said {
+    /// Nothing: the statement or the display set that only clears the
     /// screen, which is how a subtitle comes down.
-    shown: Option<Shown>,
+    Clear,
+    Shown(Shown),
+    /// A disc's picture, not yet made into the PNG a window puts up. Made
+    /// when it is first asked for ([`Reader::at`]): a window holds a minute
+    /// of a disc's subtitles, and a Blu-ray sends its standing one again
+    /// every second or two, so making every picture read into a PNG was
+    /// dozens of encodes per window for the one or two that are looked at.
+    Drawn { screen: (u16, u16), drawn: Drawn },
+}
+
+impl Said {
+    fn shows(&self) -> bool {
+        !matches!(self, Said::Clear)
+    }
 }
 
 /// One subtitle track, read a window at a time.
@@ -330,8 +353,10 @@ impl Reader {
         // standing: a subtitle that named its own end has gone by then, and
         // one the next statement replaced is not in the way of it either.
         let i = self.events.partition_point(|e| e.at <= t);
-        let event = self.events[..i].iter().rev().find(|e| e.shown.is_some());
-        let Some(event) = event else { return Ok(None) };
+        let Some(j) = self.events[..i].iter().rposition(|e| e.said.shows()) else {
+            return Ok(None);
+        };
+        let event = &self.events[j];
         if event.until.is_some_and(|u| t >= u) {
             return Ok(None);
         }
@@ -339,7 +364,13 @@ impl Reader {
         if self.events[..i].iter().any(|e| e.at > event.at) {
             return Ok(None);
         }
-        Ok(event.shown.as_ref())
+        if let Said::Drawn { screen, drawn } = &event.said {
+            self.events[j].said = Said::Shown(picture(*screen, drawn)?);
+        }
+        match &self.events[j].said {
+            Said::Shown(shown) => Ok(Some(shown)),
+            _ => Ok(None),
+        }
     }
 
     /// Read the stretch around `t` into [`Reader::events`].
@@ -391,7 +422,7 @@ impl Reader {
                 // set in that cluster is shown where the cut carries it.
                 // Before the discards, as there.
                 if from <= 0.0 && crate::sound::sought_at_head(&c, &self.url) {
-                    let target = i64::MIN / 2;
+                    let target = crate::input::head_seek(&c);
                     match sound {
                         Some(track) => {
                             if crate::sound::sound_from_head(&mut c, &self.url, track).is_err() {
@@ -480,6 +511,11 @@ impl Reader {
         // The last picture's time, for a packet that carries none: see the
         // crawl below.
         let mut clock: Option<f64> = None;
+        // The time of the composition the display set being read opened
+        // with. See the graphics below.
+        let mut composed: Option<f64> = None;
+        // The bytes of the pictures held for [`Said::Drawn`].
+        let mut held = 0usize;
         // Read through [`crate::input::Packets`], which reads past the
         // "try again" a transport stream answers with over damage: stopping
         // at the first error left everything after a dropout without its
@@ -562,7 +598,7 @@ impl Reader {
                         events.push(Event {
                             at: begin,
                             until: Some(end),
-                            shown: Some(Shown::Text {
+                            said: Said::Shown(Shown::Text {
                                 plane: written.plane,
                                 runs: page.runs,
                             }),
@@ -613,7 +649,7 @@ impl Reader {
                             events.push(Event {
                                 at,
                                 until: None,
-                                shown: None,
+                                said: Said::Clear,
                             });
                         }
                         // A statement that times itself carries more than
@@ -623,7 +659,7 @@ impl Reader {
                             events.push(Event {
                                 at: at + f64::from(page.at),
                                 until: page.until.map(|u| at + f64::from(u)),
-                                shown: Some(Shown::Text {
+                                said: Said::Shown(Shown::Text {
                                     plane: written.plane,
                                     runs: page.runs,
                                 }),
@@ -636,6 +672,17 @@ impl Reader {
                     if kind == Kind::Graphics && crate::pgs::oversized(data) {
                         continue;
                     }
+                    // A display set is shown at its composition's time. The
+                    // decoder answers at the set's END, whose packet is timed
+                    // for when the set has been decoded -- up to 70 ms before
+                    // the composition's -- and a line timed by it went up
+                    // that much before the cut, which carries the
+                    // composition's time, shows it.
+                    if kind == Kind::Graphics
+                        && crate::pgs::segments(data).any(|(k, _)| k == crate::pgs::PCS)
+                    {
+                        composed = Some(at);
+                    }
                     let mut sub = ff::codec::subtitle::Subtitle::new();
                     if !decoder.decode(&packet, &mut sub).unwrap_or(false) {
                         // A DVD's unit with nothing to show is one that takes
@@ -647,17 +694,47 @@ impl Reader {
                             events.push(Event {
                                 at,
                                 until: None,
-                                shown: None,
+                                said: Said::Clear,
                             });
                         }
                         continue;
                     }
-                    let drawn = vobsub::drawn_from(&sub);
+                    let drawn = match kind {
+                        // A unit is timed by itself: up at its start, down at
+                        // the stop it names, as the cut converts it
+                        // (`pgs::write::Composer::show_drawn`).
+                        Kind::Subpicture => {
+                            vobsub::drawn_from(&sub).map(|d| vobsub::timed_by(d, data))
+                        }
+                        _ => vobsub::drawn_from(&sub),
+                    };
+                    let at = match kind {
+                        Kind::Graphics => composed.take().unwrap_or(at),
+                        _ => at,
+                    };
                     let placed = placed_on(decoder, screen);
+                    let (from, until) = drawn
+                        .as_ref()
+                        .map_or((0.0, None), |d| (d.from, d.until.map(|u| at + u)));
+                    // All of it off the screen is nothing to see.
+                    let said = match drawn.and_then(|d| on_screen(placed, d)) {
+                        // Made into its PNG now only where the window holds
+                        // a great deal of pictures not made yet: a stream of
+                        // full-screen ones, which no disc sends.
+                        Some(drawn) if held > HELD_MOST => Said::Shown(picture(placed, &drawn)?),
+                        Some(drawn) => {
+                            held += drawn.indices.len();
+                            Said::Drawn {
+                                screen: placed,
+                                drawn,
+                            }
+                        }
+                        None => Said::Clear,
+                    };
                     events.push(Event {
-                        at,
-                        until: drawn.as_ref().and_then(|d| d.until).map(|d| at + d),
-                        shown: drawn.map(|d| picture(placed, &d)).transpose()?,
+                        at: at + from,
+                        until,
+                        said,
                     });
                 }
             }
@@ -679,6 +756,39 @@ impl Reader {
         Ok(())
     }
 
+}
+
+/// The part of a decoded subtitle that lies on the screen, or `None` where
+/// none of it does.
+///
+/// A DVD's unit states its corners in twelve bits, so one can ask for 4096
+/// dots square over a picture of 720 x 480 -- sixteen megabytes held and
+/// sixty-four made into a PNG, a picture, for dots nobody sees. A disc
+/// draws inside its screen, so for every real one this is the whole picture
+/// as it was.
+fn on_screen(screen: (u16, u16), drawn: Drawn) -> Option<Drawn> {
+    let width = drawn.width.min(screen.0.saturating_sub(drawn.x));
+    let height = drawn.height.min(screen.1.saturating_sub(drawn.y));
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if (width, height) == (drawn.width, drawn.height) {
+        return Some(drawn);
+    }
+    let (w, h) = (usize::from(width), usize::from(height));
+    let indices = drawn
+        .indices
+        .chunks_exact(usize::from(drawn.width))
+        .take(h)
+        .flat_map(|row| &row[..w])
+        .copied()
+        .collect();
+    Some(Drawn {
+        width,
+        height,
+        indices,
+        ..drawn
+    })
 }
 
 /// One decoded subtitle, as a picture a window can put up.
@@ -940,6 +1050,32 @@ mod tests {
         let packet = ff::Packet::copy(&set((16000, 16000), 5000, 5000));
         assert!(decoder.decode(&packet, &mut sub).expect("decodes"));
         assert!(vobsub::drawn_from(&sub).is_none(), "5000 dots square is no subtitle");
+    }
+
+    /// A unit can state corners far off its screen; only what is on the
+    /// screen is made into the picture a window puts up.
+    #[test]
+    fn a_picture_is_cut_to_its_screen() {
+        crate::init().expect("libav");
+        let big = Drawn {
+            x: 700,
+            y: 0,
+            width: 4096,
+            height: 4096,
+            indices: vec![1; 4096 * 4096],
+            palette: vec![(0, 0, 0, 0), (255, 255, 255, 255)],
+            until: None,
+            from: 0.0,
+            forced: false,
+        };
+        let off = Drawn { x: 720, indices: vec![1; 4], width: 2, height: 2, palette: big.palette.clone(), ..big };
+        let cut = on_screen((720, 480), big).expect("on the screen");
+        assert_eq!((cut.x, cut.width, cut.height, cut.indices.len()), (700, 20, 480, 20 * 480));
+        let Shown::Picture { width, height, .. } = picture((720, 480), &cut).expect("drawn") else {
+            panic!("a picture");
+        };
+        assert_eq!((width, height), (20, 480));
+        assert!(on_screen((720, 480), off).is_none());
     }
 
     /// Two tracks of one kind keep the order the recording named them in:

@@ -767,6 +767,11 @@ pub struct Reencoder {
     /// The delay the encoder has and does not declare. See
     /// [`undeclared_delay`].
     hidden: i64,
+    /// The last packet the encoder gave, kept back until the next one comes
+    /// or the encoder is flushed, for an encoder that restates its stream
+    /// header on an empty packet at the end (FLAC's). See `collect`.
+    held: Option<(ff::Packet, i64)>,
+    restates: bool,
 }
 
 /// How many samples late an encoder's output is beyond the delay it declares.
@@ -888,6 +893,8 @@ impl Reencoder {
             short_last,
             layout,
             hidden: undeclared_delay(target),
+            held: None,
+            restates: encoder_for(target) == ff::codec::Id::FLAC,
         })
     }
 
@@ -1102,7 +1109,19 @@ impl Reencoder {
         let t = pts as f64 * audio.time_base - start_time;
         // Held well inside i64: a crafted time stamp saturates the cast,
         // and the frame's length added to it then overflowed.
-        let first = ((t * self.sample_rate as f64).round() as i64).clamp(i64::MIN / 4, i64::MAX / 4);
+        let mut first = ((t * self.sample_rate as f64).round() as i64).clamp(i64::MIN / 4, i64::MAX / 4);
+        // On a clock coarser than a sample -- a Matroska track keeps
+        // milliseconds, 44 or 48 samples -- a frame's stamp is its start
+        // rounded, and a frame that follows on within that rounding does
+        // follow on: it opens where the one before stopped. Placed by its
+        // stamp, the window's end was read against the last frame's
+        // rounding, and every range came out up to half a millisecond longer
+        // or shorter than it was asked to be (a ten second `.flac` of a
+        // 44.1 kHz FLAC Matroska one sample short, a one second `.wav` five).
+        let tick = audio.time_base * f64::from(self.sample_rate);
+        if tick > 1.0 && self.next > self.opens.max(window.0) && (first - self.next).abs() as f64 <= tick {
+            first = self.next;
+        }
         // How long the frame lasts, in the recording's samples. Not its
         // own count where it arrived at another rate -- the programme
         // before this one, at the head of a broadcast recording -- or
@@ -1398,7 +1417,9 @@ impl Reencoder {
             self.drain(out)?;
         }
         self.encoder.send_eof()?;
-        self.collect(out)
+        self.collect(out)?;
+        out.extend(self.held.take());
+        Ok(())
     }
 
     fn collect(&mut self, out: &mut Vec<(ff::Packet, i64)>) -> Result<()> {
@@ -1423,8 +1444,14 @@ impl Reencoder {
             // yet: it arrives in the same flush, and the muxer reads it off
             // whichever packet carries it (the total length and the checksum
             // a .flac states in its header).
+            //
+            // Not yet written only because it is held back here: where the
+            // track is a whole number of frames long, the last of them is
+            // drained and handed out (and written) before the flush, and the
+            // restated header had no packet left to go with. The `.flac`
+            // then stated no length and no checksum.
             if packet.size() == 0 {
-                if let Some((last, _)) = out.last_mut() {
+                if let Some((last, _)) = self.held.as_mut().or(out.last_mut()) {
                     carry_extradata(&packet, last);
                 }
                 continue;
@@ -1437,7 +1464,11 @@ impl Reencoder {
                 }
                 None => packet,
             };
-            out.push((packet, pts));
+            if self.restates {
+                out.extend(self.held.replace((packet, pts)));
+            } else {
+                out.push((packet, pts));
+            }
         }
     }
 }
@@ -2040,7 +2071,7 @@ fn decode_around(
         ictx.seek(target, ..target)?;
         return decode_on(ictx, params, src, audio, at, reach);
     }
-    let target = i64::MIN / 2;
+    let target = crate::input::head_seek(ictx);
     ictx.seek(target, ..target)?;
     let frames = decode_on(ictx, params, src, audio, at, reach)?;
     // A seek to the head lands on a picture, and a broadcast's sound starts

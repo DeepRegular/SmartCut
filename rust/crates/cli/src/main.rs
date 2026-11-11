@@ -279,19 +279,9 @@ fn list_disc(input: &str, disc: &smartcut_core::disc::Disc) {
     tell!("\nname one with --title N to open it");
 }
 
-/// Read the written cut back and say what came of it. A cut that does not
-/// match ends the run in an error, so a script can tell.
-fn check_output(
-    out: &str,
-    pieces: &[smartcut_core::verify::Piece],
-    places: Option<&[usize]>,
-    compare: smartcut_core::verify::Compare,
-) -> Result<()> {
-    check_output_placed(out, pieces, &[], places, compare)
-}
-
-/// [`check_output`], for a file of sound alone joined with transitions:
-/// `after[n]` is what follows piece `n`. See `verify::check_crossed`.
+/// [`check_output_placed`], for a file of sound alone joined with
+/// transitions: `after[n]` is what follows piece `n`. See
+/// `verify::check_crossed`.
 fn check_output_crossed(
     out: &str,
     pieces: &[smartcut_core::verify::Piece],
@@ -301,7 +291,9 @@ fn check_output_crossed(
     check_output_placed(out, pieces, after, None, compare)
 }
 
-/// [`check_output_crossed`], told where the output's sound tracks sit among
+/// Read the written cut back and say what came of it. A cut that does not
+/// match ends the run in an error, so a script can tell. `after[n]` is what
+/// follows piece `n`, and `places` where the output's sound tracks sit among
 /// the master's. See `verify::check_placed`.
 fn check_output_placed(
     out: &str,
@@ -1038,6 +1030,13 @@ fn run() -> Result<()> {
                 if v.is_empty() {
                     bail!("-o needs a path");
                 }
+                // One cut, one file. Taken quietly, the second name replaced
+                // the first and the cut went where the line said last -- a
+                // script that added its own `-o` after the user's wrote over
+                // a file nobody had named for this run.
+                if let Some(first) = &output {
+                    bail!("-o is given twice ({first:?} and {v:?}): one run writes one file");
+                }
                 output = Some(v.clone());
             }
             // Onto a disc rather than into a file. The name of the file is
@@ -1054,6 +1053,10 @@ fn run() -> Result<()> {
                 if v.trim().is_empty() {
                     bail!("--bdav needs a folder");
                 }
+                // As `-o`: the second folder replaced the first without a word.
+                if let Some(first) = &bdav {
+                    bail!("--bdav is given twice ({first:?} and {v:?}): one run writes onto one disc");
+                }
                 let mut trimmed = v.trim_end_matches(['/', '\\']);
                 // Nor a `.` on the end: `disc/.` is the folder `disc`, and
                 // kept as it was typed the folder an `--iso-only` emptied
@@ -1064,7 +1067,20 @@ fn run() -> Result<()> {
                 {
                     trimmed = rest.trim_end_matches(['/', '\\']);
                 }
-                bdav = Some(if trimmed.is_empty() { v.clone() } else { trimmed.to_string() });
+                // Nor the separator after a drive: `E:` is the folder the run
+                // last stood in on that drive, and `--bdav E:\` -- a card or a
+                // disc's own root -- wrote the disc into wherever that was.
+                let drive = |t: &str| {
+                    let b = t.as_bytes();
+                    cfg!(windows) && b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+                };
+                bdav = Some(if trimmed.is_empty() {
+                    v.clone()
+                } else if drive(trimmed) && trimmed.len() < v.len() {
+                    format!("{trimmed}\\")
+                } else {
+                    trimmed.to_string()
+                });
             }
             // And whether to wrap the finished disc in an image. The
             // folder is what is written either way; this is the burner's
@@ -1278,14 +1294,35 @@ fn run() -> Result<()> {
             bail!("--still writes a .png, .jpg or .bmp, not {path}");
         }
     }
+    // `--preview` writes the JPEG the editor's strip is made of, whatever
+    // the name: `-o x.png` was a JPEG under a PNG's name, which a viewer
+    // that goes by the name refuses to open. A name with no ending is the
+    // user's to give; one that says another kind of picture is a still.
+    if preview_at.is_some() {
+        let ext = output.as_deref().map(smartcut_core::carry::extension).unwrap_or_default();
+        if !matches!(ext.as_str(), "" | "jpg" | "jpeg") {
+            let path = output.as_deref().unwrap_or_default();
+            bail!("--preview writes a JPEG, not {path}: name it .jpg, or use --still for a .png or .bmp");
+        }
+    }
     // A file that holds sound and nothing else, named for a cut with
     // pictures in it. The muxer turned the pictures down only once the file
     // had been created, with "Invalid argument", and a file already under
     // that name was left truncated to nothing.
     if !sound_only && stopping_at.is_none() {
         let sound_file = output.as_deref().and_then(|o| {
-            let ext = std::path::Path::new(o).extension()?.to_str()?.to_ascii_lowercase();
-            ["aac", "ac3", "eac3", "thd", "mp2", "mp3", "dts", "opus", "wav", "flac", "aiff"]
+            // As libavformat reads the name (`carry::extension`): `-o .aac`
+            // is an ADTS file to it, and no extension at all to `Path`.
+            let ext = smartcut_core::carry::extension(o);
+            // And the other files libavformat names for sound alone, which it
+            // turned down the same way after creating them (`.aif`, `.caf`,
+            // `.oga`, `.w64` ... ). Not `.m4a`, `.mka`, `.m4b` or `.wma`, whose
+            // muxers take pictures, nor `.ogg`, which can hold Theora.
+            [
+                "aac", "ac3", "eac3", "thd", "mp2", "mp3", "dts", "opus", "wav", "flac", "aiff",
+                "aif", "aifc", "caf", "w64", "oga", "wv", "spx", "au", "mpa", "tta", "amr", "gsm",
+                "mlp", "sbc",
+            ]
                 .contains(&ext.as_str())
                 .then_some(ext)
         });
@@ -1417,6 +1454,35 @@ fn run() -> Result<()> {
             bail!("--join {j} is a folder, and --join takes one recording: name a file in it");
         }
     }
+    // A recording named the way libavformat names several files or a part
+    // of one -- `concat:a.ts|b.ts`, `subfile,,start,0,end,N,,:a.ts`, a
+    // `restamp:` table over a clip -- is read out of files that are not its
+    // name, so nothing that asks whether an output is the recording found
+    // them, and `-o a.ts` was created over the first file of the list while
+    // it was being read. The files such a name reads are asked here, of
+    // every name the run writes that is known before it opens anything.
+    let read_through: Vec<(std::path::PathBuf, &str)> = std::iter::once(&input)
+        .chain(&joined)
+        .filter(|spec| !std::path::Path::new(spec.as_str()).exists())
+        .flat_map(|spec| files_in_url(spec).into_iter().map(move |f| (f, spec.as_str())))
+        .collect();
+    {
+        let mut writes: Vec<String> = [&output, &seek_index].into_iter().flatten().cloned().collect();
+        if let Some(out) = &output {
+            if audio_es && !sound_only {
+                writes.push(std::path::Path::new(out).with_extension("aac").to_string_lossy().into_owned());
+            }
+            writes.push(format!("{out}.si"));
+        }
+        for w in &writes {
+            if let Some((_, spec)) = read_through.iter().find(|(f, _)| one_place(&f.to_string_lossy(), w)) {
+                bail!(
+                    "{w} is one of the files {spec} reads; writing there would destroy it. Choose \
+                     another name or folder"
+                );
+            }
+        }
+    }
     // The index is written as soon as the recording is open and the cut over
     // it afterwards, so the run ended well with the index gone -- and the
     // next run with the same line stopped at a seek index that was a cut.
@@ -1424,10 +1490,23 @@ fn run() -> Result<()> {
         if one_place(o, s) {
             bail!("-o and --seek-index both name {o}: give the index a file of its own");
         }
+        // Nor one of the files the cut writes beside `-o` once it is done --
+        // the `.aac` of `--audio-es`, the name a transport stream's tables
+        // are put back under: the index was written at the open and
+        // replaced at the end, and the next run's seek index was a sidecar.
+        if let Some(side) = beside_the_cut(o, std::path::Path::new(s), audio_es && !sound_only, false) {
+            bail!("--seek-index {s} is {side}, which the cut writes beside -o: give the index a file of its own");
+        }
     }
     // Opened before anything is read, so that what the recording's open
     // says is in it too. The command line heads it: the one line that says
     // what the run was asked to do.
+    // Where the log is, once it is open, for the names that are only known
+    // once the recording is: see `the_log`.
+    let mut log_file: Option<std::path::PathBuf> = None;
+    // And whether this run made it, so that a log refused once the
+    // recording is open goes as one refused above does.
+    let mut log_made = false;
     if let Some(at) = written_to(log_to)? {
         let log = std::path::Path::new(&at);
         // Opened to be added to, so named as the recording it wrote the run
@@ -1445,6 +1524,7 @@ fn run() -> Result<()> {
                 }
             })
             .collect();
+        taken.extend(read_through.iter().map(|(f, _)| f.clone()));
         taken.extend(
             [output.as_ref(), seek_index.as_ref(), crossing_image.as_ref()]
                 .into_iter()
@@ -1453,6 +1533,14 @@ fn run() -> Result<()> {
         );
         if let Some(out) = output.as_ref().filter(|_| audio_es) {
             taken.push(std::path::Path::new(out).with_extension("aac"));
+        }
+        // And the subtitles written beside the cut where that was asked for
+        // (the names that depend on the recording are asked once it is
+        // open: see `the_log`).
+        if let Some(out) = output.as_ref().filter(|_| subtitles != smartcut_core::cut::Subtitles::Pgs) {
+            if let Some(side) = beside_the_cut(out, log, false, true) {
+                bail!("--log {at} is {side}, which this run writes beside -o: name another file");
+            }
         }
         // And the name a transport stream's tables are put back under before
         // it is renamed over the cut (`si::graft`), which is taken away and
@@ -1471,7 +1559,8 @@ fn run() -> Result<()> {
                 taken.push("still.png".into());
             }
             if make_proxy {
-                taken.push(std::path::Path::new(&input).with_extension("proxy.mp4"));
+                let named = input.strip_prefix("file:").filter(|f| std::path::Path::new(f).is_file());
+                taken.push(std::path::Path::new(named.unwrap_or(&input)).with_extension("proxy.mp4"));
             }
         }
         if let (Some(at), Some(_)) = (&bdav, iso) {
@@ -1636,6 +1725,8 @@ fn run() -> Result<()> {
                     .display()
             );
         }
+        log_file = Some(log.to_path_buf());
+        log_made = !existed && !dangling;
         smartcut_core::log::write_only(&format!(
             "# smartcut {} -- {}",
             smartcut_core::VERSION,
@@ -1843,8 +1934,42 @@ fn run() -> Result<()> {
             if writing.is_some() { " and no seek index is written" } else { "" }
         );
     }
+    // Whether the cut writes subtitles beside itself, as the render line
+    // below says it does: a disc's subtitles where the pair or the `.sup`
+    // was asked for, and a DVD's wherever they are not converted into a
+    // transport stream.
+    let subtitled_beside = |s: &smartcut_core::Source, out: &str| {
+        let drawn = !s.graphics.is_empty() || !s.subpictures.is_empty();
+        (drawn && subtitles != smartcut_core::cut::Subtitles::Pgs)
+            || (!s.subpictures.is_empty() && smartcut_core::carry::family(out) != "ts")
+    };
+    // Whether a name the run is about to write is the log, for the names
+    // known only now that the recording is open: the proxy's own beside the
+    // recording, and the subtitles beside the cut. Asked of the log's name
+    // as it was given, it took `--log` for another file than the proxy that
+    // then wrote over it.
+    let the_log = |at: &std::path::Path| {
+        let clash = log_file
+            .as_deref()
+            .is_some_and(|l| one_place(&l.to_string_lossy(), &at.to_string_lossy()));
+        if clash {
+            log_refused(log_file.as_deref(), log_made);
+        }
+        clash
+    };
     if let Some(p) = &writing {
         src.input.refuse_as_output(&p.to_string_lossy())?;
+        if let Some(side) = output
+            .as_deref()
+            .filter(|o| subtitled_beside(&src, o))
+            .and_then(|o| beside_the_cut(o, p, false, true))
+        {
+            bail!(
+                "--seek-index {} is {side}, which the cut writes beside -o: give the index a file \
+                 of its own",
+                p.display()
+            );
+        }
         // Not for a walk that stopped at read errors -- half an index kept
         // is half a recording on every later open. Said above, not fatal.
         // Any other failure to write the file that was asked for still ends
@@ -2359,11 +2484,18 @@ fn run() -> Result<()> {
             bail!("--proxy on a recording inside a disc needs -o");
         }
         let out = output.clone().unwrap_or_else(|| {
-            std::path::Path::new(&src.path)
+            // Beside the file a `file:` name reads, as libavformat reads it:
+            // taken as it was written, the proxy was a file called
+            // `file:x.proxy.mp4` in the folder the run stood in.
+            let named = src.path.strip_prefix("file:").filter(|f| std::path::Path::new(f).is_file());
+            std::path::Path::new(named.unwrap_or(&src.path))
                 .with_extension("proxy.mp4")
                 .to_string_lossy()
                 .into_owned()
         });
+        if the_log(std::path::Path::new(&out)) {
+            bail!("--log names {out}, which --proxy writes: name another file for the log");
+        }
         let opts = smartcut_core::ProxyOptions::default();
         let built = smartcut_core::proxy::build(
             &src,
@@ -2403,6 +2535,9 @@ fn run() -> Result<()> {
         let path = output.clone().unwrap_or_else(|| "preview.jpg".into());
         // Not over the recording: `-o` naming it wrote a JPEG where it was.
         src.input.refuse_as_output(&path)?;
+        if the_log(std::path::Path::new(&path)) {
+            bail!("--log names {path}, which --preview writes: name another file for the log");
+        }
         std::fs::write(&path, &shot.jpeg)?;
         // The time reported back is the picture actually decoded, not the one
         // asked for: a transport stream seek can land late, and saying so is
@@ -2421,6 +2556,9 @@ fn run() -> Result<()> {
         // Its extension was checked with the rest of the command line.
         let path = output.clone().unwrap_or_else(|| "still.png".into());
         src.input.refuse_as_output(&path)?;
+        if the_log(std::path::Path::new(&path)) {
+            bail!("--log names {path}, which --still writes: name another file for the log");
+        }
         if past_the_end(at, src.duration) {
             bail!("--still {} is past the end of the recording ({})", fmt_hms(at), fmt_hms(src.duration));
         }
@@ -2844,6 +2982,19 @@ fn run() -> Result<()> {
             );
         }
     }
+    // And an image there that the run would not be let replace -- of another
+    // disc, or of this one as it no longer is -- asked by the rule the image
+    // writer asks it by (`udfw::refused`), before the cut rather than after
+    // it: refused only once the image was due, a run had cut the whole
+    // recording and written it onto the disc to be told its image could not
+    // be made. After `--iso-only`'s own question, which says more about the
+    // image in the way of a disc that is not there.
+    if let (Some(at), Some(_)) = (&bdav, iso) {
+        let at = std::path::Path::new(at);
+        if let Some(why) = smartcut_core::udfw::refused(at, &image_beside(at)?) {
+            bail!("{why}");
+        }
+    }
     // `--analyze` stops here, before the disc is touched. Reserving a slot on
     // one makes its directories and takes a number the next run counts past,
     // and asking what a cut would do is not asking for either.
@@ -2918,6 +3069,10 @@ fn run() -> Result<()> {
         return Ok(());
     }
     let out = output.unwrap();
+    // What was already under the name, for a run that fails once it has
+    // started writing over it: see `written_over`. Not a disc's stream,
+    // which is the slot this run reserved and `Slot` gives back.
+    let was_there = onto.is_none().then(|| Was::of(std::path::Path::new(&out))).flatten();
     // The still laid over a crossing is read when the crossing is written,
     // long after the output file was created: named as `-o`, it was
     // truncated first and the user's image lost along with the transition.
@@ -2969,7 +3124,17 @@ fn run() -> Result<()> {
         let o = out.to_ascii_lowercase();
         [".ts", ".m2ts", ".mts", ".m2t"].iter().any(|e| o.ends_with(e))
     };
-    let target = written_as(main_codec, to_ts_out, audio_bits.unwrap_or(source_bits), audio_codec);
+    // Float samples asked as LPCM of a file of sound alone, with no width
+    // named, keep their floats (`plan_audio` in the engine).
+    let floats = sound_only
+        && audio_codec == smartcut_core::AudioCodec::Lpcm
+        && audio_bits.is_none()
+        && matches!(main_codec, "pcm_f32le" | "pcm_f32be");
+    let target = if floats {
+        main_codec.to_string()
+    } else {
+        written_as(main_codec, to_ts_out, audio_bits.unwrap_or(source_bits), audio_codec)
+    };
     // Whether what goes out is another codec than what came in, and whether
     // that is because one was named.
     let changes = !main_codec.is_empty()
@@ -2993,10 +3158,18 @@ fn run() -> Result<()> {
     // is not already in. And a lossless track asked to be re-encoded is
     // copied (`plan_audio`: "the one mode a lossless track cannot be given").
     let recoded = changes;
+    // And FLAC written alone into a `.flac` or an Ogg file, which the writer
+    // of sound alone re-encodes whatever mode was asked (`sound::write`: the
+    // file opens on a STREAMINFO that copied frames would contradict). This
+    // line said "smart" over that whole-track re-encode.
+    let flac_afresh = sound_only
+        && target == "flac"
+        && matches!(smartcut_core::carry::extension(&out).as_str(), "flac" | "ogg" | "oga");
     let reencoded = asked.is_some()
         || resampled.is_some()
         || requantised.is_some()
         || recoded
+        || flac_afresh
         || (audio_mode == smartcut_core::AudioMode::Reencode && !carried);
     // Whose encoder writes the partial GOPs. Worth saying for the one codec
     // libavcodec cannot encode, because the answer is "this program's own"
@@ -3031,15 +3204,10 @@ fn run() -> Result<()> {
         audio_bit_rate.map_or(String::new(), |b| format!(", {} kbit/s", b / 1000)),
     );
     // What is going out beside the pictures, and what is not.
-    let to_ts = std::path::Path::new(&out)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| {
-            matches!(
-                e.to_ascii_lowercase().as_str(),
-                "ts" | "m2ts" | "mts" | "m2t"
-            )
-        });
+    // By the name as the muxer reads it: an output called just `.ts` is a
+    // transport stream to libavformat and has no extension to `Path`, and
+    // this line said it carried no captions while the cut carried them.
+    let to_ts = smartcut_core::carry::family(&out) == "ts";
     let kept_audio = src
         .audios
         .iter()
@@ -3306,7 +3474,7 @@ fn run() -> Result<()> {
         if let Some(last) = pieces.last_mut() {
             last.after = Default::default();
         }
-        smartcut_core::sound::write(
+        let written = smartcut_core::sound::write(
             &pieces,
             master,
             &out,
@@ -3322,7 +3490,11 @@ fn run() -> Result<()> {
                 audio_fade,
                 ..Default::default()
             },
-        )?;
+        );
+        if written.is_err() {
+            written_over(&out, was_there.as_ref());
+        }
+        written?;
         tell!("wrote {out} (sound only)");
         if verify {
             // What follows each piece, as the writer was given it: a crossing
@@ -3346,14 +3518,20 @@ fn run() -> Result<()> {
             s.input.refuse_as_output(&beside.to_string_lossy())?;
         }
     }
+    // And the log, against what the cut writes beside itself now that the
+    // recordings say whether there are subtitles to write there.
+    if let Some(log) = log_file.as_deref() {
+        let subs = std::iter::once(&src).chain(&joined_src).any(|s| subtitled_beside(s, &out));
+        if let Some(side) = beside_the_cut(&out, log, audio_es, subs) {
+            log_refused(Some(log), log_made);
+            bail!("--log {} is {side}: name another file for the log", log.display());
+        }
+    }
     // Only where the container has a place for one; said rather than
     // dropped without a word, as the other options this output cannot use.
     let poster = match poster_at {
         Some(t) => {
-            let ext = std::path::Path::new(&out)
-                .extension()
-                .map(|e| e.to_string_lossy().to_ascii_lowercase())
-                .unwrap_or_default();
+            let ext = smartcut_core::carry::extension(&out);
             // Not .mov: libavformat's QuickTime muxer drops a cover
             // picture without a word, and the file came out as without one.
             if matches!(ext.as_str(), "mp4" | "m4v" | "mkv") {
@@ -3467,9 +3645,15 @@ fn run() -> Result<()> {
     // track dropped the output's first is its second, and a recording with
     // one track has nothing there. Counted in the output's order, the check
     // held that recording's one track against it and called the sound off.
-    // A single recording needs none of it, and may leave out a track the
-    // ranges do not hear, which this list would not know of.
-    let sound_places: Option<Vec<usize>> = (reels.len() > 1).then(|| {
+    // A single recording needs it only where `--drop-stream` took a track
+    // away, and not where the cut may still leave out a track the ranges do
+    // not hear (`cut.rs` `heard_in`: one transport stream, more than one
+    // track kept), which this list would not know of. Without it, a .mp4
+    // whose first track was dropped had its one output track paired by
+    // length rather than by place.
+    let kept_sounds = shaped_like.audios.iter().filter(|a| !drop_streams.contains(&a.stream_index)).count();
+    let placed_alone = kept_sounds < shaped_like.audios.len() && !(src.on_a_ts && kept_sounds > 1);
+    let sound_places: Option<Vec<usize>> = (reels.len() > 1 || placed_alone).then(|| {
         shaped_like
             .audios
             .iter()
@@ -3610,13 +3794,24 @@ fn run() -> Result<()> {
     // a mark the disc set just after it was a chapter of nothing.
     let mut gives_way = at_out;
     let mut first_join = true;
-    for (s, plans) in joined_src.iter().zip(&joined_plans) {
+    // And the chapters each joined recording came with, as the first one's
+    // are taken above and the window takes every clip's (`joinedChapters`):
+    // its own container's list, moved along by everything written before
+    // it. Left out, a joined .mkv's chapters were all gone from the file.
+    // Each beside where that recording gives way, which is known only once
+    // the crossing after it is: see `gives_way`.
+    let mut joined_chapters: Vec<(f64, usize)> = Vec::new();
+    let mut joined_ends: Vec<f64> = Vec::new();
+    for (k, (s, plans)) in joined_src.iter().zip(&joined_plans).enumerate() {
         if between.kind.overlaps() {
             let overlap = between.takes().0.min(half(before)).min(half(plans.first()));
             at_out = (at_out - overlap).max(0.0);
         }
         if std::mem::take(&mut first_join) {
             gives_way = at_out;
+        } else if let Some(end) = joined_ends.last_mut() {
+            // The recording before gives way where this one begins.
+            *end = at_out;
         }
         before = plans.last();
         // One where the recording begins, and none where the planner split
@@ -3626,9 +3821,26 @@ fn run() -> Result<()> {
         if !plans.is_empty() {
             marks.push(at_out);
         }
+        let first = plans.first().map_or(0.0, |p| p.t_in);
         for plan in plans {
+            for m in &s.chapters {
+                let t = m - s.start_time;
+                let t = if t < first && t >= first - 0.5 { first } else { t };
+                if t >= plan.t_in && t < plan.t_out {
+                    let into = match afresh(s) {
+                        Some(step) => kept_length(
+                            s,
+                            &smartcut_core::RangePlan { t_out: t, ..plan.clone() },
+                            Some(step),
+                        ),
+                        None => (shown_at(s, t) - shown_at(s, plan.t_in)).max(0.0),
+                    };
+                    joined_chapters.push((at_out + into, k));
+                }
+            }
             at_out += kept_length(s, plan, afresh(s));
         }
+        joined_ends.push(at_out);
     }
     // A chapter on a range boundary is one chapter, not two -- and the
     // one kept is the boundary. A disc's mark a moment ahead of where a
@@ -3636,7 +3848,8 @@ fn run() -> Result<()> {
     // boundary, the chapter opened on what was cut up to.
     marks.sort_by(f64::total_cmp);
     marks.dedup_by(|b, a| *b - *a <= 0.5);
-    for c in chapters {
+    let joined_chapters = joined_chapters.into_iter().map(|(c, k)| (c, joined_ends[k]));
+    for (c, gives_way) in chapters.into_iter().map(|c| (c, gives_way)).chain(joined_chapters) {
         if c > gives_way - 0.5 {
             continue;
         }
@@ -3679,6 +3892,9 @@ fn run() -> Result<()> {
             ..Default::default()
         },
     );
+    if written.is_err() {
+        written_over(&out, was_there.as_ref());
+    }
     written?;
     // The stream is the run's now; the folders it made stay the run's to
     // take away until the disc's index is written (see `Slot::indexed`).
@@ -3714,7 +3930,11 @@ fn run() -> Result<()> {
         } else {
             smartcut_core::verify::Compare::Pictures
         };
-        check_output(&out, &pieces, sound_places.as_deref(), compare)
+        // With what follows each reel, as the cut was given it: a crossing
+        // that overlaps two reels takes its length out of the join, and told
+        // nothing of it the check could hold the pictures only to running no
+        // longer than the reels (`verify`, `crossings_untold`).
+        check_output_placed(&out, &pieces, &afters, sound_places.as_deref(), compare)
     };
     if onto.is_none() {
         check_cut()?;
@@ -3758,7 +3978,21 @@ fn run() -> Result<()> {
         // itself carried. Each field on its own: a disc that named the
         // programme and not the channel should still take the channel from
         // the stream.
-        let said = smartcut_core::si::programme(&src.input, 0).unwrap_or_default();
+        // Of the service whose map names the pictures, the one the cut's own
+        // tables carry: asked of service 0, a recording that kept every map
+        // of its multiplex was named after whichever neighbour's programme
+        // the file described first.
+        let service = if src.on_a_ts {
+            let video_pid = smartcut_core::input::demux(&src.input.url)
+                .ok()
+                .and_then(|d| d.stream(src.video.stream_index).map(|s| s.id()))
+                .and_then(|id| u16::try_from(id).ok())
+                .unwrap_or(0);
+            smartcut_core::si::read_service(&src.input, video_pid, &[]).map_or(0, |s| s.service_id)
+        } else {
+            0
+        };
+        let said = smartcut_core::si::programme(&src.input, service).unwrap_or_default();
         let name = programme
             .or_else(|| was.map(|e| e.label.clone()))
             .or_else(|| said.name.clone())
@@ -4201,6 +4435,31 @@ mod tests {
     }
 
     #[test]
+    fn a_libav_name_reads_the_files_it_lists() {
+        use std::path::PathBuf;
+        let got = files_in_url("concat:a.ts|b.ts");
+        assert!(got.contains(&PathBuf::from("a.ts")) && got.contains(&PathBuf::from("b.ts")));
+        assert!(files_in_url("subfile,,start,0,end,9,,:file:/r/x.iso").contains(&PathBuf::from("/r/x.iso")));
+        assert!(files_in_url("restamp:T|subfile,,start,0,end,9,,:file:x.iso").contains(&PathBuf::from("x.iso")));
+        assert_eq!(files_in_url("file:x.ts"), [PathBuf::from("x.ts")]);
+        assert!(files_in_url("x.ts").is_empty());
+    }
+
+    #[test]
+    fn the_files_beside_a_cut() {
+        let p = std::path::Path::new;
+        assert!(beside_the_cut("cut.ts", p("cut.aac"), true, false).is_some());
+        assert!(beside_the_cut("cut.ts", p("cut.aac"), false, false).is_none());
+        assert!(beside_the_cut("cut.ts", p("cut.ts.si"), false, false).is_some());
+        assert!(beside_the_cut("cut.mp4", p("cut.mp4.si"), false, false).is_none());
+        for side in ["cut.idx", "cut.sub", "cut.sup", "cut.eng.sup"] {
+            assert!(beside_the_cut("cut.mkv", p(side), false, true).is_some(), "{side}");
+            assert!(beside_the_cut("cut.mkv", p(side), false, false).is_none(), "{side}");
+        }
+        assert!(beside_the_cut("cut.mkv", p("cut.log"), true, true).is_none());
+    }
+
+    #[test]
     fn overlapping_ranges_become_one() {
         assert_eq!(merge_ranges(vec![(1.0, 3.0), (2.0, 4.0)]), [(1.0, 4.0)]);
         // Touching counts as overlapping: two ranges that meet describe one
@@ -4369,6 +4628,113 @@ fn one_place(a: &str, b: &str) -> bool {
         (Some(x), Some(y)) => x == y,
         _ => false,
     }
+}
+
+/// The log, refused once the recording was open: closed, and taken away
+/// where this run made it (`made`), as one refused before anything was read.
+fn log_refused(log: Option<&std::path::Path>, made: bool) {
+    smartcut_core::log::close();
+    if let Some(log) = log.filter(|_| made) {
+        let _ = std::fs::remove_file(log);
+    }
+}
+
+/// A file that was under the output's name before the run, as it was then.
+struct Was {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl Was {
+    /// Only a file with something in it, reached by its own name: an empty
+    /// one is the writers' own to take away (`cut::join`), and through a
+    /// link the name that would go is the user's link, not the file.
+    fn of(at: &std::path::Path) -> Option<Was> {
+        let m = std::fs::symlink_metadata(at).ok().filter(|m| m.is_file() && m.len() > 0)?;
+        Some(Was { len: m.len(), modified: m.modified().ok() })
+    }
+}
+
+/// A run that failed after it had begun writing over a file that was
+/// already there. The writers take away only a file they created
+/// (`cut::join`, `sound::write`): one that had been there was left as far as
+/// the failed run had got -- the old file gone and a short new one in its
+/// place, which reads as the cut. Taken away here too where it is no longer
+/// what it was, and said; one the run never touched (refused before writing)
+/// is left as it is.
+fn written_over(out: &str, was: Option<&Was>) {
+    let Some(was) = was else { return };
+    let at = std::path::Path::new(out);
+    let Ok(now) = std::fs::symlink_metadata(at) else { return };
+    if !now.is_file() || (now.len() == was.len && now.modified().ok() == was.modified) {
+        return;
+    }
+    if std::fs::remove_file(at).is_ok() {
+        smartcut_core::say!(
+            "note: {out} was already there and had been written over when the run failed; what \
+             the run left of it is removed"
+        );
+    }
+}
+
+/// The files a name libavformat reads through its own protocols takes its
+/// bytes from: each of a `concat:` list, the file under a `subfile` window or
+/// a `restamp:` table (this program's own, see `input::Input`), and the file
+/// a `file:` names. Nothing for a name that is none of those: it is a file,
+/// and the reader's own checks have it.
+fn files_in_url(spec: &str) -> Vec<std::path::PathBuf> {
+    if let Some(rest) = spec.strip_prefix("restamp:") {
+        return rest.split_once('|').map_or_else(Vec::new, |(_, under)| files_in_url(under));
+    }
+    if let Some(list) = spec.strip_prefix("concat:") {
+        return list.split('|').flat_map(|p| files_in_url(p).into_iter().chain(Some(p.into()))).collect();
+    }
+    if spec.starts_with("subfile,") {
+        return spec.split_once(",,:").map_or_else(Vec::new, |(_, under)| {
+            files_in_url(under).into_iter().chain(Some(under.into())).collect()
+        });
+    }
+    if let Some(rest) = spec.strip_prefix("file:") {
+        return vec![rest.into()];
+    }
+    Vec::new()
+}
+
+/// Which of the files a cut into `out` writes beside it `p` is, if it is one
+/// of them, by the names their writers give them: the `.aac` of
+/// `--audio-es` (`aac`), the name a transport stream's tables are put back
+/// under before it is renamed over the cut (`si::graft`), and -- where the
+/// cut writes subtitles beside itself (`subtitles`) -- the `.idx` / `.sub`
+/// pair and the `.sup`, which takes a language or a number before its
+/// ending where a recording has several (`vobsub::named_after`,
+/// `pgs::Sup::named_after`). Asked of names neither run may have written
+/// yet, as [`one_place`] asks.
+fn beside_the_cut(out: &str, p: &std::path::Path, aac: bool, subtitles: bool) -> Option<String> {
+    use std::path::Path;
+    let same = |a: &Path| one_place(&a.to_string_lossy(), &p.to_string_lossy());
+    if aac {
+        let side = Path::new(out).with_extension("aac");
+        if same(&side) {
+            return Some(format!("the .aac --audio-es writes ({})", side.display()));
+        }
+    }
+    if smartcut_core::carry::family(out) == "ts" {
+        let side = format!("{out}.si");
+        if same(Path::new(&side)) {
+            return Some(format!("the name the cut's tables are put back under ({side})"));
+        }
+    }
+    if subtitles {
+        let fold = |s: String| if cfg!(windows) { s.to_lowercase() } else { s };
+        let stem = Path::new(out).file_stem().map(|s| fold(s.to_string_lossy().into_owned()))?;
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned())?;
+        let rest = fold(name.clone()).strip_prefix(&format!("{stem}.")).map(str::to_string)?;
+        let side = matches!(rest.as_str(), "idx" | "sub" | "sup") || rest.ends_with(".sup");
+        if side && same(&Path::new(out).with_file_name(&name)) {
+            return Some(format!("a subtitle file the cut writes beside it ({name})"));
+        }
+    }
+    None
 }
 
 /// The folders of a disc named by its own folder that hold the disc: its

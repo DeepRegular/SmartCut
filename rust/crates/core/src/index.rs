@@ -152,7 +152,7 @@ pub fn walk(
         (!u.is_null()).then(|| std::ffi::CStr::from_ptr(u).to_string_lossy().into_owned())
     };
     if url.is_some_and(|u| crate::sound::sought_at_head(&ictx, &u)) {
-        let target = i64::MIN / 2;
+        let target = crate::input::head_seek(&ictx);
         // Refused where the seek fails -- a file with no index (Cues), one
         // written to a pipe, above all: the head the open lost cannot be
         // read again, and a cut read on from the open would lose it without
@@ -1034,7 +1034,17 @@ pub(crate) fn off(key: &str) -> bool {
 
 /// How far a program stream's pictures may go back before their clock is
 /// called one that starts again. See [`clock_restart`].
-const RESTART: f64 = 1.0;
+///
+/// A quarter of a second: half the shortest GOP a program stream is made
+/// with, so that two recordings whose clocks overlap by less than a GOP are
+/// still caught, and many times what an entry point's time can be out by
+/// where libavformat had to work it out from the pictures around it (a
+/// frame or two). It was a second, and two `.mpg` joined end to end whose
+/// clocks overlapped by half of one slipped past: their pictures in the
+/// overlap were read interleaved, and a cut of the whole left 11 of them and
+/// 21 frames of the sound out as "damage". A DVD title's rows are split by
+/// the same step back (`runs_of` in [`crate::dvd`]).
+pub(crate) const RESTART: f64 = 0.25;
 
 /// Where a program stream's clock starts again, if it does: the byte of the
 /// first entry point that comes back, its time, and the latest time before it.
@@ -1052,13 +1062,15 @@ const RESTART: f64 = 1.0;
 ///
 /// **In the order the bytes come**, against the latest time so far and not
 /// against the entry point before: the entry points are pictures a GOP apart,
-/// which only go back at such a seam. What a recording does go back by on its
-/// own is far less than [`RESTART`]: B pictures shown before the anchor
-/// before them (not entry points), a camcorder's small step where it paused
-/// (half a second, measured), and the 33-bit clock's wrap, which libavformat
-/// unwraps. A DVD title as this program reads it off a disc is cut into rows
-/// where its clock leaves off by more than a second (`dvd::runs_of`), so a
-/// row never holds one. Points whose byte is unknown (-1) say nothing.
+/// which only go back at such a seam. Within one recording they never go
+/// back at all -- on every DVD title measured here, not once -- and what
+/// does go back is not an entry point: B pictures shown before the anchor
+/// before them. The 33-bit clock's wrap is unwrapped by libavformat. A
+/// clock that steps back by less than a GOP (a stream paused and picked up
+/// a little earlier) is the same overlap in small, and reads the same way:
+/// the pictures in it interleave. A DVD title as this program reads it off a
+/// disc is cut into rows where its clock leaves off (`dvd::runs_of`), so a
+/// row holds none. Points whose byte is unknown (-1) say nothing.
 ///
 /// **A restart can also come out as a leap forward.** When the first picture
 /// is more than a minute into its clock, libavformat takes a later clock near
@@ -1909,7 +1921,7 @@ fn window_at(
     let target = if at - 1.0 > 0.0 {
         (((at - 1.0) + start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
     } else {
-        i64::MIN / 2
+        crate::input::head_seek(ictx)
     };
     let _ = ictx.seek(target, ..target);
     window_from(ictx, video, start_time, at, None)
@@ -2170,6 +2182,16 @@ mod tests {
     }
 
     #[test]
+    fn an_overlap_shorter_than_a_second_is_a_restart() {
+        // A second recording whose clock picks up half a second before the
+        // first one's left off (the `cat` of two clips whose first is short).
+        let mut points: Vec<AccessPoint> =
+            (0..20).map(|i| point(0.5 + i as f64 * 0.5, i * 100_000)).collect();
+        points.extend((0..20).map(|i| point(9.5 + i as f64 * 0.5, 2_000_000 + i * 100_000)));
+        assert_eq!(clock_restart(&by_time(points)), Some((2_000_000, 9.5, 10.0)));
+    }
+
+    #[test]
     fn a_restart_unwrapped_into_a_leap_forward_is_a_restart() {
         // 2807 s in, then a clock near nought that libavformat moved on by 2^33.
         let wrap = (1u64 << 33) as f64 / 90_000.0;
@@ -2181,10 +2203,10 @@ mod tests {
 
     #[test]
     fn a_small_step_back_a_jump_forward_and_unknown_bytes_are_not() {
-        // A camcorder's half-second step back where it paused.
-        let mut points: Vec<AccessPoint> =
-            (0..20).map(|i| point(0.5 + i as f64 * 0.5, i * 100_000)).collect();
-        points.extend((0..20).map(|i| point(9.6 + i as f64 * 0.5, 2_000_000 + i * 100_000)));
+        // A clock that runs on, an entry point late or early by a frame.
+        let points: Vec<AccessPoint> = (0..40)
+            .map(|i| point(0.5 + i as f64 * 0.5 + if i == 20 { -0.04 } else { 0.0 }, i * 100_000))
+            .collect();
         assert_eq!(clock_restart(&by_time(points)), None);
         // A second recording a hundred seconds on.
         let points: Vec<AccessPoint> = (0..40)

@@ -72,6 +72,15 @@ const WORTH_TICKING: f64 = 300.0;
 /// How many title sets a disc may have. The format's own limit is 99.
 const MAX_TITLE_SETS: usize = 99;
 
+/// The most index a disc's title sets may hold between them.
+///
+/// Each index is held to what an image's own files are (64 MB, see
+/// [`crate::udf`]), and every title set's is kept while the disc is read: 99
+/// of them at that size was six gigabytes held at once for one listing. A
+/// title set's index of 999 chains of 255 cells each is under ten megabytes,
+/// so a whole disc of the largest the format can describe fits.
+const MAX_INDEX_HELD: u64 = 1 << 30;
+
 /// One stretch of a title that runs on a single clock.
 ///
 /// Usually the whole title. A DVD is allowed to assemble a title out of
@@ -151,19 +160,21 @@ pub fn read(at: &Path) -> Result<Disc> {
     // title of every set begins at sector 0, and two sets of the same size
     // -- a warning screen in two languages -- are two rows and not one.
     let mut seen: Vec<(usize, u64, u64)> = Vec::new();
-    for t in titles {
-        let key = (t.vts, t.first_sector, t.last_sector);
-        if seen.contains(&key) {
-            continue;
-        }
-        seen.push(key);
+    let titles: Vec<Title> = titles
+        .into_iter()
+        .filter(|t| {
+            let key = (t.vts, t.first_sector, t.last_sector);
+            let new = !seen.contains(&key);
+            if new {
+                seen.push(key);
+            }
+            new
+        })
+        .collect();
+    let numbers: Vec<usize> = titles.iter().map(|t| t.number).collect();
+    for (t, part) in titles.into_iter().zip(pieces_named(&numbers)) {
         let sectors = t.last_sector + 1 - t.first_sector;
         let path = vol.stream(t.vts, t.first_sector, t.last_sector);
-        let part = if t.parts > 1 {
-            format!(" ({}/{})", t.part, t.parts)
-        } else {
-            String::new()
-        };
         let label_row = format!("{label} {}{part}", t.number);
         entries.push(Entry {
             path,
@@ -214,6 +225,30 @@ pub fn read(at: &Path) -> Result<Disc> {
     })
 }
 
+/// What each row says about the piece of its title it is: ` (2/3)`, or
+/// nothing for a title listed as one row.
+///
+/// Counted among the rows a title is listed as, which are not always the
+/// pieces it is made of. A disc that ends three titles on one short cell they
+/// share lists that cell once, as the first title's second piece -- and the
+/// other two titles were each called "(1/2)" with no "(2/2)" anywhere in the
+/// list.
+fn pieces_named(numbers: &[usize]) -> Vec<String> {
+    numbers
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let parts = numbers.iter().filter(|m| *m == n).count();
+            let k = numbers[..=i].iter().filter(|m| *m == n).count();
+            if parts > 1 {
+                format!(" ({k}/{parts})")
+            } else {
+                String::new()
+            }
+        })
+        .collect()
+}
+
 /// The titles the disc's own tables list, in the order a player numbers them.
 ///
 /// One row per stretch of stream that runs on one clock, so a title
@@ -250,6 +285,7 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
     // Whether any title was found and then passed over for how its chain is
     // laid out, which is not a table that is empty.
     let mut passed_over = false;
+    let mut held = vmg.len() as u64;
     for i in 0..count {
         let at = 8 + i * 12;
         if srpt.len() < at + 12 {
@@ -263,7 +299,12 @@ pub fn titles(vol: &mut Volume) -> Result<Vec<Title>> {
         if !cache.iter().any(|(n, _)| *n == vts) {
             // A title set the disc names and does not hold is a damaged disc,
             // not a reason to show none of the others.
-            cache.push((vts, title_set(vol, vts).ok()));
+            let set = title_set(vol, vts).ok();
+            held += set.as_ref().map_or(0, |s| s.ifo.len() as u64);
+            if held > MAX_INDEX_HELD {
+                bail!("this disc's index files come to more than {MAX_INDEX_HELD} bytes");
+            }
+            cache.push((vts, set));
         }
         let Some((_, Some(set))) = cache.iter().find(|(n, _)| *n == vts) else {
             continue;
@@ -442,7 +483,13 @@ fn runs_of(vol: &mut Volume, vts: usize, pgc: &Pgc) -> Vec<Run> {
             // A cell whose predecessor's end could not be read joins it too:
             // there is no evidence of a seam, and inventing one would split a
             // programme in half over a sector that would not read.
-            (Some(t), Some(_)) => !ends_at.is_finite() || (t - ends_at).abs() <= SLACK,
+            // Back by no more than the open's own rule lets a program
+            // stream's clock go ([`crate::index::RESTART`]), so a row never
+            // holds a step back the open would refuse it for.
+            (Some(t), Some(_)) => {
+                !ends_at.is_finite()
+                    || (t - ends_at >= -crate::index::RESTART && t - ends_at <= SLACK)
+            }
             (Some(_), None) => false,
         };
         let joins = follows && on_the_clock;
@@ -1433,6 +1480,15 @@ mod tests {
         // A sector no chain plays leaves the numbering as the list has it.
         let listed = tracks(&ifo, controls_of(&ifo, Some(99_999)).as_ref());
         assert_eq!(named(&listed, "subtitle"), vec![0x20, 0x21, 0x22]);
+    }
+
+    #[test]
+    fn a_title_is_numbered_among_the_rows_it_is_listed_as() {
+        // Titles 2 and 3 each end on the cell title 1 ends on, which is
+        // listed once, as title 1's second piece.
+        assert_eq!(pieces_named(&[1, 1, 2, 3]), vec![" (1/2)", " (2/2)", "", ""]);
+        assert_eq!(pieces_named(&[4, 4, 4, 5]), vec![" (1/3)", " (2/3)", " (3/3)", ""]);
+        assert!(pieces_named(&[]).is_empty());
     }
 
     #[test]

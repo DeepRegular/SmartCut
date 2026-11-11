@@ -210,9 +210,14 @@ pub struct Plane {
     framing: Option<Vec<u8>>,
     /// Whether the last complete set left anything on screen.
     occupied: bool,
-    /// The last complete set that put something up and could put it up
-    /// again. Kept whole, because putting it up again is sending it again.
-    standing: Option<Vec<Held>>,
+    /// The last complete set that could stand alone, and every set since
+    /// that changed what it put up -- a normal case that moves a subtitle,
+    /// fades it by its palette, or shows an object the epoch sent earlier.
+    /// Kept whole, because putting it up again is sending them again: the
+    /// self-contained set alone put up what was there before the changes.
+    standing: Vec<Vec<Held>>,
+    /// What `standing` holds, in bytes of payload.
+    standing_bytes: usize,
     /// The composition and window of the last complete set, whatever it did,
     /// which is what the clear is built out of. Taken from the last rather
     /// than from the standing one so that a composition which moved a
@@ -222,6 +227,10 @@ pub struct Plane {
 
 /// The most a display set being put together is allowed to hold.
 const MAX_SET_BYTES: usize = 64 << 20;
+/// The most sets kept to put one subtitle up again: its own and the changes
+/// made to it since. A fade is a few dozen palette updates; past this, the
+/// later ones are not sent again.
+const MAX_CHAIN: usize = 64;
 /// And the most packets: a set of the largest objects is a few thousand.
 const MAX_SET_PACKETS: usize = 1 << 16;
 
@@ -285,8 +294,18 @@ impl Plane {
         let framing = self.framing.take();
         let c = composition(&opening)?;
         self.occupied = c.objects > 0;
-        if c.objects > 0 && c.self_contained() {
-            self.standing = Some(set.clone());
+        let bytes: usize = set.iter().map(|h| h.data.len()).sum();
+        if c.self_contained() {
+            self.standing = vec![set.clone()];
+            self.standing_bytes = bytes;
+        } else if !self.standing.is_empty()
+            && self.standing.len() < MAX_CHAIN
+            && self.standing_bytes + bytes <= MAX_SET_BYTES
+        {
+            // Only a chain that has its beginning: a normal case on its own
+            // changes pieces this read never saw.
+            self.standing.push(set.clone());
+            self.standing_bytes += bytes;
         }
         self.last = Some((opening, framing));
         Some(set)
@@ -320,25 +339,36 @@ impl Plane {
     ///
     /// The composition is marked as opening an epoch whatever it was before.
     /// It is: nothing of this stream reached the output before it.
+    ///
+    /// The sets that changed it since follow, each moved the same way to
+    /// begin just after the one before it has been shown, so the subtitle
+    /// is put up as it last stood within a few hundredths of a second.
     pub fn replay(&self, at: f64) -> Vec<Held> {
-        let Some(set) = self.standing.as_ref().filter(|_| self.occupied) else {
-            return Vec::new();
-        };
-        let first = set
-            .iter()
-            .map(|h| h.dts.min(h.pts))
-            .fold(f64::INFINITY, f64::min);
-        if !first.is_finite() {
+        if !self.occupied || self.standing.is_empty() {
             return Vec::new();
         }
-        set.iter()
-            .map(|h| {
+        let mut out = Vec::new();
+        let mut at = at;
+        for (k, set) in self.standing.iter().enumerate() {
+            let first = set
+                .iter()
+                .map(|h| h.dts.min(h.pts))
+                .fold(f64::INFINITY, f64::min);
+            let last = set
+                .iter()
+                .map(|h| h.dts.max(h.pts))
+                .fold(f64::NEG_INFINITY, f64::max);
+            if !first.is_finite() || !last.is_finite() {
+                return if k == 0 { Vec::new() } else { out };
+            }
+            out.extend(set.iter().map(|h| {
                 let mut data = h.data.clone();
-                // The one byte that is not a copy. See above.
+                // The one byte that is not a copy, and only in the first.
+                // See above.
                 let state_at = segments(&data)
                     .next()
                     .and_then(|(kind, body)| (kind == PCS && body.len() > 7).then_some(3 + 7));
-                if let Some(at) = state_at {
+                if let (0, Some(at)) = (k, state_at) {
                     data[at] = EPOCH_START;
                 }
                 Held {
@@ -346,8 +376,10 @@ impl Plane {
                     dts: at + (h.dts - first),
                     data,
                 }
-            })
-            .collect()
+            }));
+            at += last - first + 0.001;
+        }
+        out
     }
 
     /// The set that takes down what is on screen, timed to land at `at`.
@@ -401,6 +433,9 @@ pub struct Sup {
     tag: Option<String>,
     out: Vec<u8>,
     segments: usize,
+    /// The decode time of the last segment written, which the next one may
+    /// not come before. See [`Sup::take`].
+    last_dts: Option<u32>,
 }
 
 impl Sup {
@@ -409,6 +444,7 @@ impl Sup {
             tag,
             out: Vec::new(),
             segments: 0,
+            last_dts: None,
         }
     }
 
@@ -425,7 +461,21 @@ impl Sup {
                 .round()
                 .min(u32::MAX as f64) as u32
         };
-        let (pts, dts) = (stamp(held.pts), stamp(held.dts));
+        let (mut pts, mut dts) = (stamp(held.pts), stamp(held.dts));
+        // Never decoded before the segment written ahead of it. The set that
+        // takes a range's last subtitle down is written at the range's end,
+        // and the set the next range opens with is shown at that same
+        // instant and so handed over a little before it -- 60 ms back, which
+        // a `.sup` reader that checks the decode times calls a broken file.
+        // The transport stream path nudges the same thing (`push_graphics`
+        // in `cut.rs`); here an equal time is no fault, since every segment
+        // of one set shares one. The show time follows only where it would
+        // otherwise come before the decode time.
+        if let Some(last) = self.last_dts {
+            dts = dts.max(last);
+            pts = pts.max(dts);
+        }
+        self.last_dts = Some(dts);
         for (kind, body) in segments(&held.data) {
             self.out.extend_from_slice(b"PG");
             self.out.extend_from_slice(&pts.to_be_bytes());
@@ -603,19 +653,45 @@ pub mod write {
     /// composition opens an epoch, because a converted subtitle stands on
     /// nothing that came before it.
     pub fn draw(screen: (u16, u16), number: u16, at: f64, picture: &Picture) -> Vec<Held> {
+        drawn_as(screen, number, at, picture, false)
+    }
+
+    /// [`draw`], saying whether the subtitle is a forced one: shown even to
+    /// a viewer who has subtitles off, which is what a DVD's forced start
+    /// says and what a composition's forced flag says on a Blu-ray.
+    fn drawn_as(
+        screen: (u16, u16),
+        number: u16,
+        at: f64,
+        picture: &Picture,
+        forced: bool,
+    ) -> Vec<Held> {
         let dts = (at - LEAD).max(0.0);
         let window = (picture.x, picture.y, picture.width, picture.height);
+        // A picture whose runs do not fit the twenty-four bits an object
+        // states its length in is not written as one: the length would wrap
+        // and a decoder read the rest of the set as picture. Only a crafted
+        // unit gets there -- the most a DVD's corners allow, coded at its
+        // worst, a byte a dot -- and it is put up as nothing, an epoch with
+        // no object in it, rather than as a set no reader can make sense of.
+        let Some(objects) = objects(picture) else {
+            return vec![
+                held(dts, at, PCS, &composition(screen, number, EPOCH_START, None, false)),
+                held(dts, dts, WDS, &windows(window)),
+                held(dts, dts, END, &[]),
+            ];
+        };
         let mut out = vec![
             held(
                 dts,
                 at,
                 PCS,
-                &composition(screen, number, EPOCH_START, Some(picture)),
+                &composition(screen, number, EPOCH_START, Some(picture), forced),
             ),
             held(dts, dts, WDS, &windows(window)),
             held(dts, dts, PDS, &palette(picture.palette)),
         ];
-        for segment in objects(picture) {
+        for segment in objects {
             out.push(held(dts, dts, ODS, &segment));
         }
         out.push(held(dts, dts, END, &[]));
@@ -628,7 +704,7 @@ pub mod write {
     /// in it, and the window it is clearing.
     pub fn erase(screen: (u16, u16), number: u16, at: f64, window: Window) -> Vec<Held> {
         vec![
-            held(at, at, PCS, &composition(screen, number, 0x00, None)),
+            held(at, at, PCS, &composition(screen, number, 0x00, None, false)),
             held(at, at, WDS, &windows(window)),
             held(at, at, END, &[]),
         ]
@@ -649,6 +725,7 @@ pub mod write {
         number: u16,
         state: u8,
         picture: Option<&Picture>,
+        forced: bool,
     ) -> Vec<u8> {
         let mut out = Vec::with_capacity(19);
         out.extend_from_slice(&screen.0.to_be_bytes());
@@ -667,7 +744,8 @@ pub mod write {
                 out.push(1);
                 out.extend_from_slice(&0u16.to_be_bytes()); // object zero, likewise
                 out.push(0x00); // in window zero
-                out.push(0x00); // and not cropped
+                // Not cropped, and forced only where the disc said so.
+                out.push(if forced { 0x40 } else { 0x00 });
                 out.extend_from_slice(&p.x.to_be_bytes());
                 out.extend_from_slice(&p.y.to_be_bytes());
             }
@@ -719,7 +797,7 @@ pub mod write {
     /// length field is sixteen bits and a full-screen picture of noise would
     /// not fit -- and because a reader that meets a split it does not expect
     /// shows nothing at all.
-    fn objects(picture: &Picture) -> Vec<Vec<u8>> {
+    fn objects(picture: &Picture) -> Option<Vec<Vec<u8>>> {
         let data = rle(
             picture.indices,
             picture.width as usize,
@@ -729,6 +807,11 @@ pub mod write {
         // length, and the shape. A continuation carries only the first four.
         const HEAD: usize = 2 + 1 + 1 + 3;
         const ROOM: usize = 0xFFE0;
+        // The length the *whole* object comes to, which only the first
+        // segment states, in three bytes: the shape and the run together.
+        let whole = u32::try_from(data.len() + 4)
+            .ok()
+            .filter(|&n| n <= 0xFF_FFFF)?;
         let mut out = Vec::new();
         let mut rest = &data[..];
         let mut first = true;
@@ -746,10 +829,7 @@ pub mod write {
                 (false, false) => 0x00,
             });
             if first {
-                // The length the *whole* object comes to, which only the
-                // first segment states: the shape and the run together.
-                let whole = data.len() + 4;
-                seg.extend_from_slice(&(whole as u32).to_be_bytes()[1..]);
+                seg.extend_from_slice(&whole.to_be_bytes()[1..]);
                 seg.extend_from_slice(&picture.width.to_be_bytes());
                 seg.extend_from_slice(&picture.height.to_be_bytes());
             }
@@ -758,7 +838,7 @@ pub mod write {
             rest = &rest[take..];
             first = false;
         }
-        out
+        Some(out)
     }
 
     /// Run-length code one picture, a row at a time.
@@ -872,9 +952,42 @@ pub mod write {
             until: Option<f64>,
             picture: &Picture,
         ) -> Vec<Held> {
+            self.put_up(screen, at, until, picture, false)
+        }
+
+        /// [`Composer::show`] for a DVD's unit read at `at`, as the unit
+        /// itself times it: up where its start says, which a unit may put
+        /// some way after its own time, down where its stop says, counted
+        /// from that same time, and forced where it says it is forced.
+        pub fn show_drawn(
+            &mut self,
+            screen: (u16, u16),
+            at: f64,
+            drawn: &crate::vobsub::Drawn,
+        ) -> Vec<Held> {
+            let picture = Picture {
+                x: drawn.x,
+                y: drawn.y,
+                width: drawn.width,
+                height: drawn.height,
+                indices: &drawn.indices,
+                palette: &drawn.palette,
+            };
+            let until = drawn.until.map(|d| at + d);
+            self.put_up(screen, at + drawn.from, until, &picture, drawn.forced)
+        }
+
+        fn put_up(
+            &mut self,
+            screen: (u16, u16),
+            at: f64,
+            until: Option<f64>,
+            picture: &Picture,
+            forced: bool,
+        ) -> Vec<Held> {
             let mut out = self.take_down_before(screen, at);
             self.number = self.number.wrapping_add(1);
-            out.extend(draw(screen, self.number, at, picture));
+            out.extend(drawn_as(screen, self.number, at, picture, forced));
             self.standing = Some(((picture.x, picture.y, picture.width, picture.height), until));
             out
         }
@@ -1269,6 +1382,160 @@ mod tests {
         let mut open = write::Composer::default();
         open.show(screen, 1.0, None, &picture);
         assert!(open.due(screen, 1e6).is_empty());
+    }
+
+    /// A `.sup` never decodes a segment before the one written ahead of it:
+    /// the set a range opens with is handed over before the instant the
+    /// last range's clear is written at, and was written 60 ms back.
+    #[test]
+    fn a_sup_never_steps_back() {
+        let mut sup = Sup::new(None);
+        let stamps = |sup: &Sup| -> Vec<(u32, u32)> {
+            let mut at = 0usize;
+            let mut out = Vec::new();
+            while at < sup.out.len() {
+                let word = |from: usize| {
+                    u32::from_be_bytes(sup.out[from..from + 4].try_into().expect("four"))
+                };
+                out.push((word(at + 2), word(at + 6)));
+                let len = u16::from_be_bytes([sup.out[at + 11], sup.out[at + 12]]) as usize;
+                at += 13 + len;
+            }
+            out
+        };
+        // The clear at a range's end, at 25.025 ...
+        sup.take(&held(25.025, pcs(6, 0x00, 0)), 0.0);
+        // ... and the next range's set, shown then and decoded 60 ms before.
+        sup.take(
+            &Held {
+                pts: 25.025,
+                dts: 24.965,
+                data: pcs(7, EPOCH_START, 1),
+            },
+            0.0,
+        );
+        sup.take(&held(25.1, one(END, 0)), 0.0);
+        let got = stamps(&sup);
+        assert_eq!(got[0], (2_252_250, 2_252_250));
+        assert_eq!(got[1], (2_252_250, 2_252_250), "held at the clear's, shown as it was");
+        assert!(got.windows(2).all(|w| w[1].1 >= w[0].1 && w[1].0 >= w[1].1));
+        // A set in order is written as it came.
+        let mut plain = Sup::new(None);
+        plain.take(&Held { pts: 1.07, dts: 1.0, data: pcs(1, EPOCH_START, 1) }, 0.0);
+        plain.take(&held(1.02, one(END, 0)), 0.0);
+        assert_eq!(stamps(&plain), [(96_300, 90_000), (91_800, 91_800)]);
+    }
+
+    /// A subtitle a normal case changed after its epoch -- moved, faded,
+    /// or shown from an object the epoch sent -- is put up again as it
+    /// stood, the changes sent after the set that began it.
+    #[test]
+    fn a_changed_subtitle_is_put_up_as_it_stands() {
+        let mut plane = Plane::default();
+        plane.feed(held(1.0, pcs(1, EPOCH_START, 1)));
+        plane.feed(held(1.05, one(END, 0)));
+        plane.feed(held(2.0, pcs(2, 0x00, 1)));
+        plane.feed(held(2.02, one(END, 0)));
+        let again = plane.replay(50.0);
+        let numbers: Vec<(u16, u8)> = again
+            .iter()
+            .filter_map(|h| segments(&h.data).next())
+            .filter(|(k, _)| *k == PCS)
+            .filter_map(|(_, body)| composition(body))
+            .map(|c| (c.number, c.state))
+            .collect();
+        assert_eq!(numbers, [(1, EPOCH_START), (2, 0x00)]);
+        assert!((again[0].pts - 50.0).abs() < 1e-9);
+        assert!(again.windows(2).all(|w| w[1].pts > w[0].pts));
+        assert!(again.last().unwrap().pts < 50.1);
+        // And one that stood alone is put up alone, as before.
+        plane.feed(held(3.0, pcs(3, ACQUISITION, 1)));
+        plane.feed(held(3.05, one(END, 0)));
+        assert_eq!(plane.replay(60.0).len(), 2);
+        // An epoch that showed nothing and a normal case that shows what it
+        // sent: both, where the epoch alone put up nothing at all.
+        let mut plane = Plane::default();
+        plane.feed(held(1.0, pcs(1, EPOCH_START, 0)));
+        plane.feed(held(1.05, one(END, 0)));
+        plane.feed(held(2.0, pcs(2, 0x00, 1)));
+        plane.feed(held(2.05, one(END, 0)));
+        assert_eq!(plane.replay(9.0).len(), 4);
+    }
+
+    /// A picture whose runs do not fit an object's twenty-four bits of
+    /// length is put up as nothing rather than as a set that says it is a
+    /// few bytes long.
+    #[test]
+    fn a_picture_too_long_to_state_is_not_written() {
+        let (w, h) = (4096usize, 4096usize);
+        // Three colours in turn: a byte a dot, the most the runs can cost.
+        let indices: Vec<u8> = (0..w * h).map(|i| (i % 3) as u8 + 1).collect();
+        let palette = [(0, 0, 0, 0), (255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255)];
+        let picture = write::Picture {
+            x: 0,
+            y: 0,
+            width: w as u16,
+            height: h as u16,
+            indices: &indices,
+            palette: &palette,
+        };
+        let set = write::draw((720, 480), 1, 5.0, &picture);
+        let kinds: Vec<u8> = set
+            .iter()
+            .filter_map(|h| segments(&h.data).next())
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(kinds, [PCS, WDS, END]);
+        let (_, body) = segments(&set[0].data).next().unwrap();
+        assert_eq!(composition(body).unwrap().objects, 0);
+    }
+
+    /// A DVD unit's own start delay and forced start reach the set: shown
+    /// at its start, down at its stop counted from the unit's time, and
+    /// the composition's object marked forced.
+    #[test]
+    fn a_unit_is_shown_at_its_start_and_marked_forced() {
+        let drawn = crate::vobsub::Drawn {
+            x: 4,
+            y: 8,
+            width: 2,
+            height: 2,
+            indices: vec![1; 4],
+            palette: vec![(0, 0, 0, 0), (255, 255, 255, 255)],
+            until: Some(3.0),
+            from: 0.5,
+            forced: true,
+        };
+        let screen = (720, 480);
+        let mut composer = write::Composer::default();
+        let set = composer.show_drawn(screen, 10.0, &drawn);
+        assert!((set[0].pts - 10.5).abs() < 1e-9);
+        let (_, body) = segments(&set[0].data).next().unwrap();
+        assert_eq!(body[14], 0x40, "the object is forced");
+        let down = composer.due(screen, 13.5);
+        assert!((down[0].pts - 13.0).abs() < 1e-9);
+        // And a reader of display sets reads it back as forced.
+        crate::init().expect("libav");
+        let mut reader = read::Reader::open(screen).expect("a decoder");
+        let whole: Vec<u8> = set.iter().flat_map(|h| h.data.clone()).collect();
+        let back = reader.read(&whole).expect("decodes").expect("draws");
+        assert!(back.forced);
+        // A plain one is written as `show` writes it, byte for byte.
+        let plain = crate::vobsub::Drawn { from: 0.0, forced: false, until: None, ..drawn };
+        let picture = write::Picture {
+            x: 4,
+            y: 8,
+            width: 2,
+            height: 2,
+            indices: &plain.indices,
+            palette: &plain.palette,
+        };
+        let a = write::Composer::default().show_drawn(screen, 1.0, &plain);
+        let b = write::Composer::default().show(screen, 1.0, None, &picture);
+        let bytes = |s: &[Held]| -> Vec<(u64, u64, Vec<u8>)> {
+            s.iter().map(|h| (h.pts.to_bits(), h.dts.to_bits(), h.data.clone())).collect()
+        };
+        assert_eq!(bytes(&a), bytes(&b));
     }
 
     /// A part-read set says so, which is how a reader knows not to stop in

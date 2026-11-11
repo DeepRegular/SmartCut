@@ -79,6 +79,11 @@ pub struct Shape {
     /// against.
     pub intra: [u8; 64],
     pub non_intra: [u8; 64],
+    /// Whether the sequence header last read was followed by a sequence
+    /// scalable extension. It comes once, after the sequence header, and
+    /// every picture until the next sequence header belongs to that layer.
+    /// See [`Error::Scalable`].
+    pub scalable: bool,
 }
 
 impl Default for Shape {
@@ -88,6 +93,7 @@ impl Default for Shape {
             vertical_size: 1080,
             intra: scan::DEFAULT_INTRA,
             non_intra: scan::DEFAULT_NON_INTRA,
+            scalable: false,
         }
     }
 }
@@ -274,6 +280,9 @@ impl<'a> Picture<'a> {
                     if shape.chroma_format != 1 {
                         return Err(Error::Chroma);
                     }
+                    if shape.scalable {
+                        return Err(Error::Scalable);
+                    }
                     pic.parts.push(Part::Bytes(copied, at as u32 + 4));
                     let index = pic.slices.len() as u32;
                     pic.read_slice(t, (at as u32 + 4) * 8, until * 8, &head, shape)?;
@@ -287,7 +296,10 @@ impl<'a> Picture<'a> {
                     match r.u(4) {
                         1 => sequence_extension(&mut r, shape),
                         3 => quant_matrix_extension(&mut r, shape),
-                        5 => return Err(Error::Scalable),
+                        5 => {
+                            shape.scalable = true;
+                            return Err(Error::Scalable);
+                        }
                         8 => {
                             let h = head.as_mut().ok_or(Error::NoPictureHeader)?;
                             picture_coding_extension(&mut r, h);
@@ -1024,6 +1036,9 @@ fn sequence_header(data: &[u8], at: usize, shape: &mut Shape) -> Result<(), Erro
     // The sequence extension may add two more bits of it; until one arrives
     // this is the whole height.
     shape.vertical_size = vertical;
+    // A new sequence: its own extensions, which follow, say whether it is
+    // scalable.
+    shape.scalable = false;
     r.skip(4 + 4 + 18 + 1 + 10 + 1);
     // A sequence header that carries no matrix of its own is not silent about
     // them: it puts the default ones back.
@@ -1277,6 +1292,27 @@ mod tests {
         }
         out.push(&stream[from..]);
         out
+    }
+
+    /// A sequence scalable extension comes once, after the sequence header,
+    /// and the pictures after it are that layer's until the next header.
+    #[test]
+    fn a_scalable_sequence_is_refused_to_its_end() {
+        let stream = bytes(PLAIN);
+        let pics = pictures(&stream);
+        let first = pics[0];
+        // After the sequence extension: a scalable extension (id 5,
+        // temporal scalability).
+        let at = first.windows(5).position(|w| w == [0, 0, 1, 0xb5, 0x14]).unwrap() + 10;
+        let mut scalable = first[..at].to_vec();
+        scalable.extend_from_slice(&[0, 0, 1, 0xb5, 0x5c, 0x00]);
+        scalable.extend_from_slice(&first[at..]);
+        let mut shape = Shape::default();
+        assert!(matches!(Picture::read(&scalable, &mut shape), Err(Error::Scalable)));
+        assert!(matches!(Picture::read(pics[1], &mut shape), Err(Error::Scalable)));
+        // A new sequence header with no such extension ends it.
+        assert!(Picture::read(first, &mut shape).is_ok());
+        assert!(Picture::read(pics[1], &mut shape).is_ok());
     }
 
     #[test]

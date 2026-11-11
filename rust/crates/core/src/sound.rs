@@ -375,7 +375,9 @@ fn run(
     let joins_at_sync = setup.mode != AudioMode::Reencode
         && matches!(setup.target, ff::codec::Id::TRUEHD | ff::codec::Id::MLP);
 
-    let mut octx = ff::format::output(&*crate::input::as_output(output)).map_err(|e| anyhow!("{output}: {e}"))?;
+    // Not created yet: every refusal below comes before the file is touched,
+    // which opened here was emptied first. See [`crate::cut::unopened`].
+    let mut octx = crate::cut::unopened(output, None)?;
     // Which way round this container writes samples. `carriage` answers for
     // the containers a cut goes into, where big-endian PCM is what an MP4
     // has a box for; a `.wav` wants them the other way round and says
@@ -409,8 +411,11 @@ fn run(
     // recording were a file that said it was forty seconds long, began ten
     // seconds in and failed its own checksum. FLAC re-encoded loses nothing,
     // and the encoder numbers its frames from nought and states what it wrote.
+    //
+    // An Ogg file opens on the same STREAMINFO: a FLAC player read ten
+    // seconds kept into an `.ogg` as forty, the recording's length.
     if setup.target == ff::codec::Id::FLAC
-        && octx.format().name() == "flac"
+        && matches!(octx.format().name(), "flac" | "ogg" | "oga")
         && setup.mode != AudioMode::Reencode
     {
         setup.mode = AudioMode::Reencode;
@@ -575,6 +580,7 @@ fn run(
     if octx.format().name() == "wav" {
         muxer_opts.set("rf64", "auto");
     }
+    crate::cut::open_file(&mut octx, output)?;
     octx.write_header_with(muxer_opts)?;
     let out_tb = f64::from(
         octx.stream(0)
@@ -636,7 +642,19 @@ fn run(
             // overlapping one has moved the range's start already.
             let entered = k == 0 && n > 0 && pieces[n - 1].after.kind != crate::transition::Crossing::None;
             let leaves = k + 1 == count && n + 1 < pieces.len() && piece.after.kind != crate::transition::Crossing::None;
-            if piece.ranges.get(k) != Some(&*range) {
+            let given = piece.ranges.get(k) == Some(&*range);
+            // A recording joined on starts on its first picture, crossing or
+            // not: an overlapping one takes its stretch from there. See
+            // [`joined_lead`].
+            if k == 0 && n > 0 {
+                if let Some(&asked) = piece.ranges.first() {
+                    let lead = joined_lead(piece.src, asked, afresh, &opts.plan);
+                    if lead > 0.0 && range.0 + lead < range.1 {
+                        range.0 += lead;
+                    }
+                }
+            }
+            if !given {
                 continue;
             }
             let (from, to) = on_its_pictures(piece.src, *range, afresh, &opts.plan);
@@ -834,9 +852,7 @@ fn run(
     // fails part way leaves every packet as it was: a note, not a failure
     // that removes the file.
     if crate::m2ts::standalone(output, opts.disc_clip) {
-        if let Err(e) = crate::m2ts::restamp(output) {
-            crate::say!("note: the arrival times in {output} were left as written: {e:#}");
-        }
+        crate::m2ts::restamp_or_say(output, opts.notes.as_deref());
     }
     say(ranges_in_all);
     Ok(())
@@ -884,6 +900,38 @@ fn on_its_pictures(
     let from = if a > first + slack && moved(a, from) { from } else { a };
     let to = if moved(b, to) && to > from { to } else { b };
     (from, to)
+}
+
+/// How much later than its range's start the cut with pictures starts the
+/// sound of a recording joined on, where that range runs from before the
+/// recording's first entry point: from there to its first picture. Nought
+/// for any other range.
+///
+/// At the head of the file the sound a recording sends ahead of its first
+/// picture is its own and is kept (see [`primed_from`]); joined on, it is
+/// not at the head of anything. The cut starts that recording on its first
+/// picture, and laid in here the lead went in at the join instead, on the
+/// end of the recording before: 0.89 s of a satellite recording's lead, and
+/// a join's fade-in spent on it so that the programme came in at full level.
+fn joined_lead(src: &Source, range: (f64, f64), afresh: bool, opts: &crate::plan::PlanOptions) -> f64 {
+    let (a, b) = range;
+    let slack = crate::cut::on_a_picture_slack(&src.video);
+    let first = src.points.first().map_or(0.0, |p| p.time);
+    if a > first + slack {
+        return 0.0;
+    }
+    let Some(plan) = crate::plan::plan_on(src, &[range], opts).pop() else {
+        return 0.0;
+    };
+    if plan.segments.is_empty() {
+        return 0.0;
+    }
+    let (from, _) = crate::cut::sound_span(src, &plan, afresh);
+    if from > a + slack && from < b {
+        from - a
+    } else {
+        0.0
+    }
 }
 
 /// Where a range read from the head of a recording starts, where the cut
@@ -1084,7 +1132,7 @@ pub(crate) fn sound_from_head(
     track: usize,
 ) -> Result<bool> {
     if sought_at_head(ictx, url) {
-        let target = i64::MIN / 2;
+        let target = crate::input::head_seek(ictx);
         ictx.seek(target, ..target)?;
         // Sought to the first key picture: from the cluster before it, where
         // the sound starts ahead of it -- where the open lost that cluster,
@@ -1359,7 +1407,7 @@ pub(crate) fn open_lost(url: &str) -> Result<bool> {
     drop(open);
     let mut sought = crate::input::demux_as_opened(url)?;
     // As `seek_to` in [`crate::cut`] seeks to the head, before the discards.
-    let target = i64::MIN / 2;
+    let target = crate::input::head_seek(&sought);
     sought.seek(target, ..target)?;
     crate::input::keep_only(&mut sought, &keep);
     let mut past = 0;

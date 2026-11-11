@@ -367,8 +367,12 @@ fn level(id: ff::codec::Id, level: c_int) -> String {
     match id {
         Id::H264 if level == 9 => "1b".into(),
         Id::H264 => format!("{}.{}", level / 10, level % 10),
-        // HEVC and VVC number their levels thirty to the step.
-        Id::HEVC | Id::VVC => {
+        // VVC numbers its levels sixteen to the major step and three to the
+        // minor: 4.1 is 67 (H.266 A.4). Divided by thirty as HEVC's are, it
+        // read 2.2.
+        Id::VVC => format!("{}.{}", level / 16, level % 16 / 3),
+        // HEVC numbers its levels thirty to the step.
+        Id::HEVC => {
             // In 64 bits: the level is whatever the container states.
             let tenths = i64::from(level) * 10 / 30;
             format!("{}.{}", tenths / 10, tenths % 10)
@@ -510,6 +514,8 @@ mod tests {
         assert_eq!(level(Id::H264, 9), "1b");
         assert_eq!(level(Id::HEVC, 153), "5.1");
         assert_eq!(level(Id::HEVC, 120), "4.0");
+        assert_eq!(level(Id::VVC, 67), "4.1");
+        assert_eq!(level(Id::VVC, 80), "5.0");
         assert_eq!(level(Id::MPEG2VIDEO, 4), "High");
     }
 

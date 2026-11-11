@@ -1429,6 +1429,21 @@ fn assemble(
     } = outline;
     let mut points = idx.points;
     if points.is_empty() {
+        // VC-1 in Matroska: libavformat gives its packets decoding times
+        // only, so no entry picture has a time. Said with the way out (the
+        // GUI's i18n.js `engine.vc1Matroska` matches these words whole).
+        let matroska = || {
+            input::demux(&input.url)
+                .is_ok_and(|c| c.format().name().split(',').any(|n| n.trim() == "matroska"))
+        };
+        if video.codec == "vc1" && matroska() {
+            return Err(anyhow!(
+                "{path}: VC-1 in a Matroska file carries no presentation times (libavformat reads only \
+                 decoding times for it), so no picture can be found to start a cut from. Remux it to \
+                 .m2ts first, letting ffmpeg make the times up: ffmpeg -fflags +genpts -i in.mkv -c \
+                 copy out.m2ts"
+            ));
+        }
         return Err(anyhow!("no random access points found in {path}"));
     }
     // **Two recordings in one program stream** cannot be read as one; see
@@ -2236,6 +2251,13 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             })
         })
         .collect();
+    // The caption before the superimpose, as a broadcast's own map lists
+    // them: libavformat makes a stream in the order it first meets a packet,
+    // and a caption PID silent through the probe came after the crawl, which
+    // then went first in the cut's map and took the first caption PID on a
+    // .m2ts. Stable, so the order within one kind -- what a join matches
+    // reels by -- is as it was.
+    captions.sort_by_key(|c| c.kind == TextKind::Superimpose);
 
     // The disc's own subtitles, which are drawn rather than written. Kept
     // apart from the captions above for the one reason [`GraphicsInfo`]
@@ -2539,7 +2561,7 @@ fn first_picture(ictx: &mut input::Demux, video: &VideoInfo, start_time: f64) ->
     // until the walk landed. Only on that branch: the demuxer is dropped
     // after this, and every other recording is read as before.
     if url.is_some_and(|u| crate::sound::sought_at_head(ictx, &u)) {
-        let target = i64::MIN / 2;
+        let target = crate::input::head_seek(ictx);
         ictx.seek(target, ..target).ok()?;
         input::keep_only(ictx, &[video.stream_index]);
     }
@@ -2747,7 +2769,7 @@ fn measured_rate(url: &str, stream_index: usize) -> Option<f64> {
     // parse); see [`crate::sound::sought_at_head`]. Before the discards, as
     // there.
     if crate::sound::sought_at_head(&ictx, url) {
-        let target = i64::MIN / 2;
+        let target = crate::input::head_seek(&ictx);
         let _ = ictx.seek(target, ..target);
     }
     crate::input::keep_only(&mut ictx, &[stream_index]);

@@ -265,6 +265,7 @@ fn video_mismatches(master: &VideoInfo, clip: &VideoInfo) -> Vec<Mismatch> {
     );
     if stated(master.rate_known(), clip.rate_known())
         && !near(master.frame_rate, clip.frame_rate, RATE_TOLERANCE)
+        && !same_authored_rate(master, clip)
     {
         say(
             What::Rate,
@@ -282,7 +283,7 @@ fn video_mismatches(master: &VideoInfo, clip: &VideoInfo) -> Vec<Mismatch> {
             pixels(clip.shape.pix_fmt),
         );
     }
-    if !same_colour(&master.shape, &clip.shape) {
+    if !same_colour(master, clip) {
         say(What::Colour, colour(&master.shape), colour(&clip.shape));
     }
     if stated(
@@ -328,26 +329,108 @@ fn stated(master: bool, clip: bool) -> bool {
     master && clip
 }
 
+/// Whether a variable master and a clip are authored at one rate, which is
+/// all a copy of the clip needs of the master's rate.
+///
+/// **A variable recording's average is not a rate it has.** Two recordings
+/// off one phone, both declaring 60 and averaging 56.59 and 58.26 for
+/// whatever the light did, were two rates by their averages, and the second
+/// was decoded and written afresh whole to join the first. Nothing in the
+/// output stands on the master's average where the master varies: the
+/// timeline is divided finely ([`crate::cut`]'s `Grid`, `FINE`) and every
+/// copied picture is placed by its own timestamp, so a clip of the rate the
+/// master was authored at lands where it was taken, as the master's own
+/// pictures do. Where the master is constant its timeline is one unit a
+/// field of its rate, and a clip that varies would be rounded onto it, so
+/// that is still compared by the average. A declared rate of a thousand is
+/// the Matroska clock turned over, not a rate anything was authored at.
+fn same_authored_rate(master: &VideoInfo, clip: &VideoInfo) -> bool {
+    let authored = |r: f64| r.is_finite() && r > 0.0 && r < 1000.0;
+    master.variable_rate
+        && authored(master.base_rate)
+        && authored(clip.base_rate)
+        && near(master.base_rate, clip.base_rate, RATE_TOLERANCE)
+}
+
 /// The colour fields, compared one at a time so that a recording which
 /// states two of the three and leaves the last unspecified is still the same
 /// colour as one that states all three.
 ///
 /// Reported as one phrase all the same -- see [`colour`] -- because what the
 /// reader has to decide is the same whichever of the three it was.
-fn same_colour(master: &PictureShape, clip: &PictureShape) -> bool {
+fn same_colour(master: &VideoInfo, clip: &VideoInfo) -> bool {
     // `AVCOL_PRI_UNSPECIFIED`, `AVCOL_TRC_UNSPECIFIED` and
     // `AVCOL_SPC_UNSPECIFIED` are all 2. Zero is not one of them: it is
     // reserved for the primaries and the transfer, and it is RGB for the
     // matrix, which is a claim like any other.
     const UNSPECIFIED: i32 = 2;
     let same = |m: i32, c: i32| m == c || m == UNSPECIFIED || c == UNSPECIFIED;
+    let (ms, cs) = (&master.shape, &clip.shape);
     // And the range, which is part of what the numbers mean: a full-range
     // clip copied beside a studio-range master has its black read as a dark
     // grey and its white clipped, and nothing in the file says otherwise.
-    same(master.primaries, clip.primaries)
-        && same(master.transfer, clip.transfer)
-        && same(master.matrix, clip.matrix)
-        && master.full_range() == clip.full_range()
+    same(ms.primaries, cs.primaries)
+        && same(ms.transfer, cs.transfer)
+        && same_matrix(master, clip)
+        && ms.full_range() == cs.full_range()
+}
+
+/// **An unstated matrix is not an unknown one.** A player reads it by the
+/// picture's size -- BT.709 for high definition, BT.601 below -- and so does
+/// the cut where it converts a reel ([`crate::cut_conform::matrices`]). And a
+/// decoder that has read a stated matrix keeps it for the pictures after
+/// that state none: a clip copied after a master that states one is shown
+/// through the master's. A 720p recording stating BT.601 (OBS's 601 colour
+/// space) joined with a 720p clip that states nothing was copied, and the
+/// clip's BT.709 samples played through BT.601 -- in the .ts as in the
+/// .mp4 and .mkv, where the container states the master's matrix too. So
+/// where one of the two is unstated, it is compared as read; a matrix that
+/// is not one a picture can be converted between (RGB, YCgCo) still counts
+/// as matching an unstated one, as before.
+fn same_matrix(master: &VideoInfo, clip: &VideoInfo) -> bool {
+    let (m, c) = (master.shape.matrix, clip.shape.matrix);
+    if m == c {
+        return true;
+    }
+    // Two stated matrices that differ differ, as they always did.
+    if m != UNSTATED_MATRIX && c != UNSTATED_MATRIX {
+        return false;
+    }
+    match (
+        read_matrix(m, master.width, master.height),
+        read_matrix(c, clip.width, clip.height),
+    ) {
+        (Some(m), Some(c)) => m == c,
+        _ => true,
+    }
+}
+
+/// `AVCOL_SPC_UNSPECIFIED`.
+const UNSTATED_MATRIX: i32 = 2;
+
+/// The YUV matrix a picture's samples are read with, as
+/// [`crate::cut_conform::matrices`] reads it: what the recording states, or
+/// by size where it states nothing (1280 across or more than 576 lines is
+/// high definition, mpv's rule). BT.470BG and SMPTE 170M are one matrix.
+/// `None` for one that is not a YUV matrix to convert between.
+pub(crate) fn read_matrix(space: i32, width: u32, height: u32) -> Option<i32> {
+    use ff::ffi::AVColorSpace as S;
+    match space {
+        x if x == S::AVCOL_SPC_BT709 as i32 => Some(S::AVCOL_SPC_BT709 as i32),
+        x if x == S::AVCOL_SPC_BT470BG as i32 || x == S::AVCOL_SPC_SMPTE170M as i32 => {
+            Some(S::AVCOL_SPC_SMPTE170M as i32)
+        }
+        x if x == S::AVCOL_SPC_BT2020_NCL as i32 || x == S::AVCOL_SPC_BT2020_CL as i32 => {
+            Some(S::AVCOL_SPC_BT2020_NCL as i32)
+        }
+        x if x == S::AVCOL_SPC_FCC as i32 || x == S::AVCOL_SPC_SMPTE240M as i32 => Some(x),
+        x if x == S::AVCOL_SPC_UNSPECIFIED as i32 => Some(if width >= 1280 || height > 576 {
+            S::AVCOL_SPC_BT709 as i32
+        } else {
+            S::AVCOL_SPC_SMPTE170M as i32
+        }),
+        _ => None,
+    }
 }
 
 fn sound_mismatches(master: &[AudioInfo], clip: &[AudioInfo]) -> Vec<Mismatch> {
@@ -630,6 +713,59 @@ mod tests {
         let found = video_mismatches(&video(), &theirs);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].what, What::Colour);
+    }
+
+    /// An unstated matrix is read by size, as the cut converts and a player
+    /// shows it: high definition is BT.709, so a 720p clip that states
+    /// nothing is not the colour of a 720p master stating BT.601, in either
+    /// direction -- and still is the colour of one stating BT.709.
+    #[test]
+    fn an_unstated_matrix_is_read_by_size() {
+        let mut master = video();
+        (master.width, master.height) = (1280, 720);
+        master.shape.matrix = ff::ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32;
+        let mut theirs = master.clone();
+        theirs.shape.matrix = ff::ffi::AVColorSpace::AVCOL_SPC_UNSPECIFIED as i32;
+        let found = video_mismatches(&master, &theirs);
+        assert_eq!(found.iter().map(|m| m.what).collect::<Vec<_>>(), vec![What::Colour]);
+        assert!(fit_of(&found, 1, 1).video);
+        assert_eq!(video_mismatches(&theirs, &master).len(), 1);
+        master.shape.matrix = ff::ffi::AVColorSpace::AVCOL_SPC_BT709 as i32;
+        assert!(video_mismatches(&master, &theirs).is_empty());
+        // Standard definition reads BT.601, which BT.470BG is.
+        let mut sd = video();
+        (sd.width, sd.height) = (720, 480);
+        sd.shape.matrix = ff::ffi::AVColorSpace::AVCOL_SPC_BT470BG as i32;
+        let mut silent = sd.clone();
+        silent.shape.matrix = ff::ffi::AVColorSpace::AVCOL_SPC_UNSPECIFIED as i32;
+        assert!(video_mismatches(&sd, &silent).is_empty());
+        sd.shape.matrix = ff::ffi::AVColorSpace::AVCOL_SPC_BT709 as i32;
+        assert_eq!(video_mismatches(&sd, &silent).len(), 1);
+    }
+
+    /// Two clips off one phone are one rate, whatever their averages: the
+    /// master's pictures vary, so its timeline is divided finely and the
+    /// clip's pictures are placed by their own times. Not onto a constant
+    /// master, whose timeline is its own rate's fields; and not where the
+    /// declared rates differ.
+    #[test]
+    fn a_variable_master_compares_the_authored_rate() {
+        let phone = |average: f64, variable: bool| {
+            let mut v = video();
+            (v.frame_rate, v.base_rate, v.variable_rate) = (average, 60.0, variable);
+            v
+        };
+        assert!(video_mismatches(&phone(56.59, true), &phone(58.26, true)).is_empty());
+        assert!(video_mismatches(&phone(56.59, true), &phone(60.0, false)).is_empty());
+        let found = video_mismatches(&phone(59.98, false), &phone(56.59, true));
+        assert_eq!(found.iter().map(|m| m.what).collect::<Vec<_>>(), vec![What::Rate]);
+        let mut thirty = phone(29.5, true);
+        thirty.base_rate = 30.0;
+        assert_eq!(video_mismatches(&phone(56.59, true), &thirty).len(), 1);
+        // Matroska's clock turned over is no authored rate.
+        let (mut a, mut b) = (phone(23.9, true), phone(29.9, true));
+        (a.base_rate, b.base_rate) = (1000.0, 1000.0);
+        assert_eq!(video_mismatches(&a, &b).len(), 1);
     }
 
     /// And a recording that never stated a pixel aspect ratio is not one

@@ -727,7 +727,7 @@ fn front_of(src: &Source, landing: f64) -> i64 {
     if landing > 0.0 {
         ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
     } else {
-        i64::MIN / 2
+        crate::input::HEAD_SEEK
     }
 }
 
@@ -1178,9 +1178,7 @@ fn feed_from(
     let mut decoder = ff::codec::context::Context::from_parameters(params)?
         .decoder()
         .audio()?;
-    let mut resampler: Option<ff::software::resampling::Context> = None;
     let mut resampled = ff::frame::Audio::empty();
-    let mut folder: Option<ff::software::resampling::Context> = None;
     let mut folded = ff::frame::Audio::empty();
 
     'ranges: for &(a, b) in ranges.iter() {
@@ -1209,6 +1207,12 @@ fn feed_from(
         let target = front_of(src, landing);
         let _ = ictx.seek(target, ..target);
         decoder.flush();
+        // And the conversions after it: a resampler keeps the last few
+        // samples it was given to filter the next ones against, and kept
+        // across the seek it put the end of the range before at the head of
+        // this one, every later sample of it that much late.
+        let mut resampler: Option<ff::software::resampling::Context> = None;
+        let mut folder: Option<ff::software::resampling::Context> = None;
 
         let mut frame = ff::frame::Audio::empty();
         for (stream, packet) in ictx.read_packets() {

@@ -58,13 +58,28 @@ let playRun = 0;
 /// not put back on the stage.
 let playAt = -Infinity;
 let playUrl = null;
-/// Where a playback that ran to its end left the playhead, until anything
-/// else moves it. The last instant played is a picture short of the end of
-/// the preview -- playback stops before `span.seconds`, never on it -- so the
-/// test against the end alone missed it, and 再生 pressed again played that
-/// one picture and stopped: the preview could not be played twice without
-/// first going back to its start by hand.
-let ranOutAt = null;
+/// Whether the playhead is where a playback that ran to its end left it,
+/// until anything else moves it. The last instant played is a picture short
+/// of the end of the preview -- playback stops before `span.seconds`, never
+/// on it -- so the test against the end alone missed it, and 再生 pressed
+/// again played that one picture and stopped: the preview could not be
+/// played twice without first going back to its start by hand.
+///
+/// A flag rather than the instant it stopped on: held as a number and
+/// compared with the playhead, a step back and a step forward that came to
+/// the same float again read as "ran out", and 再生 went back to the start
+/// rather than playing from the step. Every move of the playhead by hand
+/// clears it.
+let ranOut = false;
+/// Set where a setting was changed while the preview was playing: the
+/// playback is stopped, and started again from where it was once the
+/// stretch has been worked out again. A playback is given its seam when it
+/// starts (`cross_play`), so one left running went on playing the crossing
+/// as it was before the change -- the old length, the old effect, the old
+/// fades -- under controls that said otherwise. Anything else that stops
+/// the playback, or starts it, takes the restart back (`stopPlay`,
+/// `startPlay`).
+let resumeAfter = false;
 /// Set while the list has not answered yet. See `announceReady`.
 let answered = false;
 
@@ -146,6 +161,13 @@ function crossing() {
     const name = ALIAS.get(a[what]) ?? a[what];
     a[what] = [...el(id).options].some((o) => o.value === name) ? name : none;
   }
+  // And the three numbers are what their controls can show. Held only where
+  // they were shown, a project written by hand with a crossing of 0.02 s or
+  // a fade of 0.04 s showed 0.1 and 0 in the fields while the preview and
+  // the joined file used what the file said.
+  a.seconds = clamp(Number(a.seconds) || 0.1, 0.1, 30);
+  a.fadeOut = fadeSecs(a.fadeOut);
+  a.fadeIn = fadeSecs(a.fadeIn);
   return a;
 }
 
@@ -332,11 +354,14 @@ function seamSpec() {
 
 /// Work out the previewed stretch again, and redraw everything that depends
 /// on it. Called on every change of a setting.
+///
+/// Answers whether this was the newest question asked, landed or failed:
+/// false where a later one has overtaken it, and that one has the last word.
 async function refreshSpan() {
   const spec = seamSpec();
   // Worked out against the pair the backend holds, so not while that is
   // still the join before: `showJoin` asks again once its pair is in.
-  if (!spec || !invoke || !facts) return;
+  if (!spec || !invoke || !facts) return true;
   const run = ++spanRun;
   const pair = joinRun;
   let got;
@@ -344,19 +369,20 @@ async function refreshSpan() {
     got = await invoke("cross_span", { seam: spec });
   } catch (e) {
     jlog(`cross_span: ${e}`);
-    return;
+    return run === spanRun && pair === joinRun;
   }
   // A slider dragged asks on every step, and the answers need not come back
   // in order: only the last question's is the setting on screen. Nor is an
   // answer about the join before one: landing after `showJoin` had cleared
   // the span, it put that join's stretch under this one, and its note over
   // the line saying this join's recordings could not be read.
-  if (run !== spanRun || pair !== joinRun) return;
+  if (run !== spanRun || pair !== joinRun) return false;
   span = got;
   head = clamp(head, 0, span.seconds);
   drawScrub();
   updateReadouts();
   paintNote();
+  return true;
 }
 
 /// Whether a still is already on its way, so that a pointer dragged across
@@ -432,13 +458,14 @@ function setPlaying(on) {
 }
 
 function startPlay() {
+  resumeAfter = false;
   if (!invoke || playing || !facts || !span || span.seconds <= 0) return;
   const spec = seamSpec();
   if (!spec) return;
   // From the top again where the playhead is sitting at the end: pressing 再生
   // on a preview that has just finished means "again", not "nothing".
-  if (head >= span.seconds - 1e-3 || head === ranOutAt) head = 0;
-  ranOutAt = null;
+  if (head >= span.seconds - 1e-3 || ranOut) head = 0;
+  ranOut = false;
   setPlaying(true);
   playAt = -Infinity;
   const run = ++playRun;
@@ -464,6 +491,7 @@ function startPlay() {
 }
 
 function stopPlay(repaint = true) {
+  resumeAfter = false;
   if (!playing) return;
   invoke && invoke("stop_play", { cross: true });
   setPlaying(false);
@@ -507,7 +535,7 @@ async function showJoin() {
   drawPattern();
   paintLive();
   head = 0;
-  ranOutAt = null;
+  ranOut = false;
   span = null;
   // The pair the backend holds is the join before's until the load below is
   // in; nothing is asked of it for this join until then.
@@ -535,6 +563,10 @@ async function showJoin() {
     el("preview").removeAttribute("src");
     shown = 0;
     updateReadouts();
+    // And nothing can be heard from a pair that is not there: left as the
+    // join before had them, the sound's controls stood live over a seam
+    // that cannot be played.
+    for (const id of ["mute", "volume"]) el(id).disabled = true;
     return;
   }
   // Another join was picked while this one loaded; its own load comes after
@@ -547,7 +579,13 @@ async function showJoin() {
   // (`heard` below 0, see `joinHeard` in the list), and a live slider over
   // it was a control that did nothing.
   const silent = typeof j.heard === "number" && j.heard < 0;
-  const heard = (facts.beforeAudio || facts.afterAudio) && !silent;
+  // And the track played is the one in the master's first kept track's place
+  // (`heard`), which a clip of fewer tracks has nothing in: both clips of one
+  // track under a master whose first kept track is its second were silence
+  // under live controls. Told by the clips' track counts where the backend
+  // gives them, by their main tracks otherwise.
+  const has = (n, main) => (typeof n === "number" && typeof j.heard === "number" ? j.heard < n : main);
+  const heard = (has(facts.beforeTracks, facts.beforeAudio) || has(facts.afterTracks, facts.afterAudio)) && !silent;
   for (const id of ["mute", "volume"]) el(id).disabled = !heard;
   await refreshSpan();
   // Where the playhead is, which is the start unless the scrubber was used
@@ -607,8 +645,13 @@ function take(what, value) {
     drawPattern();
     paintLive();
   }
-  refreshSpan().then(() => {
-    if (!playing) showFrame(head);
+  if (playing) {
+    stopPlay(false);
+    resumeAfter = true;
+  }
+  refreshSpan().then((newest) => {
+    if (newest && resumeAfter) startPlay();
+    else if (!playing && !resumeAfter) showFrame(head);
   });
 }
 
@@ -914,6 +957,7 @@ el("play").addEventListener("click", () => (playing ? stopPlay() : startPlay()))
 const step = (n) => {
   stopPlay(false);
   const gap = 1 / fps();
+  ranOut = false;
   head = clamp(head + n * gap, 0, span ? span.seconds : 0);
   drawScrub();
   showFrame(head);
@@ -955,12 +999,14 @@ holdStep("step-back", -1);
 holdStep("step-fwd", 1);
 el("go-start").addEventListener("click", () => {
   stopPlay(false);
+  ranOut = false;
   head = 0;
   drawScrub();
   showFrame(head);
 });
 el("go-end").addEventListener("click", () => {
   stopPlay(false);
+  ranOut = false;
   head = span ? span.seconds : 0;
   drawScrub();
   showFrame(head);
@@ -984,6 +1030,7 @@ el("xscrub").addEventListener("pointerdown", (ev) => {
   stopPlay(false);
   dragging = true;
   el("xscrub").setPointerCapture(ev.pointerId);
+  ranOut = false;
   head = scrubAt(ev);
   drawScrub();
   showFrame(head);
@@ -1181,7 +1228,7 @@ if (listen) {
     } else {
       // Left standing on the last instant, which is what somebody watching a
       // crossing end is looking at.
-      ranOutAt = head;
+      ranOut = true;
       showFrame(head);
     }
   });

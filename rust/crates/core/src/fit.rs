@@ -351,7 +351,7 @@ pub fn estimate_kept(rates: Rates, seconds: f64, busier: f64, going: Going) -> E
     // else about the framing is the same.
     let (framing, sound, extras) = match going {
         Going::Disc => (FRAMING, SOUND_FRAMING, disc_files(seconds).saturating_add(PADDING)),
-        Going::File => (FRAMING * 188.0 / 192.0, SOUND_FRAMING * 188.0 / 192.0, 0),
+        Going::File => (FRAMING * 188.0 / 192.0, FILE_SOUND_FRAMING, 0),
     };
     let busier = if busier.is_finite() { busier } else { 0.0 };
     let video_es = (video_rate / 8.0 * seconds + busier).max(0.0);
@@ -509,10 +509,23 @@ pub const TS_FRAMING: f64 = FRAMING * 188.0 / 192.0;
 
 /// And round the sound, which fares worse.
 ///
-/// A sound frame is a fiftieth of the size of a picture and gets a PES header
-/// of its own all the same, so the part-empty packet at the end of each one is
-/// a far larger share of it. Measured on the same disc: a fifth again.
-const SOUND_FRAMING: f64 = 1.4;
+/// A sound frame is a fiftieth of the size of a picture, so the PES header
+/// and the part-empty packet at the end of each PES are a larger share of
+/// it. On a disc the muxer gathers frames into a PES up to 2930 bytes, and
+/// what that comes to was counted on cuts written with `--bdav`: AC-3 at
+/// 448k 1.071 and at 192k 1.084, MP2 1.083, AAC 1.07-1.11 (broadcast
+/// recordings of six stations, and 1.13 against the rate libav states for
+/// the track) -- and linear PCM, sent in a PES every 5 ms, 1.195. This is
+/// the largest of those. It was 1.4, more than any of them pays: a DVD
+/// title with linear PCM was priced 5% of the disc over what it came to,
+/// and `--fit` and the window's fitting left that much of the disc empty.
+const SOUND_FRAMING: f64 = 1.2;
+
+/// [`SOUND_FRAMING`] in a file, where every sound frame goes out in a PES of
+/// its own: MP2 1.224 and AAC 1.14 counted on `.ts` cuts. Left at the
+/// figure it has had (1.4 in 192-byte packets), as a file is also held to
+/// the recording's own rate (see [`estimate`]).
+const FILE_SOUND_FRAMING: f64 = 1.4 * 188.0 / 192.0;
 
 /// And what the recording's own account of itself costs on top, in a file:
 /// the tables that describe the streams. A `.ts` cut carries the broadcast's
@@ -871,7 +884,7 @@ mod tests {
         // A file keeps its share, as before.
         let file = estimate_at(r(12e6), 300.0, Going::File);
         let streams = 12e6 / 8.0 * 300.0 * FRAMING * 188.0 / 192.0
-            + 192_000.0 / 8.0 * 300.0 * SOUND_FRAMING * 188.0 / 192.0;
+            + 192_000.0 / 8.0 * 300.0 * FILE_SOUND_FRAMING;
         assert_eq!(file.bytes, (streams * TABLES) as u64);
     }
 

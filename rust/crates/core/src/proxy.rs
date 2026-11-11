@@ -671,7 +671,7 @@ pub fn build(
     // showed nothing there. See [`crate::sound::sought_at_head`]; before the
     // discards, as there.
     if crate::sound::sought_at_head(&ictx, &src.input.url) {
-        let target = i64::MIN / 2;
+        let target = crate::input::head_seek(&ictx);
         let _ = ictx.seek(target, ..target);
     }
     let idx = src.video.stream_index;
@@ -1027,6 +1027,16 @@ fn open_sink(
         gop,
         quality: opts.quality,
         bit_rate: opts.bit_rate,
+        // The proxy's samples are the recording's, scaled: in its matrix. A
+        // proxy that states none is read by its own size, and one under 1280
+        // across of an HD recording (`SMARTCUT_PROXY_WIDTH=960`), or of one
+        // stating a matrix against its size, was shown through the other
+        // matrix in every still taken off it.
+        matrix: crate::conform::read_matrix(
+            unsafe { crate::raw_enum(std::ptr::addr_of!((*picture.as_ptr()).colorspace)) },
+            picture.width(),
+            picture.height(),
+        ),
     };
     let mut chosen: Option<(ff::encoder::video::Encoder, String)> = None;
     let mut tried: Vec<String> = Vec::new();
@@ -1100,6 +1110,9 @@ struct EncoderSettings {
     quality: f64,
     /// Set only for an encoder that has no constant-quality mode.
     bit_rate: Option<usize>,
+    /// The YUV matrix the samples are in, as the proxy states it; `None`
+    /// leaves it unstated. See where it is set.
+    matrix: Option<i32>,
 }
 
 /// x264 is told only not to place keyframes of its own; the forced ones must
@@ -1149,6 +1162,9 @@ fn open_encoder(
     // the picture.
     enc.set_max_b_frames(0);
     enc.set_aspect_ratio(ff::Rational::new(1, 1));
+    if let Some(space) = s.matrix {
+        unsafe { crate::set_raw_enum(std::ptr::addr_of_mut!((*enc.as_mut_ptr()).colorspace), space) };
+    }
 
     let q = quality_for(name, s.quality);
     let mut eopts = ff::Dictionary::new();

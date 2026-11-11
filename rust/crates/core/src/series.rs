@@ -55,6 +55,7 @@ pub fn of(name: &str) -> String {
     let text = without_block(&text);
     let text = before_episode(&text);
     let text = without_subtitle(&text);
+    let text = without_trailing_label(&text);
     let text = tidy(&text);
     if text.is_empty() {
         tidy(name)
@@ -78,13 +79,96 @@ pub fn of(name: &str) -> String {
 /// is the sort of guess that goes wrong quietly: a disc of six programmes
 /// labelled with the first of them reads, in a recorder's list, exactly like
 /// a disc of six episodes of that one.
+///
+/// Compared as written in either width: one listing writes `第3期` where the
+/// next writes `第３期`, and they are one season. And where the names still
+/// differ, once more with a bare number taken for the episode
+/// ([`before_bare_number`]): only then, because a number on its own is a
+/// title's as often as an episode's, and it is the names differing at that
+/// number and nowhere else that says which it is here.
 pub fn shared<S: AsRef<str>>(names: &[S]) -> Option<String> {
-    let mut titles = names
+    let alike = |titles: &[String]| {
+        let first = titles.first()?;
+        let key = |t: &String| t.chars().map(fold).collect::<String>();
+        titles.iter().all(|t| key(t) == key(first)).then(|| first.clone())
+    };
+    let titles: Vec<String> = names
         .iter()
         .map(|n| of(n.as_ref()))
-        .filter(|t| !t.is_empty());
-    let first = titles.next()?;
-    titles.all(|t| t == first).then_some(first)
+        .filter(|t| !t.is_empty())
+        .collect();
+    if let Some(one) = alike(&titles) {
+        return Some(one);
+    }
+    if titles.len() < 2 {
+        return None;
+    }
+    let looser: Vec<String> = titles.iter().map(|t| before_bare_number(t)).collect();
+    alike(&looser).filter(|t| !t.is_empty())
+}
+
+/// The name up to a number standing on its own between spaces, and the one
+/// word of Latin letters in front of it where there is one: the episode as a
+/// listing writes it when it writes it with nothing around it
+/// (`X　１８　無罪の証明`, `X　request　19．`). A name that opens with the
+/// number, or has nothing else, is left whole. See [`shared`] for why this is
+/// not part of [`of`].
+fn before_bare_number(name: &str) -> String {
+    let raw: Vec<char> = name.chars().collect();
+    let folded: Vec<char> = raw.iter().map(|c| fold(*c)).collect();
+    let space = |i: usize| folded.get(i).is_none_or(|c| c.is_whitespace());
+    let mut i = 1;
+    while i < raw.len() {
+        if space(i - 1) && digit(&folded, i) {
+            let mut end = i;
+            while digit(&folded, end) {
+                end += 1;
+            }
+            if folded.get(end) == Some(&'.') {
+                end += 1;
+            }
+            if space(end) {
+                // Back over the spaces, and over one word of letters.
+                let mut cut = i;
+                while cut > 0 && space(cut - 1) {
+                    cut -= 1;
+                }
+                let word_end = cut;
+                while cut > 0 && folded[cut - 1].is_ascii_alphabetic() {
+                    cut -= 1;
+                }
+                if cut == word_end || cut == 0 || !space(cut - 1) {
+                    cut = word_end;
+                }
+                let kept = tidy(&raw[..cut].iter().collect::<String>());
+                if !kept.is_empty() {
+                    return kept;
+                }
+            }
+            i = end;
+        }
+        i += 1;
+    }
+    name.to_string()
+}
+
+/// The name with a label in angle brackets taken off the end: what a channel
+/// says about this showing rather than the series (`X＜チャンネル初＞`), left
+/// standing once the episode number behind it has been cut away. Only at
+/// the end and only with a name in front of it, as [`without_block`] takes
+/// one only off the front.
+fn without_trailing_label(name: &str) -> String {
+    let raw: Vec<char> = name.chars().collect();
+    let Some(end) = raw.iter().rposition(|c| !fold(*c).is_whitespace()) else {
+        return name.to_string();
+    };
+    if fold(raw[end]) != '>' {
+        return name.to_string();
+    }
+    match raw[..end].iter().rposition(|c| fold(*c) == '<') {
+        Some(open) if open > 0 && end - open <= 26 => raw[..open].iter().collect(),
+        _ => name.to_string(),
+    }
 }
 
 /// The name with the marks a listing hangs off it taken out.
@@ -442,5 +526,31 @@ mod tests {
         assert_eq!(shared(&["風待ちの丘Ⅱ #1", "風待ちの丘Ⅲ #2"]), None);
         assert_eq!(shared::<&str>(&[]), None);
         assert_eq!(shared(&[""]), None);
+        // A bare number is a title's own where it does not differ.
+        assert_eq!(shared(&["硝子の塔 13 #1", "硝子の塔 13 #2"]).as_deref(), Some("硝子の塔 13"));
+        assert_eq!(shared(&["硝子の塔 13", "名もなき午後 13"]), None);
+    }
+
+    /// The shapes a listing writes that the rules above did not cut: a
+    /// channel's label after the name, an episode as a bare number or as a
+    /// word and a number, and the season in either width.
+    #[test]
+    fn reads_the_other_shapes_of_a_series() {
+        assert_eq!(of("灯台守の休日＜チャンネル初＞ #3-4"), "灯台守の休日");
+        assert_eq!(of("＜チャンネル初＞"), "＜チャンネル初＞");
+        assert_eq!(
+            shared(&["風待ちの丘　１８　無罪の証明", "風待ちの丘　１９　帰郷"]).as_deref(),
+            Some("風待ちの丘")
+        );
+        assert_eq!(
+            shared(&["硝子の塔　request　19．", "硝子の塔　request　20．"]).as_deref(),
+            Some("硝子の塔")
+        );
+        assert_eq!(
+            shared(&["砂時計の向こう側 第3期 #1", "砂時計の向こう側 第３期 #2"]).as_deref(),
+            Some("砂時計の向こう側 第3期")
+        );
+        // A single recording keeps its number: nothing says it is an episode.
+        assert_eq!(shared(&["風待ちの丘　１８　無罪の証明"]).as_deref(), Some("風待ちの丘　１８　無罪の証明"));
     }
 }

@@ -1010,6 +1010,10 @@ const CATALOG = {
       "ベリファイで不一致: 無劣化でコピーしたはずの {planned} フレームのうち {n} フレームが元の録画と違います",
     "out.verifyNoPictures": "ベリファイで不一致: 映像を 1 フレームも復号できません",
     "out.verifyDamaged": "ベリファイで不一致: 復号エラーのフレームが {n} 枚あります",
+    "out.verifyLength": "ベリファイで不一致: 映像の長さが {got} 秒です（元の録画の残した範囲では {want} 秒）",
+    "out.verifyLengthRange": "ベリファイで不一致: 映像の長さが {got} 秒です（元の録画の残した範囲では {from}〜{to} 秒）",
+    "out.verifyGaps": "ベリファイで不一致: 映像が途切れている時間が {got} 秒あります（元の録画では {want} 秒）",
+    "out.verifyRuns": "ベリファイで不一致: 映像の長さが元の録画の残した範囲と合いません",
     "out.verifySkipped": " / {why}",
     "out.verifyStopped": "ベリファイは中止しました",
     "out.verifyFailed": "ベリファイできませんでした: {e}",
@@ -1070,6 +1074,7 @@ const CATALOG = {
     "batch.interrupted": "出力の途中でツールが閉じられました",
     "batch.stoppedHere": "出力の途中で中止されました",
     "batch.cannotOpen": "プロジェクトを開けませんでした",
+    "batch.sharesUnknown": "開けませんでした。次のコンピューターの共有フォルダーは、まだ使用が許可されていません: {hosts}。右クリックの「プロジェクトを開く」で一度開き、許可してください",
     "batch.nothingReadable": "読める録画が 1 本もありません",
     "batch.refused": "出力設定が足りず、開始できませんでした",
     "batch.threw": "出力中にエラーが発生しました: {e}",
@@ -1413,6 +1418,19 @@ const CATALOG = {
     "cm.wrongFormat": "{file} はより新しいバージョンの SmartCut で保存されているため、読み込めません",
     "cm.marked": "CM ブロック {n} 個をキーフレームにしました",
     "cm.nothing": "まだ CM を検出していません",
+
+    // --- エンジンが開けない録画 --------------------------------------------
+    "engine.noEntry": "{path} には、カットを始められるピクチャ（時刻の付いたキーフレーム）が見つかりません",
+    "engine.clockRestarts":
+      "{path}: ファイルの途中（{pos} バイト目）で、映像の時刻が {latest} 秒から {at} 秒へ不連続に変わっています。" +
+      "複数の録画を順につないだファイルなので、1 本の録画としてはカットできません。" +
+      "cat や copy /b でつないだファイル、複数のタイトルを含む DVD の .VOB、DVD レコーダーの .VRO がこれに当たります。" +
+      "録画を 1 本ずつ開いてください（つなぐ前のファイル、DVD なら .VOB ではなく VIDEO_TS フォルダー）。",
+    "engine.restampLeft":
+      "注意: {path} の到着時刻（.m2ts の各パケットの時刻）は書き直せなかったので、書き出したときのままです（{why}）",
+    "engine.vc1Matroska":
+      "{path}: Matroska に収められた VC-1 には表示時刻が記録されていないので、カットを始められるピクチャを決められません。" +
+      "先に FFmpeg で時刻を付けて .m2ts に入れ直してください（例: ffmpeg -fflags +genpts -i 入力.mkv -c copy 出力.m2ts）。",
   },
 
   en: {
@@ -2342,6 +2360,10 @@ const CATALOG = {
     "out.verifyCopies": "Check failed: {n} of the {planned} frames meant to be copied differ from the recording",
     "out.verifyNoPictures": "Check failed: not one picture could be decoded",
     "out.verifyDamaged": "Check failed: {n} frame{n?s} decoded with errors",
+    "out.verifyLength": "Check failed: the pictures run {got} s, the kept ranges of the recording {want} s",
+    "out.verifyLengthRange": "Check failed: the pictures run {got} s, the kept ranges of the recording {from} to {to} s",
+    "out.verifyGaps": "Check failed: {got} s with no picture, {want} s in the recording",
+    "out.verifyRuns": "Check failed: the pictures do not run as long as the kept ranges of the recording",
     "out.verifySkipped": " / {why}",
     "out.verifyStopped": "check stopped",
     "out.verifyFailed": "could not be checked: {e}",
@@ -2407,6 +2429,7 @@ const CATALOG = {
     "batch.interrupted": "The tool was closed part way through",
     "batch.stoppedHere": "Stopped part way through",
     "batch.cannotOpen": "The project would not open",
+    "batch.sharesUnknown": "Not opened: it uses shared folders on computers not allowed here yet: {hosts}. Open the project in a window once to allow them",
     "batch.nothingReadable": "Not one recording could be read",
     "batch.refused": "The output settings were incomplete",
     "batch.threw": "Something went wrong while writing: {e}",
@@ -2744,6 +2767,21 @@ const CATALOG = {
     "cm.wrongFormat": "{file} was saved by a later version of SmartCut and cannot be read here",
     "cm.marked": "Turned {n} block{n?s} into keyframes",
     "cm.nothing": "Nothing has been detected yet",
+
+    // --- recordings the engine cannot open ---------------------------------
+    // The engine's own sentences, word for word: see `engineSays`.
+    "engine.noEntry": "no random access points found in {path}",
+    "engine.clockRestarts":
+      "{path}: the pictures' clock starts again part-way through the file (at byte {pos}, {at}s comes after " +
+      "{latest}s), so it holds more than one recording one after another -- files joined end to end (cat, " +
+      "copy /b), the .VOB files of a DVD set holding more than one title, or a DVD recorder's .VRO -- and it " +
+      "cannot be cut as one. Open each recording on its own: the files as they were before they were joined, " +
+      "or a DVD's folder (VIDEO_TS) rather than its .VOB files.",
+    "engine.restampLeft": "note: the arrival times in {path} were left as written: {why}",
+    "engine.vc1Matroska":
+      "{path}: VC-1 in a Matroska file carries no presentation times (libavformat reads only decoding times " +
+      "for it), so no picture can be found to start a cut from. Remux it to .m2ts first, letting ffmpeg make " +
+      "the times up: ffmpeg -fflags +genpts -i in.mkv -c copy out.m2ts",
   },
 };
 
@@ -2831,7 +2869,54 @@ function fill(text, vars) {
 /// to the key itself if it is in neither, which is what a typo looks like.
 export function t(key, vars) {
   const text = CATALOG[lang]?.[key] ?? CATALOG.ja[key] ?? key;
+  // An error handed in to be said is said in the language in force where it
+  // is one of the engine's refusals: see `engineSays`.
+  if (vars && "e" in vars && vars.e != null) {
+    const e = String(vars.e);
+    const said = engineSays(e);
+    if (said !== e) vars = { ...vars, e: said };
+  }
   return fill(text, vars);
+}
+
+/// The engine's refusals to open a recording, which are written in English
+/// on that side (`smartcut_core`), as the command line prints them, and
+/// reach a window as the text of an error: the row's line, or the `{e}` of a
+/// sentence of ours. Each is recognised by its own words and said again from
+/// the catalogue, so that a Japanese screen does not stand an English
+/// paragraph under a Japanese name. The English lines are the engine's word
+/// for word, so nothing changes for an English screen.
+///
+/// Matched whole, not by a fragment: a sentence the engine words otherwise
+/// one day is shown as it comes rather than half-translated.
+const ENGINE = [
+  [
+    /^([\s\S]*): the pictures' clock starts again part-way through the file \(at byte (\d+), (-?[\d.]+)s comes after (-?[\d.]+)s\), so it holds more than one recording one after another -- [\s\S]* rather than its \.VOB files\.$/,
+    "engine.clockRestarts",
+    (m) => ({ path: m[1], pos: m[2], at: m[3], latest: m[4] }),
+  ],
+  [
+    /^([\s\S]*): VC-1 in a Matroska file carries no presentation times [\s\S]*-c copy out\.m2ts$/,
+    "engine.vc1Matroska",
+    (m) => ({ path: m[1] }),
+  ],
+  [/^no random access points found in ([\s\S]+)$/, "engine.noEntry", (m) => ({ path: m[1] })],
+  [
+    /^note: the arrival times in ([\s\S]*) were left as written: ([\s\S]*)$/,
+    "engine.restampLeft",
+    (m) => ({ path: m[1], why: m[2] }),
+  ],
+];
+
+/// `text` in the language in force where it is one of `ENGINE`, and as it
+/// came otherwise.
+export function engineSays(text) {
+  const s = String(text ?? "");
+  for (const [re, key, vars] of ENGINE) {
+    const m = re.exec(s);
+    if (m) return t(key, vars(m));
+  }
+  return s;
 }
 
 /// Everything the two documents say for themselves.

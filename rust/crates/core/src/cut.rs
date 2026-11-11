@@ -375,6 +375,13 @@ pub struct CutOptions {
     /// that wrote what it was given. A caller that does not ask leaves it
     /// `None`.
     pub replanned: Option<std::sync::Arc<std::sync::OnceLock<Vec<Vec<RangePlan>>>>>,
+    /// Where the caller wants the notes a run can only say once the file is
+    /// written, to show beside the run's own result: a standalone `.m2ts`
+    /// whose arrival times were left as libavformat wrote them (see
+    /// [`crate::m2ts::restamp`]). Each line is said as well, as every note
+    /// is; this is for a window, which has no terminal to read it on. A
+    /// caller that does not ask leaves it `None`.
+    pub notes: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
     /// Whether this run is writing a clip into a disc's folder -- the
     /// command line's `--bdav`, or a disc the window is making -- which
     /// [`crate::bdav::stamp`] stamps once it is written. Every other `.m2ts`
@@ -461,6 +468,20 @@ impl CutOptions {
 /// within a fraction of a second of each other, so a packet that has not
 /// arrived three seconds later is not going to.
 const TRAIL: f64 = 3.0;
+
+/// How far past a re-encoded segment's end the read goes while the decoder
+/// has handed back no picture at all, before the segment is given up.
+///
+/// **A decoder that has shown nothing by then is not going to show this
+/// segment anything.** Reaching the end is what a picture at or past it
+/// says, and a decoder that never outputs never says it: an AVCHD disc's map
+/// enters on I pictures that are not IDR and carry no recovery point, which
+/// libavcodec's H.264 decoder never takes for a place to start showing from,
+/// and a five-second keep of a three-hour title read the rest of the title
+/// (391 s warm, a quarter of an hour cold) before saying "no pictures
+/// decoded". Ten seconds of the recording's own clock is several GOPs of
+/// anything, and far longer than any decoder's delay.
+const NOTHING_SHOWN: f64 = 10.0;
 
 /// The furthest past its anchor a copied picture is placed, in seconds:
 /// about three years. A tick is at most 1/2^31 of a second (see
@@ -967,9 +988,9 @@ struct Writer {
     shrink: Option<Shrink>,
     /// A re-encoded head waiting for the copy after it. See [`poc_seam`].
     held: Option<Held>,
-    /// A recording joined after another has begun, or a range whose copy
-    /// follows a copy it does not carry on from, and none of its pictures
-    /// has been written yet. See [`copy_segment`] for what an HEVC copy does
+    /// A recording joined after another has begun, a range whose copy
+    /// follows a copy it does not carry on from, or the last picture written
+    /// was re-encoded -- and nothing copied has been written since. See [`copy_segment`] for what an HEVC copy does
     /// with that.
     opening: bool,
     /// Keep a picture more than the reorder depth asks back, so that the
@@ -1477,7 +1498,10 @@ impl Writer {
         if let Some(config) = self.av1_mp4.as_mut() {
             config.packet(&mut e.packet, kind)?;
         }
-        self.opening = false;
+        // A copy after a re-encoded picture opens on a splice as well: its
+        // first picture follows the encoder's, not the recording's own. See
+        // [`copy_segment`] for what an HEVC copy does with that.
+        self.opening = kind == SegmentKind::Reencode;
         if let Some(held) = self.held.as_mut() {
             if !held.sealed {
                 held.pictures += 1;
@@ -1806,8 +1830,15 @@ impl Writer {
         // times, and capped here it would lose that again; left at its coded
         // length, the average's frame, it passed the end.
         let mut fields = e.fields;
+        //
+        // Every muxer of the MP4 family, as `cut_into` names them for its
+        // edit list: a `.3gp` or `.f4v` is the same box structure, and a
+        // variable recording cut into one ran past the range as an MP4 did.
         if self.keep_last
-            && matches!(self.octx.format().name(), "matroska" | "webm" | "mp4" | "mov" | "ipod")
+            && matches!(
+                self.octx.format().name(),
+                "matroska" | "webm" | "mp4" | "mov" | "ipod" | "3gp" | "3g2" | "psp" | "ismv" | "f4v"
+            )
         {
             match self.ends {
                 Some(end) if self.pending.is_empty() && end > e.display => fields = end - e.display,
@@ -2696,6 +2727,21 @@ mod poc_seam {
     fn stop_bit(rbsp: &[u8]) -> Option<usize> {
         let byte = rbsp.iter().rposition(|&b| b != 0)?;
         Some(byte * 8 + 7 - rbsp[byte].trailing_zeros() as usize)
+    }
+
+    /// The number a sequence or picture parameter set NAL is filed under.
+    /// See [`super::seam_set_id`].
+    pub(super) fn set_id(nal: &[u8]) -> Option<u32> {
+        let rbsp = unescape(nal);
+        let mut b = Bits { data: &rbsp, pos: 8 };
+        match rbsp.first()? & 0x1F {
+            7 => {
+                b.u(24)?; // profile, constraint flags, level
+                b.ue()
+            }
+            8 => b.ue(),
+            _ => None,
+        }
     }
 
     /// `max_num_ref_frames` of the sequence header a packet restates ahead
@@ -3848,15 +3894,66 @@ struct TsLayout {
     service_id: i32,
 }
 
+/// The muxer for `output` -- by its name, or the one `format` names -- with
+/// nothing done to the file yet: what `ff::format::output` (`output_as`)
+/// gives, less the `avio_open` that creates the file, which empties one
+/// that is there. See [`open_file`].
+///
+/// **A refusal comes before the file is touched.** Opened first, every
+/// "cannot hold" the writer says once it can ask the muxer -- a `.flac`
+/// asked to hold AAC, an encoder that will not open -- was said over a
+/// file it had already emptied: `--sound-only -o existing.flac` of a
+/// broadcast's AAC left nought bytes where the file had been.
+pub(crate) fn unopened(output: &str, format: Option<&str>) -> Result<ff::format::context::Output> {
+    let named = std::ffi::CString::new(&*crate::input::as_output(output))
+        .map_err(|_| anyhow!("{output}: the name holds a NUL"))?;
+    let format = format
+        .map(std::ffi::CString::new)
+        .transpose()
+        .map_err(|_| anyhow!("{output}: the format name holds a NUL"))?;
+    unsafe {
+        let mut ps = std::ptr::null_mut();
+        let err = ff::ffi::avformat_alloc_output_context2(
+            &mut ps,
+            std::ptr::null_mut(),
+            format.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
+            named.as_ptr(),
+        );
+        if err < 0 || ps.is_null() {
+            return Err(anyhow!("{output}: {}", ff::Error::from(err.min(-1))));
+        }
+        Ok(ff::format::context::Output::wrap(ps))
+    }
+}
+
+/// Create (or empty) the file an [`unopened`] muxer writes, as
+/// `ff::format::output` would have at the start. Called right before the
+/// header is written, once nothing is left to refuse.
+pub(crate) fn open_file(octx: &mut ff::format::context::Output, output: &str) -> Result<()> {
+    let named = std::ffi::CString::new(&*crate::input::as_output(output))
+        .map_err(|_| anyhow!("{output}: the name holds a NUL"))?;
+    unsafe {
+        let ps = octx.as_mut_ptr();
+        if !(*ps).pb.is_null() {
+            return Ok(());
+        }
+        let err = ff::ffi::avio_open(&mut (*ps).pb, named.as_ptr(), ff::ffi::AVIO_FLAG_WRITE);
+        if err < 0 {
+            return Err(anyhow!("{output}: {}", ff::Error::from(err)));
+        }
+    }
+    Ok(())
+}
+
 /// Whether the output is Blu-ray's own shape of transport stream.
 ///
 /// The two differ in the framing -- a `.m2ts` puts four bytes of arrival
 /// time in front of every packet -- and in the numbering: see [`Pids`].
+///
+/// By the name's ending as libavformat reads it ([`crate::carry::extension`]):
+/// a file named just `.m2ts` is written as one.
 fn writing_m2ts(path: &str) -> bool {
-    std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("m2ts"))
+    crate::carry::extension(path) == "m2ts"
 }
 
 /// Whether the output is a clip in a disc's folder, `BDAV/STREAM/00001.m2ts`,
@@ -3879,14 +3976,14 @@ fn onto_a_disc(path: &str) -> bool {
 /// own tables go into that as they go into a `.ts` -- the pass that puts
 /// them back reads whichever framing it finds -- which is what lets a cut be
 /// written straight onto a disc. See [`crate::bdav`].
+///
+/// By the name's ending as libavformat reads it, as [`writing_m2ts`]: a file
+/// named just `.ts` is a transport stream to the muxer, and was judged here
+/// not to be one.
 fn writing_ts(path: &str) -> bool {
     matches!(
-        std::path::Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("ts" | "m2ts" | "mts" | "m2t")
+        crate::carry::extension(path).as_str(),
+        "ts" | "m2ts" | "mts" | "m2t"
     )
 }
 
@@ -4210,12 +4307,68 @@ fn seek_to(ictx: &mut crate::input::Demux, src: &Source, time: f64) -> Result<()
         }
     }
     let target = if landing <= 0.0 {
-        i64::MIN / 2
+        crate::input::head_seek(ictx)
     } else {
         ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
     };
     ictx.seek(target, ..target).context("seek failed")?;
     Ok(())
+}
+
+/// Which of a DVD's subtitle streams a segment's read still waits on: each
+/// until a unit of its own turns up past the segment's end, as the sound's
+/// and the captions' streams are waited on one by one.
+///
+/// **One flag for them all stopped every stream at the first.** A DVD muxes
+/// a unit ahead of and around its time, so on a title with two languages
+/// the first unit of either past the end stopped the read, and a unit of the
+/// other that came after it in the file -- still inside the segment -- was
+/// never taken: the line left out of the `.idx/.sub` or the PGS at a range's
+/// end.
+///
+/// The streams owed are the ones the cut writes: listed for the title, not
+/// left out, and going somewhere (beside the cut, or converted). A listed
+/// stream with no unit past the end leaves the read to stop where the
+/// pictures say (see [`TRAIL`]).
+struct SubsOwed {
+    owed: Vec<i32>,
+    past: Vec<i32>,
+}
+
+impl SubsOwed {
+    /// `reading` is whether the segment reads subtitles at all
+    /// (`ctx.subpictures`).
+    fn new(reading: bool, src: &Source, writer: &Writer) -> Self {
+        let owed = if reading {
+            src.subpictures
+                .iter()
+                .map(|s| s.id)
+                .filter(|id| {
+                    writer.subpictures.as_ref().is_some_and(|s| !s.dropped.contains(id))
+                        || writer.converted.iter().any(|c| c.id == *id)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        SubsOwed { owed, past: Vec::new() }
+    }
+
+    /// Whether no stream is owed any more.
+    fn done(&self) -> bool {
+        self.owed.is_empty()
+    }
+
+    /// Take a unit of stream `id` with `take` (which says whether it was past
+    /// the segment), unless that stream has run past it already; then whether
+    /// every stream owed is done.
+    fn take(&mut self, id: i32, take: impl FnOnce() -> bool) -> bool {
+        if !self.past.contains(&id) && take() {
+            self.past.push(id);
+            self.owed.retain(|&o| o != id);
+        }
+        self.done()
+    }
 }
 
 /// Put one subtitle of a DVD aside, if it falls inside this segment's
@@ -4286,17 +4439,11 @@ fn convert_subpicture(
             }
             return Ok(());
         };
-        let picture = crate::pgs::write::Picture {
-            x: drawn.x,
-            y: drawn.y,
-            width: drawn.width,
-            height: drawn.height,
-            indices: &drawn.indices,
-            palette: &drawn.palette,
-        };
-        let until = drawn.until.map(|d| at + d);
+        // Up where the unit's own start puts it, down where its stop does
+        // (both counted from `at`), and forced where it says so. See
+        // [`crate::pgs::write::Composer::show_drawn`].
         c.shown += 1;
-        (c.track, c.composer.show(c.screen, at, until, &picture))
+        (c.track, c.composer.show_drawn(c.screen, at, &drawn))
     };
     for held in &sets {
         writer.push_graphics(track, held, 0.0, mended)?;
@@ -4567,7 +4714,7 @@ struct GraphicsBefore {
 mod conformed;
 use conformed::conform_segment;
 // The seam window scales a reel into the master the way the cut does.
-pub(crate) use conformed::{convert_matrices, matrices};
+pub(crate) use conformed::{convert_matrices, far_slack, matrices};
 
 /// Take the segment's packets straight from the source, untouched.
 fn copy_segment(
@@ -4665,9 +4812,9 @@ fn copy_segment(
     // A recording with no subtitles of this kind is done with them before it
     // begins, which is what keeps the read from waiting on packets that are
     // never coming.
-    let mut sub_done = !ctx.subpictures
-        || src.subpictures.is_empty()
-        || (writer.subpictures.is_none() && writer.converted.is_empty());
+    // Per stream: see [`SubsOwed`].
+    let mut subs_owed = SubsOwed::new(ctx.subpictures, src, writer);
+    let mut sub_done = subs_owed.done();
 
     // See [`crate::input::LateFrames`].
     let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
@@ -4714,7 +4861,8 @@ fn copy_segment(
                 // recording. See [`crate::SubpictureInfo`].
                 let id = stream.id();
                 let tb = f64::from(stream.time_base());
-                sub_done = take_subpicture(seg, ctx.offset, id, tb, src, &packet, writer);
+                sub_done = subs_owed
+                    .take(id, || take_subpicture(seg, ctx.offset, id, tb, src, &packet, writer));
             }
             if video_done
                 && audio_done.iter().all(|&d| d)
@@ -4941,8 +5089,11 @@ fn copy_segment(
         // CRA after one throws away the pictures not yet shown (two, there).
         // An IDR restarts everything itself and is left as it is. A range
         // whose copy follows a copy it does not carry on from is answered
-        // the same way (see [`after_a_copy`]). See [`open_the_reel`] for
-        // H.264, which has no such type.
+        // the same way (see [`after_a_copy`]), and so is a copy right after
+        // a re-encoded stretch of its own recording: its CRA was read
+        // against the encoder's last pictures, which only libav's habit of
+        // starting afresh at a changed sequence header made right. See
+        // [`open_the_reel`] for H.264, which has no such type.
         let packet = if writer.opening && src.video.codec == "hevc" {
             let framing = match (reframe, ctx.unframe) {
                 (Some(r), _) => NalFraming::Length(r.nal_length),
@@ -5046,8 +5197,113 @@ fn copy_segment(
 /// ended where the recording's own entry points happened to fall. See
 /// [`smartcut_vc1`], which writes the few dozen pictures such a cut needs.
 enum Pictures {
-    Libav(Box<ff::encoder::video::Encoder>),
+    Libav(Box<SeamEncoder>),
     Vc1(Box<smartcut_vc1::Encoder>),
+}
+
+/// A libavcodec encoder, and the format it is handed its pictures in where
+/// it cannot take the decoder's own. See [`taken_as`].
+///
+/// Everything but the sending is the encoder's own, through `Deref`; the
+/// sending converts first, so that a caller handing it decoded pictures need
+/// not know.
+struct SeamEncoder {
+    encoder: ff::encoder::video::Encoder,
+    /// The format the encoder was opened at, where that is not the
+    /// recording's; the scaler is built for the first picture's shape and
+    /// again whenever that changes.
+    into: Option<ff::format::Pixel>,
+    scaler: Option<((u32, u32, ff::format::Pixel), ff::software::scaling::Context)>,
+}
+
+impl std::ops::Deref for SeamEncoder {
+    type Target = ff::encoder::video::Encoder;
+    fn deref(&self) -> &Self::Target {
+        &self.encoder
+    }
+}
+
+impl std::ops::DerefMut for SeamEncoder {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.encoder
+    }
+}
+
+impl SeamEncoder {
+    fn send_frame(&mut self, frame: &ff::frame::Video) -> Result<()> {
+        let Some(into) = self.into.filter(|&f| f != frame.format()) else {
+            self.encoder.send_frame(frame)?;
+            return Ok(());
+        };
+        let shape = (frame.width(), frame.height(), frame.format());
+        if self.scaler.as_ref().is_none_or(|(was, _)| *was != shape) {
+            let ctx = ff::software::scaling::Context::get(
+                shape.2,
+                shape.0,
+                shape.1,
+                into,
+                shape.0,
+                shape.1,
+                ff::software::scaling::Flags::POINT | ff::software::scaling::Flags::BITEXACT,
+            )?;
+            self.scaler = Some((shape, ctx));
+        }
+        let (_, ctx) = self.scaler.as_mut().expect("built just above");
+        let mut out = ff::frame::Video::empty();
+        ctx.run(frame, &mut out)?;
+        // The picture's own time, kind, fields and colour go with it.
+        unsafe {
+            if ff::ffi::av_frame_copy_props(out.as_mut_ptr(), frame.as_ptr()) < 0 {
+                bail!("cannot carry a picture's properties into {into:?}");
+            }
+        }
+        self.encoder.send_frame(&out)?;
+        Ok(())
+    }
+}
+
+/// The format an encoder is to be opened at for a recording whose own it
+/// does not take, where there is one that loses nothing the encoder could
+/// have kept; `None` where it takes the recording's, or has nothing to offer
+/// in its place (and then refuses to open, as it always did).
+///
+/// **Two shapes no encoder here writes as they are decoded.** ProRes 4444
+/// and 4444 XQ decode to twelve bits, and libavcodec's ProRes encoders take
+/// ten: every re-encode of such a recording -- a range shorter than the
+/// shortest copy, any transition at a join -- stopped at "cannot open
+/// encoder: Invalid argument". The seam is written from ten, which is what
+/// the ProRes encoders have; the copied pictures keep their twelve. And an
+/// RGB H.264 (libx264rgb's, OBS's lossless RGB) decodes to planar GBR, which
+/// libx264rgb takes packed: the same samples in another order.
+fn taken_as(codec: &ff::codec::codec::Codec, from: i32) -> Option<ff::format::Pixel> {
+    use ff::ffi::AVPixelFormat as F;
+    use ff::format::Pixel as P;
+    let listed: Vec<P> = codec.video().ok()?.formats()?.collect();
+    let raw = |p: P| F::from(p) as i32;
+    if listed.is_empty() || listed.iter().any(|&p| raw(p) == from) {
+        return None;
+    }
+    // Only for the two shapes named above. A twelve-bit H.264, HEVC or
+    // DNxHR whose encoder stops at ten is refused as it always was: its
+    // seams would state another bit depth than the pictures copied around
+    // them, inside one stream. A ProRes picture states none.
+    let id = codec.id();
+    let instead: &[P] = match from {
+        f if id == ff::codec::Id::PRORES && f == F::AV_PIX_FMT_YUV444P12LE as i32 => {
+            &[P::YUV444P10LE]
+        }
+        f if id == ff::codec::Id::PRORES && f == F::AV_PIX_FMT_YUVA444P12LE as i32 => {
+            &[P::YUVA444P10LE]
+        }
+        f if id == ff::codec::Id::PRORES && f == F::AV_PIX_FMT_YUV422P12LE as i32 => {
+            &[P::YUV422P10LE]
+        }
+        f if id == ff::codec::Id::H264 && f == F::AV_PIX_FMT_GBRP as i32 => {
+            &[P::BGRZ, P::BGR24, P::RGB24]
+        }
+        _ => &[],
+    };
+    instead.iter().copied().find(|p| listed.contains(p))
 }
 
 /// The quantizer step VC-1 pictures are written at when nothing says
@@ -5212,6 +5468,103 @@ struct Signalling {
     /// output keeps no aspect of its own to state it for them. See
     /// [`restated_sar`].
     restate_sar: Option<(i32, i32)>,
+    /// The H.264 parameter set numbers (sequence and picture, one bit each
+    /// below 64) the recording's own record and opening packets use. A seam
+    /// is written under a number none of them has; see [`seam_set_id`].
+    h264_ids: u64,
+    /// How many slices the recording's first key picture is coded in, where
+    /// that is more than one. See [`open_encoder_as`].
+    h264_slices: Option<usize>,
+    /// How many pictures apart the encoder puts its key pictures, where that
+    /// is the master's own GOP rather than "never": a whole reel written in
+    /// the master's shape. Never set for a seam. See [`master_gop`].
+    gop: Option<i32>,
+}
+
+/// How many pictures apart a master's own key pictures come, as the median
+/// of its entry points' spacing; `None` where it has too few to say.
+///
+/// **A reel written whole into the master's shape is not a seam.** A seam
+/// is a partial GOP, shorter than the GOPs either side of it, and is written
+/// with no key picture past its first. A reel that does not match the
+/// master is re-encoded from its first picture to its last, and written that
+/// way it had one key picture for up to 600 pictures: a phone clip joined
+/// onto a camera's 720p master went into a `.ts` as one IDR and 199 pictures
+/// after it, a seek into the reel decoded nothing, and an hour of a DVD
+/// conformed onto a DVD master had a key picture every 20 seconds where a
+/// DVD has one every half. Held to the master's own spacing, the reel can be
+/// entered where the master's pictures can.
+fn master_gop(src: &Source) -> Option<i32> {
+    let mut gaps: Vec<f64> = src
+        .points
+        .windows(2)
+        .map(|w| w[1].time - w[0].time)
+        .filter(|g| g.is_finite() && *g > 0.0)
+        .collect();
+    if gaps.len() < 2 || !(src.video.frame_rate.is_finite() && src.video.frame_rate > 0.0) {
+        return None;
+    }
+    gaps.sort_by(f64::total_cmp);
+    let median = gaps[gaps.len() / 2];
+    Some(((median * src.video.frame_rate).round() as i32).clamp(1, 600))
+}
+
+/// The parameter set number an H.264 seam is written under: the lowest from
+/// one up that the recording's own sets (`ids`, see [`Signalling::h264_ids`])
+/// do not use.
+///
+/// **A seam's sets differ from the copy's, and under the same number they
+/// replace them.** x264 numbers its sequence and picture sets 0, and so does
+/// nearly every recording. Written as 0, the seam's set redefined the
+/// recording's in the middle of its sequence -- after a copy that opens on
+/// an I picture that is not an IDR there is nothing to restart it -- and a
+/// player that seeks into the first copied group after a seam, before the
+/// recording restates its own set, decodes the copy by the seam's: an x264
+/// open-GOP recording cut to `.ts` showed broken B pictures to the end of
+/// the file after 4-15 % of `ffmpeg -ss` seeks. Never 0, so that a cut of a
+/// cut whose first range was re-encoded (its opening packets say the old
+/// seam's number) does not take the number its copies use.
+fn seam_set_id(ids: u64) -> u32 {
+    (1..32).find(|&i| ids & (1u64 << i) == 0).unwrap_or(31)
+}
+
+/// The reference frames an x264 seam is held to, where it is held: the
+/// copy's own count (see [`refs_before`]), x264's three included -- a seam
+/// with a B pyramid keeps four unless told otherwise (see
+/// [`open_encoder_as`]), so a copy keeping three is not left to the default.
+fn capped_refs(signalling: &Signalling) -> Option<i64> {
+    signalling.refs.filter(|&r| (1..=X264_REFS).contains(&r))
+}
+
+/// The parameter set numbers among `nals`, one bit each. See
+/// [`Signalling::h264_ids`].
+fn h264_set_ids<'a>(nals: impl IntoIterator<Item = &'a [u8]>) -> u64 {
+    nals.into_iter()
+        .filter_map(poc_seam::set_id)
+        .filter(|&id| id < 64)
+        .fold(0, |ids, id| ids | (1u64 << id))
+}
+
+#[cfg(test)]
+mod seam_set_id_tests {
+    use super::{h264_set_ids, seam_set_id};
+
+    #[test]
+    fn a_seam_takes_a_number_the_recording_does_not_use() {
+        // x264's SPS and PPS numbered 0 (High, level 3.0), then numbered 2.
+        let sps0: &[u8] = &[0x67, 0x64, 0x00, 0x1e, 0xac, 0xd9];
+        let pps0: &[u8] = &[0x68, 0xeb, 0xe3, 0xcb];
+        let sps2: &[u8] = &[0x67, 0x64, 0x00, 0x1e, 0x6a, 0xd9];
+        let pps2: &[u8] = &[0x68, 0x6b, 0xe3, 0xcb];
+        assert_eq!(h264_set_ids([sps0, pps0]), 1);
+        assert_eq!(h264_set_ids([sps2, pps2]), 1 << 2);
+        assert_eq!(h264_set_ids([&[0x65u8, 0x88][..]]), 0);
+        assert_eq!(seam_set_id(0), 1);
+        assert_eq!(seam_set_id(1), 1);
+        // A cut of a cut that opened on its seam: never 0, never the seam's.
+        assert_eq!(seam_set_id(1 << 1), 2);
+        assert_eq!(seam_set_id(0b111), 3);
+    }
 }
 
 /// The pixel aspect a picture coded with `coded` has to be rewritten to
@@ -5555,7 +5908,50 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
     let resolved = unsafe { crate::raw_enum(std::ptr::addr_of!((*params.as_ptr()).color_trc)) };
     let hdr = resolved == ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084 as i32
         || resolved == ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67 as i32;
+    // The parameter set numbers the recording uses, from its record and from
+    // the packets read below. See [`seam_set_id`].
+    let h264 = src.video.codec == "h264";
+    if h264 {
+        let record = unsafe {
+            let p = params.as_ptr();
+            if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+            }
+        };
+        let sets = parameter_sets("h264", record);
+        out.h264_ids = if sets.is_empty() {
+            // A record in start codes, as one read from a transport stream.
+            h264_set_ids(crate::bitstream::nal_payloads(record, NalFraming::AnnexB))
+        } else {
+            h264_set_ids(sets.iter().map(|s| s.as_slice()))
+        };
+    }
+    let slices_of = |packet: &ff::Packet| {
+        packet.data().map_or(0, |d| {
+            crate::bitstream::nal_payloads(d, src.video.framing)
+                .iter()
+                .filter(|nal| nal.first().is_some_and(|b| matches!(b & 0x1F, 1 | 5)))
+                .count()
+        })
+    };
+    let ids_of = |packet: &ff::Packet| {
+        packet.data().map_or(0, |d| h264_set_ids(crate::bitstream::nal_payloads(d, src.video.framing)))
+    };
     if !hdr && !out.has_dovi {
+        if h264 {
+            for (stream, packet) in ictx.read_packets().take(64) {
+                if stream.index() == ist {
+                    out.h264_ids |= ids_of(&packet);
+                    if packet.is_key() && out.h264_slices.is_none() {
+                        out.h264_slices = Some(slices_of(&packet));
+                    }
+                }
+            }
+            out.h264_slices = out.h264_slices.filter(|&n| n > 1);
+            return out;
+        }
         // **Before the way out, not after it.** What the recording's own
         // sequence header states about its rate is wanted for every
         // re-encode, and an ordinary broadcast is exactly the case this
@@ -5605,6 +6001,12 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
     for (stream, packet) in ictx.read_packets().take(64) {
         if stream.index() != ist {
             continue;
+        }
+        if h264 {
+            out.h264_ids |= ids_of(&packet);
+            if packet.is_key() && out.h264_slices.is_none() {
+                out.h264_slices = Some(slices_of(&packet));
+            }
         }
         if out.coded_transfer.is_none() {
             out.coded_transfer = packet
@@ -5716,7 +6118,7 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
 /// Which encoders may write a codec's partial GOPs, best first.
 ///
 /// Empty for everything libavcodec has one sensible answer for, where
-/// [`ff::encoder::find`] is asked instead. Two codecs are named outright.
+/// [`ff::encoder::find`] is asked instead. Three are named outright.
 ///
 /// **AV1.** What `find` returns is libaom-av1, whose default `cpu-used` is 0:
 /// measured here at 348 seconds for two seconds of 1080p24, which is not a
@@ -5727,10 +6129,16 @@ fn signalling_of(src: &Source, opts: &CutOptions) -> Signalling {
 ///
 /// **VP9.** There is only one either way. It is named so that the speed set
 /// below does not depend on what `find` answered.
-fn encoders_for(id: ff::codec::Id) -> &'static [&'static str] {
+///
+/// **H.264 in RGB.** libx264 writes YUV only and refuses planar GBR when it
+/// is opened; libx264rgb is the same encoder taking RGB. See [`taken_as`].
+fn encoders_for(id: ff::codec::Id, format: i32) -> &'static [&'static str] {
     match id {
         ff::codec::Id::AV1 => &["libsvtav1", "librav1e", "libaom-av1"],
         ff::codec::Id::VP9 => &["libvpx-vp9"],
+        ff::codec::Id::H264 if format == ff::ffi::AVPixelFormat::AV_PIX_FMT_GBRP as i32 => {
+            &["libx264rgb"]
+        }
         _ => &[],
     }
 }
@@ -5791,12 +6199,41 @@ pub(crate) fn xvid_mpeg_quant(params: &ff::codec::Parameters) -> bool {
 }
 
 /// [`xvid_mpeg_quant`] on a codec record and its fourcc.
+///
+/// **The fourcc counts only where no user data names the encoder.** That is
+/// libavcodec's order: an "XviD" string makes the stream Xvid's whatever its
+/// fourcc, and a "DivX", "Lavc" or "FFmpeg" one keeps the fourcc from being
+/// asked at all. `ffmpeg -c:v mpeg4 -mpeg_quant 1 -vtag XVID` -- the usual
+/// way to make an .avi "Xvid" -- says "Lavc" in its record, libavcodec
+/// decodes it with its own IDCT, and taken for Xvid by the fourcc every
+/// decoder here used Xvid's: 64.8 dB from libavcodec's own pictures.
 fn xvid_mpeg_quant_record(record: &[u8], tag: u32) -> bool {
+    // In upper case, as libavcodec compares it: ffmpeg's own .avi writes "xvid".
+    let tag = u32::from_le_bytes(tag.to_le_bytes().map(|c| c.to_ascii_uppercase()));
     let fourcc = [b"XVID", b"XVIX", b"RMP4", b"ZMP4", b"SIPP"]
         .iter()
         .any(|t| tag == u32::from_le_bytes(**t));
-    let user_data = record.windows(8).any(|w| w[..4] == [0, 0, 1, 0xB2] && &w[4..] == b"XviD");
-    (fourcc || user_data) && mpeg4_vol(record).is_some_and(|v| v.mpeg_quant)
+    // Each user data string, up to the next start code.
+    let strings: Vec<&[u8]> = record
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == [0, 0, 1, 0xB2])
+        .map(|(i, _)| {
+            let body = &record[i + 4..];
+            let end = body.windows(3).position(|w| w == [0, 0, 1]).unwrap_or(body.len());
+            &body[..end]
+        })
+        .collect();
+    let named = |name: &[u8]| {
+        strings.iter().any(|s| {
+            s.starts_with(name) && s.get(name.len()).is_some_and(|c| c.is_ascii_digit())
+        })
+    };
+    let xvid = named(b"XviD");
+    let other = named(b"DivX")
+        || named(b"Lavc")
+        || strings.iter().any(|s| s.starts_with(b"FFmpe") || *s == b"ffmpeg");
+    (xvid || (fourcc && !other)) && mpeg4_vol(record).is_some_and(|v| v.mpeg_quant)
 }
 
 /// Whether an MPEG-4 Part 2 packet states a video object layer before its
@@ -6008,7 +6445,15 @@ mod mpeg4_vol_tests {
              36312e31392e313031"
         );
         assert!(!xvid_mpeg_quant_record(&cm, 0));
-        assert!(xvid_mpeg_quant_record(&cm, u32::from_le_bytes(*b"XVID")));
+        // ... and not even then: its record says "Lavc", and libavcodec asks
+        // the fourcc only where no user data has named the encoder.
+        assert!(!xvid_mpeg_quant_record(&cm, u32::from_le_bytes(*b"XVID")));
+        // The same VOL with no user data at all is Xvid's by its fourcc.
+        let ud = cm.windows(4).position(|w| w == [0, 0, 1, 0xB2]).unwrap();
+        let bare = &cm[..ud];
+        assert!(xvid_mpeg_quant_record(bare, u32::from_le_bytes(*b"XVID")));
+        assert!(!xvid_mpeg_quant_record(bare, 0));
+        assert!(xvid_mpeg_quant_record(bare, u32::from_le_bytes(*b"xvid")));
         assert!(!xvid_mpeg_quant_record(&[], u32::from_le_bytes(*b"XVID")));
     }
 }
@@ -6026,10 +6471,11 @@ fn open_encoder(
     params: &ff::codec::Parameters,
     opts: &CutOptions,
     signalling: &Signalling,
-) -> Result<ff::encoder::video::Encoder> {
+) -> Result<SeamEncoder> {
     let id = params.id();
+    let format = unsafe { (*params.as_ptr()).format };
     let mut refused: Option<anyhow::Error> = None;
-    for name in encoders_for(id) {
+    for name in encoders_for(id, format) {
         let Some(codec) = ff::encoder::find_by_name(name) else {
             continue;
         };
@@ -6068,10 +6514,13 @@ fn open_encoder_as(
     opts: &CutOptions,
     signalling: &Signalling,
     av1_level: Option<&str>,
-) -> Result<ff::encoder::video::Encoder> {
+) -> Result<SeamEncoder> {
     let mut enc = ff::codec::context::Context::new_with_codec(codec)
         .encoder()
         .video()?;
+    // The format the pictures are converted to on their way in, where the
+    // encoder cannot take the recording's. See [`taken_as`].
+    let into = taken_as(&codec, unsafe { (*params.as_ptr()).format });
 
     let v = video;
     // What an MPEG-4 Part 2 recording's own VOL says. See [`mpeg4_vol`].
@@ -6098,7 +6547,10 @@ fn open_encoder_as(
         let p = params.as_ptr();
         let e = enc.as_mut_ptr();
         // codecpar carries the pixel format as a plain int
-        crate::set_raw_enum(std::ptr::addr_of_mut!((*e).pix_fmt), (*p).format);
+        crate::set_raw_enum(
+            std::ptr::addr_of_mut!((*e).pix_fmt),
+            into.map_or((*p).format, |f| ff::ffi::AVPixelFormat::from(f) as i32),
+        );
         // The aspect the copied pictures are rewritten to state, where the
         // output can state it nowhere else. See [`restated_sar`].
         (*e).sample_aspect_ratio = match restated_sar(
@@ -6171,8 +6623,8 @@ fn open_encoder_as(
         // Fewer reference frames than x264's own three (its preset's), and
         // only where the copy after the seam is to be decoded on from it.
         // See [`refs_before`].
-        if codec.name() == "libx264" {
-            if let Some(refs) = signalling.refs.filter(|&r| (1..X264_REFS).contains(&r)) {
+        if matches!(codec.name(), "libx264" | "libx264rgb") {
+            if let Some(refs) = capped_refs(signalling) {
                 (*e).refs = refs as i32;
             }
         }
@@ -6192,7 +6644,9 @@ fn open_encoder_as(
         // A partial GOP is re-encoded whole and spliced, so it must not
         // depend on anything outside itself.
         (*e).flags |= ff::ffi::AV_CODEC_FLAG_CLOSED_GOP as i32;
-        (*e).gop_size = 600;
+        // A seam writes one key picture, at its head; a whole reel in the
+        // master's shape writes them as the master does. See [`master_gop`].
+        (*e).gop_size = signalling.gop.unwrap_or(600);
         // **Every core, the same as the decoder feeding it.** What
         // `avcodec_alloc_context3` leaves here is 1, not 0, and an encoder
         // reads it literally: the seams were written on one core while the
@@ -6372,7 +6826,7 @@ fn open_encoder_as(
     {
         eopts.set("profile", "baseline");
     }
-    if codec.name() == "libx264" && params.id() == ff::codec::Id::H264 {
+    if matches!(codec.name(), "libx264" | "libx264rgb") && params.id() == ff::codec::Id::H264 {
         let record = unsafe {
             let p = params.as_ptr();
             if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
@@ -6383,6 +6837,27 @@ fn open_encoder_as(
         };
         if crate::bitstream::h264_record_lossless(record) {
             eopts.set("qp", "0");
+        }
+        // Its own parameter set number. See [`seam_set_id`].
+        let mut x264 = format!("sps-id={}", seam_set_id(signalling.h264_ids));
+        // **And as many slices as the recording's pictures.** x264 writes
+        // one; a pressed Blu-ray's and many cameras' H.264 is coded in four
+        // or more, which is what the disc formats ask of a 1080 picture so
+        // that a player's decoder can share it out. A seam of one slice
+        // among them is a picture such a player need not take.
+        if let Some(n) = signalling.h264_slices.filter(|&n| n > 1) {
+            x264.push_str(&format!(":slices={}", n.min(32)));
+        }
+        eopts.set("x264-params", &x264);
+        // **A cap on the reference frames binds only without a B pyramid.**
+        // x264 keeps at least four frames whenever it builds one, which it
+        // does by default at two B frames or more: a seam capped to a copy's
+        // two or three still said four, and the decoder's memory changed size
+        // at the copy's I picture all the same (libav: "mmco: unref short
+        // failure"). Without the pyramid it keeps the larger of the cap and
+        // two. Only where the cap is asked for. See [`refs_before`].
+        if capped_refs(signalling).is_some() && v.has_b_frames >= 2 {
+            eopts.set("b-pyramid", "none");
         }
     }
     if codec.name() == "libx265" {
@@ -6474,7 +6949,11 @@ fn open_encoder_as(
             );
         }
     }
-    Ok(enc)
+    Ok(SeamEncoder {
+        encoder: enc,
+        into,
+        scaler: None,
+    })
 }
 
 /// How finely the output timeline is divided where a recording needs it.
@@ -7059,9 +7538,19 @@ fn reencode_segment(
     } else {
         (false, None)
     };
+    // **And only where frames come to as many macroblock rows as an
+    // interlaced sequence counts.** libavcodec codes a progressive frame in
+    // (h+15)/16 rows; a decoder told the sequence is interlaced reads
+    // 2*((h+31)/32). Where the first is odd (a 352x240 picture: 15 against
+    // 16) the sequence cannot be written back interlaced over those frames,
+    // and the segment is encoded as it was before repeats were written --
+    // interlaced, its repeats left to the timestamps. 480, 576, 1080 and 1088
+    // lines are all even; 720 is not (45 rows against 46), which matters only
+    // for a progressive 720-line stream whose sequence says interlaced.
+    let rows_fit = src.video.height.div_ceil(16).is_multiple_of(2);
     // Frames only when the sequence type can be written back afterwards;
     // without it the segment would claim a progressive sequence.
-    let mut encoder = if repeats && interlaced_sequence.is_some() && src.video.interlaced() {
+    let mut encoder = if repeats && interlaced_sequence.is_some() && src.video.interlaced() && rows_fit {
         let mut frames = src.video.clone();
         frames.field_order = 1; // AV_FIELD_PROGRESSIVE
         Pictures::open_into(&frames, default_bit_rate(src), &params, opts, ctx.signalling)?
@@ -7071,11 +7560,14 @@ fn reencode_segment(
     // As the encoder was opened just above, and not merely where a field
     // repeats: with the sequence type unread the encoder is interlaced, and
     // its pictures have to be told so.
-    let as_frames = (repeats && interlaced_sequence.is_some()) || !src.video.interlaced();
+    let as_frames =
+        (repeats && interlaced_sequence.is_some() && rows_fit) || !src.video.interlaced();
     // A progressive sequence only where a frame repeats: without one there
     // is nothing libavcodec wrote wrong, and the seam stays as it was.
     let mut shown = match interlaced_sequence {
-        Some(true) if as_frames => Some(true),
+        // Not over frames whose rows an interlaced sequence counts otherwise
+        // (see `rows_fit`): left progressive, as libavcodec wrote them.
+        Some(true) if as_frames && rows_fit => Some(true),
         Some(false) if as_frames && repeats => Some(false),
         _ => None,
     }
@@ -7099,9 +7591,9 @@ fn reencode_segment(
     // A recording with no subtitles of this kind is done with them before it
     // begins, which is what keeps the read from waiting on packets that are
     // never coming.
-    let mut sub_done = !ctx.subpictures
-        || src.subpictures.is_empty()
-        || (writer.subpictures.is_none() && writer.converted.is_empty());
+    // Per stream: see [`SubsOwed`].
+    let mut subs_owed = SubsOwed::new(ctx.subpictures, src, writer);
+    let mut sub_done = subs_owed.done();
     let mut anchor: Option<f64> = None;
     let mut span = Span::default();
     // The encoder hands packets back in decode order, labelled only with the
@@ -7110,6 +7602,9 @@ fn reencode_segment(
     let mut placed: std::collections::HashMap<i64, (i64, i64)> = Default::default();
     let mut fed = 0i64;
     let mut past_end = false;
+    // Whether the decoder has handed back any picture at all, the run-up's
+    // included. See [`NOTHING_SHOWN`].
+    let mut shown_any = false;
     // Packets libavcodec would not take. See where they are counted.
     let mut damaged = 0usize;
     // Whether the decoder has taken a key picture of this read yet.
@@ -7216,6 +7711,7 @@ fn reencode_segment(
     macro_rules! feed {
         () => {
             while decoder.receive_frame(&mut frame).is_ok() {
+                shown_any = true;
                 let Some(pts) = frame.pts() else { continue };
                 let t = pts as f64 * in_tb - src.start_time;
                 if t >= seg.end - tol {
@@ -7321,7 +7817,8 @@ fn reencode_segment(
                 // recording. See [`crate::SubpictureInfo`].
                 let id = stream.id();
                 let tb = f64::from(stream.time_base());
-                sub_done = take_subpicture(seg, ctx.offset, id, tb, src, &packet, writer);
+                sub_done = subs_owed
+                    .take(id, || take_subpicture(seg, ctx.offset, id, tb, src, &packet, writer));
             }
             continue;
         }
@@ -7359,6 +7856,20 @@ fn reencode_segment(
                 feed!();
             }
             continue;
+        }
+        // See [`NOTHING_SHOWN`].
+        if !shown_any
+            && packet
+                .dts()
+                .or(packet.pts())
+                .is_some_and(|p| p as f64 * in_tb - src.start_time > seg.end + NOTHING_SHOWN)
+        {
+            // There are pictures past the end -- this packet is one -- even
+            // though none was decoded: the window is not past the last
+            // picture, and what is held over it stays (see
+            // `past_the_pictures` below).
+            past_end = true;
+            break;
         }
         // A packet the decoder will not take is not a reason to stop.
         //
@@ -7413,20 +7924,66 @@ fn reencode_segment(
         decoder.send_eof()?;
         feed!();
     }
-    let _ = past_end; // only the loop above acts on it
     // Nothing arrived in the window at all: the whole of it lies inside one
     // picture's hold, and that picture is the whole of what it has to show.
+    //
+    // **Unless that picture had gone before the window opened and nothing
+    // came after it.** Then the window lies past the recording's last
+    // picture, where only its sound runs on: a recording whose sound is a
+    // frame longer than its pictures, cut from inside to that frame, ended
+    // on a picture of the removed stretch written over the sound's last
+    // 40 ms. How long the picture was up is what it says itself (an MP4's
+    // sample duration), or on a recording that comes at a rate its coded
+    // length; a variable one that says nothing keeps its hold. Such a
+    // window writes no picture, and its sound is what the range keeps.
+    let mut past_the_pictures = false;
     if anchor.is_none() {
         if let Some(mut held) = still_on_screen.take() {
-            place!(held, seg.start);
+            let until = held.pts().and_then(|pts| {
+                let stated = unsafe { (*held.as_ptr()).duration };
+                if stated > 0 {
+                    Some(pts.saturating_add(stated) as f64 * in_tb - src.start_time)
+                } else if !src.video.variable_rate {
+                    let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
+                    Some(pts as f64 * in_tb - src.start_time + f64::from(shown_for) * fd / 2.0)
+                } else {
+                    None
+                }
+            });
+            // Not where packets of the window were refused: pictures were
+            // there, and the hold stands for them as it always did.
+            //
+            // **And only over the sound's last frame or so.** Sound that
+            // outlasts the pictures by less than a picture is the muxer's
+            // rounding, and what is held there belongs to the removed
+            // stretch. Sound that runs on for longer is a recording whose
+            // pictures stopped -- a screen capture whose screen stood still
+            // to the end, its last sample a frame long -- where every player
+            // holds the last picture over the rest: a range kept in that
+            // tail kept it as well (a picture held over 46-47 s of one whose
+            // pictures end at 45.5 s), and written with none, its output
+            // had no picture at all. See `pictures_in` in [`crate::preview`],
+            // which counts as this does.
+            if !past_end
+                && damaged == 0
+                && until.is_some_and(|end| end <= seg.start + tol && seg.end <= end + fd + tol)
+            {
+                past_the_pictures = true;
+            } else {
+                place!(held, seg.start);
+            }
         }
     }
+    let _ = (past_end, shown_any); // only the loops above act on them
     let _ = fed; // the count only matters while pictures are still going in
     if let Pictures::Libav(enc) = &mut encoder {
         enc.send_eof()?;
         drain_encoder_shown(enc, reframe, &placed, shown.as_ref(), writer)?;
     }
 
+    if span.pictures == 0 && past_the_pictures {
+        return Ok(span);
+    }
     if span.pictures == 0 {
         if damaged > 0 {
             bail!(
@@ -8106,7 +8663,29 @@ pub(crate) fn plan_audio(
     drop(probe);
     // What the track is written as. Settled before the mode, because it can
     // decide it: there is no copying a frame into a codec it is not in.
-    let target = carriage(source_id, to_ts, bits, opts.audio_codec);
+    //
+    // Except float samples into a file of sound alone whose container has
+    // linear PCM of its own, with no width asked for: LPCM is what the
+    // command line and the window ask a `.wav` for on its behalf, and
+    // `carriage` takes a float track that way to 24 bit integers, which clip
+    // whatever went over full scale. Those files hold floats as floats (see
+    // [`crate::sound::pcm_in`]); the track is still written afresh, as every
+    // PCM is into them.
+    //
+    // Thirty-two bit floats only: the file's own byte order is settled by
+    // `pcm_in` for the PCM `crate::audio::uncompressed` knows, which has no
+    // 64 bit floats, so a big-endian one kept as it was went into a `.wav`
+    // that cannot hold it and was refused (and a `.aiff` of a little-endian
+    // one). Those go the way they went before, by `carriage`.
+    let floats = pcm_file.is_some()
+        && opts.audio_codec == AudioCodec::Lpcm
+        && opts.audio_bits.is_none()
+        && matches!(source_id, ff::codec::Id::PCM_F32LE | ff::codec::Id::PCM_F32BE);
+    let target = if floats {
+        source_id
+    } else {
+        carriage(source_id, to_ts, bits, opts.audio_codec)
+    };
     // Whether the codec on the way out is one the caller named rather than
     // the one that came in. `carriage` can arrive at the same answer either
     // way -- AAC asked of an AAC recording is the recording's own codec --
@@ -8558,6 +9137,7 @@ fn graft_tables(
     pids: &Pids,
     range_starts: &[f64],
     plans: &[RangePlan],
+    spans: &[(f64, f64)],
     output: &str,
     on: Option<&(dyn Fn(f64) + Sync)>,
     tables: crate::si::Tables,
@@ -8787,7 +9367,8 @@ fn graft_tables(
     let ranges: Vec<crate::si::GraftRange> = plans
         .iter()
         .zip(range_starts)
-        .map(|(plan, &start)| {
+        .zip(spans)
+        .map(|((plan, &start), &(from, to))| {
             let anchor = src
                 .points
                 .iter()
@@ -8801,10 +9382,12 @@ fn graft_tables(
             // alternative is reading from the head of the file to find a
             // range forty minutes in, which is gigabytes to carry a stream
             // that is a hundredth of them. See [`crate::carousel::Span`].
+            // From the range's first picture to where its last one ends, as
+            // the sound: see [`sound_span`].
             let source = anchor.map(|p| crate::carousel::Span {
                 pos: p.pos,
-                skip: plan.t_in - p.time,
-                length: plan.t_out - plan.t_in,
+                skip: from - p.time,
+                length: to - from,
             });
             crate::si::GraftRange {
                 start,
@@ -9072,15 +9655,20 @@ mod name_converted_tests {
 /// Where one kept range sits in its recording, for the data broadcast read
 /// out of it as bytes: the byte the index says its opening picture arrives
 /// at, and how far past that picture the range begins. The same reckoning
-/// [`graft_tables`] makes for the master's own ranges.
-fn carousel_span(src: &Source, plan: &RangePlan) -> Option<crate::carousel::Span> {
+/// [`graft_tables`] makes for the master's own ranges, from the range's
+/// first picture to where its last one ends (`span`, see [`sound_span`]).
+fn carousel_span(
+    src: &Source,
+    plan: &RangePlan,
+    (from, to): (f64, f64),
+) -> Option<crate::carousel::Span> {
     src.points
         .iter()
         .rfind(|p| p.time <= plan.t_in + 1e-6 && p.pos >= 0)
         .map(|p| crate::carousel::Span {
             pos: p.pos,
-            skip: plan.t_in - p.time,
-            length: plan.t_out - plan.t_in,
+            skip: from - p.time,
+            length: to - from,
         })
 }
 
@@ -11098,11 +11686,9 @@ fn cut_into(
     // [`crate::carry`].
     {
         let family = crate::carry::family(output);
-        let ext = std::path::Path::new(output)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("file")
-            .to_ascii_lowercase();
+        let ext = Some(crate::carry::extension(output))
+            .filter(|e| !e.is_empty())
+            .unwrap_or_else(|| "file".to_string());
         let refuse = |codec: &str, what: &str| -> anyhow::Error {
             let how = if family == "ts" {
                 "would be written as private data of no stated kind, which is a stream every \
@@ -11115,7 +11701,13 @@ fn cut_into(
             // Into a transport stream, linear PCM of any kind -- eight bit
             // samples, or the 16, 24 or 32 bit or float ones a .mkv or a
             // .mov holds -- goes as Blu-ray LPCM when that is asked for.
-            let instead = if family == "ts" && codec.starts_with("pcm_") {
+            // A program stream takes AC-3 and 16 bit PCM, which are a DVD's.
+            let instead = if family == "ps" && codec.starts_with("pcm_") {
+                "--audio-codec lpcm --audio-bits 16 writes it as 16 bit PCM, which a program \
+                 stream holds"
+            } else if family == "ps" && what == "sound" {
+                "--audio-codec ac3 writes it as AC-3, which a program stream holds"
+            } else if family == "ts" && codec.starts_with("pcm_") {
                 "--audio-codec lpcm writes it as Blu-ray LPCM, which a transport stream holds"
             } else if codec == "pcm_s8" {
                 "Into a .mkv, .mp4 or .mov, --audio-bits 24 writes it as 24 bit PCM, which \
@@ -11304,12 +11896,22 @@ fn cut_into(
         if let Some(l) = layout {
             first_pid = l.first_pid.to_string();
             pmt = l.pmt_pid.to_string();
-            service = l.service_id.to_string();
+            // The service the tables put back are of, where they are: the
+            // map read off the recording (`si::read_service`, the first that
+            // names the pictures in arrival order) and not libav's first
+            // programme in PAT order that holds them, which on a recording
+            // carrying two maps for the pictures is another number.
+            let service_id = tables
+                .as_ref()
+                .map(|t| i32::from(t.service_id))
+                .filter(|&n| n > 0)
+                .unwrap_or(l.service_id);
+            service = service_id.to_string();
             // Which service this is, always: the table this program writes
             // over the muxer's names the recording's own service, and a
             // program number in the map that the list of programmes does not
             // have is a file a player cannot follow from one to the other.
-            if l.service_id > 0 {
+            if service_id > 0 {
                 muxer_opts.set("mpegts_service_id", &service);
             }
             // Where the streams go, only where the recording's own numbering
@@ -11374,10 +11976,13 @@ fn cut_into(
     // the name, libavformat hands it to its `ipod` muxer, which takes H.264
     // and nothing newer and turns down the `avc3` tag a cut with rewritten
     // seams needs.
+    //
+    // Not created yet: see [`unopened`]. The file is opened right before the
+    // header is written, once every stream has been declared.
     let mut octx = if output.to_ascii_lowercase().ends_with(".m4v") {
-        ff::format::output_as(&*crate::input::as_output(output), "mp4").map_err(|e| anyhow!("{output}: {e}"))?
+        unopened(output, Some("mp4"))?
     } else {
-        ff::format::output(&*crate::input::as_output(output)).map_err(|e| anyhow!("{output}: {e}"))?
+        unopened(output, None)?
     };
     // The lead a disc gives a decoder: how far the first picture is shown
     // after the clock that has to be running to show it arrives.
@@ -11913,6 +12518,7 @@ fn cut_into(
         // Scoped: the leftovers borrow the context, and everything below
         // needs it back. Anything still in here is an option this muxer did
         // not recognise -- worth tripping over while developing.
+        open_file(&mut octx, output)?;
         let left = octx.write_header_with(muxer_opts)?;
         debug_assert!(
             left.iter().next().is_none(),
@@ -12671,6 +13277,14 @@ fn cut_into(
                 }
             }
         }
+        // Where on the reel's clock the range's first picture is, which is
+        // what goes at `target_start`: the range's own start, except where a
+        // re-encoded head opens between pictures, on the first picture after
+        // it. The sound is laid from there (see [`sound_span`]), and so are
+        // the captions, the subtitles and a DVD's subpictures: from the range
+        // start they went in that much later than their pictures -- up to a
+        // frame, on the command line's seconds.
+        let picture_in = sound_spans[reel_no][plan_no].0;
         let caption_ctx: Vec<CaptionCtx> = writer
             .captions
             .iter()
@@ -12681,7 +13295,7 @@ fn cut_into(
                     track,
                     in_index: info.stream_index,
                     in_tb: info.time_base,
-                    offset: target_start - plan.t_in,
+                    offset: target_start - picture_in,
                     ttml: t.ttml,
                     base: info.base,
                     range: (plan.t_in, ttml_until[track]),
@@ -12757,7 +13371,9 @@ fn cut_into(
             let began = began.unwrap_or(f64::NEG_INFINITY);
             let at = match crossed {
                 Some(theirs) => (theirs + caption.offset).max(began),
-                None => claims_from.min(plan.t_in) + caption.offset,
+                // The line already up goes up with the range's first
+                // picture, as it always has.
+                None => claims_from.min(plan.t_in) - plan.t_in + target_start,
             };
             let mut out: Vec<(f64, ff::Packet)> = up.into_iter().map(|p| (at, p)).collect();
             out.extend(sent.into_iter().map(|(t, p)| ((t + caption.offset).max(began), p)));
@@ -12801,7 +13417,7 @@ fn cut_into(
                     track,
                     in_index: t.in_index,
                     in_tb: t.in_tb,
-                    offset: target_start - plan.t_in,
+                    offset: target_start - picture_in,
                     ends: plan.t_out,
                 })
                 .collect()
@@ -12816,7 +13432,7 @@ fn cut_into(
         // instead, a subtitle shown and gone inside a 3 s crossing was lost
         // and the next one went up late. `look` is where the look back
         // stands on the reel's clock, `head` where that goes on the output.
-        let shift = target_start - plan.t_in;
+        let shift = target_start - picture_in;
         let not_before = began.unwrap_or(f64::NEG_INFINITY);
         let (look, head) = match crossed {
             Some(theirs) => (theirs, (theirs + shift).max(not_before)),
@@ -12946,7 +13562,7 @@ fn cut_into(
                 audio: &audio_ctx,
                 captions: &caption_ctx,
                 graphics: &graphics_ctx,
-                offset: target_start - plan.t_in,
+                offset: target_start - picture_in,
                 subpictures: thread.graphics,
                 first: first_segment,
                 last: n + 1 == plan.segments.len(),
@@ -13038,6 +13654,9 @@ fn cut_into(
                 // and what it is written into is the master's shape rather
                 // than its own. See [`conform_segment`].
                 (SegmentKind::Reencode, None, true) => {
+                    // Keyed as the master is keyed. See [`master_gop`].
+                    let keyed = Signalling { gop: master_gop(src), ..ctx.signalling.clone() };
+                    let ctx = SegmentCtx { signalling: &keyed, ..ctx };
                     conform_segment(rsrc, seg, &ctx, opts, &shaped, &mut writer)?
                 }
                 (SegmentKind::Reencode, None, false) => {
@@ -13338,9 +13957,13 @@ fn cut_into(
                         "the subtitles are beside the cut rather than in it, as asked -- read \
                          back out of the display sets the disc draws them with and written as \
                          the kind a DVD draws, palette and all"
+                    } else if beside {
+                        "the subtitles are beside the cut rather than in it, as asked"
                     } else {
-                        "the subtitles are beside the cut, not in it -- a transport stream has \
-                         no place for the kind a DVD draws"
+                        // Converted only into a transport stream, which this
+                        // is not: see the note said before the cut.
+                        "the subtitles are beside the cut, not in it -- this output has no place \
+                         for the kind a DVD draws"
                     };
                     crate::say!(
                         "note: {why}. {idx} and {sub} carry {}. A player opening the cut \
@@ -13471,7 +14094,11 @@ fn cut_into(
                 input: &rsrc.input,
                 carry: carry.clone(),
                 source_pcr_pid: *clock,
-                source: carousel_span(rsrc, reel_plans[reel_no].get(plan_no)?),
+                source: carousel_span(
+                    rsrc,
+                    reel_plans[reel_no].get(plan_no)?,
+                    *sound_spans[reel_no].get(plan_no)?,
+                ),
             })
         })
         .collect();
@@ -13492,6 +14119,7 @@ fn cut_into(
             &pids,
             &range_starts,
             plans,
+            &sound_spans[master],
             output,
             tables_report.as_ref().map(|f| &**f as &(dyn Fn(f64) + Sync)),
             // The recording's own tables where it had some; where it had
@@ -13542,13 +14170,26 @@ fn cut_into(
     // into this framing that also moves the clock onto a PID of its own,
     // which is the disc's stamp's business and not a language's. Only the
     // map's own packets change, each within itself. See [`name_converted`].
-    if to_ts && tables.is_none() && writing_m2ts(output) && !converted_streams.is_empty() {
-        let named: Vec<(u16, [u8; 3])> = converted_streams
+    //
+    // A Blu-ray's own subtitles carried from a file that has no tables --
+    // a MakeMKV `.mkv`, or `--tables muxer` -- are the same graphics stream
+    // under the same muxer, and came out of a `.m2ts` and onto a disc with
+    // no language for a player's menu to show, where the `.ts` of the same
+    // cut names them (`unnamed` above). Named here the same way.
+    if to_ts
+        && tables.is_none()
+        && writing_m2ts(output)
+        && (!converted_streams.is_empty() || !graphics.is_empty())
+    {
+        let named: Vec<(u16, [u8; 3])> = graphics
             .iter()
             .enumerate()
-            .filter_map(|(n, c)| {
-                let pid = pids.graphics(graphics.len() + n, c.id);
-                let three = c.language.as_deref().and_then(crate::dvd::three_letters)?;
+            .map(|(n, g)| (pids.graphics(n, g.pid), g.language.as_deref()))
+            .chain(converted_streams.iter().enumerate().map(|(n, c)| {
+                (pids.graphics(graphics.len() + n, c.id), c.language.as_deref())
+            }))
+            .filter_map(|(pid, language)| {
+                let three = language.and_then(crate::dvd::three_letters)?;
                 let b: [u8; 3] = three.as_bytes().try_into().ok()?;
                 (STREAM_PIDS.contains(&pid) && b.iter().all(u8::is_ascii_alphabetic))
                     .then_some((pid as u16, b))
@@ -13568,9 +14209,7 @@ fn cut_into(
     // fails part way leaves every 188-byte packet as it was: a note, not a
     // failure that removes the file (as in `crate::sound`).
     if crate::m2ts::standalone(output, opts.disc_clip) {
-        if let Err(e) = crate::m2ts::restamp(output) {
-            crate::say!("note: the arrival times in {output} were left as written: {e:#}");
-        }
+        crate::m2ts::restamp_or_say(output, opts.notes.as_deref());
     }
 
     // Whichever pass was the last one, ending on the end of it. A cut whose

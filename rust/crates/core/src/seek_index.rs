@@ -210,9 +210,38 @@ pub struct SeekIndex {
     /// track failed to build, or was never asked for, still saves the pass
     /// over its packets next time.
     pub track: Option<thumbs::Track>,
+    /// Which recording this was made from: its length in bytes and a hash
+    /// of its first bytes ([`identity`]), when they could be read. See
+    /// [`index::IndexSource::build`] below.
+    identity: Option<(u64, u64)>,
     /// Whether the pass behind this read the recording to its end. Not
     /// written to the file: one that did not is never written at all.
     whole: bool,
+}
+
+/// How many of a recording's first bytes go into its [`identity`]: the
+/// tables a transport stream opens with, a program stream's first packs, an
+/// MP4's or a Matroska file's header -- what tells one recording from another
+/// of the same length, for the price of one small read.
+const HEAD: usize = 64 << 10;
+
+/// What tells the recording `spec` names from another under the same name:
+/// its length in bytes and an FNV-1a hash of its first [`HEAD`] bytes, read
+/// the way the passes over its own tables read it (a clip inside an image is
+/// the clip's bytes, a DVD title its own sectors). `None` where it cannot be
+/// read that way -- a URL libavformat opens and this does not.
+fn identity(spec: &str) -> Option<(u64, u64)> {
+    use std::io::Read as _;
+    let input = crate::input::Input::parse(spec).ok()?;
+    let len = input.bytes().ok()?;
+    let mut head = Vec::with_capacity(HEAD);
+    input.open().ok()?.take(HEAD as u64).read_to_end(&mut head).ok()?;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in &head {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x1_0000_01b3);
+    }
+    Some((len, h))
 }
 
 /// A held index drops straight into [`crate::scan_with`] in place of the
@@ -226,9 +255,26 @@ impl index::IndexSource for SeekIndex {
         "seek index"
     }
 
-    fn build(&self, _input: index::IndexInput) -> Result<index::Index> {
+    fn build(&self, input: index::IndexInput) -> Result<index::Index> {
         if self.points.is_empty() {
             bail!("the seek index holds no access points");
+        }
+        // **An index made from another recording is refused.** `--seek-index`
+        // is a path somebody typed, and the same one given for the next
+        // recording handed that recording the first one's byte positions and
+        // length: a cut of the wrong pictures, or none. The window's own are
+        // keyed on the path, size and time and never meet another recording,
+        // but nothing in the file said which one it was made from. An index
+        // written before there was such a word has none, and is believed as
+        // it always was.
+        if let Some((len, head)) = self.identity {
+            if identity(input.path).is_some_and(|now| now != (len, head)) {
+                bail!(
+                    "the seek index was made from another recording than {} (it was made from \
+                     one of {len} bytes): name another file for it, or delete it",
+                    input.path
+                );
+            }
         }
         Ok(index::Index {
             points: self.points.clone(),
@@ -258,6 +304,7 @@ impl SeekIndex {
             // keep.
             end: Some(src.duration),
             track: track.map(clone_track),
+            identity: identity(&src.path),
             whole: src.read_whole,
         }
     }
@@ -335,6 +382,11 @@ impl SeekIndex {
         w.f64(self.bit_rate.unwrap_or(0.0));
         // And after it the closest two pictures came; zero, not measured.
         w.f64(self.closest.unwrap_or(0.0));
+        // And after that which recording this was made from, when that could
+        // be read: a length and a hash, both zero where not.
+        let (len, head) = self.identity.unwrap_or((0, 0));
+        w.u64(len);
+        w.u64(head);
 
         // Through a temporary and renamed into place. This runs to tens of
         // megabytes and the process can be closed while it is writing; a
@@ -486,9 +538,27 @@ impl SeekIndex {
             // nothing being no rate at all.
             bit_rate: r.f64().ok().filter(|r| r.is_finite() && *r > 0.0),
             closest: r.f64().ok().filter(|g| g.is_finite() && *g > 0.0),
+            identity: r.u64().ok().zip(r.u64().ok()).filter(|&(len, head)| (len, head) != (0, 0)),
             whole: true,
         })
     }
+}
+
+/// Whether the index at `path` is one of this version that holds a thumbnail
+/// track, read off its first twelve bytes.
+///
+/// For a writer about to put a trackless index where one with a track
+/// already stands: the clip list's walk of a row that the editor has opened
+/// meanwhile is the same recording's index without its pictures, and written
+/// over the editor's it cost the next open a pass for every one of them.
+pub fn has_track(path: &Path) -> bool {
+    use std::io::Read as _;
+    let mut head = [0u8; 12];
+    let read = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head));
+    read.is_ok()
+        && &head[..4] == MAGIC
+        && head[4..8] == VERSION.to_le_bytes()
+        && u32::from_le_bytes([head[8], head[9], head[10], head[11]]) & FLAG_HAS_TRACK != 0
 }
 
 /// `Track` is not `Clone`: it is tens of megabytes of JPEG and copying one by
@@ -883,6 +953,7 @@ mod tests {
             bit_rate: None,
             closest: None,
             track: None,
+            identity: None,
             whole: true,
         };
         let at = std::env::temp_dir().join(format!("smartcut-scix-read-{}.scix", std::process::id()));
@@ -891,6 +962,62 @@ mod tests {
         let _ = std::fs::remove_file(&at);
         let got: Vec<(bool, bool)> = back.points.iter().map(|p| (p.measured, p.droppable)).collect();
         assert_eq!(got, [(true, false), (false, false)]);
+    }
+
+    /// Which recording an index was made from goes with it, and an index
+    /// written before there was such a word still reads, with none.
+    #[test]
+    fn the_recording_it_was_made_from() {
+        let dir = std::env::temp_dir().join(format!("smartcut-scix-who-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let (a, b, c) = (dir.join("a.ts"), dir.join("b.ts"), dir.join("c.ts"));
+        std::fs::write(&a, vec![0x47u8; 200_000]).unwrap();
+        let mut other = vec![0x47u8; 200_000];
+        other[100] = 0x48;
+        std::fs::write(&b, &other).unwrap();
+        std::fs::write(&c, vec![0x47u8; 100]).unwrap();
+        let of = |p: &PathBuf| identity(&p.to_string_lossy()).unwrap();
+        assert_eq!(of(&a).0, 200_000);
+        assert_ne!(of(&a), of(&b));
+        assert_ne!(of(&a), of(&c));
+        // Past the head, the same recording as far as this can tell.
+        other[100] = 0x47;
+        other[150_000] = 0;
+        std::fs::write(&b, &other).unwrap();
+        assert_eq!(of(&a), of(&b));
+
+        let ix = |identity| SeekIndex {
+            points: vec![AccessPoint {
+                time: 0.0,
+                lead_start: 0.0,
+                lead_indices: Vec::new(),
+                droppable: true,
+                pos: 0,
+                measured: true,
+            }],
+            leading_known: true,
+            end: Some(1.0),
+            pulldown: None,
+            variable: None,
+            bit_rate: Some(1e6),
+            closest: Some(0.04),
+            track: None,
+            identity,
+            whole: true,
+        };
+        let at = dir.join("x.scix");
+        ix(Some(of(&a))).save(&at).unwrap();
+        assert_eq!(SeekIndex::load(&at).unwrap().identity, Some(of(&a)));
+        assert!(!has_track(&at) && !has_track(&dir.join("none.scix")));
+        ix(None).save(&at).unwrap();
+        let back = SeekIndex::load(&at).unwrap();
+        assert_eq!((back.identity, back.closest), (None, Some(0.04)));
+        // One of version 20 as it was written before: it ends at `closest`.
+        let raw = std::fs::read(&at).unwrap();
+        std::fs::write(&at, &raw[..raw.len() - 16]).unwrap();
+        let back = SeekIndex::load(&at).unwrap();
+        assert_eq!((back.identity, back.closest, back.bit_rate), (None, Some(0.04), Some(1e6)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// And one that says it holds none, which is a file that reads.

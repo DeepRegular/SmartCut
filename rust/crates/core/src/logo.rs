@@ -279,7 +279,7 @@ fn walk_keyframes<T: Send + 'static>(
     // with a WebVTT block libavformat cannot parse); see
     // [`crate::sound::sought_at_head`]. Stretches seek to each of their own.
     if matches!(reach, Reach::Whole) && crate::sound::sought_at_head(&ictx, &src.input.url) {
-        let target = i64::MIN / 2;
+        let target = crate::input::head_seek(&ictx);
         let _ = ictx.seek(target, ..target);
     }
     let idx = src.video.stream_index;
@@ -418,18 +418,28 @@ const TEMPLATE_STRETCHES: usize = 24;
 /// twice the sample in it saves half a read, and one with barely more than
 /// the sample saves nothing and pays for the seeks.
 fn template_reach(src: &Source) -> Reach {
-    let points = src.points.len();
-    // ...and only where every entry point says what byte it starts at, which
-    // is what the seek is made of. An index that does not carry them would
-    // place no run at all and the pass would come back with nothing to build
-    // a template from, which reads from outside as a recording with no logo.
+    // Only the entry points that say what byte they start at, which is what
+    // the seek is made of: [`crate::index::seek_to_entry`] refuses the rest,
+    // and a run started on one of them was never read. An index that carries
+    // none would place no run at all and the pass would come back with
+    // nothing to build a template from, which reads from outside as a
+    // recording with no logo.
+    //
+    // **A few without a byte do not send the pass to a whole read.** A
+    // program stream ffmpeg wrote, opened with its timestamps generated as
+    // SmartCut opens one, hands back two to four in a hundred of its key
+    // packets with no position, and every one of those recordings read the
+    // whole file once more for it. Each run now starts on the entry point
+    // with a byte at or before where it is aimed, which on a recording whose
+    // points all have one is the point the seek always took.
+    //
     // The switch that turns byte seeks off for a measurement turns them off
     // here too: `seek_to_entry` would refuse every run and leave nothing.
+    let placed: Vec<f64> = src.points.iter().filter(|p| p.pos >= 0).map(|p| p.time).collect();
     if !src.byte_seekable
         || crate::index::off("SMARTCUT_BYTE_SEEK")
-        || points < TEMPLATE_PICTURES * 2
+        || placed.len() < TEMPLATE_PICTURES * 2
         || src.duration <= 0.0
-        || src.points.iter().any(|p| p.pos < 0)
     {
         return Reach::Whole;
     }
@@ -450,8 +460,22 @@ fn template_reach(src: &Source) -> Reach {
         return Reach::Whole;
     };
     let each = TEMPLATE_PICTURES.div_ceil(TEMPLATE_STRETCHES);
+    // **The first run starts on the first entry point**, not at nought. The
+    // recording's zero is its earliest stream, which on a broadcast is
+    // usually the sound, and the first picture stands a fraction of a second
+    // after it: there was no entry point at or before nought to seek to, the
+    // run was passed over, and every template was built from the other
+    // twenty-three -- never from the head of the recording.
     let from = (0..TEMPLATE_STRETCHES)
         .map(|k| span * k as f64 / TEMPLATE_STRETCHES as f64)
+        .map(|t| {
+            placed
+                .iter()
+                .rev()
+                .find(|&&p| p <= t + 1e-6)
+                .copied()
+                .unwrap_or(placed[0])
+        })
         .collect();
     Reach::Stretches { from, each }
 }
@@ -725,7 +749,7 @@ pub fn detect_with(
     for k in 0..4 {
         let (present_t, absent_t) = thresholds[k];
         let (intervals, brief, transitions) =
-            intervals_from(&times, &scores[k], present_t, absent_t, opts);
+            intervals_from(&times, &scores[k], present_t, absent_t, src.duration, opts);
         let present: usize = scores[k].iter().filter(|&&s| s >= present_t).count();
         let frac = present as f64 / scores[k].len().max(1) as f64;
         if std::env::var("SMARTCUT_DEBUG").is_ok() {
@@ -805,6 +829,7 @@ fn intervals_from(
     scores: &[f64],
     present_t: f64,
     absent_t: f64,
+    end: f64,
     opts: &LogoOptions,
 ) -> (Vec<(f64, f64)>, Vec<(f64, f64)>, usize) {
     // Each stretch, and whether it runs off an end of the recording -- an
@@ -866,7 +891,22 @@ fn intervals_from(
     }
     if !present {
         if let Some(&last) = times.last() {
-            absent.push((from, last, true));
+            match back {
+                // **Back, and up until the recording stopped**, only not for
+                // the [`LogoOptions::min_present`] a return is held to: the
+                // recording ended first. The wait is there to tell a return
+                // from a commercial that grazes the template for a moment,
+                // and a logo that is still up when the pictures run out is
+                // not that. Taken as an absence running off the end, the
+                // last block ran on over the programme that had come back --
+                // up to the five seconds the wait is.
+                Some(since) if since < last => absent.push((from, since, at_head)),
+                // Gone to the end. The stretch runs to the end of the
+                // recording rather than to the last entry picture scored,
+                // which is up to a GOP before it: the block ended there, and
+                // the pictures after it were kept as programme.
+                _ => absent.push((from, end.max(last), true)),
+            }
         }
     }
 
@@ -958,4 +998,45 @@ fn largest_cluster(picked: &[usize], w: usize, h: usize) -> Vec<usize> {
         }
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scores every half second: the logo up, gone from `gone.0` to
+    /// `gone.1`, and up again after it.
+    fn timeline(len: f64, gone: (f64, f64)) -> (Vec<f64>, Vec<f64>) {
+        let times: Vec<f64> = (0..).map(|i| i as f64 * 0.5).take_while(|&t| t <= len).collect();
+        let scores = times
+            .iter()
+            .map(|&t| if t >= gone.0 && t < gone.1 { 0.0 } else { 0.5 })
+            .collect();
+        (times, scores)
+    }
+
+    /// A logo that comes back three seconds before the recording stops ends
+    /// the absence there, though it was never up for the five a return is
+    /// held to.
+    #[test]
+    fn a_return_cut_short_by_the_end_still_ends_the_absence() {
+        let opts = LogoOptions::default();
+        let (times, scores) = timeline(1800.0, (1700.0, 1797.0));
+        let (absent, _, _) = intervals_from(&times, &scores, 0.2, 0.1, 1800.4, &opts);
+        assert_eq!(absent, vec![(1700.0, 1797.0)]);
+    }
+
+    /// One that never comes back runs to the end of the recording, not to
+    /// the last entry picture scored.
+    #[test]
+    fn an_absence_off_the_end_runs_to_the_end() {
+        let opts = LogoOptions::default();
+        let (times, scores) = timeline(1800.0, (1700.0, 2000.0));
+        let (absent, _, _) = intervals_from(&times, &scores, 0.2, 0.1, 1800.4, &opts);
+        assert_eq!(absent, vec![(1700.0, 1800.4)]);
+        // ...and one in the middle is as it was.
+        let (times, scores) = timeline(1800.0, (600.0, 690.0));
+        let (absent, _, _) = intervals_from(&times, &scores, 0.2, 0.1, 1800.4, &opts);
+        assert_eq!(absent, vec![(600.0, 690.0)]);
+    }
 }

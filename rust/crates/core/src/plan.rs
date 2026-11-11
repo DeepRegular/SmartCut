@@ -457,7 +457,7 @@ fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
             .map_or(0.0, |p| p.time);
         let landing = at - src.seek_margin;
         let target = if landing <= 0.0 {
-            i64::MIN / 2
+            crate::input::head_seek(&ictx)
         } else {
             ((landing + src.start_time) * ffmpeg_next::ffi::AV_TIME_BASE as f64) as i64
         };
@@ -498,6 +498,19 @@ fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
         }
         if !opened {
             if !packet.is_key() {
+                // **Not read on past `hi` waiting for a key picture,** by
+                // the test below: a key picture met there would end the read
+                // with nothing in it anyway. An AVCHD disc's map enters on I
+                // pictures that are not IDR and carry no recovery point,
+                // which libavformat does not mark as key pictures, and every
+                // read from one of them went on to the end of the title --
+                // the sound of a five-second keep of a seminar disc took
+                // eleven minutes to place, and then the cut was refused.
+                let at = |v: Option<i64>| v.map(|p| p as f64 * tb - src.start_time);
+                let (pts, dts) = (at(packet.pts()), at(packet.dts()));
+                if dts.map_or(pts.is_some_and(|t| t > hi + 1.0), |t| t > hi + 2.0 * fd) {
+                    break;
+                }
                 continue;
             }
             opened = true;

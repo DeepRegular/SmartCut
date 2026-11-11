@@ -237,7 +237,11 @@ pub fn retimed(payload: &[u8], shift: f64, window: (f64, f64)) -> Option<Vec<u8>
         // tail of a longer name, and would write the time over that one.
         let old = attribute(hay, name)?;
         let at = old.as_ptr() as usize - hay.as_ptr() as usize;
-        let text = written_clock(value);
+        // In the shape the old one is written in, digit for digit, so that
+        // it takes the same room: a document that writes `0:02:21.67` or
+        // `00:02:21.6` was dropped from every cut when the time was written
+        // as `HH:MM:SS.mmm` and came out a different width.
+        let text = written_like(value, old)?;
         // Only over a time written the same width: a shorter one would be
         // overwritten past its closing quote and into whatever follows.
         if old.len() != text.len() {
@@ -278,6 +282,56 @@ fn written_clock(seconds: f64) -> String {
         whole % 60,
         ms
     )
+}
+
+/// `seconds` written in the shape of `old`: as many digits for the hours,
+/// the minutes, the seconds and the fraction as `old` has, rounded to the
+/// fraction it keeps. `None` where the time does not fit that shape -- ten
+/// hours in a one-digit hour -- or `old` is no clock at all.
+fn written_like(seconds: f64, old: &str) -> Option<String> {
+    let mut parts = old.split(':');
+    let (h, m, sec) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let (whole, fraction) = match sec.split_once('.') {
+        Some((w, f)) => (w, Some(f)),
+        None => (sec, None),
+    };
+    let widths = [h.len(), m.len(), whole.len()];
+    let places = fraction.map_or(0, str::len);
+    if widths.contains(&0) || places > 9 || !old.bytes().all(|b| b.is_ascii_digit() || b == b':' || b == b'.') {
+        return None;
+    }
+    if (widths, places) == ([2, 2, 2], 3) {
+        // The shape every document measured here is written in, as it
+        // always was written.
+        return Some(written_clock(seconds));
+    }
+    let scale = 10u64.pow(places as u32);
+    let ticks = (seconds.max(0.0) * scale as f64).round();
+    if !ticks.is_finite() || ticks >= u64::MAX as f64 {
+        return None;
+    }
+    let ticks = ticks as u64;
+    let (whole, part) = (ticks / scale, ticks % scale);
+    let (hours, minutes, secs) = (whole / 3600, (whole / 60) % 60, whole % 60);
+    let mut out = String::new();
+    for (value, width) in [(hours, widths[0]), (minutes, widths[1]), (secs, widths[2])] {
+        let text = format!("{value:0width$}");
+        if text.len() != width {
+            return None;
+        }
+        if !out.is_empty() {
+            out.push(':');
+        }
+        out.push_str(&text);
+    }
+    if fraction.is_some() {
+        out.push('.');
+        out.push_str(&format!("{part:0places$}"));
+    }
+    Some(out)
 }
 
 /// The opening tag whose name is `open`, as it stands in the document.
@@ -714,6 +768,25 @@ mod tests {
         // And one that falls outside every kept range is not carried.
         assert!(retimed(&p, 0.0, (0.0, 100.0)).is_none());
         assert!(retimed(&p, 0.0, (200.0, 300.0)).is_none());
+    }
+
+    /// A document whose times are written in another width keeps that
+    /// width, rather than being dropped from the cut for not fitting.
+    #[test]
+    fn moves_times_of_any_width_in_their_own_width() {
+        let p = packet("0:02:21.67", "0:02:26.6", "テスト");
+        let moved = retimed(&p, 10.0 - 120.0, (120.0, 200.0)).expect("carried");
+        assert_eq!(moved.len(), p.len());
+        let doc = std::str::from_utf8(&moved[12..]).unwrap();
+        assert!(doc.contains("begin=\"0:00:31.67\" end=\"0:00:36.6\""), "{doc}");
+        // Rounded to what the shape keeps, the carry included.
+        assert_eq!(written_like(59.96, "00:00:00.0").as_deref(), Some("00:01:00.0"));
+        assert_eq!(written_like(3.5, "00:00:03").as_deref(), Some("00:00:04"));
+        // The shape every recording writes is written as it always was.
+        assert_eq!(written_like(141.667, "00:00:00.000").as_deref(), Some("00:02:21.667"));
+        // Ten hours do not fit one digit of hour.
+        assert_eq!(written_like(36_000.0, "0:00:00.000"), None);
+        assert_eq!(written_like(1.0, "1e3:00:00"), None);
     }
 
     #[test]

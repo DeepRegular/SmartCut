@@ -386,7 +386,7 @@ pub fn resets_with(
     // a WebVTT block libavformat cannot parse). See
     // [`crate::sound::sought_at_head`].
     if crate::sound::sought_at_head(&ictx, &src.input.url) {
-        let target = i64::MIN / 2;
+        let target = crate::input::head_seek(&ictx);
         let _ = ictx.seek(target, ..target);
     }
     // The subtitles and nothing else: this pass reads the whole recording,

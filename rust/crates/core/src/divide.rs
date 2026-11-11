@@ -76,12 +76,18 @@ impl<'a> Line<'a> {
     /// start of the keep after it: that is where the part beginning there
     /// begins.
     fn source(&self, t: f64) -> f64 {
+        self.keep_at(t).map_or_else(|| self.keeps.last().map_or(0.0, |&(_, b)| b), |(_, s)| s)
+    }
+
+    /// As [`Self::source`], with which keep the instant is in; `None` past
+    /// the end of the last one.
+    fn keep_at(&self, t: f64) -> Option<(usize, f64)> {
         for (i, &(a, b)) in self.keeps.iter().enumerate() {
             if t < self.at[i] + (b - a) - 1e-9 {
-                return a + (t - self.at[i]).max(0.0);
+                return Some((i, a + (t - self.at[i]).max(0.0)));
             }
         }
-        self.keeps.last().map_or(0.0, |&(_, b)| b)
+        None
     }
 }
 
@@ -125,13 +131,30 @@ pub fn divide(
     clean.dedup_by(|x, y| (*x - *y).abs() < frame / 2.0);
     // The latest a part may begin: the last one is at least a frame long.
     let last = total - frame;
-    // A division off a point, put on the frame it falls in.
-    let exact = |t: f64| {
-        let s = line.source(t);
-        let on = head + ((s - head) / frame).round() * frame;
-        // Back into the keep it was in, if the rounding took it across a cut.
-        let src = if (s - on).abs() < frame { on } else { s };
-        (t + (src - s), src)
+    // A division off a point, put on a frame: the nearest one, or for a
+    // ceiling (`down`) the one at or before it, so that a size is not
+    // passed by the rounding.
+    let exact = |t: f64, down: bool| {
+        let Some((i, s)) = line.keep_at(t) else {
+            return (t, line.source(t), false);
+        };
+        let steps = (s - head) / frame;
+        let on = head + if down { (steps + 1e-6).floor() } else { steps.round() } * frame;
+        // Back into the keep it was in where the rounding took it across a
+        // cut: onto the keep's own start, or past its end onto the start of
+        // the keep after it, which are cuts already. Left where it fell, a
+        // division off the points just inside a keep was put up to half a
+        // frame outside it -- into what was cut, or into the clock a
+        // recorder's seam holds no pictures at.
+        let (a, b) = keeps[i];
+        if on < a {
+            (line.at[i], a, i > 0)
+        } else if on > b - 1e-9 {
+            let o = line.at[i] + (b - a);
+            (o, line.source(o), true)
+        } else {
+            (t + (on - s), on, false)
+        }
     };
 
     let mut cuts: Vec<(f64, f64, bool)> = Vec::new(); // (output, source, on a point)
@@ -151,8 +174,8 @@ pub fn divide(
                 return Some((c, line.source(c), true));
             }
         }
-        let (o, s) = exact(t);
-        (o > lo && o < last + frame / 2.0).then_some((o, s, false))
+        let (o, s, join) = exact(t, ceiling);
+        (o > lo && o < last + frame / 2.0).then_some((o, s, join))
     };
 
     match rule {
@@ -207,9 +230,15 @@ pub fn divide(
             // two rules: the last point before the size could be a stray one
             // just past the previous division, behind a GOP longer than the
             // part, and taking it made a part a frame long.
+            //
+            // Until what is left fits: a remainder up to a frame over the
+            // size was left to the last part, which then came out over it.
+            // Divided at the last frame instead -- the latest a part may
+            // begin -- the part before stays under and the last one is that
+            // frame.
             let mut prev = 0.0;
-            while prev + len <= last {
-                let Some(c) = place(prev + len, true, len / 2.0, prev) else { break };
+            while prev + len < total - 1e-9 {
+                let Some(c) = place((prev + len).min(last), true, len / 2.0, prev) else { break };
                 prev = c.0;
                 cuts.push(c);
             }
@@ -518,10 +547,9 @@ mod tests {
                 d.at.iter().all(|&s| keeps.iter().any(|&(a, b)| s >= a - FD && s <= b + FD)),
                 "{why}"
             );
-            // Over by less than the frame the last part is allowed to be
-            // left with rather than made a part of its own.
+            // Never over, the last part included.
             if let Rule::Size(bytes) = rule {
-                let most = bytes as f64 / 1e6 + FD + 1e-9;
+                let most = bytes as f64 / 1e6 + 1e-9;
                 assert!(d.lengths.iter().all(|&l| l <= most), "{why}");
             }
         }
@@ -556,22 +584,22 @@ mod tests {
         assert!(d.at.contains(&58.0), "{:?}", d.at);
     }
 
-    /// Off the points, a size is still the most a part comes to, give or
-    /// take the half frame a division is rounded by.
+    /// Off the points, a size is still the most a part comes to: a division
+    /// is put on the frame at or before it.
     #[test]
     fn a_size_off_the_points() {
         let keeps = [(0.0, 100.0)];
         let d = divide(&keeps, &[], Rule::Size(7_000_000), false, FD, 0.0, 1e6).unwrap();
         assert_eq!(d.at.len(), 14);
         assert_eq!(d.off_point, 14);
-        assert!(d.lengths.iter().all(|&l| l > 0.0 && l <= 7.0 + FD / 2.0 + 1e-9), "{:?}", d.lengths);
+        assert!(d.lengths.iter().all(|&l| l > 0.0 && l <= 7.0 + 1e-9), "{:?}", d.lengths);
         assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{:?}", d.at);
     }
 
     /// Keeps whose bounds are off the frame grid -- a millisecond clock, or
     /// an edit made on another recording's grid: a division off the points
-    /// is put on a frame, which is never more than half a frame from where
-    /// it was asked for, so it stays within half a frame of a keep, and the
+    /// is put on a frame, or on the start of its keep or the next one where
+    /// the frame is outside the keep, so it is always inside a keep, and the
     /// parts still add up to what survives the cuts.
     #[test]
     fn rounding_to_a_frame_stays_by_its_keep() {
@@ -581,14 +609,12 @@ mod tests {
             let d = divide(&keeps, &[], Rule::Parts(n), false, FD, 0.0, 0.0).unwrap();
             let why = format!("{n}: {d:?}");
             assert!(d.at.windows(2).all(|w| w[0] < w[1]), "{why}");
-            assert!(
-                d.at.iter().all(|&s| keeps.iter().any(|&(a, b)| s >= a - FD / 2.0 - 1e-9 && s <= b + FD / 2.0 + 1e-9)),
-                "{why}"
-            );
+            assert!(d.at.iter().all(|&s| keeps.iter().any(|&(a, b)| s >= a && s < b)), "{why}");
             assert!((d.lengths.iter().sum::<f64>() - total).abs() < 1e-6, "{why}");
             for t in &d.at {
                 let k = t / FD;
-                assert!((k - k.round()).abs() < 1e-6, "{t} is not on a frame: {why}");
+                let join = keeps.iter().any(|&(a, _)| a == *t);
+                assert!(join || (k - k.round()).abs() < 1e-6, "{t} is not on a frame: {why}");
             }
         }
     }
@@ -659,5 +685,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// What is left after the last whole part is up to a frame over the
+    /// size: divided once more at the last frame, not left to the last part.
+    /// And the frame a division is rounded onto is never outside its keep.
+    #[test]
+    fn a_size_remainder_just_over_and_a_keep_edge() {
+        let keeps = [(0.0, 20.0 + FD / 2.0)];
+        let d = divide(&keeps, &[], Rule::Size(10_000_000), false, FD, 0.0, 1e6).unwrap();
+        assert!(d.lengths.iter().all(|&l| l > 0.0 && l <= 10.0 + 1e-9), "{d:?}");
+        assert_eq!(d.lengths.len(), 3, "{d:?}");
+        // Two keeps whose join is half a frame off the grid: a division
+        // rounded across it lands on the join, inside, and on a point.
+        let keeps = [(0.0, 10.0 + 0.6 * FD), (30.0 + 0.3 * FD, 40.0)];
+        let d = divide(&keeps, &[], Rule::Every(10.0 + 0.55 * FD), false, FD, 0.0, 0.0).unwrap();
+        assert_eq!(d.at, vec![30.0 + 0.3 * FD], "{d:?}");
+        assert_eq!(d.off_point, 0, "{d:?}");
     }
 }

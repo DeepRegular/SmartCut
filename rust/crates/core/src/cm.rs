@@ -358,6 +358,50 @@ fn read_sound(
     let mut last_end = 0.0;
     let mut told = -1.0;
 
+    // One decoded frame: where its loud samples begin and end, against the
+    // stretch of quiet running when it arrived.
+    let mut heard = |frame: &ff::frame::Audio| {
+        let Some(pts) = frame.pts() else { return };
+        let t = pts as f64 * audio.time_base - src.start_time;
+        // The frame's own rate, which is the one its samples are counted
+        // at: HE-AAC declares the core's half rate in the container and
+        // decodes to the full one, and counting at the declared rate put
+        // every silence's edges twice as far into its frame as they are.
+        let rate = match frame.rate() {
+            0 => rate,
+            own => f64::from(own),
+        };
+        let dur = frame.samples() as f64 / rate;
+        match loud_bounds(frame, floor) {
+            // The sound comes back at the first loud sample, which is
+            // where a stretch of quiet ends.
+            Some((first, last)) => {
+                if let Some(from) = quiet_from.take() {
+                    out.push(Silence {
+                        start: from,
+                        end: t + first as f64 / rate,
+                    });
+                }
+                loud_until = t + (last + 1) as f64 / rate;
+            }
+            // Nothing in this frame. A stretch already running carries
+            // on; a new one began where the sound last stopped, which
+            // may be part way through the frame before this one.
+            None => {
+                if quiet_from.is_none() {
+                    quiet_from = Some(loud_until.min(t));
+                }
+            }
+        }
+        last_end = t + dur;
+        if let Some(f) = progress.as_mut() {
+            let done = (t / src.duration.max(1e-9)).clamp(0.0, 1.0);
+            if done - told >= 0.02 {
+                told = done;
+                f(done);
+            }
+        }
+    };
     for (stream, packet) in ictx.read_packets() {
         if stream.index() != audio.stream_index {
             marks.take(stream.index(), &packet, src);
@@ -367,46 +411,18 @@ fn read_sound(
             continue;
         }
         while decoder.receive_frame(&mut frame).is_ok() {
-            let Some(pts) = frame.pts() else { continue };
-            let t = pts as f64 * audio.time_base - src.start_time;
-            // The frame's own rate, which is the one its samples are counted
-            // at: HE-AAC declares the core's half rate in the container and
-            // decodes to the full one, and counting at the declared rate put
-            // every silence's edges twice as far into its frame as they are.
-            let rate = match frame.rate() {
-                0 => rate,
-                own => f64::from(own),
-            };
-            let dur = frame.samples() as f64 / rate;
-            match loud_bounds(&frame, floor) {
-                // The sound comes back at the first loud sample, which is
-                // where a stretch of quiet ends.
-                Some((first, last)) => {
-                    if let Some(from) = quiet_from.take() {
-                        out.push(Silence {
-                            start: from,
-                            end: t + first as f64 / rate,
-                        });
-                    }
-                    loud_until = t + (last + 1) as f64 / rate;
-                }
-                // Nothing in this frame. A stretch already running carries
-                // on; a new one began where the sound last stopped, which
-                // may be part way through the frame before this one.
-                None => {
-                    if quiet_from.is_none() {
-                        quiet_from = Some(loud_until.min(t));
-                    }
-                }
-            }
-            last_end = t + dur;
-            if let Some(f) = progress.as_mut() {
-                let done = (t / src.duration.max(1e-9)).clamp(0.0, 1.0);
-                if done - told >= 0.02 {
-                    told = done;
-                    f(done);
-                }
-            }
+            heard(&frame);
+        }
+    }
+    // Whatever a decoder is still holding is the end of the recording, and
+    // a quiet tail is measured to where the sound really stops. None of the
+    // decoders a recording here is likely to carry holds a frame back (AAC,
+    // AC-3, E-AC-3, MP2, MP3, Opus, Vorbis, FLAC, ALAC, DTS and TrueHD were
+    // tried, and gave the same tail drained or not), so this is for the one
+    // that does; [`crate::blank`] drains its pictures the same way.
+    if decoder.send_eof().is_ok() {
+        while decoder.receive_frame(&mut frame).is_ok() {
+            heard(&frame);
         }
     }
     if let Some(f) = progress.as_mut() {
@@ -743,6 +759,11 @@ pub fn blocks_from_logo(
             // picture the logo was missing on.
             let at_head = a <= EDGE;
             let start = if at_head { 0.0 } else { start };
+            // ...and at the tail nothing after it: an absence that runs off
+            // the end is the recording having stopped inside the break, and
+            // pulled back onto a junction or a grid position within reach it
+            // left the last seconds of the break as programme.
+            let end = if b >= duration - EDGE && duration > 0.0 { duration } else { end };
             Block {
                 start,
                 // Held against the start the block keeps, not the junction
@@ -1045,6 +1066,32 @@ mod tests {
         let head = blocks_from_resets(&[3.7, 9.0, 300.0, 315.0], 1800.0);
         let head: Vec<(f64, f64)> = head.iter().map(|b| (b.start, b.end)).collect();
         assert_eq!(head, vec![(0.0, 9.0), (300.0, 315.0)]);
+    }
+
+    /// An absence that runs off the end of the recording makes a block that
+    /// runs to the end, not one pulled back onto a junction short of it.
+    #[test]
+    fn a_tail_absence_runs_to_the_end() {
+        let at = |time: f64| Candidate {
+            time,
+            silence: 1.0,
+            start: time - 0.5,
+            end: time + 0.5,
+            run: 2,
+            score: 0.8,
+        };
+        let opts = DetectOptions::default();
+        let blocks = blocks_from_logo(
+            &[at(1700.0), at(1715.0), at(1798.0)],
+            &[(1700.2, 1800.0)],
+            &[],
+            &opts,
+            3.0,
+            1800.0,
+            None,
+        );
+        assert_eq!(blocks.len(), 1);
+        assert_eq!((blocks[0].start, blocks[0].end), (1700.0, 1800.0));
     }
 
     /// An interleaved frame's element index is not its sample position.

@@ -155,6 +155,43 @@ mod tests {
         assert!(!picture.uniform_quantizer);
     }
 
+    /// A stream whose entry point sets PANSCAN_FLAG states its windows in
+    /// every picture header: one per field shown, the repeated one too.
+    #[test]
+    fn pan_scan_windows_are_stepped_over() {
+        let mut shape = Shape::read(EXTRADATA).expect("headers");
+        shape.entry.panscan = true;
+        let header = |rff: bool, present: bool| {
+            let mut w = bits::Writer::new();
+            w.u(0b10, 2); // FCM: frame interlace
+            w.u(0b110, 3); // PTYPE: I
+            w.bit1(true); // TFF
+            w.bit1(rff);
+            w.bit1(present); // PS_PRESENT
+            if present {
+                for _ in 0..2 + u32::from(rff) {
+                    w.u(0x2_aaaa, 18);
+                    w.u(0x1_5555, 18);
+                    w.u(0x2aaa, 14);
+                    w.u(0x1555, 14);
+                }
+            }
+            w.bit1(false); // RNDCTRL
+            w.bit1(false); // UVSAMP
+            w.u(0b01000, 5); // PQINDEX
+            w.bit1(true); // HALFQP
+            w.u(0x55, 8);
+            let mut packet = vec![0, 0, 1, 0x0d];
+            packet.extend(bits::escape(&w.finish()));
+            packet
+        };
+        for (rff, present) in [(false, false), (false, true), (true, true)] {
+            let p = shape.picture(&header(rff, present)).expect("picture");
+            assert_eq!((p.kind, p.rff, p.pqindex, p.halfqp), (Kind::I, rff, 8, true));
+            assert_eq!(p.display_fields(), if rff { 3 } else { 2 });
+        }
+    }
+
     /// Whatever the headers say, reading them and writing against them
     /// gives an answer or a refusal and never a panic: every truncation and
     /// every flipped bit of the disc's own pair, each shape that still reads

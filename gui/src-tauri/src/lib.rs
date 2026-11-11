@@ -213,6 +213,10 @@ impl CrossPair {
 #[derive(Default)]
 struct Subs(Mutex<Option<Subtitles>>);
 
+/// How many editor windows have been built, for each one's going to know
+/// whether it is still the last: see `open_editor`.
+static EDITORS_BUILT: AtomicU64 = AtomicU64::new(0);
+
 struct Subtitles {
     /// Which track, by the number the recording names it with -- a PID, or
     /// a DVD's substream id.
@@ -1257,7 +1261,7 @@ fn held_index(app: &tauri::AppHandle, path: &str) -> Option<SeekIndex> {
 /// background while another one is being edited, and neither pass may stand
 /// on the other's [`Opened`], [`Thumbs`] or [`Held`].
 fn scan_cached(app: &tauri::AppHandle, path: &str) -> Result<(Source, Option<SeekIndex>), String> {
-    scan_cached_reporting(app, path, None, None)
+    scan_cached_reporting(app, path, None, None).map(|(src, held, _)| (src, held))
 }
 
 /// As [`scan_cached`], with somewhere to say how far through the walk is.
@@ -1266,25 +1270,25 @@ fn scan_cached(app: &tauri::AppHandle, path: &str) -> Result<(Source, Option<See
 /// to pick up -- so a row that finds one goes straight past this and the bar
 /// never shows the phase at all, which is the honest picture of what
 /// happened.
+///
+/// And with what the recording weighed when it was walked (see [`Weight`]),
+/// where it was: for the caller that writes the walk down to hand to
+/// [`remember_index`].
 fn scan_cached_reporting(
     app: &tauri::AppHandle,
     path: &str,
     on: Option<smartcut_core::index::OnProgress>,
     stop: Option<&(dyn Fn() -> bool + Sync)>,
-) -> Result<(Source, Option<SeekIndex>), String> {
+) -> Result<(Source, Option<SeekIndex>, Option<Weight>), String> {
     // The pass over the packets is the same answer every time, so a previous
     // session's is taken where there is one: about a second per gigabyte
     // saved, which on a half-hour recording is the whole of the wait between
     // choosing a file and being able to move the pointer.
     let mut held = held_index(app, path);
     // Weighed before a byte is read when the file is to be walked: see
-    // [`WEIGHED`]. Not for an index picked up from the cache, which was
+    // [`Weight`]. Not for an index picked up from the cache, which was
     // weighed when it was written.
-    if held.is_none() {
-        if let Some(w) = weigh(path) {
-            locked(&WEIGHED).insert(path.to_string(), w);
-        }
-    }
+    let mut weighed = if held.is_none() { weigh(path) } else { None };
     let mut src = match &held {
         Some(ix) => smartcut_core::scan_reporting(path, ix, on),
         // Ask whoever already knows. A recording on a disc has an index
@@ -1318,9 +1322,10 @@ fn scan_cached_reporting(
             }
         }
         held = None;
+        weighed = weigh(path);
         src = smartcut_core::scan_stoppable(path, &smartcut_core::PacketScan, on, stop);
     }
-    Ok((src.map_err(|e| e.to_string())?, held))
+    Ok((src.map_err(|e| e.to_string())?, held, weighed))
 }
 
 fn info_of(src: &Source) -> SourceInfo {
@@ -1360,13 +1365,27 @@ fn info_of(src: &Source) -> SourceInfo {
     }
 }
 
-/// A recording's size and modification time when a walk of it began, by the
-/// path it was opened as. [`remember_index`] refuses to keep an index of a
-/// file that has changed since.
-static WEIGHED: Mutex<std::collections::BTreeMap<String, (u64, u128)>> =
-    Mutex::new(std::collections::BTreeMap::new());
+/// A recording's size and modification time when a walk of it began.
+/// [`remember_index`] refuses to keep an index of a file that has changed
+/// since, and [`remember_wave`] an outline.
+///
+/// Handed from the walk to the write by whoever does both. It was a map by
+/// path, and two walks of one recording at once -- the list's lane and the
+/// editor -- shared one entry: the first write took it away, and the second
+/// was kept unchecked, or checked against the other walk's weight.
+type Weight = (u64, u128);
 
-fn weigh(path: &str) -> Option<(u64, u128)> {
+/// The [`Weight`] of the editor's open, by its [`Generation`]: the walk is
+/// `open_now`'s and the write `prepare`'s, on another thread and a moment
+/// later.
+static OPEN_WEIGHED: Mutex<Option<(u64, Weight)>> = Mutex::new(None);
+
+/// The editor's open's [`Weight`], where `generation` is that open.
+fn open_weighed(generation: u64) -> Option<Weight> {
+    (*locked(&OPEN_WEIGHED)).filter(|(g, _)| *g == generation).map(|(_, w)| w)
+}
+
+fn weigh(path: &str) -> Option<Weight> {
     let file = smartcut_core::input::Input::parse(path).ok()?.file;
     let meta = std::fs::metadata(file).ok()?;
     let at = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
@@ -1412,7 +1431,7 @@ fn open_now(
     if stale() {
         return Err("another recording was opened in the meantime".into());
     }
-    let (src, held) = scanned?;
+    let (src, held, weighed) = scanned?;
     let mut info = info_of(&src);
     info.unplayed = smartcut_core::disc::unplayed_in(&src, plays);
     // All of it under the recording's own lock, because `prepare` reads the
@@ -1436,6 +1455,7 @@ fn open_now(
         // nothing now; the count going up is what tells it so.
         let now = app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst) + 1;
         SHORT_OPEN.store(if short { now } else { 0 }, Ordering::SeqCst);
+        *locked(&OPEN_WEIGHED) = weighed.map(|w| (now, w));
         *locked(&app.state::<Thumbs>().0) = None;
         // Named by what was asked for rather than by what came back: this is
         // compared against a path the list window holds, and that is the
@@ -1980,6 +2000,8 @@ fn without_proxy(
     // The sound outlined on the way past, where nothing has outlined it yet:
     // the editor's waveform is then waiting for nothing but this pass.
     let sound = wave_wanted(app, &src.path);
+    // See [`remember_wave`].
+    let before = weigh(&src.path);
     let (mut track, wave) = smartcut_core::thumbs::build_with_sound(
         src,
         thumb_opts,
@@ -2026,9 +2048,9 @@ fn without_proxy(
     // window asks under it for every row it draws, and the write prunes a
     // folder of up to a thousand outlines.
     if let Some(wave) = &wave {
-        remember_wave(app, &src.path, &wave_out(wave));
+        remember_wave(app, &src.path, &wave_out(wave), before);
     }
-    let index = (!short).then(|| remember_index(app, src, taken)).flatten();
+    let index = (!short).then(|| remember_index(app, src, taken, open_weighed(generation))).flatten();
     Ok(PrepareInfo { proxy: None, index, track: info, note })
 }
 
@@ -2040,8 +2062,9 @@ fn remember(
     app: &tauri::AppHandle,
     src: &Source,
     track: Option<&smartcut_core::Track>,
+    weighed: Option<Weight>,
 ) -> Option<IndexInfo> {
-    remember_index(app, src, SeekIndex::of(src, track))
+    remember_index(app, src, SeekIndex::of(src, track), weighed)
 }
 
 /// [`remember`], for an index already taken: where it was taken under the
@@ -2056,7 +2079,12 @@ fn remember(
 /// that ended where the share did. See
 /// [`smartcut_core::input::reads_failed`], which only a thread under
 /// [`smartcut_core::input::stop_reads_when`] can answer.
-fn remember_index(app: &tauri::AppHandle, src: &Source, index: SeekIndex) -> Option<IndexInfo> {
+fn remember_index(
+    app: &tauri::AppHandle,
+    src: &Source,
+    index: SeekIndex,
+    weighed: Option<Weight>,
+) -> Option<IndexInfo> {
     if smartcut_core::input::reads_failed() {
         eprintln!("index: {} was not read to the end; not kept", src.path);
         return None;
@@ -2066,13 +2094,20 @@ fn remember_index(app: &tauri::AppHandle, src: &Source, index: SeekIndex) -> Opt
     // still being written -- a recorder's file opened over a share -- and an
     // index of its first half was kept under the finished file's key, every
     // later open taking the recording to end where the walk had.
-    let then = locked(&WEIGHED).remove(&src.path);
-    if then.is_some_and(|w| weigh(&src.path) != Some(w)) {
+    if weighed.is_some_and(|w| weigh(&src.path) != Some(w)) {
         eprintln!("index: {} changed while it was read; not kept", src.path);
         return None;
     }
     let dir = index_dir(app).ok()?;
     let file = seek_index::cache_path(&dir, &src.path).ok()?;
+    // Never a walk with no pictures over one with them. The list's lane and
+    // the editor can walk one recording at once, and the lane's trackless
+    // index, written last, took away the thumbnail track the editor had just
+    // kept: the next open made its pictures again. Same key, same file, same
+    // points; only the track differs.
+    if index.track.is_none() && seek_index::has_track(&file) {
+        return index_info(app, src, false);
+    }
     if let Err(e) = index.save(&file) {
         eprintln!("index: cannot write {}: {e}", file.display());
         return None;
@@ -2096,15 +2131,41 @@ fn remember_index(app: &tauri::AppHandle, src: &Source, index: SeekIndex) -> Opt
     // here: that is a stat of every recording in the list, over a share as
     // often as not, and for one inside a disc image a walk of the image --
     // on every index written, while the other lane waited on this lock.
-    let spare: std::collections::HashSet<std::path::PathBuf> = {
+    let mut spare: std::collections::HashSet<std::path::PathBuf> = {
         let mut listed = locked(&LISTED);
         if let Some(row) = listed.get_mut(&src.path) {
             *row = Some(file.clone());
         }
         listed.values().flatten().cloned().collect()
     };
+    spare.extend(touched_lately(&dir));
     let _ = seek_index::prune(&dir, 32, 2 << 30, &spare);
     index_info(app, src, false)
+}
+
+/// The indexes in `dir` written or read in the last ten minutes.
+///
+/// [`LISTED`] is this process's rows only. A second list window, or the
+/// batch tool, is another process with a list of its own, and its rows'
+/// indexes were the oldest in the folder to this one's prune and went first:
+/// walked again when that window got to them. An index is touched whenever a
+/// window reads it and written whenever one walks, so what any window is
+/// working on now is among these, and nothing has to be shared to spare it.
+fn touched_lately(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    const LATELY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("scix"))
+        .filter(|p| {
+            p.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age < LATELY)
+        })
+        .collect()
 }
 
 fn index_info(app: &tauri::AppHandle, src: &Source, cached: bool) -> Option<IndexInfo> {
@@ -2245,6 +2306,12 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<bool, Strin
         let _ = w.set_focus();
         return Ok(true);
     }
+    // Which editor this is, for its going to let go of what it opened. See
+    // [`EDITORS_BUILT`]. Counted before the build rather than after it: the
+    // page starts loading as it is built, and its open can store its
+    // recording before the window is even shown -- counted after, the last
+    // editor's going could take that for its own and let it go.
+    let mine = EDITORS_BUILT.fetch_add(1, Ordering::SeqCst) + 1;
     let window = WebviewWindowBuilder::new(&app, EDITOR, WebviewUrl::App("editor.html".into()))
         .title(title)
         .inner_size(1240.0, 860.0)
@@ -2296,6 +2363,23 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<bool, Strin
             teller.state::<BatchStop>().editor.fetch_add(1, Ordering::SeqCst);
         }
         if matches!(event, tauri::WindowEvent::Destroyed) {
+            // The recording it had open, and the subtitle reader built on
+            // it: an open demuxer and its indexes, held for nothing until the
+            // next editor opened another. Not where an editor built since has
+            // already opened its own (asked again under the lock, as an open
+            // stores its recording under it). Off this thread, which is the
+            // one every window's events come through: a plan can hold the
+            // recording for seconds.
+            let letting_go = teller.clone();
+            std::thread::spawn(move || {
+                let opened = letting_go.state::<Opened>();
+                let mut opened = locked(&opened.0);
+                if EDITORS_BUILT.load(Ordering::SeqCst) == mine {
+                    *opened = None;
+                    drop(opened);
+                    *locked(&letting_go.state::<Subs>().0) = None;
+                }
+            });
             let _ = teller.emit("editor-closed", ());
             // 拡大表示 magnifies the picture this window was showing, so it
             // has nothing left to show. Closed from here rather than left to
@@ -2503,6 +2587,12 @@ struct CrossInfo {
     after_duration: f64,
     before_audio: bool,
     after_audio: bool,
+    /// How many sound tracks each clip has, in its own order: the window
+    /// plays the track at `heard`, the master's first kept track's place,
+    /// and a clip with fewer has silence there -- its sound controls with
+    /// it. `before_audio`/`after_audio` say only whether the main track is.
+    before_tracks: usize,
+    after_tracks: usize,
 }
 
 /// Open the two recordings at one join.
@@ -2553,7 +2643,16 @@ async fn cross_load(
             master: master_src,
         };
         let info = info_of_pair(&pair);
-        *locked(&app.state::<Crossed>().0) = Some(pair);
+        // Kept only for a window that is still up. A load that landed after
+        // its window had closed put the pair back after the close had let it
+        // go: two open recordings and their indexes held for nothing until
+        // the next seam window. Asked under the lock the close takes, after
+        // `CrossUp` is down, so the two cannot pass each other.
+        let state = app.state::<Crossed>();
+        let mut held = locked(&state.0);
+        if app.state::<CrossUp>().0.load(Ordering::SeqCst) {
+            *held = Some(pair);
+        }
         Ok(info)
     })
     .await
@@ -2572,6 +2671,8 @@ fn info_of_pair(pair: &CrossPair) -> CrossInfo {
         after_duration: pair.after.duration,
         before_audio: pair.before.audio.is_some(),
         after_audio: pair.after.audio.is_some(),
+        before_tracks: pair.before.audios.len(),
+        after_tracks: pair.after.audios.len(),
     }
 }
 
@@ -3286,7 +3387,7 @@ fn index_clip_now(
 
     // A walk given up because the row was taken out of the list reads as the
     // stop it was, not as the recording failing to read.
-    let (src, held) = scan_cached_reporting(app, path, Some(&on), Some(&stopped))
+    let (src, held, weighed) = scan_cached_reporting(app, path, Some(&on), Some(&stopped))
         .map_err(|e| if stopped() { "cancelled".to_string() } else { e })?;
     if stopped() {
         return Err("cancelled".into());
@@ -3304,7 +3405,7 @@ fn index_clip_now(
     // knows -- it is what one written by an interrupted session looks like --
     // and the pass behind this one fills it in.
     if !cached {
-        remember(app, &src, None);
+        remember(app, &src, None, weighed);
     }
 
     say(tr!("完了", "Done"), 1.0);
@@ -3403,10 +3504,8 @@ fn merged_clip_now(
         threads: background_threads(app),
         ..Default::default()
     };
-    // A walk as much as the one in `scan_cached_reporting`: see [`WEIGHED`].
-    if let Some(w) = weigh(path) {
-        locked(&WEIGHED).insert(path.to_string(), w);
-    }
+    // A walk as much as the one in `scan_cached_reporting`: see [`Weight`].
+    let weighed = weigh(path);
     let (src, track) = smartcut_core::scan_with_pictures(path, &opts, Some(on), Some(stopped))
         // A pass that was asked to stop does not come back with what it had.
         // Said in the one word the list watches for, because a stop is not a
@@ -3415,7 +3514,7 @@ fn merged_clip_now(
     if stopped() {
         return Err("cancelled".into());
     }
-    remember(app, &src, Some(&track));
+    remember(app, &src, Some(&track), weighed);
     let mut info = clip_info_of(path, &src, false, began.elapsed().as_secs_f64());
     info.unplayed = smartcut_core::disc::unplayed_in(&src, plays);
     // Empty is what the list sends for a clip nothing has been cut out of,
@@ -3489,7 +3588,10 @@ fn clip_pictures_now(
     // The walk has been over this file already, so its index is on disc and
     // this open is a read of that rather than another pass over the
     // recording -- which is what makes the two halves affordable as two.
-    let (src, _) = scan_cached(app, path)?;
+    let (src, _, weighed) = scan_cached_reporting(app, path, None, None)?;
+    // What the recording weighs before the read the outline comes out of:
+    // see [`remember_wave`].
+    let before = weigh(path);
     let reporter = app.clone();
     let owned = path.to_string();
     let watcher = app.clone();
@@ -3527,9 +3629,9 @@ fn clip_pictures_now(
         return Err("cancelled".into());
     }
     if let Some(wave) = &wave {
-        remember_wave(app, path, &wave_out(wave));
+        remember_wave(app, path, &wave_out(wave), before);
     }
-    remember(app, &src, Some(&track));
+    remember(app, &src, Some(&track), weighed);
     Ok(answer(&track, false))
 }
 
@@ -3546,7 +3648,13 @@ fn make_proxy(
     let path = proxy::cache_path(&dir, &src.path, opts).map_err(|e| e.to_string())?;
     let began = std::time::Instant::now();
 
-    let held = proxy::ready(&path).then(|| load_cached(app, &path, thumb_opts)).and_then(|r| {
+    let held = proxy::ready(&path).then(|| load_cached(app, &path, thumb_opts, generation));
+    // A pass told to stop is not a proxy that cannot be read: that one is
+    // still good, and the open it was for is not on screen any more.
+    if app.state::<Generation>().0.load(Ordering::SeqCst) != generation {
+        return Ok(None);
+    }
+    let held = held.and_then(|r| {
         r.map_err(|e| {
             // A proxy that cannot be read is worse than no proxy: it would be
             // found again on the next open and fail again. Out it goes, and
@@ -3649,7 +3757,7 @@ fn make_proxy(
     *thumbs = Some(track);
     *locked(&app.state::<Proxy>().0) = Some(Proxied { src: psrc, marks });
     drop(thumbs);
-    let index = (!short).then(|| remember_index(app, src, taken)).flatten();
+    let index = (!short).then(|| remember_index(app, src, taken, open_weighed(generation))).flatten();
     Ok(Some(PrepareInfo { proxy: Some(info), index, track: tinfo, note: String::new() }))
 }
 
@@ -3705,6 +3813,7 @@ fn load_cached(
     app: &tauri::AppHandle,
     path: &std::path::Path,
     thumb_opts: &smartcut_core::ThumbOptions,
+    generation: u64,
 ) -> Result<(Source, proxy::Marks, smartcut_core::Track), String> {
     let marks = proxy::Marks::load(&proxy::marks_path(path)).map_err(|e| e.to_string())?;
     let psrc = proxy::open_with(&path.to_string_lossy(), Some(&marks))
@@ -3713,11 +3822,19 @@ fn load_cached(
     // not: it is being used now.
     touch(path);
     let reporter = app.clone();
-    let track = smartcut_core::thumbs::build(
+    let watcher = app.clone();
+    // Stopped as the build it stands for is: another recording opened, or
+    // the window gone. See `with_proxy`, which tells that from a proxy that
+    // could not be read.
+    let track = smartcut_core::thumbs::build_with(
         &psrc,
         thumb_opts,
         Some(Box::new(move |f| {
             let _ = reporter.emit("prepare-progress", (tr!("サムネイル", "thumbnails"), f));
+        })),
+        None,
+        Some(Box::new(move || {
+            watcher.state::<Generation>().0.load(Ordering::SeqCst) != generation
         })),
     )
     .map_err(|e| e.to_string())?;
@@ -3865,12 +3982,30 @@ fn plan_now(ranges: &[(f64, f64)], app: &tauri::AppHandle) -> Result<PlanInfo, S
     // The plan, and -- where the cut would read the recording again to open
     // a range's copy (see [`opened_as_cut`]) -- a copy of it to read with the
     // recording let go, as above.
-    let (mut plans, again) = {
+    //
+    // A recording with seams is planned on a copy as well, with the lock let
+    // go: the planner reads up to 8 MB at each seam the first time it meets
+    // one (`stretch_last_picture`), and the editor stood still on a disc
+    // title while it did. A copy of one is its points and seams.
+    let (planned, held) = {
         let guard = locked(&state.0);
         let src = guard.as_ref().ok_or("no file open")?;
-        let plans = build_plan(src, ranges);
-        let again = (src.video.codec == "h264" && plans.len() > 1).then(|| src.clone());
-        (plans, again)
+        if src.joins.is_empty() {
+            let plans = build_plan(src, ranges);
+            let again = (src.video.codec == "h264" && plans.len() > 1).then(|| src.clone());
+            (Some(plans), again)
+        } else {
+            (None, Some(src.clone()))
+        }
+    };
+    let (mut plans, again) = match (planned, held) {
+        (Some(plans), again) => (plans, again),
+        (None, Some(src)) => {
+            let plans = build_plan(&src, ranges);
+            let again = (src.video.codec == "h264" && plans.len() > 1).then_some(src);
+            (plans, again)
+        }
+        (None, None) => unreachable!("a copy is taken wherever no plan is"),
     };
     if let Some(src) = again {
         opened_as_cut(&src, &mut plans);
@@ -4378,8 +4513,11 @@ async fn divide_clip(
     app: tauri::AppHandle,
 ) -> Result<DivisionInfo, String> {
     use smartcut_core::divide::{self, Rule};
+    // This question's number. See [`DIVIDE_ASKED`].
+    let mine = DIVIDE_ASKED.fetch_add(1, Ordering::SeqCst) + 1;
     off_thread(move || {
-        let (src, _) = scan_cached(&app, &path)?;
+        let overtaken = || DIVIDE_ASKED.load(Ordering::SeqCst) != mine;
+        let (src, _, _) = scan_cached_reporting(&app, &path, None, Some(&overtaken))?;
         let rule = match rule.as_str() {
             "parts" if value.is_finite() && value >= 0.0 => Rule::Parts(value.round() as usize),
             "every" => Rule::Every(value),
@@ -4396,6 +4534,23 @@ async fn divide_clip(
         })
     })
     .await
+}
+
+/// How many questions the 分割 box has put, or called off with
+/// [`stop_divide`].
+///
+/// A row with no index of its own -- a broadcast whose walk has not been
+/// kept, a disc row read over a share -- is walked to answer, and the box asks
+/// on every key pressed in it: each question walked the whole recording
+/// beside the ones before it, and nothing stopped any of them, the box
+/// closed or not. A walk now gives up once a later question is asked or the
+/// box goes.
+static DIVIDE_ASKED: AtomicU64 = AtomicU64::new(0);
+
+/// The 分割 box has closed: what it asked last is not wanted.
+#[tauri::command]
+fn stop_divide() {
+    DIVIDE_ASKED.fetch_add(1, Ordering::SeqCst);
 }
 
 /// What `save_frame` answers when a name it was told is new is already taken.
@@ -4662,7 +4817,11 @@ fn cm_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 /// changes in preference to one where it does not. All in 0.8.1, which left
 /// this at 2 and went on showing 0.8.0's boundaries for every recording
 /// detected before it.
-const CM_VERSION: u32 = 3;
+///
+/// 4: HE-AAC silences are read at the decoded rate (0.8.10, which left this
+/// at 3), a logo absence cut short by the end of the recording runs to the
+/// end, and the logo template reads the head of the recording.
+const CM_VERSION: u32 = 4;
 
 /// Where this recording's commercial detection belongs.
 fn cm_path(app: &tauri::AppHandle, src_path: &str) -> Result<std::path::PathBuf, String> {
@@ -5171,8 +5330,21 @@ fn wave_out(wave: &smartcut_core::wave::Wave) -> WaveOut {
 /// Keep an outline, unless the read it came out of was cut short by a share
 /// that went away: shown, not kept. A failure to write is not worth stopping
 /// for, as with a detection.
-fn remember_wave(app: &tauri::AppHandle, path: &str, out: &WaveOut) {
+///
+/// `before` is what the recording weighed before the read the outline came
+/// out of ([`weigh`]). An outline is filed under the size and time the file
+/// has when it is written, and one read from a recording still being
+/// written -- a recorder's file over a share -- was filed under a key that
+/// described more of the file than was read: a later open finding the file
+/// at that size and time was handed the outline of a shorter one. So one of
+/// a file that changed during the read is not kept, as [`remember_index`]
+/// keeps no index of one.
+fn remember_wave(app: &tauri::AppHandle, path: &str, out: &WaveOut, before: Option<Weight>) {
     if smartcut_core::input::reads_failed() {
+        return;
+    }
+    if before.is_some_and(|w| weigh(path) != Some(w)) {
+        eprintln!("wave: {path} changed while it was read; not kept");
         return;
     }
     let Ok(file) = wave_path(app, path) else { return };
@@ -5206,6 +5378,8 @@ async fn read_wave(path: String, app: tauri::AppHandle) -> Result<WaveOut, Strin
             return Err(tr!("音声がありません", "no audio").to_string());
         }
         let _reads = stop_reads_on(&app, |s| &s.editor, mine);
+        // See [`remember_wave`].
+        let before = weigh(&path);
         let reporter = app.clone();
         let owned = path.clone();
         let say = move |done: f64| {
@@ -5217,7 +5391,7 @@ async fn read_wave(path: String, app: tauri::AppHandle) -> Result<WaveOut, Strin
             return Err("cancelled".into());
         }
         let out = wave_out(&wave);
-        remember_wave(&app, &path, &out);
+        remember_wave(&app, &path, &out, before);
         Ok(out)
     })
     .await
@@ -6169,7 +6343,7 @@ async fn export(
     // where the container keeps a chapter list; see
     // [`smartcut_core::CutOptions::chapters`].
     chapters: Option<Vec<f64>>,
-) -> Result<bool, String> {
+) -> Result<Exported, String> {
     // Cutting is minutes of I/O on a broadcast recording; keeping it off the
     // UI thread is what lets the progress bar move at all.
     tauri::async_runtime::spawn_blocking(move || {
@@ -6233,6 +6407,8 @@ async fn export(
         let whose = src.path.clone();
         // Whether the cut is written by the plans above. See [`REPLANNED`].
         let replanned = std::sync::Arc::new(std::sync::OnceLock::new());
+        // What the run can only say once the file is written. See [`Exported`].
+        let notes = std::sync::Arc::new(Mutex::new(Vec::new()));
         locked(&REPLANNED).remove(&output);
         let opts = smartcut_core::CutOptions {
             audio_mode: if audio_reencode.unwrap_or(false) {
@@ -6294,6 +6470,7 @@ async fn export(
             poster,
             chapters: chapters.unwrap_or_default(),
             replanned: Some(replanned.clone()),
+            notes: Some(notes.clone()),
             disc_clip: disc_slot(&output),
             ..Default::default()
         };
@@ -6313,7 +6490,7 @@ async fn export(
                 })),
             )
             .map_err(|e| e.to_string())?;
-            return Ok(false);
+            return Ok(Exported::of(false, &notes));
         }
         // The AAC beside the cut takes the cut's name with `.aac` on it, and
         // that can be the recording being read (a transport stream saved as
@@ -6360,7 +6537,7 @@ async fn export(
             )
             .map_err(|e| e.to_string())?;
         }
-        Ok(replanned)
+        Ok(Exported::of(replanned, &notes))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6412,6 +6589,21 @@ struct Checked {
     /// The sound tracks that do not run as long as the pictures: the
     /// output's stream index, and by how much (positive for longer).
     sound_off: Vec<(usize, f64)>,
+    /// Whether the pictures run as long as the sources' own do in the kept
+    /// ranges and leave no stretch of them out: `verify::Report::runs_as_kept`,
+    /// which `pictures_ok` holds them to. Said on its own, so that a file
+    /// that failed only this is not called damaged with nothing damaged.
+    runs_as_kept: bool,
+    /// What the pictures should run to, from `from` to `to` seconds, where
+    /// the sources could be read for it (`verify::Kept`).
+    kept_from: Option<f64>,
+    kept_to: Option<f64>,
+    /// Give or take this much (`verify::Kept::slack`).
+    kept_slack: Option<f64>,
+    /// How much time in the output has no picture, and how much in the
+    /// sources, where the recordings come at a rate (`verify::Kept::holes`).
+    gap_seconds: Option<f64>,
+    gap_in_source: Option<f64>,
 }
 
 /// Whether the check under way has been told to stop.
@@ -6438,6 +6630,25 @@ static PLANNED_WITH: Mutex<std::collections::BTreeMap<String, Option<f64>>> =
 /// called a faithful cut wrong.
 static REPLANNED: Mutex<std::collections::BTreeMap<String, Vec<Vec<smartcut_core::RangePlan>>>> =
     Mutex::new(std::collections::BTreeMap::new());
+
+/// What `export` and `export_joined` answer: whether the engine wrote the
+/// file by other plans than it was handed (see [`note_replanned`]), and the
+/// notes it could only say once the file was written -- a standalone `.m2ts`
+/// whose arrival times were left as libavformat wrote them
+/// (`CutOptions::notes`). Those went to the terminal and the run's log
+/// alone, and the row said 完了 with nothing beside it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Exported {
+    replanned: bool,
+    notes: Vec<String>,
+}
+
+impl Exported {
+    fn of(replanned: bool, notes: &Mutex<Vec<String>>) -> Self {
+        Exported { replanned, notes: std::mem::take(&mut *locked(notes)) }
+    }
+}
 
 /// Write down what `replanned` says the export at `output` was written by,
 /// and whether that was not what it was given.
@@ -6488,17 +6699,20 @@ async fn verify_output(
             "count" => smartcut_core::verify::Compare::Count,
             _ => smartcut_core::verify::Compare::Nothing,
         };
-        // Planned as the export planned it. See [`PLANNED_WITH`].
+        // Planned as the export planned it. See [`PLANNED_WITH`]. Taken
+        // out rather than read: an output is checked once, after the export
+        // that put it there, and the next export to that name puts its own
+        // in. Read and left, one was kept per output for as long as the
+        // window was open.
         let clean_join = locked(&PLANNED_WITH)
-            .get(&output)
-            .copied()
+            .remove(&output)
             .unwrap_or_else(prefs::clean_join);
         // Or not planned at all, where the export was written by other plans
         // than its own in the end. See [`REPLANNED`].
+        // Taken out as that is, and for its reason: these are whole plans.
         let replanned = locked(&REPLANNED)
-            .get(&output)
-            .filter(|again| again.len() == clips.len())
-            .cloned();
+            .remove(&output)
+            .filter(|again| again.len() == clips.len());
         let mut sources = Vec::with_capacity(clips.len());
         let mut plans = Vec::with_capacity(clips.len());
         for (n, c) in clips.iter().enumerate() {
@@ -6617,6 +6831,12 @@ async fn verify_output(
             damaged_in_source: report.damaged_in_source,
             seconds: report.seconds,
             sound_off: report.sound_off(),
+            runs_as_kept: report.runs_as_kept(),
+            kept_from: report.kept.map(|k| k.from),
+            kept_to: report.kept.map(|k| k.to),
+            kept_slack: report.kept.map(|k| k.slack),
+            gap_seconds: report.kept.and_then(|k| k.holes).map(|(out, _)| out),
+            gap_in_source: report.kept.and_then(|k| k.holes).map(|(_, src)| src),
         })
     })
     .await
@@ -6724,7 +6944,7 @@ async fn export_joined(
     data_broadcast: Option<bool>,
     video_share: Option<f64>,
     chapters: Option<Vec<f64>>,
-) -> Result<bool, String> {
+) -> Result<Exported, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if clips.is_empty() {
             return Err("nothing to write: the list is empty".to_string());
@@ -6833,6 +7053,8 @@ async fn export_joined(
         let reporter = app.clone();
         // Whether the cut is written by the plans above. See [`REPLANNED`].
         let replanned = std::sync::Arc::new(std::sync::OnceLock::new());
+        // What the run can only say once the file is written. See [`Exported`].
+        let notes = std::sync::Arc::new(Mutex::new(Vec::new()));
         locked(&REPLANNED).remove(&output);
         let opts = smartcut_core::CutOptions {
             audio_mode: if audio_reencode.unwrap_or(false) {
@@ -6886,6 +7108,7 @@ async fn export_joined(
                 ..Default::default()
             },
             replanned: Some(replanned.clone()),
+            notes: Some(notes.clone()),
             disc_clip: disc_slot(&output),
             ..Default::default()
         };
@@ -6910,7 +7133,7 @@ async fn export_joined(
                 })),
             )
             .map_err(|e| e.to_string())?;
-            return Ok(false);
+            return Ok(Exported::of(false, &notes));
         }
         if audio_es.unwrap_or(false) {
             let beside = std::path::Path::new(&output).with_extension("aac");
@@ -6941,7 +7164,7 @@ async fn export_joined(
             )
             .map_err(|e| e.to_string())?;
         }
-        Ok(replanned)
+        Ok(Exported::of(replanned, &notes))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -7045,10 +7268,22 @@ async fn bdav_title(dir: String) -> Option<String> {
 /// Asked before the run rather than during it, because the numbering depends
 /// on what the disc already holds: a second evening's cuts are added to the
 /// disc rather than written over it.
+///
+/// `image` is whether the run makes an image of the disc afterwards. Then the
+/// image is asked about first, by the rule `udfw::write` refuses by (inside
+/// the folder it is made of, or over an image of another disc or a file that
+/// is none): refused only once it was reached, the run had cut and indexed
+/// every recording for a disc whose image it then could not make.
 #[tauri::command]
-async fn bdav_prepare(dir: String, n: usize) -> Result<Vec<BdavSlot>, String> {
+async fn bdav_prepare(dir: String, n: usize, image: Option<bool>) -> Result<Vec<BdavSlot>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
+        if image == Some(true) {
+            let image = image_of(&at)?;
+            if let Some(why) = smartcut_core::udfw::refused(&at, &image) {
+                return Err(why);
+            }
+        }
         let clips = smartcut_core::bdav::prepare(&at, n).map_err(|e| e.to_string())?;
         locked(&HANDED_OUT)
             .extend(clips.iter().map(|clip| smartcut_core::bdav::stream_of(&at, clip)));
@@ -7135,6 +7370,29 @@ struct ImageMade {
     bytes: u64,
 }
 
+/// Where the image of the disc in `at` goes: beside the folder, under its
+/// name -- `disc/` becomes `disc.iso`. For [`bdav_image`], which writes it,
+/// and [`bdav_prepare`], which asks before the run whether it can be.
+fn image_of(at: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    // A drive or the root has no name and nothing beside it. `E:\.iso` would
+    // be inside the very folder it is made of.
+    let Some(name) = at.file_name() else {
+        return Err(format!(
+            "{}: an image goes beside the disc's folder, and this has nothing beside it. \
+             Choose a folder for the disc",
+            at.display()
+        ));
+    };
+    // Appended to the folder's name rather than `with_extension`, which
+    // would take a folder called `2026.09` and write `2026.iso` -- and put
+    // in the folder's parent by path rather than by string: `disc/.` has
+    // the name `disc` too, and `disc/..iso` was inside the very folder
+    // the image is made of.
+    let mut file = name.to_os_string();
+    file.push(".iso");
+    Ok(at.with_file_name(file))
+}
+
 /// Wrap the finished disc in an image a burner can take.
 ///
 /// The folder is what was written and it stays unless the run asks for it to
@@ -7153,23 +7411,7 @@ async fn bdav_image(
 ) -> Result<ImageMade, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let at = local_path(&dir)?;
-        // Beside the folder, under its name -- which a drive or the root has
-        // neither of. `E:\.iso` would be inside the very folder it is made of.
-        let Some(name) = at.file_name() else {
-            return Err(format!(
-                "{}: an image goes beside the disc's folder, and this has nothing beside it. \
-                 Choose a folder for the disc",
-                at.display()
-            ));
-        };
-        // Appended to the folder's name rather than `with_extension`, which
-        // would take a folder called `2026.09` and write `2026.iso` -- and put
-        // in the folder's parent by path rather than by string: `disc/.` has
-        // the name `disc` too, and `disc/..iso` was inside the very folder
-        // the image is made of.
-        let mut file = name.to_os_string();
-        file.push(".iso");
-        let image = at.with_file_name(file);
+        let image = image_of(&at)?;
         // The image is named after the folder and goes beside it, which can be
         // the very image a row of the list was read out of: a disc cut into a
         // folder of the same name had its source replaced by the new one.
@@ -7400,9 +7642,10 @@ async fn bdav_used(dir: String) -> u64 {
         let mine: u64 = locked(&HANDED_OUT)
             .iter()
             .filter(|p| p.starts_with(&root))
-            // And the copies of it made beside it while it is finished: the
-            // arrival times (`bdav::stamp`) and the tables (`si` graft).
-            .flat_map(|p| [p.clone(), p.with_extension("m2ts.ats"), p.with_extension("m2ts.si")])
+            // And the copy of it made beside it while it is finished: the
+            // tables (`si` graft). `bdav::stamp` writes the arrival times
+            // in place now, with no copy.
+            .flat_map(|p| [p.clone(), p.with_extension("m2ts.si")])
             .map(|p| std::fs::symlink_metadata(p).map(|m| m.len()).unwrap_or(0))
             .fold(0u64, u64::saturating_add);
         smartcut_core::fit::already_on(&at).saturating_sub(mine)
@@ -8667,44 +8910,44 @@ fn put_queue(dir: &std::path::Path, queue: &BatchQueue) -> Result<(), String> {
 
 /// Run a read-modify-write of the queue with the other process kept out.
 ///
-/// A file created only if it is not there is the one lock both platforms
-/// agree on. One left behind by a process that died holding it is taken as
-/// stale after a few seconds, which is far longer than any write here takes.
+/// A lock the operating system holds on `batch.lock` for as long as `work`
+/// runs, as [`crate::recovery`] holds its own: let go when the process ends,
+/// however it ends, so there is nothing stale to judge. The file used to be
+/// the lock itself -- made only if it was not there, and taken as stale after
+/// five seconds -- and two windows that both found a stale one both removed
+/// it: the second removed the lock the first had just made, and both wrote
+/// the queue at once. The file now stays where it is.
 fn with_queue_lock<T>(
     dir: &std::path::Path,
     work: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    let lock = dir.join("batch.lock");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("batch.lock"))
+        .map_err(|e| e.to_string())?;
     let mut held = false;
     for _ in 0..200 {
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
-            Ok(_) => {
+        match lock.try_lock() {
+            Ok(()) => {
                 held = true;
                 break;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let stale = std::fs::metadata(&lock)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.elapsed().ok())
-                    .is_some_and(|age| age > std::time::Duration::from_secs(5));
-                if stale {
-                    let _ = std::fs::remove_file(&lock);
-                    continue;
-                }
+            Err(std::fs::TryLockError::WouldBlock) => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
-            Err(e) => return Err(e.to_string()),
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.to_string()),
         }
     }
-    // Five seconds of waiting on a lock that keeps being renewed is another
-    // process at work on the queue. Going ahead without it wrote over what
-    // that one was writing, and taking the lock away afterwards took its.
+    // Five seconds of waiting is another process at work on the queue. Going
+    // ahead without it wrote over what that one was writing.
     if !held {
         return Err("the batch queue is busy; try again".to_string());
     }
     let done = work();
-    let _ = std::fs::remove_file(&lock);
+    drop(lock);
     done
 }
 
@@ -9096,11 +9339,34 @@ fn show_folder_now(path: &str) -> Result<(), String> {
     } else {
         "xdg-open"
     };
-    desktop_command(opener)
-        .arg(dir)
-        .spawn()
-        .map(reap)
-        .map_err(|e| format!("{opener}: {e}"))
+    let mut run = desktop_command(opener);
+    path_arg(&mut run, dir);
+    run.spawn().map(reap).map_err(|e| format!("{opener}: {e}"))
+}
+
+/// Hand `path` to the desktop's opener as one argument.
+///
+/// `arg` everywhere but Windows. There the opener is `explorer`, which reads
+/// its own command line and takes a comma as the end of an argument: a
+/// folder named `2024,秋` came to it unquoted -- the standard quoting puts
+/// quotes only around a space -- and it opened 2024 or the Documents folder
+/// instead. So a path with a comma in it goes in quoted as it is, which a
+/// Windows path can be since it cannot hold a quote itself; a trailing
+/// backslash is taken off first, as it would read as one in front of the
+/// closing quote. Any other path goes as it always did.
+pub(crate) fn path_arg(run: &mut std::process::Command, path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let text = path.as_os_str().to_string_lossy();
+        if text.contains(',') && !text.contains('"') {
+            let trimmed = text.trim_end_matches(['\\', '/']);
+            let trimmed = if trimmed.len() < 3 { text.as_ref() } else { trimmed };
+            run.raw_arg(format!("\"{trimmed}\""));
+            return;
+        }
+    }
+    run.arg(path);
 }
 
 /// Say on the desktop that a run has finished: the list's 出力 or the batch
@@ -9841,6 +10107,7 @@ pub fn run() {
             clip_thumbs,
             clip_poster,
             divide_clip,
+            stop_divide,
             save_frame,
             clip_glance,
             clip_gone,
@@ -10037,6 +10304,66 @@ mod tests {
         assert!(set_prefs(want("")).is_ok());
         assert_eq!(prefs::cache_dir(), None);
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Only indexes, and only those written or read in the last ten minutes,
+    /// are spared for the other windows' lists.
+    #[test]
+    fn indexes_touched_lately_are_the_recent_ones() {
+        let mut root = std::env::temp_dir();
+        root.push(format!("smartcut-lately-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let (new, old, other) =
+            (root.join("a-0123456789abcdef.scix"), root.join("b-0123456789abcdef.scix"), root.join("c.txt"));
+        for f in [&new, &old, &other] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(hour_ago))
+            .unwrap();
+        assert_eq!(touched_lately(&root), vec![new]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The queue's lock keeps a second writer out while the first works, a
+    /// lock file left over from an earlier process keeps nobody out, and the
+    /// lock is gone again once the work is done. Many writers at once each
+    /// add their one job and none is written away.
+    #[test]
+    fn the_queue_lock_lets_one_writer_in_at_a_time() {
+        let mut root = std::env::temp_dir();
+        root.push(format!("smartcut-queue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // As a version that made the file the lock would have left it.
+        std::fs::write(root.join("batch.lock"), b"").unwrap();
+        let inside = std::sync::Arc::new(AtomicU64::new(0));
+        let hands: Vec<_> = (0..8)
+            .map(|n| {
+                let (root, inside) = (root.clone(), inside.clone());
+                std::thread::spawn(move || {
+                    with_queue_lock(&root, || {
+                        assert_eq!(inside.fetch_add(1, Ordering::SeqCst), 0, "two writers inside");
+                        let mut queue = read_queue(&root)?;
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        queue.jobs.push(BatchJob { path: format!("job-{n}"), ..Default::default() });
+                        put_queue(&root, &queue)?;
+                        inside.fetch_sub(1, Ordering::SeqCst);
+                        Ok(())
+                    })
+                })
+            })
+            .collect();
+        for hand in hands {
+            hand.join().unwrap().unwrap();
+        }
+        assert_eq!(read_queue(&root).unwrap().jobs.len(), 8);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

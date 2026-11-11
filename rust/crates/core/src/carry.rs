@@ -91,7 +91,28 @@ const TS_AUDIO: &[&str] = &[
 /// the same way, "Could not find tag", whatever the compliance level -- the
 /// unsigned kind a WAV holds and the signed kind (`twos`) an old QuickTime
 /// file does alike.
-const MP4_REFUSES: &[&str] = &["vp8", "aac_latm", "mlp", "pcm_u8", "pcm_s8"];
+///
+/// And the intermediate and lossless picture codecs a camera, an editor or a
+/// capture card writes into a `.mov` or a `.mkv`: ProRes, DNxHD, CineForm,
+/// DV, HAP, FFV1, Ut Video, HuffYUV, v210, QuickTime Animation and
+/// uncompressed pictures, and H.263, Sorenson Spark, the old Microsoft
+/// MPEG-4s and Theora, which an MP4 has no tag for either. Each was cut out
+/// of a `.mov` or `.mkv` into a `.mp4` with libavformat 61 and turned away
+/// at the header, "Could not find tag for codec": the cut planned and then
+/// stopped with a bare "Invalid argument". WavPack is the sound's one more.
+const MP4_REFUSES: &[&str] = &[
+    "vp8", "aac_latm", "mlp", "pcm_u8", "pcm_s8", "prores", "hap", "dnxhd", "cfhd", "dvvideo",
+    "v210", "ffv1", "utvideo", "huffyuv", "qtrle", "rawvideo", "h263", "flv1", "msmpeg4v2",
+    "msmpeg4v3", "wmv1", "wmv2", "theora", "wavpack",
+];
+
+/// The sound a program stream holds, a `.mpg` or a `.vob`: MPEG audio, AC-3,
+/// DTS and 16 bit big-endian linear PCM, the packs a DVD's own sound comes
+/// in. The muxer turns anything else away at the header with "Invalid
+/// argument" -- AAC, E-AC-3, Opus, Vorbis, FLAC and 24 bit PCM among them --
+/// and a cut planned and stopped with that and nothing else. Its pictures
+/// are not listed: the muxer writes whatever it is given as a video stream.
+const PS_AUDIO: &[&str] = &["mp1", "mp2", "mp3", "ac3", "dts", "pcm_s16be"];
 
 /// What a Matroska file refuses, which is one thing: 8-bit PCM is stored the
 /// way a WAV stores it, unsigned, and the muxer has no tag for the signed
@@ -103,7 +124,7 @@ const MKV_REFUSES: &[&str] = &["pcm_s8"];
 /// the three WebM carries, and its sound stops at the lossless ones: "vp9
 /// only supported in MP4", "VP8 muxing is currently not supported", and a
 /// plain refusal of the header for TrueHD, FLAC and Opus.
-const MOV_REFUSES: &[&str] = &["vp8", "vp9", "av1", "truehd", "mlp", "flac", "opus"];
+const MOV_REFUSES: &[&str] = &["vp8", "vp9", "av1", "truehd", "mlp", "flac", "opus", "wavpack"];
 
 /// What a WebM holds, which is the shortest list of the lot and the reason
 /// the window has had one container greyed out since before this module.
@@ -117,19 +138,33 @@ const WEBM: &[&str] = &["vp8", "vp9", "av1", "opus", "vorbis"];
 /// to refuse on -- the muxer will have its own opinion and it is welcome to
 /// it.
 pub fn family(output: &str) -> &'static str {
-    let ext = std::path::Path::new(output)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    match ext.as_str() {
+    match extension(output).as_str() {
         "ts" | "m2ts" | "mts" | "m2t" => "ts",
+        // An MP4 by another name, written by the MP4 muxer: see where the
+        // cut opens its output.
         "mp4" | "m4v" => "mp4",
         "mov" => "mov",
         "mkv" => "mkv",
         "webm" => "webm",
+        "mpg" | "mpeg" | "vob" => "ps",
         _ => "",
     }
+}
+
+/// The name's ending, lowercased: what follows the last dot of the file's
+/// own name, or nothing where there is no dot.
+///
+/// The way libavformat picks a muxer by the name (`av_match_ext`), rather
+/// than the way [`std::path::Path::extension`] reads one: a file named just
+/// `.ts` has no extension to `Path`, which takes it for a hidden file's
+/// stem, while libavformat writes it as a transport stream.
+pub fn extension(output: &str) -> String {
+    std::path::Path::new(output)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.rsplit_once('.'))
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default()
 }
 
 /// Whether a container of this family can carry a stream in this codec.
@@ -141,11 +176,24 @@ pub fn holds(family: &str, codec: &str) -> bool {
     match family {
         "ts" => TS_VIDEO.contains(&codec) || TS_AUDIO.contains(&codec),
         "mp4" => !MP4_REFUSES.contains(&codec),
+        // The pictures as they are, the sound from the list.
+        "ps" => !is_sound(codec) || PS_AUDIO.contains(&codec),
         "mov" => !MOV_REFUSES.contains(&codec),
         "webm" => WEBM.contains(&codec),
         "mkv" => !MKV_REFUSES.contains(&codec),
         // An unknown name is not this module's to refuse.
         _ => true,
+    }
+}
+
+/// Whether libav knows this codec as one of sound.
+fn is_sound(codec: &str) -> bool {
+    let Ok(name) = std::ffi::CString::new(codec) else { return false };
+    // SAFETY: a lookup in libavcodec's static table by a NUL-terminated
+    // name; the answer is a pointer into that table or null.
+    unsafe {
+        let d = ff::ffi::avcodec_descriptor_get_by_name(name.as_ptr());
+        !d.is_null() && (*d).type_ == ff::ffi::AVMediaType::AVMEDIA_TYPE_AUDIO
     }
 }
 
@@ -231,6 +279,37 @@ mod tests {
         assert!(!holds("mp4", "pcm_s8") && !holds("mkv", "pcm_s8") && holds("mov", "pcm_s8"));
         assert!(!holds("mp4", "pcm_u8") && holds("mkv", "pcm_u8"));
         assert!(holds("", "vp8"));
+    }
+
+    #[test]
+    fn a_name_is_read_the_way_libav_reads_it() {
+        assert_eq!(family("/out/.ts"), "ts");
+        assert_eq!(family("/out/.M2TS"), "ts");
+        assert_eq!(family("/out/ts"), "");
+        assert_eq!(family("/out.d/cut"), "");
+        assert_eq!(family("a.b.mkv"), "mkv");
+        assert_eq!(extension("x/CUT.Mp4"), "mp4");
+        assert_eq!(extension("x/cut"), "");
+    }
+
+    #[test]
+    fn the_intermediate_codecs_and_the_program_stream() {
+        for codec in ["prores", "dnxhd", "ffv1", "hap", "dvvideo", "cfhd", "wavpack"] {
+            assert!(!holds("mp4", codec) && holds("mkv", codec), "{codec}");
+        }
+        assert!(holds("mp4", "mjpeg") && holds("mp4", "mpeg2video") && holds("mp4", "hevc"));
+        assert!(holds("mov", "prores") && !holds("mov", "wavpack"));
+        // A .m4v is written by the MP4 muxer.
+        assert_eq!(family("x.m4v"), "mp4");
+        // A program stream: its pictures as they come, its sound by list.
+        assert_eq!(family("x.VOB"), "ps");
+        assert_eq!(family("x.mpg"), "ps");
+        for codec in ["mpeg2video", "mpeg1video", "h264", "ac3", "mp2", "dts", "pcm_s16be"] {
+            assert!(holds("ps", codec), "{codec}");
+        }
+        for codec in ["aac", "eac3", "opus", "vorbis", "flac", "pcm_s24be", "pcm_s16le", "truehd"] {
+            assert!(!holds("ps", codec), "{codec}");
+        }
     }
 
     #[test]

@@ -150,10 +150,77 @@ pub fn mounts() -> Vec<Mount> {
 /// share names are matched case-insensitively, the way SMB itself treats
 /// them.
 pub fn mount_of(share: &Share) -> Option<PathBuf> {
-    mounts()
-        .into_iter()
-        .find(|m| eq_ci(&m.host, &share.host) && eq_ci(&m.share, &share.share))
-        .map(|m| m.at)
+    let all = mounts();
+    whole_share(&all, share, &|host| eq_ci(host, &share.host)).or_else(|| {
+        let machine = Machine::of(&share.host);
+        whole_share(&all, share, &|host| machine.is(host))
+    })
+}
+
+/// The mount of the whole of `share` among `all`, on a host `same` takes for
+/// the share's.
+fn whole_share(all: &[Mount], share: &Share, same: &dyn Fn(&str) -> bool) -> Option<PathBuf> {
+    all.iter()
+        .find(|m| same(&m.host) && eq_ci(&m.share, &share.share))
+        .map(|m| m.at.clone())
+}
+
+/// The machine a share's host names, for telling whether a mount listed
+/// under another name is on it.
+///
+/// **One NAS goes by several names.** `smb://nas/rec` is what the file
+/// manager shows, the `fstab` line that mounted it says `//192.168.0.10/rec`,
+/// and gvfs lists it under whatever the connection was made with --
+/// `nas.local`, `NAS`, the address. Matched by the name alone, a share that
+/// was mounted was "not mounted" whenever the two were spelt differently. So
+/// where no mount carries the name as written, the two are also taken for
+/// one machine when one is the other with a domain on the end (`nas` and
+/// `nas.local`), or when they come to the same address. Only then, and only
+/// against the handful of SMB mounts there are: a name that does not resolve
+/// costs the resolver's wait on a path that was about to fail anyway.
+struct Machine {
+    name: String,
+    addrs: std::cell::OnceCell<Vec<std::net::IpAddr>>,
+}
+
+impl Machine {
+    fn of(name: &str) -> Machine {
+        Machine {
+            name: name.to_string(),
+            addrs: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn is(&self, other: &str) -> bool {
+        if eq_ci(&self.name, other) {
+            return true;
+        }
+        let short = |h: &str| -> Option<String> {
+            (h.parse::<std::net::IpAddr>().is_err() && !h.starts_with('['))
+                .then(|| h.split('.').next().unwrap_or(h).to_lowercase())
+        };
+        if let (Some(a), Some(b)) = (short(&self.name), short(other)) {
+            if a == b && !a.is_empty() {
+                return true;
+            }
+        }
+        let mine = self.addrs.get_or_init(|| addresses(&self.name));
+        !mine.is_empty() && addresses(other).iter().any(|a| mine.contains(a))
+    }
+}
+
+/// The addresses a host name or address stands for; none where it does not
+/// resolve.
+fn addresses(host: &str) -> Vec<std::net::IpAddr> {
+    use std::net::ToSocketAddrs as _;
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return vec![ip];
+    }
+    (bare, 445)
+        .to_socket_addrs()
+        .map(|found| found.map(|a| a.ip()).collect())
+        .unwrap_or_default()
 }
 
 /// The path to open for a share -- its mount point plus what was named inside
@@ -161,20 +228,38 @@ pub fn mount_of(share: &Share) -> Option<PathBuf> {
 /// caller's question.
 #[cfg(not(windows))]
 pub fn local(share: &Share) -> Result<PathBuf> {
-    if let Some(at) = mount_of(share) {
-        return Ok(if share.rest.is_empty() {
+    let under = |at: PathBuf| {
+        if share.rest.is_empty() {
             at
         } else {
             at.join(&share.rest)
-        });
+        }
+    };
+    let all = mounts();
+    if let Some(at) = whole_share(&all, share, &|host| eq_ci(host, &share.host)) {
+        return Ok(under(at));
     }
     // A folder inside the share, mounted on its own: `//nas/rec/anime` on
     // `/mnt/anime` is an ordinary fstab line, and the share it belongs to is
     // not mounted anywhere at all. A path under that folder is a path under
     // its mount point.
-    mounts()
-        .iter()
-        .find_map(|m| inside_folder_mount(m, share))
+    if let Some(at) = all.iter().find_map(|m| inside_folder_mount(m, share)) {
+        return Ok(at);
+    }
+    // And either, under another name for the same machine; see [`Machine`].
+    let machine = Machine::of(&share.host);
+    if let Some(at) = whole_share(&all, share, &|host| machine.is(host)) {
+        return Ok(under(at));
+    }
+    all.iter()
+        .filter(|m| machine.is(&m.host))
+        .find_map(|m| {
+            let named = Share {
+                host: m.host.clone(),
+                ..share.clone()
+            };
+            inside_folder_mount(m, &named)
+        })
         .ok_or_else(|| anyhow!("{} is not mounted", share.unc()))
 }
 
@@ -493,6 +578,22 @@ mod tests {
         );
         assert_eq!(gvfs_share("sftp:host=nas"), None);
         assert_eq!(gvfs_share("smb-share:server=nas"), None);
+    }
+
+    /// One machine under two names: a name and the same name with its
+    /// domain, or a name and its address.
+    #[test]
+    fn one_machine_under_another_name() {
+        assert!(Machine::of("nas").is("NAS.local"));
+        assert!(Machine::of("nas.lan").is("nas"));
+        assert!(!Machine::of("nas").is("nas2.local"));
+        assert!(Machine::of("localhost").is("127.0.0.1"));
+        assert!(Machine::of("127.0.0.1").is("localhost"));
+        assert!(Machine::of("192.168.0.10").is("192.168.0.10"));
+        assert!(!Machine::of("192.168.0.10").is("192.168.0.11"));
+        // Two addresses are not cut down to their first part.
+        assert!(!Machine::of("192.168.0.10").is("192.1.2.3"));
+        assert!(!Machine::of("no-such-host.invalid").is("other-host.invalid"));
     }
 
     #[test]

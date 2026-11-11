@@ -89,9 +89,6 @@ pub struct Weave {
     /// The last frame handed out, in fields, so that a picture whose clock
     /// jumped back cannot hand the same frame out twice.
     last: Option<i64>,
-    /// Whether a picture has been seen at all, which is what tells the first
-    /// picture of a walk from one arriving in the middle of it.
-    started: bool,
 }
 
 impl Weave {
@@ -107,7 +104,6 @@ impl Weave {
             head,
             open: None,
             last: None,
-            started: false,
         }
     }
 
@@ -134,7 +130,6 @@ impl Weave {
         const FAR: f64 = (1i64 << 52) as f64;
         let from = ((t - head) / self.field).round().clamp(-FAR, FAR) as i64;
         let picture = Rc::new(picture);
-        let first = !std::mem::replace(&mut self.started, true);
 
         let mut out = Vec::new();
         for i in 0..fields {
@@ -161,21 +156,22 @@ impl Weave {
             }
             match self.open.take() {
                 Some(open) if open.at == field.at - 1 => self.emit_pair(open, field, &mut out)?,
-                Some(open) => {
-                    self.emit_whole(open, &mut out);
-                }
                 // The second half of a frame whose first half is not here.
                 // At the start of a walk that is the picture before the seek
                 // landed, which nobody decoded; the frame is shown as this
                 // picture rather than not at all, because it is the frame an
                 // access point falls in and that is exactly where a walk
-                // starts. Anywhere else it is a field with nothing to pair
-                // with, and it goes.
-                None if first && i == 0 => {
+                // starts. In the middle of one it is a lone field -- the
+                // stream's fields stepped half a frame -- and the frame it
+                // falls in is shown as this picture too: dropped, that frame
+                // had no picture at all, and a step went straight past it.
+                open => {
+                    if let Some(open) = open {
+                        self.emit_whole(open, &mut out);
+                    }
                     let at = field.at - 1;
                     self.emit(at, field.picture, &mut out);
                 }
-                None => {}
             }
         }
         Ok(out)
@@ -370,6 +366,23 @@ mod tests {
         out.extend(w.finish());
         let times: Vec<f64> = out.iter().map(|(t, _)| (t / FD * 100.0).round() / 100.0).collect();
         assert_eq!(times, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn a_lone_field_in_the_middle_leaves_no_frame_empty() {
+        // Three pictures of two fields, then the fields step half a frame:
+        // the next picture begins on the second field of frame 3.
+        let mut w = Weave::with(FD, Some(0.0));
+        let mut out = Vec::new();
+        for (level, at) in [(10, 0), (20, 2), (30, 4), (40, 7), (50, 9), (60, 11)] {
+            let t = at as f64 * FD / 2.0;
+            out.extend(w.push(t, picture(level, 2, at % 2 == 0)).unwrap());
+        }
+        out.extend(w.finish());
+        let times: Vec<f64> = out.iter().map(|(t, _)| (t / FD * 100.0).round() / 100.0).collect();
+        assert_eq!(times, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        // Frame 3 is the picture that began half way through it.
+        assert_eq!(lines(&out[3].1), vec![40, 40, 40, 40]);
     }
 
     #[test]

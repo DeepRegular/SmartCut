@@ -485,7 +485,7 @@ pub fn find_runs_with(
     // as two, running on over the picture that came back.
     // See [`crate::sound::sought_at_head`].
     if crate::sound::sought_at_head(&ictx, &src.input.url) {
-        let target = i64::MIN / 2;
+        let target = crate::input::head_seek(&ictx);
         let _ = ictx.seek(target, ..target);
     }
     let idx = src.video.stream_index;

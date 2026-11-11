@@ -56,14 +56,33 @@ pub fn standalone(path: &str, disc_clip: bool) -> bool {
 /// Write the arrival times of a finished standalone `.m2ts` again, from its
 /// own clock references. See the module's own account.
 ///
-/// Where the stream has nothing to stamp from, says so and leaves it alone.
-/// An error is a file that could not be read or written.
-pub fn restamp(path: &str) -> Result<()> {
+/// Where the stream has nothing to stamp from, leaves it alone and answers
+/// why. An error is a file that could not be read or written.
+pub fn restamp(path: &str) -> Result<Option<String>> {
     match plan(path)? {
-        Ok(anchors) => write(path, &anchors),
-        Err(why) => {
-            crate::say!("note: the arrival times in {path} were left as written: {why}");
-            Ok(())
+        Ok(anchors) => write(path, &anchors).map(|()| None),
+        Err(why) => Ok(Some(why.to_string())),
+    }
+}
+
+/// [`restamp`] at the end of a run, where a file that could not be stamped
+/// is a note and not a failure: the file is all written by then, and a pass
+/// that fails part way leaves every packet as it was.
+///
+/// The note is said, and put in `notes` where the caller gave one (see
+/// `CutOptions::notes`): said alone it reached the terminal and the run's
+/// log, and the window's row said only that the run was done.
+pub(crate) fn restamp_or_say(path: &str, notes: Option<&std::sync::Mutex<Vec<String>>>) {
+    let why = match restamp(path) {
+        Ok(None) => return,
+        Ok(Some(why)) => why,
+        Err(e) => format!("{e:#}"),
+    };
+    let line = format!("note: the arrival times in {path} were left as written: {why}");
+    crate::say!("{line}");
+    if let Some(notes) = notes {
+        if let Ok(mut notes) = notes.lock() {
+            notes.push(line);
         }
     }
 }

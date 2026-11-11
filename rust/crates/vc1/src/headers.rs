@@ -362,11 +362,24 @@ pub fn picture(payload: &[u8], seq: &Sequence, entry: &EntryPoint) -> Option<Pic
             rff = r.bit1();
         }
     }
-    if entry.panscan {
-        // The syntax here depends on window counts this program has never
-        // met on a disc, and a wrong guess would misread everything after
-        // it. Say so by refusing rather than by answering wrongly.
-        return None;
+    if entry.panscan && r.bit1() {
+        // PS_PRESENT, then a window (18 + 18 + 14 + 14 bits) for each field
+        // or frame the picture is shown as: two fields and the repeated
+        // one in an interlaced sequence, else the frame and its repeats
+        // (SMPTE 421M 7.1.1.20). Stepped over, as nothing after it depends
+        // on it; the encoder still refuses such a stream (see
+        // [`crate::intra::Unsupported::PanScan`]).
+        let windows = if seq.interlace && !seq.psf {
+            2 + u32::from(seq.pulldown && rff)
+        } else {
+            1 + if seq.pulldown { u32::from(rptfrm) } else { 0 }
+        };
+        for _ in 0..windows {
+            r.u(18);
+            r.u(18);
+            r.u(14);
+            r.u(14);
+        }
     }
     if kind == Kind::Skipped {
         // Nothing follows: the picture is a repeat of the last one.

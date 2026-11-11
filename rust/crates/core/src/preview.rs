@@ -195,19 +195,20 @@ impl<'a, P: Clone> Slots<'a, P> {
         Ok(())
     }
 
-    /// The run's answer, once nothing more is coming. `close` is the closest
-    /// two different pictures can come ([`crate::VideoInfo::least_gap`]).
-    fn finish(
-        mut self,
-        close: f64,
-        image: impl Fn(P) -> Result<Vec<u8>>,
-    ) -> Result<Vec<Option<Shot>>> {
+    /// The run's answer, once nothing more is coming.
+    fn finish(mut self, image: impl Fn(P) -> Result<Vec<u8>>) -> Result<Vec<Option<Shot>>> {
         // Two slots can round to the same picture -- the strip's spacing need
         // not be a whole number of picture intervals, and under pulldown it
-        // never is. The later slot gives it up rather than repeating it.
+        // never is. The later slot gives it up rather than repeating it. The
+        // same picture, which is the same instant: not two within half the
+        // closest two pictures come, which a recording's last picture can be
+        // of the one before it where the measure of that closest is taken
+        // without it -- a phone's last picture a fraction of a millisecond
+        // after the one before, whose cell then stayed empty though the
+        // picture on screen there was that one.
         for i in (1..self.got.len()).rev() {
             let dup = match (&self.got[i], &self.got[i - 1]) {
-                (Some(a), Some(b)) => (a.0 - b.0).abs() < close / 2.0,
+                (Some(a), Some(b)) => a.0 == b.0,
                 _ => false,
             };
             if dup {
@@ -273,7 +274,7 @@ fn collect_run(
             break;
         }
     }
-    got.finish(src.video.least_gap(), |frame| encode_jpeg(&frame, sar, width))
+    got.finish(|frame| encode_jpeg(&frame, sar, width))
 }
 
 /// As [`collect_run`], for a run whose every slot stands on an entry point.
@@ -362,7 +363,7 @@ fn entry_run(
         }
     }
     // Already encoded, on the worker that decoded it.
-    got.finish(src.video.least_gap(), Ok)
+    got.finish(Ok)
 }
 
 /// The entry pictures of a stretch of the recording, as packets, decoding
@@ -500,32 +501,92 @@ pub fn play_from(
             true
         }
     };
+    // **The range opens on the picture the cut opens it on** -- unless the
+    // recording is woven into frames (see [`crate::weave`]), which is shown
+    // frame by frame and keeps the nearer-of-two rule below. A range the
+    // cut copies from an entry point begins on that point's picture, up to
+    // half the closest two pictures come before `from`; a range it
+    // re-encodes begins on the first picture at `from` or after it, or with
+    // the picture already up at `from` where nothing arrives within the
+    // closest two pictures come and that one is held past its own length
+    // (`still_on_screen` in the cut's re-encode, whose rule this is). The
+    // nearer of the two either side was the rule for all of them: a range
+    // asked for in seconds between two pictures of a constant-rate
+    // recording played a picture of what was cut first, which the cut does
+    // not write, and a range opening inside a screen recording's hold of a
+    // second or two played nothing of the hold, which the cut writes.
+    let woven = crate::weave::woven(src);
+    let least = src.video.least_gap();
+    let tol = fd * 1e-3;
+    // A bound within a coarse clock's ticks of a picture is that picture's,
+    // as the cut settles it ([`crate::plan::plan_on`]).
+    let slack = crate::cut::on_a_picture_slack(&src.video);
+    let copied = (!woven)
+        .then(|| {
+            crate::plan::plan_range(
+                &src.video,
+                src.duration,
+                &src.points,
+                from,
+                until,
+                &crate::plan::PlanOptions::default(),
+            )
+        })
+        .and_then(|plan| plan.segments.first().cloned())
+        .filter(|s| s.kind == crate::plan::SegmentKind::Copy)
+        .map(|s| s.start);
+    // The first instant a picture of the range's own may begin at.
+    let own_from = copied.map_or(from - slack, |c| c.min(from - slack) - tol);
     for (attempt, margin) in [0.0, src.seek_margin].into_iter().enumerate() {
         let mut began_late = true;
         // **A picture that begins before `from` is played only where it is
         // the nearer of the two either side of it**, as `picture_in` picks
-        // the one the editor stands on. Up to half a frame early was the
-        // whole rule, and a frame is the average's: on a screen recording
-        // averaging 9 a second whose pictures come 33 ms apart wherever the
-        // screen moves, half of it is 55 ms, so playing from a picture
-        // began on the one before it -- a picture of what was cut, at
-        // every range's head. Where pictures come a frame apart this is
-        // the same rule as before.
+        // the one the editor stands on -- on a woven recording; see above
+        // for every other. Up to half a frame early was the whole rule, and
+        // a frame is the average's: on a screen recording averaging 9 a
+        // second whose pictures come 33 ms apart wherever the screen moves,
+        // half of it is 55 ms, so playing from a picture began on the one
+        // before it -- a picture of what was cut, at every range's head.
         let mut early: Option<(f64, ff::frame::Video)> = None;
         let first = walk(src, entry, margin, false, true, Cores::All, false, None, |t, frame| {
-            if t < from - fd / 2.0 {
-                return true;
-            }
-            if t < from - 1e-6 {
-                early = Some((t, frame.clone()));
-                return true;
-            }
-            if let Some((e, held)) = early.take() {
-                if from - e <= t - from {
-                    began_late = false;
-                    if !put(e, &held) {
-                        stopped = true;
-                        return false;
+            if !woven {
+                if t < own_from {
+                    // Held by reference, not copied: this is every picture
+                    // from the entry point up to the range, and a hold can
+                    // reach back to any of them.
+                    early = Some((t, held_ref(frame)));
+                    return true;
+                }
+                if let Some((e, held)) = early.take() {
+                    // Up from the range's start until `t`, as the cut puts
+                    // it: only where `t` is at least the closest two
+                    // pictures come after the start, and the picture is
+                    // held past its own coded length.
+                    let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
+                    let own_end = e + f64::from(shown_for) * least / 2.0;
+                    if copied.is_none() && t - from >= least && own_end < t - least / 4.0 {
+                        began_late = false;
+                        if !put(e, &held) {
+                            stopped = true;
+                            return false;
+                        }
+                    }
+                }
+            } else {
+                if t < from - fd / 2.0 {
+                    return true;
+                }
+                if t < from - 1e-6 {
+                    early = Some((t, frame.clone()));
+                    return true;
+                }
+                if let Some((e, held)) = early.take() {
+                    if from - e <= t - from {
+                        began_late = false;
+                        if !put(e, &held) {
+                            stopped = true;
+                            return false;
+                        }
                     }
                 }
             }
@@ -558,6 +619,18 @@ pub fn play_from(
         }
     }
     Ok(())
+}
+
+/// Another reference to a decoded picture's buffers, which costs nothing
+/// where the decoder counts them (every decoder here) -- a copy of every
+/// sample only where it does not.
+fn held_ref(frame: &ff::frame::Video) -> ff::frame::Video {
+    let mut held = ff::frame::Video::empty();
+    let r = unsafe { ff::ffi::av_frame_ref(held.as_mut_ptr(), frame.as_ptr()) };
+    if r < 0 {
+        return frame.clone();
+    }
+    held
 }
 
 /// Decode the picture shown at `time` and return it as a JPEG.
@@ -1140,7 +1213,7 @@ impl Glancer {
         let ts = if want > start + 1e-6 {
             (want * ff::ffi::AV_TIME_BASE as f64) as i64
         } else {
-            i64::MIN / 2
+            crate::input::head_seek(ictx)
         };
         let _ = ictx.seek(ts, ..ts);
 
@@ -1166,6 +1239,37 @@ impl Glancer {
                 .pts()
                 .map_or(0.0, |pts| pts as f64 * time_base - start)
         };
+        // One decoded picture into its cell; true once the stretch is done.
+        let mut take = |frame: &ff::frame::Video, out: &mut Vec<Shot>| -> Result<bool> {
+            let at = when(frame);
+            // Pictures come out of the decoder in presentation order, so
+            // the first one past the far end says the stretch is done.
+            if at > to + 1e-6 {
+                return Ok(true);
+            }
+            if at < from - 1e-6 {
+                return Ok(false);
+            }
+            // One picture per cell is all the caller can show, and the
+            // decoding is done either way -- what this saves is the
+            // encoding of the ones that would land on top of each other.
+            let k = cell_of(at);
+            if k == held {
+                return Ok(false);
+            }
+            held = k;
+            out.push(Shot {
+                jpeg: encode_jpeg(frame, sar, width)?,
+                time: at,
+                kind: kind_of(frame),
+            });
+            Ok(out.len() >= most)
+        };
+        // Whether the read stopped before the file did. Where it did not, the
+        // decoder still holds the last pictures it was given for reordering,
+        // and they are the end of the recording: a stretch reaching the end
+        // of a recording that has B pictures had its last cells empty.
+        let mut done = false;
         'read: for (s, packet) in ictx.read_packets() {
             if s.index() != idx {
                 continue;
@@ -1175,6 +1279,7 @@ impl Glancer {
             // strip read to the end of the file on every update.
             left -= 1;
             if left <= 0 {
+                done = true;
                 break;
             }
             started = started || packet.is_key();
@@ -1185,30 +1290,17 @@ impl Glancer {
                 continue;
             }
             while decoder.receive_frame(&mut frame).is_ok() {
-                let at = when(&frame);
-                // Pictures come out of the decoder in presentation order, so
-                // the first one past the far end says the stretch is done.
-                if at > to + 1e-6 {
+                if take(&frame, &mut out)? {
+                    done = true;
                     break 'read;
                 }
-                if at < from - 1e-6 {
-                    continue;
-                }
-                // One picture per cell is all the caller can show, and the
-                // decoding is done either way -- what this saves is the
-                // encoding of the ones that would land on top of each other.
-                let k = cell_of(at);
-                if k == held {
-                    continue;
-                }
-                held = k;
-                out.push(Shot {
-                    jpeg: encode_jpeg(&frame, sar, width)?,
-                    time: at,
-                    kind: kind_of(&frame),
-                });
-                if out.len() >= most {
-                    break 'read;
+            }
+        }
+        if !done && started {
+            let _ = decoder.send_eof();
+            while decoder.receive_frame(&mut frame).is_ok() {
+                if take(&frame, &mut out)? {
+                    break;
                 }
             }
         }
@@ -1282,6 +1374,18 @@ fn encode_jpeg_within(picture: &ff::frame::Video, sar: f64, width: u32) -> Resul
     )?;
     let mut scaled = ff::frame::Video::new(ff::format::Pixel::YUVJ420P, out_w, out_h);
     scaler.run(picture, &mut scaled)?;
+    // And into the matrix a JPEG is read with, which is BT.601 whatever the
+    // picture was made with. Left in the picture's own, an HD recording's
+    // BT.709 samples were read through BT.601 by the webview: the editor,
+    // the strip and a cover showed its reds orange and its greens yellow
+    // against the cut every player shows, and against the still saved of the
+    // same frame (see [`to_rgb`]). After the scaling, at the JPEG's size, and
+    // here rather than by libswscale, which goes through 16-bit RGB at the
+    // size it is asked for: that more than doubled what a 1080p picture cost
+    // to play at 1920 across (17 to 26 ms).
+    if let Some(from) = jpeg_matrix(picture) {
+        rematrix(&mut scaled, from);
+    }
 
     let codec =
         ff::encoder::find(ff::codec::Id::MJPEG).ok_or_else(|| anyhow!("no MJPEG encoder"))?;
@@ -1313,6 +1417,94 @@ fn encode_jpeg_within(picture: &ff::frame::Video, sar: f64, width: u32) -> Resul
     Ok((out, out_w, out_h))
 }
 
+/// The YUV matrix `picture` is read with, as its two luma weights (red,
+/// blue), where it is not the BT.601 one a JPEG is read with; `None` where it
+/// is, or where the picture is not YUV. By the rule [`to_rgb`] reads it by:
+/// what the picture says, or by its size where it says nothing.
+fn jpeg_matrix(picture: &ff::frame::Video) -> Option<(f64, f64)> {
+    use ff::ffi::AVColorSpace as S;
+    let yuv = unsafe {
+        let d = ff::ffi::av_pix_fmt_desc_get(picture.format().into());
+        !d.is_null()
+            && (*d).nb_components >= 3
+            && (*d).flags & (ff::ffi::AV_PIX_FMT_FLAG_RGB as u64) == 0
+    };
+    if !yuv {
+        return None;
+    }
+    match unsafe { (*picture.as_ptr()).colorspace } {
+        S::AVCOL_SPC_BT709 => Some((0.2126, 0.0722)),
+        S::AVCOL_SPC_BT2020_NCL | S::AVCOL_SPC_BT2020_CL => Some((0.2627, 0.0593)),
+        S::AVCOL_SPC_FCC => Some((0.30, 0.11)),
+        S::AVCOL_SPC_SMPTE240M => Some((0.212, 0.087)),
+        S::AVCOL_SPC_UNSPECIFIED if picture.width() >= 1280 || picture.height() > 576 => {
+            Some((0.2126, 0.0722))
+        }
+        _ => None,
+    }
+}
+
+/// Bring a full-range 4:2:0 picture's samples from the YUV matrix whose luma
+/// weights are `(kr, kb)` to BT.601's, in place: through RGB, which is
+/// linear, so three sums a sample. Each luma sample takes the chroma of the
+/// 2x2 block it is in.
+fn rematrix(frame: &mut ff::frame::Video, (kr, kb): (f64, f64)) {
+    const ONE: f64 = (1 << 14) as f64;
+    let (kr2, kb2) = (0.299, 0.114);
+    // The new (Y, Cb, Cr) of each of the old ones alone, Cb and Cr centred.
+    let to601 = |y: f64, cb: f64, cr: f64| {
+        let r = y + 2.0 * (1.0 - kr) * cr;
+        let b = y + 2.0 * (1.0 - kb) * cb;
+        let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+        let y2 = kr2 * r + (1.0 - kr2 - kb2) * g + kb2 * b;
+        (y2, (b - y2) / (2.0 * (1.0 - kb2)), (r - y2) / (2.0 * (1.0 - kr2)))
+    };
+    let fix = |v: f64| (v * ONE).round() as i32;
+    let on_cb = to601(0.0, 1.0, 0.0);
+    let on_cr = to601(0.0, 0.0, 1.0);
+    let (y_cb, cb_cb, cr_cb) = (fix(on_cb.0), fix(on_cb.1), fix(on_cb.2));
+    let (y_cr, cb_cr, cr_cr) = (fix(on_cr.0), fix(on_cr.1), fix(on_cr.2));
+    let (w, h) = (frame.width() as usize, frame.height() as usize);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let (ys, cbs, crs) = (frame.stride(0), frame.stride(1), frame.stride(2));
+    let clamp = |v: i32| ((v + (1 << 13)) >> 14).clamp(0, 255) as u8;
+    // Chroma of the whole picture first, kept as it was: the luma needs it.
+    let mut cb_of = vec![0i32; cw * ch];
+    let mut cr_of = vec![0i32; cw * ch];
+    {
+        let cb = frame.data(1);
+        let cr = frame.data(2);
+        for y in 0..ch {
+            for x in 0..cw {
+                cb_of[y * cw + x] = i32::from(cb[y * cbs + x]) - 128;
+                cr_of[y * cw + x] = i32::from(cr[y * crs + x]) - 128;
+            }
+        }
+    }
+    {
+        let luma = frame.data_mut(0);
+        for y in 0..h {
+            let row = &mut luma[y * ys..y * ys + w];
+            let c = (y / 2) * cw;
+            for (x, v) in row.iter_mut().enumerate() {
+                let (cb, cr) = (cb_of[c + x / 2], cr_of[c + x / 2]);
+                *v = clamp((i32::from(*v) << 14) + y_cb * cb + y_cr * cr);
+            }
+        }
+    }
+    for (plane, (on_b, on_r)) in [(1usize, (cb_cb, cb_cr)), (2, (cr_cb, cr_cr))] {
+        let stride = frame.stride(plane);
+        let data = frame.data_mut(plane);
+        for y in 0..ch {
+            for x in 0..cw {
+                let k = y * cw + x;
+                let v = on_b * cb_of[k] + on_r * cr_of[k];
+                data[y * stride + x] = clamp(v + (128 << 14));
+            }
+        }
+    }
+}
+
 /// The widest a cover is made. A file manager shows it a few hundred pixels
 /// across; this is room for a player that shows it whole.
 const POSTER_WIDTH: u32 = 1920;
@@ -1329,7 +1521,12 @@ const POSTER_WIDTH: u32 = 1920;
 /// just the same, on a frame that does not say it is interlaced. The coded
 /// picture nearest `time` is a whole one.
 pub fn poster_at(src: &Source, time: f64) -> Result<crate::cut::Poster> {
-    let (_, picture) = picture_in(src, time, false)?;
+    // The picture a still of the same frame is saved from ([`still_picture`]),
+    // which is the coded picture nearest `time` wherever the recording is
+    // not woven. Where it is, the nearest was the other picture of the two a
+    // frame is woven from wherever the frame begins on a top field, and a
+    // cover and a still taken at the same frame were two pictures.
+    let picture = still_picture(src, time)?;
     // Held to one a picture can have before it is halved for a field, as a
     // still's is: clamped only after halving, a crafted 1:1000 gave a cover
     // 19 pixels wide, and a crafted 1000:1 one half as tall as the frame's.
@@ -1676,7 +1873,7 @@ fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -
     // nothing before it can be decoded anyway: aiming at it would land
     // past it and cost a whole second pass to find that out.
     let target = if src.points.first().is_none_or(|p| landing <= p.time) {
-        i64::MIN / 2
+        crate::input::head_seek(ictx)
     } else {
         ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
     };
@@ -1708,6 +1905,9 @@ fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -
 pub(crate) struct Landed {
     time: f64,
     pos: i64,
+    /// The next entry point's instant: a key picture stated at or past it is
+    /// another GOP's, whatever byte it came from.
+    next: f64,
 }
 
 impl Landed {
@@ -1725,11 +1925,14 @@ impl Landed {
         if src.on_a_ts {
             return None;
         }
-        src.points
+        let k = src.points.iter().rposition(|p| p.time == time && p.pos >= 0)?;
+        let p = &src.points[k];
+        let next = src.points[k + 1..]
             .iter()
-            .rev()
-            .find(|p| p.time == time && p.pos >= 0)
-            .map(|p| Landed { time: p.time, pos: p.pos })
+            .map(|q| q.time)
+            .find(|&t| t > p.time)
+            .unwrap_or(f64::INFINITY);
+        Some(Landed { time: p.time, pos: p.pos, next })
     }
 
     /// Give the entry picture's packet the entry point's own time, if the
@@ -1775,13 +1978,22 @@ impl Landed {
             }
         }
         *slot = None;
-        if pos >= 0 && pos != at.pos {
-            return;
-        }
         let tb = src.video.time_base;
         let quarter = src.video.frame_duration() / 4.0;
         let stated = packet.pts().map(|p| p as f64 * tb - src.start_time);
         if stated.is_some_and(|t| (t - at.time).abs() <= quarter) || tb.is_nan() || tb <= 0.0 {
+            return;
+        }
+        // The first key picture read, with nothing past the entry point's
+        // byte before it (a packet that was is the non-key case above), is
+        // the entry picture, from whichever byte the parser says it began
+        // at: told by its byte alone, an I picture whose PES opened on the
+        // tail of the picture before was handed over from the next pack
+        // (2048 bytes on) -- `ffmpeg -f vob` of a BS broadcast, one GOP in
+        // sixty -- still timed as the P picture after it, and a frame asked
+        // for at that P was answered with the I. A key picture stated at
+        // the next entry point or past it is that one's.
+        if pos >= 0 && pos != at.pos && !stated.is_some_and(|t| t > at.time && t < at.next - quarter) {
             return;
         }
         packet.set_pts(Some(((at.time + src.start_time) / tb).round() as i64));
@@ -2208,7 +2420,31 @@ pub(crate) fn pictures_in(
     // often enough; left out here, every pair after it was one out.
     // `next` is the first picture at or after `from`, if there is one.
     let up_too = |was: f64, held: &ff::frame::Video, next: Option<f64>| {
-        let Some(t) = next else { return head.is_some() };
+        let Some(t) = next else {
+            // Not where that picture had gone before `from` and nothing came
+            // after it: the range lies past the last picture, and the cut
+            // writes none there (`past_the_pictures` in its re-encode). Gone
+            // by its own stated length, or by its coded one on a recording
+            // that comes at a rate.
+            let stated = unsafe { (*held.as_ptr()).duration };
+            let ended = if stated > 0 {
+                Some(was + stated as f64 * src.video.time_base)
+            } else if !src.video.variable_rate {
+                let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
+                Some(was + f64::from(shown_for) * fd / 2.0)
+            } else {
+                None
+            };
+            // Only where the read ran to the end of the file: one stopped at a
+            // seam (`wall`, below) has pictures after it, and the cut, drained
+            // there, holds the picture as it always did.
+            let to_the_end = !src.joins.iter().any(|j| j.time >= to - eps);
+            // And only over a frame past it, as the cut: see
+            // `past_the_pictures` there.
+            return head.is_some()
+                && !(to_the_end
+                    && ended.is_some_and(|end| end <= from + eps && to <= end + fd + eps));
+        };
         if head.is_some_and(|end| t >= end - eps) {
             return true;
         }
@@ -2342,11 +2578,21 @@ mod tests {
         for (n, t) in [0.4, 0.9, 1.02, 1.6, 2.1, 2.05].into_iter().enumerate() {
             slots.offer(t, "I", || Ok(n as u32)).unwrap();
         }
-        let got = slots.finish(fd, |n| Ok(vec![n as u8])).unwrap();
+        let got = slots.finish(|n| Ok(vec![n as u8])).unwrap();
         assert_eq!(got.len(), 4);
         let at: Vec<Option<f64>> = got.iter().map(|s| s.as_ref().map(|s| s.time)).collect();
         assert_eq!(at, vec![Some(1.02), None, Some(2.05), None]);
         assert_eq!(got[0].as_ref().unwrap().jpeg, vec![2]);
+        // Two pictures a hair apart are two pictures: a last one 65 us after
+        // the one before keeps the cell it is nearest.
+        let wanted = [19.9333, 19.9667];
+        let mut slots: Slots<'_, u32> = Slots::new(&wanted, fd);
+        for (n, t) in [19.933333, 19.933398].into_iter().enumerate() {
+            slots.offer(t, "P", || Ok(n as u32)).unwrap();
+        }
+        let at: Vec<Option<f64>> =
+            slots.finish(|n| Ok(vec![n as u8])).unwrap().iter().map(|s| s.as_ref().map(|s| s.time)).collect();
+        assert_eq!(at, vec![Some(19.933333), Some(19.933398)]);
     }
 
     /// A recorder's clip with two seams: the stretches overlap on the joined
@@ -2451,6 +2697,29 @@ mod tests {
         let mut s = Stretches::of(&twins, fd);
         s.reach(100);
         assert!(s.outside(11.0) && !s.outside(12.0) && !s.outside(50.0));
+    }
+
+    /// BT.709 red, white and grey come out as BT.601 has them: what a JPEG
+    /// decoder makes of the samples is the colour the recording is.
+    #[test]
+    fn a_jpeg_is_given_bt601_samples() {
+        crate::init().unwrap();
+        let mut f = ff::frame::Video::new(ff::format::Pixel::YUVJ420P, 4, 2);
+        // Left block red as BT.709 codes it, right block white.
+        let (ys, cs) = (f.stride(0), f.stride(1));
+        for y in 0..2 {
+            f.data_mut(0)[y * ys..y * ys + 2].fill(54);
+            f.data_mut(0)[y * ys + 2..y * ys + 4].fill(255);
+        }
+        f.data_mut(1)[..2].copy_from_slice(&[99, 128]);
+        f.data_mut(2)[..2].copy_from_slice(&[255, 128]);
+        let _ = cs;
+        rematrix(&mut f, (0.2126, 0.0722));
+        let y = f.data(0)[0];
+        let (cb, cr) = (f.data(1)[0], f.data(2)[0]);
+        // BT.601 red: 76, 85, 255.
+        assert!((i32::from(y) - 76).abs() <= 1 && (i32::from(cb) - 85).abs() <= 1 && cr >= 254, "{y} {cb} {cr}");
+        assert_eq!((f.data(0)[2], f.data(1)[1], f.data(2)[1]), (255, 128, 128));
     }
 
     /// A lone second field joined in front of an entry picture's headers is

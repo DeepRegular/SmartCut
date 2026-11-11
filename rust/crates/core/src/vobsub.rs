@@ -113,7 +113,15 @@ fn takes_it_down(spu: &[u8], at: usize) -> bool {
             0x03 | 0x04 => p += 3,
             0x05 => p += 7,
             0x06 => p += 5,
-            0x07 => return false, // a colour change, whose length varies
+            // A colour change, karaoke's: its parameters say how long they
+            // are, counting the two bytes that say so. Taken as the end of
+            // the sequence, a stop that came after one was never seen.
+            0x07 => match spu.get(p + 1..p + 3) {
+                Some(n) if u16::from_be_bytes([n[0], n[1]]) >= 2 => {
+                    p += 1 + usize::from(u16::from_be_bytes([n[0], n[1]]));
+                }
+                _ => return false,
+            },
             _ => return false,
         }
     }
@@ -279,9 +287,16 @@ pub struct Drawn {
     pub indices: Vec<u8>,
     /// Red, green, blue and how opaque, one for each index.
     pub palette: Vec<(u8, u8, u8, u8)>,
-    /// How long after it appears the unit says it should go -- `None` where
-    /// it never says, which is most of them.
+    /// How long after its own time the unit says it should go -- `None`
+    /// where it never says, which is most of them.
     pub until: Option<f64>,
+    /// How long after its own time it appears: a unit's start runs at a
+    /// delay of its own, which is nearly always none. A display set's is
+    /// always none: it is shown at its own time.
+    pub from: f64,
+    /// Whether it is shown even to a viewer who has subtitles off: a DVD's
+    /// forced start, a display set's forced flag.
+    pub forced: bool,
 }
 
 /// Reads the picture out of a unit.
@@ -336,8 +351,22 @@ impl Reader {
         if !self.decoder.decode(&packet, &mut sub)? {
             return Ok(None);
         }
-        Ok(drawn_from(&sub))
+        Ok(drawn_from(&sub).map(|d| timed_by(d, unit)))
     }
+}
+
+/// A unit's picture with the stop the unit itself names, where the decoder
+/// found none.
+///
+/// libavcodec stops reading a sequence at a command it does not know, and a
+/// karaoke colour change is one: a stop written after it was not seen, and
+/// the line stood until the next unit, where [`stops_after`] -- which the
+/// pair beside a cut is written by -- had it come down.
+pub(crate) fn timed_by(mut drawn: Drawn, unit: &[u8]) -> Drawn {
+    if drawn.until.is_none() {
+        drawn.until = stops_after(unit).filter(|&u| u > drawn.from);
+    }
+    drawn
 }
 
 /// The widest and tallest subtitle picture taken out of a decoder: what a
@@ -357,6 +386,22 @@ pub(crate) fn drawn_from(sub: &ff::codec::subtitle::Subtitle) -> Option<Drawn> {
     let until = match sub.end() {
         0 | u32::MAX => None,
         ms => Some(ms as f64 / 1000.0),
+    };
+    // And when it appears, counted the same way. A DVD's decoder reads it
+    // off the unit's start; taken as nought, a unit that starts a second
+    // after its own time went up a second early, in the cut and the window
+    // alike. Only where it comes before the stop: a start after it is a
+    // unit that puts its picture up twice, and the first time is the one.
+    let from = match sub.start() {
+        0 | u32::MAX => 0.0,
+        ms => {
+            let from = ms as f64 / 1000.0;
+            if until.is_none_or(|u| from < u) {
+                from
+            } else {
+                0.0
+            }
+        }
     };
     let mut parts: Vec<Drawn> = Vec::new();
     for rect in sub.rects() {
@@ -407,6 +452,8 @@ pub(crate) fn drawn_from(sub: &ff::codec::subtitle::Subtitle) -> Option<Drawn> {
                 indices,
                 palette,
                 until,
+                from,
+                forced: (*r).flags & ff::ffi::AV_SUBTITLE_FLAG_FORCED != 0,
             }
         };
         parts.push(drawn);
@@ -486,6 +533,8 @@ fn merged(mut parts: Vec<Drawn>) -> Option<Drawn> {
         indices,
         palette,
         until: first.until,
+        from: first.from,
+        forced: first.forced || same.iter().any(|p| p.forced),
     })
 }
 
@@ -826,7 +875,9 @@ pub fn unit(drawn: &Drawn, ink: &mut Ink) -> Option<Vec<u8>> {
     out.push(0x06);
     out.extend_from_slice(&(top_at as u16).to_be_bytes());
     out.extend_from_slice(&(bottom_at as u16).to_be_bytes());
-    out.push(0x01); // put it up
+    // Put it up -- forced, where the set said its subtitle is shown even
+    // with subtitles off, which a unit says by how it starts.
+    out.push(if drawn.forced { 0x00 } else { 0x01 });
     out.push(END);
     debug_assert_eq!(
         out.len(),
@@ -1449,6 +1500,8 @@ mod tests {
                 (200, 190, 32, 153),  // and a blend, half there
             ],
             until: None,
+            from: 0.0,
+            forced: false,
         }
     }
 
@@ -1524,6 +1577,62 @@ mod tests {
         assert_eq!(u16be(&timed, 0) as usize, timed.len());
     }
 
+    /// A unit's start can run at a delay of its own, and a forced one says
+    /// so by the command it puts itself up with. Both come out of the
+    /// decoder as the unit wrote them, which is what the cut and the window
+    /// time and mark the picture by.
+    #[test]
+    fn a_unit_says_when_it_starts_and_whether_it_is_forced() {
+        crate::init().expect("libav");
+        let mut ink = Ink::default();
+        let spu = unit(&picture(32, 16), &mut ink).expect("a unit");
+        let dcsqt = u16be(&spu, 2) as usize;
+        assert_eq!(spu[dcsqt + 22], 0x01, "the start, where the writer puts it");
+        let mut reader = Reader::open(&ink.palette(), (720, 480)).expect("a decoder");
+        let plain = reader.read(&spu).expect("decodes").expect("draws");
+        assert_eq!((plain.from, plain.forced), (0.0, false));
+
+        let mut late = spu.clone();
+        late[dcsqt..dcsqt + 2].copy_from_slice(&88u16.to_be_bytes());
+        let late = reader.read(&late).expect("decodes").expect("draws");
+        assert!((late.from - 88.0 * TICK).abs() < 0.002, "{}", late.from);
+        assert!(!late.forced);
+
+        // As the writer writes a forced one.
+        let forced = unit(&Drawn { forced: true, ..picture(32, 16) }, &mut ink).expect("a unit");
+        assert_eq!(forced[dcsqt + 22], 0x00);
+        let forced = reader.read(&forced).expect("decodes").expect("draws");
+        assert!(forced.forced);
+        assert_eq!(forced.from, 0.0);
+    }
+
+    /// A karaoke colour change ahead of the stop in one sequence: the stop
+    /// is still read, by [`stops_after`] and so by what the cut converts.
+    #[test]
+    fn a_stop_after_a_colour_change_is_seen() {
+        crate::init().expect("libav");
+        let mut ink = Ink::default();
+        let mut timed = picture(32, 16);
+        timed.until = Some(2.5);
+        let mut spu = unit(&timed, &mut ink).expect("a unit");
+        let at = spu.len() - 2; // the stop, then the end
+        assert_eq!(spu[at], STOP);
+        // A colour change of no areas: the command, and a size of two that
+        // counts only itself.
+        spu.splice(at..at, [0x07, 0x00, 0x02]);
+        let size = spu.len() as u16;
+        spu[0..2].copy_from_slice(&size.to_be_bytes());
+        let after = stops_after(&spu).expect("the stop is still there");
+        assert!((after - 2.5).abs() < TICK, "{after}");
+        let mut reader = Reader::open(&ink.palette(), (720, 480)).expect("a decoder");
+        let drawn = reader.read(&spu).expect("decodes").expect("draws");
+        assert!(drawn.until.is_some_and(|u| (u - 2.5).abs() < TICK), "{:?}", drawn.until);
+        // And a stop written after the colour change is moved like any other.
+        let earlier = stopped_after(&spu, 1.0);
+        assert!(stops_after(&earlier).is_some_and(|u| (u - 1.0).abs() < TICK));
+        assert_eq!(earlier.len(), spu.len(), "rewritten, not appended to");
+    }
+
     /// A picture that draws nothing is not a unit. What clears a screen is
     /// [`take_down`], which is ten bytes rather than a picture of nothing.
     #[test]
@@ -1537,6 +1646,8 @@ mod tests {
             indices: vec![0; 16 * 8],
             palette: vec![(0, 0, 0, 0), (255, 255, 255, 255)],
             until: None,
+            from: 0.0,
+            forced: false,
         };
         assert!(unit(&empty, &mut ink).is_none());
     }
@@ -1592,6 +1703,8 @@ mod tests {
             indices,
             palette,
             until: None,
+            from: 0.0,
+            forced: false,
         };
         let mut ink = Ink::default();
         let spu = unit(&drawn, &mut ink).expect("a unit");

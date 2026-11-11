@@ -57,7 +57,7 @@
 //! writing a zero into a field whose name is unknown.
 
 use anyhow::{bail, Context, Result};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::si::Began;
@@ -396,17 +396,7 @@ pub fn remove_disc(at: &Path) -> Result<()> {
     if !root.is_dir() {
         bail!("{} holds no disc to remove", at.display());
     }
-    // Not while it holds a file the image could not: that file would be in
-    // neither. See `udfw::left_out`.
-    let stranded = crate::udfw::left_out(&root)?;
-    if let Some(first) = stranded.first() {
-        bail!(
-            "{} is kept: {} file(s) in it are not in the image, {first} among them",
-            root.display(),
-            stranded.len()
-        );
-    }
-    // Nor while it holds a stream with no clip index: a number another run
+    // Not while it holds a stream with no clip index: a number another run
     // reserved and is still cutting into (see `prepare`), which the image
     // has as the empty or half-written file it was when the image was made.
     // Two command lines into one disc, one of them `--iso-only`, deleted the
@@ -420,6 +410,18 @@ pub fn remove_disc(at: &Path) -> Result<()> {
             "{} is kept: recording {open} in it has no index yet -- another run may still be \
              writing it",
             root.display()
+        );
+    }
+    // Nor while it holds a file the image could not: that file would be in
+    // neither. See `udfw::left_out`. Asked second, as the image leaves out
+    // a stream with no index too, and the answer above is the one that says
+    // why.
+    let stranded = crate::udfw::left_out(&root)?;
+    if let Some(first) = stranded.first() {
+        bail!(
+            "{} is kept: {} file(s) in it are not in the image, {first} among them",
+            root.display(),
+            stranded.len()
         );
     }
     // Nor while the image beside it does not hold the disc as it is now.
@@ -481,6 +483,19 @@ fn not_in_image(dir: &Path, under: &str, image: &crate::udf::Image) -> Result<Op
 
 /// The five-digit stems of the files of one kind a disc directory holds.
 fn numbered(dir: &Path, ext: &str) -> Result<Vec<String>> {
+    Ok(numbered_files(dir, ext)?
+        .into_iter()
+        .map(|mut name| {
+            name.truncate(5);
+            name
+        })
+        .collect())
+}
+
+/// The same files by their whole names, the extension as the folder spells
+/// it: a disc copied off a filesystem that spells it `00001.RPLS` is listed
+/// in its table as that, which is the file a player then finds.
+fn numbered_files(dir: &Path, ext: &str) -> Result<Vec<String>> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(Vec::new());
     };
@@ -496,7 +511,7 @@ fn numbered(dir: &Path, ext: &str) -> Result<Vec<String>> {
         {
             continue;
         }
-        out.push(stem.to_string());
+        out.push(name);
     }
     out.sort();
     Ok(out)
@@ -531,6 +546,7 @@ pub fn write(
     if let Some((k, _)) = &failed {
         for rec in &recordings[*k..] {
             let _ = std::fs::remove_file(stream_of(at, &rec.clip));
+            // What a stamp before 0.8.45 wrote beside the stream.
             let _ = std::fs::remove_file(stream_of(at, &rec.clip).with_extension("m2ts.ats"));
             let _ = std::fs::remove_file(root.join("CLIPINF").join(format!("{}.clpi", rec.clip)));
             let _ = std::fs::remove_file(root.join("PLAYLIST").join(format!("{}.rpls", rec.clip)));
@@ -621,16 +637,11 @@ fn write_table(root: &Path, title: &str) -> Result<()> {
     // A recorder's virtual playlists -- its edits of a recording -- are in
     // the table as well, in the one order of their numbers.
     let listed = || -> Result<Vec<String>> {
-        let mut playlists: Vec<String> = numbered(&root.join("PLAYLIST"), "rpls")?
-            .iter()
-            .map(|n| format!("{n}.rpls"))
-            .chain(
-                numbered(&root.join("PLAYLIST"), "vpls")?
-                    .iter()
-                    .map(|n| format!("{n}.vpls")),
-            )
+        let mut playlists: Vec<String> = numbered_files(&root.join("PLAYLIST"), "rpls")?
+            .into_iter()
+            .chain(numbered_files(&root.join("PLAYLIST"), "vpls")?)
             .collect();
-        playlists.sort();
+        playlists.sort_by_key(|name| name.to_ascii_lowercase());
         Ok(playlists)
     };
     // Written aside and moved over: on a disc that already holds a
@@ -848,12 +859,17 @@ fn choose_step(anchors: &[(u32, i64)]) -> i64 {
 /// and holding a recording in memory to avoid reading it twice is not a
 /// trade worth making.
 ///
-/// The file is rewritten beside itself and renamed over, so a failure leaves
-/// the stream as it was rather than half stamped.
+/// The file is rewritten in place. A failure leaves a stream half stamped,
+/// which is a stream with no clip index: [`write`] takes it off the disc.
+///
+/// The map is put right on the way: a stream it calls private data that is
+/// pictures or sound is named as what it is (see [`sniffed`]), as the clip
+/// index names it.
 ///
 /// `on` is told how far through, counting both passes as one: this is three
 /// quarters of what making a disc out of a written stream costs, and it used
 /// to say nothing while it did it.
+#[allow(clippy::chunks_exact_to_as_chunks)] // `as_chunks_mut` needs Rust 1.88.
 pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
     // What the two passes are measured against. The file is a whole number
     // of source packets, so its length is how many there are to get through;
@@ -866,9 +882,8 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
     // write, so the first is a third of the work and the second the rest.
     const SURVEYED: f64 = 1.0 / 3.0;
     let mut told = crate::Told::new();
-    let (read, anchors, pictures, shown) = survey(path, &mut |i: u64| {
-        told.at(on, i as f64 / packets as f64 * SURVEYED)
-    })?;
+    let Surveyed { packets: read, anchors, pictures, shown, map_pid, retype } =
+        survey(path, &mut |i: u64| told.at(on, i as f64 / packets as f64 * SURVEYED))?;
     let step = choose_step(&anchors);
     let plan = Schedule::new(&anchors, step);
     // Faster than a disc is written. Held to 48 Mbit/s anyway, the backlog
@@ -892,46 +907,60 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
         );
     }
 
-    let temp = path.with_extension("m2ts.ats");
+    // Rewritten in place, block by block. It was written beside itself and
+    // renamed over, which left a `00007.m2ts.ats` of gigabytes behind every
+    // run that was stopped part way -- one an image leaves out and a folder
+    // that holds it is never taken away for -- and which needed the room of
+    // the recording twice over on the disk it was written to. A stamp that
+    // fails part way leaves a stream nothing indexes, which [`write`] takes
+    // off the disc as it takes any recording it could not index; and the
+    // stream is no recording until its clip index is written after this, so
+    // nothing reads it in between (an image leaves it out: see
+    // [`crate::udfw`]).
     let done = (|| -> Result<u32> {
-        let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
-        // Made afresh and never opened through what is there. The number is
-        // reserved by its stream alone, so a disc folder that arrived with a
-        // `00007.m2ts.ats` linked to a file elsewhere had that file truncated
-        // and filled with this recording.
-        let _ = std::fs::remove_file(&temp);
-        let mut dst = BufWriter::with_capacity(
-            1 << 20,
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?,
-        );
-        let mut frame = [0u8; SOURCE_PACKET];
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        // A torn last packet is not a packet: what the pass below reads is
+        // whole source packets, as [`survey`] counted them.
+        let whole = u64::from(read) * SOURCE_PACKET as u64;
+        let mut block = vec![0u8; SOURCE_PACKET * 4096];
+        let mut offset = 0u64;
         let mut i = 0u32;
         let mut next = 0usize;
         let mut last = 0i64;
-        loop {
-            match src.read_exact(&mut frame) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e).context("reading the stream back"),
+        while offset < whole {
+            let take = (whole - offset).min(block.len() as u64) as usize;
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(&mut block[..take]).context("reading the stream back")?;
+            for frame in block[..take].chunks_exact_mut(SOURCE_PACKET) {
+                while plan.at.get(next).is_some_and(|(packet, _)| *packet < i) {
+                    next += 1;
+                }
+                let at = plan.when(i, next);
+                frame[..4].copy_from_slice(&((at as u32) & ATS_MASK).to_be_bytes());
+                // A reference that was moved says so, or a player's clock steps
+                // by the difference every time one arrives.
+                if plan.at.get(next).is_some_and(|(packet, _)| *packet == i) {
+                    write_pcr(&mut frame[4..], at);
+                }
+                if !retype.is_empty() && map_pid == Some(packet_pid(&frame[4..])) {
+                    retyped(&mut frame[4..], &retype);
+                }
+                last = at;
+                i += 1;
+                told.at(on, SURVEYED + f64::from(i) / packets as f64 * (1.0 - SURVEYED));
             }
-            while plan.at.get(next).is_some_and(|(packet, _)| *packet < i) {
-                next += 1;
-            }
-            let at = plan.when(i, next);
-            frame[..4].copy_from_slice(&((at as u32) & ATS_MASK).to_be_bytes());
-            // A reference that was moved says so, or a player's clock steps
-            // by the difference every time one arrives.
-            if plan.at.get(next).is_some_and(|(packet, _)| *packet == i) {
-                write_pcr(&mut frame[4..], at);
-            }
-            dst.write_all(&frame)?;
-            last = at;
-            i += 1;
-            told.at(on, SURVEYED + f64::from(i) / packets as f64 * (1.0 - SURVEYED));
+            file.seek(SeekFrom::Start(offset))?;
+            file.write_all(&block[..take])
+                .with_context(|| format!("writing the arrival times of {}", path.display()))?;
+            offset += take as u64;
         }
+        file.set_len(whole)?;
+        file.seek(SeekFrom::Start(whole))?;
+        let mut dst = BufWriter::with_capacity(1 << 20, &mut file);
         // And the null packets that make the file a whole number of the unit
         // a recorder writes in, arriving at the rate everything else did.
         let short = (FILE_UNIT - u64::from(i) % FILE_UNIT) % FILE_UNIT;
@@ -946,26 +975,130 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
         dst.flush()?;
         Ok(i)
     })();
-    match done {
-        Ok(packets) => {
-            std::fs::rename(&temp, path)
-                .with_context(|| format!("replacing {}", path.display()))?;
-            debug_assert_eq!(u64::from(packets) % FILE_UNIT, 0);
-            debug_assert_eq!(FILE_UNIT % ALIGNED_UNIT, 0);
-            let _ = read;
-            Ok(Timing {
-                packets,
-                rate: rate_of(step),
-                first_clock: anchors.first().map_or(0, |(packet, _)| *packet),
-                pictures,
-                shown,
-            })
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp);
-            Err(e)
-        }
+    let packets = done.with_context(|| format!("stamping {}", path.display()))?;
+    debug_assert_eq!(u64::from(packets) % FILE_UNIT, 0);
+    debug_assert_eq!(FILE_UNIT % ALIGNED_UNIT, 0);
+    Ok(Timing {
+        packets,
+        rate: rate_of(step),
+        first_clock: anchors.first().map_or(0, |(packet, _)| *packet),
+        pictures,
+        shown,
+    })
+}
+
+/// The PID a transport stream packet is on.
+fn packet_pid(p: &[u8]) -> u16 {
+    (u16::from(p[1] & 0x1F) << 8) | u16::from(p[2])
+}
+
+/// The coding a stream the map calls private data (0x06) really is, off the
+/// first PES packet it begins: the one [`audio_coding`] / [`video_coding`]
+/// gives the clip index for it, or `None` where it is something the map is
+/// right to call private (captions, data).
+///
+/// libavformat writing a `.m2ts` has a Blu-ray stream type for MPEG-2, H.264,
+/// HEVC, VC-1 and the disc's own sound codings and none for MPEG-1 pictures
+/// or AAC, which it declares private data -- while the clip index beside the
+/// stream names them (see [`read_clip`]). A disc whose map and index say two
+/// things is a disc a player reading the map plays without that stream.
+fn sniffed(p: &[u8]) -> Option<u8> {
+    let payload = match (p[3] >> 4) & 0x03 {
+        1 => p.get(4..)?,
+        3 => p.get(5 + *p.get(4)? as usize..)?,
+        _ => return None,
+    };
+    if payload.get(..3)? != [0, 0, 1] {
+        return None;
     }
+    let es = payload.get(9 + usize::from(*payload.get(8)?)..)?;
+    let (a, b) = (*es.first()?, *es.get(1)?);
+    match payload[3] {
+        // The other four picture codings have types of their own (VC-1 is
+        // not on these ids), so pictures declared private are MPEG-1.
+        0xE0..=0xEF => Some(0x01),
+        // ADTS: twelve bits of sync and the layer nought.
+        0xC0..=0xDF if a == 0xFF && b & 0xF6 == 0xF0 => Some(0x0F),
+        // MPEG audio: eleven bits of sync and a layer that is not nought.
+        0xC0..=0xDF if a == 0xFF && b & 0xE0 == 0xE0 && b & 0x06 != 0 => Some(0x04),
+        // LATM's own sync, eleven bits of 0x2B7.
+        0xC0..=0xDF if a == 0x56 && b & 0xE0 == 0xE0 => Some(0x11),
+        _ => None,
+    }
+}
+
+/// The streams a programme map section declares private data (0x06).
+fn private_of(sec: &[u8]) -> Vec<u16> {
+    let mut out = Vec::new();
+    let (Some(&0x02), Some(&b1), Some(&b2), Some(&b10), Some(&b11)) =
+        (sec.first(), sec.get(1), sec.get(2), sec.get(10), sec.get(11))
+    else {
+        return out;
+    };
+    let len = (usize::from(b1 & 0x0F) << 8) | usize::from(b2);
+    let Some(end) = (3 + len).checked_sub(4) else { return out };
+    let mut at = 12 + ((usize::from(b10 & 0x0F) << 8) | usize::from(b11));
+    while at + 5 <= end && at + 5 <= sec.len() {
+        if sec[at] == 0x06 {
+            out.push(u16::from_be_bytes([sec[at + 1], sec[at + 2]]) & 0x1FFF);
+        }
+        at += 5 + ((usize::from(sec[at + 3] & 0x0F) << 8) | usize::from(sec[at + 4]));
+    }
+    out
+}
+
+/// Name the codings `retype` gives in the programme map section a packet
+/// carries whole, where the map calls them private data, and seal it again.
+/// A packet that carries no whole map, or one whose seal does not hold, is
+/// left as it is. The section keeps its length: one byte changes in each
+/// entry, and the four of the seal.
+fn retyped(p: &mut [u8], retype: &[(u16, u8)]) {
+    if p[1] & 0x40 == 0 {
+        return;
+    }
+    let start = match (p[3] >> 4) & 0x03 {
+        1 => 4,
+        3 => 5 + usize::from(p[4]),
+        _ => return,
+    };
+    let Some(&pointer) = p.get(start) else { return };
+    let at = start + 1 + usize::from(pointer);
+    let Some(head) = p.get(at..at + 3) else { return };
+    let whole = 3 + ((usize::from(head[1] & 0x0F) << 8) | usize::from(head[2]));
+    if head[0] != 0x02 || whole < 16 || at + whole > PACKET || crc32(&p[at..at + whole]) != 0 {
+        return;
+    }
+    let mut sec = p[at..at + whole].to_vec();
+    let end = whole - 4;
+    let mut n = 12 + ((usize::from(sec[10] & 0x0F) << 8) | usize::from(sec[11]));
+    let mut changed = false;
+    while n + 5 <= end {
+        let pid = u16::from_be_bytes([sec[n + 1], sec[n + 2]]) & 0x1FFF;
+        if sec[n] == 0x06 {
+            if let Some((_, coding)) = retype.iter().find(|(on, _)| *on == pid) {
+                sec[n] = *coding;
+                changed = true;
+            }
+        }
+        n += 5 + ((usize::from(sec[n + 3] & 0x0F) << 8) | usize::from(sec[n + 4]));
+    }
+    // An entry that runs past the seal is not a map this can read.
+    if changed && n == end {
+        let crc = crc32(&sec[..end]);
+        sec[end..].copy_from_slice(&crc.to_be_bytes());
+        p[at..at + whole].copy_from_slice(&sec);
+    }
+}
+
+/// The MPEG-2 CRC a section ends in; over a whole section with it, nought.
+fn crc32(data: &[u8]) -> u32 {
+    data.iter().fold(0xFFFF_FFFFu32, |mut crc, &b| {
+        crc ^= u32::from(b) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+        }
+        crc
+    })
 }
 
 /// The read-only pass: every clock reference in the stream, and where every
@@ -977,11 +1110,7 @@ pub fn stamp(path: &Path, on: Option<&(dyn Fn(f64) + Sync)>) -> Result<Timing> {
 /// video's own PID says a new payload does. Which PID that is comes out of
 /// the stream's own tables, read here rather than asked of libavformat: this
 /// pass is already reading every packet.
-#[allow(clippy::type_complexity)]
-fn survey(
-    path: &Path,
-    told: &mut dyn FnMut(u64),
-) -> Result<(u32, Vec<(u32, i64)>, Vec<u32>, Vec<Option<u64>>)> {
+fn survey(path: &Path, told: &mut dyn FnMut(u64)) -> Result<Surveyed> {
     let mut src = BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
     let mut frame = [0u8; SOURCE_PACKET];
     let mut anchors: Vec<(u32, i64)> = Vec::new();
@@ -995,6 +1124,10 @@ fn survey(
     // then found no pictures at all: every entry point of an MPEG-1 disc
     // said its picture ran to the end of the stream.
     let mut unnamed = false;
+    // The streams the first map calls private data, and what each of them
+    // turned out to be (see [`sniffed`]).
+    let mut private: Option<Vec<u16>> = None;
+    let mut retype: Vec<(u16, u8)> = Vec::new();
     let (mut i, mut wrap, mut was) = (0u32, 0i64, -1i64);
     loop {
         match src.read_exact(&mut frame) {
@@ -1023,6 +1156,17 @@ fn survey(
                 _ => {}
             }
         }
+        if private.is_none() && map_pid == Some(pid) {
+            private = section(p).filter(|s| s.first() == Some(&0x02)).map(private_of);
+        }
+        if p[1] & 0x40 != 0
+            && private.as_ref().is_some_and(|on| on.contains(&pid))
+            && !retype.iter().any(|(on, _)| *on == pid)
+        {
+            if let Some(coding) = sniffed(p) {
+                retype.push((pid, coding));
+            }
+        }
         if video == Some(pid) && p[1] & 0x40 != 0 {
             pictures.push(i);
             shown.push(pes_pts(p));
@@ -1046,7 +1190,20 @@ fn survey(
         i += 1;
         told(u64::from(i));
     }
-    Ok((i, anchors, pictures, shown))
+    Ok(Surveyed { packets: i, anchors, pictures, shown, map_pid, retype })
+}
+
+/// What [`survey`] found: how many whole source packets the stream holds,
+/// every clock reference as `(packet, time)`, where every picture begins and
+/// the time it carries, the map's PID, and the streams the map calls private
+/// data that are pictures or sound, with the coding each one is.
+struct Surveyed {
+    packets: u32,
+    anchors: Vec<(u32, i64)>,
+    pictures: Vec<u32>,
+    shown: Vec<Option<u64>>,
+    map_pid: Option<u16>,
+    retype: Vec<(u16, u8)>,
 }
 
 /// The presentation time stamp of the PES packet a transport stream packet
@@ -2654,9 +2811,87 @@ mod tests {
             ];
             let path = dir.join(name);
             std::fs::write(&path, frames.concat()).unwrap();
-            let (_, _, pictures, _) = survey(&path, &mut |_| {}).unwrap();
+            let pictures = survey(&path, &mut |_| {}).unwrap().pictures;
             assert_eq!(pictures, vec![3, 5], "{name}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stream the muxer's map calls private data that is pictures or sound
+    /// is named in the map as the clip index names it, in place: the map
+    /// keeps its length and its seal holds; captions stay private. And the
+    /// stamp leaves nothing beside the stream.
+    #[test]
+    fn the_map_names_what_the_muxer_called_private() {
+        let source = |payload: &[u8], pid: u16, start: bool| {
+            let mut f = vec![0u8; 4];
+            let first = (pid >> 8) as u8 | if start { 0x40 } else { 0 };
+            f.extend_from_slice(&[0x47, first, pid as u8, 0x10]);
+            f.extend_from_slice(payload);
+            f.resize(SOURCE_PACKET, 0xFF);
+            f
+        };
+        let sealed = |mut sec: Vec<u8>| {
+            let crc = crc32(&sec);
+            sec.extend_from_slice(&crc.to_be_bytes());
+            let mut out = vec![0u8];
+            out.extend_from_slice(&sec);
+            out
+        };
+        let pat = sealed(vec![0x00, 0xB0, 0x0D, 0, 1, 0xC1, 0, 0, 0, 1, 0xF0, 0x00]);
+        let pmt = sealed(vec![
+            0x02, 0xB0, 0x1C, 0, 1, 0xC1, 0, 0, 0xF0, 0x11, 0xF0, 0x00, // head
+            0x06, 0xF0, 0x11, 0xF0, 0x00, // MPEG-1 pictures, as libavformat declares them
+            0x06, 0xF1, 0x00, 0xF0, 0x00, // AAC
+            0x06, 0xF1, 0x30, 0xF0, 0x00, // captions
+        ]);
+        let video_pes = [0, 0, 1, 0xE0, 0, 0, 0x80, 0x00, 0x00, 0, 0, 1, 0xB3];
+        let audio_pes = [0, 0, 1, 0xC0, 0, 0, 0x80, 0x00, 0x00, 0xFF, 0xF1, 0x50];
+        let caption_pes = [0, 0, 1, 0xBD, 0, 0, 0x80, 0x00, 0x00, 0x80, 0xFF];
+        let dir = std::env::temp_dir().join(format!("bdav-retype-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("00001.m2ts");
+        let frames = [
+            source(&pat, 0, true),
+            source(&pmt, 0x1000, true),
+            source(&audio_pes, 0x1100, true),
+            source(&caption_pes, 0x1130, true),
+            source(&video_pes, 0x1011, true),
+            source(&pmt, 0x1000, true),
+        ];
+        std::fs::write(&path, frames.concat()).unwrap();
+        let timing = stamp(&path, None).unwrap();
+        assert_eq!(u64::from(timing.packets) % FILE_UNIT, 0);
+        assert!(!path.with_extension("m2ts.ats").exists());
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(written.len(), timing.packets as usize * SOURCE_PACKET);
+        for k in [1usize, 5] {
+            let p = &written[k * SOURCE_PACKET + 4..(k + 1) * SOURCE_PACKET];
+            let sec = section(p).unwrap();
+            let whole = 3 + ((usize::from(sec[1] & 0x0F) << 8) | usize::from(sec[2]));
+            assert_eq!(whole, pmt.len() - 1);
+            assert_eq!(crc32(&sec[..whole]), 0, "the seal holds");
+            assert_eq!([sec[12], sec[17], sec[22]], [0x01, 0x0F, 0x06]);
+        }
+        // Every other packet's own 188 bytes are as they were.
+        for (k, was) in frames.iter().enumerate().filter(|(k, _)| ![1, 5].contains(k)) {
+            assert_eq!(written[k * SOURCE_PACKET + 4..(k + 1) * SOURCE_PACKET], was[4..]);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The disc's table lists a playlist by the name the folder has it under.
+    #[test]
+    fn the_table_lists_a_playlist_as_it_is_spelled() {
+        let at = std::env::temp_dir().join(format!("bdav-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(root(&at).join("PLAYLIST")).unwrap();
+        std::fs::write(root(&at).join("PLAYLIST").join("00002.rpls"), b"x").unwrap();
+        std::fs::write(root(&at).join("PLAYLIST").join("00001.RPLS"), b"x").unwrap();
+        write_table(&root(&at), "").unwrap();
+        let table = std::fs::read(root(&at).join("info.bdav")).unwrap();
+        assert_eq!(&table[TABLE_AT + 4..TABLE_AT + 6], &[0, 2]);
+        assert_eq!(&table[TABLE_AT + 6..TABLE_AT + 26], b"00001.RPLS00002.rpls");
+        let _ = std::fs::remove_dir_all(&at);
     }
 }

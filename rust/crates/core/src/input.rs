@@ -87,6 +87,62 @@ use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::ptr;
 
+/// Where a seek "to the head" aims (`ictx.seek(HEAD_SEEK, ..HEAD_SEEK)`), in
+/// AV_TIME_BASE units: 2^50 µs, 35 years, before any recording's start. Not
+/// further: libavformat rescales the target into the time base of the stream
+/// it seeks by, and `i64::MIN / 2` overflowed there for any time base finer
+/// than about 2 MHz -- a 10 MHz mp4 track (Media Foundation's timescale)
+/// with an edit list landed at 29 s of 30. 2^50 µs stays inside i64 in every
+/// time base a stream can have (a denominator up to `i32::MAX`: 2.4e18).
+pub(crate) const HEAD_SEEK: i64 = -(1 << 50);
+
+/// The demuxers whose seek searches the stream's index and fails ("Operation
+/// not permitted") for a target before its first entry instead of landing
+/// on it: AVI's own, and libavformat's generic seek, which FLV uses.
+const SEEK_FROM_THE_INDEX: [&str; 2] = ["avi", "flv"];
+
+/// Where a seek "to the head" of `ictx` aims: [`HEAD_SEEK`], or on the
+/// demuxers of [`SEEK_FROM_THE_INDEX`] the first key entry of the index of the
+/// stream libavformat seeks by -- a head seek of an `.avi` failed, and with
+/// it every cut that kept the head (`--keep 0-2`, `--cut 1-2`).
+pub(crate) fn head_seek(ictx: &ff::format::context::Input) -> i64 {
+    if !SEEK_FROM_THE_INDEX.contains(&ictx.format().name()) {
+        return HEAD_SEEK;
+    }
+    // SAFETY: the context is open and only read here.
+    unsafe {
+        let ps = ictx.as_ptr() as *mut ff::ffi::AVFormatContext;
+        let Ok(i) = usize::try_from(ff::ffi::av_find_default_stream_index(ps)) else {
+            return HEAD_SEEK;
+        };
+        if i >= (*ps).nb_streams as usize {
+            return HEAD_SEEK;
+        }
+        let st = *(*ps).streams.add(i);
+        if st.is_null() {
+            return HEAD_SEEK;
+        }
+        // The first KEY entry: the seek searches the index backward for a
+        // key at or before the target, so an .avi whose first picture is not
+        // one (trimmed with -copyinkf) failed at its first entry as well.
+        let first = (0..ff::ffi::avformat_index_get_entries_count(st))
+            .map(|k| ff::ffi::avformat_index_get_entry(st, k))
+            .take_while(|e| !e.is_null())
+            .find(|&e| (*e).flags() & ff::ffi::AVINDEX_KEYFRAME != 0);
+        let Some(first) = first else {
+            return HEAD_SEEK;
+        };
+        // Rounded up, so that it comes back to the entry itself, not the tick
+        // before it, when libavformat rescales it to the stream's time base.
+        ff::ffi::av_rescale_q_rnd(
+            (*first).timestamp,
+            (*st).time_base,
+            ff::ffi::AVRational { num: 1, den: ff::ffi::AV_TIME_BASE },
+            ff::ffi::AVRounding::AV_ROUND_UP,
+        )
+    }
+}
+
 /// A DVD sector, and the unit its index addresses the stream in.
 const SECTOR: u64 = 2048;
 
@@ -660,7 +716,7 @@ pub(crate) fn demux_unlost(url: &str) -> Option<Demux> {
     no_nul(url).ok()?;
     let name = CString::new(as_local(url).as_bytes()).ok()?;
     let mut opts = ff::Dictionary::new();
-    opts.set("protocol_whitelist", LOCAL_PROTOCOLS);
+    opts.set("protocol_whitelist", protocols_for(url));
     // SAFETY: the context is wrapped as soon as it is open, so it is closed
     // on every way out; its streams are read while it is.
     unsafe {
@@ -717,7 +773,7 @@ fn starts_unlost(url: &str) -> Option<Clock> {
         };
         // The Cues are read on the first seek, and name the WebVTT's blocks
         // as well as the pictures'.
-        let target = i64::MIN / 2;
+        let target = crate::input::head_seek(&ictx);
         let _ = ictx.seek(target, ..target);
         let all = streams(ps);
         if all.len() != (*ps).nb_streams as usize {
@@ -895,7 +951,7 @@ fn head_of(url: &str, n: usize) -> Option<Vec<u8>> {
     unsafe {
         let mut io: *mut ff::ffi::AVIOContext = ptr::null_mut();
         let mut opts: *mut ff::ffi::AVDictionary = ptr::null_mut();
-        set(&mut opts, "protocol_whitelist", LOCAL_PROTOCOLS);
+        set(&mut opts, "protocol_whitelist", protocols_for(url));
         let err = ff::ffi::avio_open2(
             &mut io,
             name.as_ptr(),
@@ -1510,6 +1566,38 @@ impl LateFrames {
 /// What libavformat may open to read a recording. See [`open_with`].
 pub(crate) const LOCAL_PROTOCOLS: &str = "file,subfile,concat";
 
+/// How [`dvd_title`] names the pieces of a title in a folder whose path holds
+/// a '|', which `concat` would split a piece's name on: one name per line,
+/// read by `concatf` out of the URL itself.
+const PIECES_LISTED: &str = "concatf:data:text/plain,";
+
+/// A piece's name as a line of [`PIECES_LISTED`]: `concatf` reads each line
+/// through `av_get_token`, which takes a backslash as an escape, drops a
+/// quote as quoting and whitespace at either end -- a folder `a|b's` or
+/// `a|b\c` opened a name that is not there. Each of those is escaped.
+fn listed(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if matches!(c, '\\' | '\'' | ' ' | '\t') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// What libavformat may open to read `url`: [`LOCAL_PROTOCOLS`], and for the
+/// list [`PIECES_LISTED`] the two protocols it is read through as well --
+/// `data` reads nothing but the URL, and `concatf` opens what the list names
+/// under this same list. For no other URL.
+fn protocols_for(url: &str) -> &'static str {
+    if url.contains(PIECES_LISTED) {
+        "file,subfile,concat,concatf,data"
+    } else {
+        LOCAL_PROTOCOLS
+    }
+}
+
 /// Open a file that is not a recording -- an image, a stream this program
 /// has just written -- under the same rule as [`open_with`].
 pub fn open_local(path: &str) -> Result<ff::format::context::Input> {
@@ -1613,7 +1701,7 @@ fn open_with(
     // behalf. A "recording" can be a playlist in disguise: an HLS or concat
     // file named `.ts` has libavformat fetch whatever it lists, over the
     // network if it says so, as soon as a list or a batch opens it.
-    opts.set("protocol_whitelist", LOCAL_PROTOCOLS);
+    opts.set("protocol_whitelist", protocols_for(url));
     if all_maps {
         opts.set("scan_all_pmts", "1");
     }
@@ -2051,7 +2139,19 @@ fn dvd_title(spec: &str, base: &str, first: u64, last: u64) -> Result<Input> {
                 .iter()
                 .map(|(p, _)| as_local(&p.to_string_lossy()).into_owned())
                 .collect();
-            let concat = format!("concat:{}", joined.join("|"));
+            // `concat` splits its list on '|' and has no escape for one, so a
+            // folder whose path holds one ("a|b/VIDEO_TS") is handed over as
+            // a list of lines instead: `concatf` reading it from a `data:`
+            // URL. See [`protocols_for`].
+            let concat = if joined.iter().any(|p| p.contains('|')) {
+                if joined.iter().any(|p| p.contains(['\n', '\r'])) {
+                    bail!("{spec}: a folder whose name holds both '|' and a line break cannot be read");
+                }
+                let lines: Vec<String> = joined.iter().map(|p| listed(p)).collect();
+                format!("{PIECES_LISTED}{}", lines.join("\n"))
+            } else {
+                format!("concat:{}", joined.join("|"))
+            };
             // A title that is the whole stream needs no window around the
             // join, and one protocol is worth more than two.
             let url = if range.at == 0 && range.len == whole {
@@ -2527,5 +2627,14 @@ mod tests {
         let rest = late.rest();
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].1.pts(), Some(6268));
+    }
+
+    /// A DVD folder's piece as a `concatf` line: what `av_get_token` would
+    /// take as an escape, a quote or the ends' whitespace is escaped, and
+    /// nothing else changes ('|', ',', '%', '#', non-ASCII).
+    #[test]
+    fn listed_escapes_what_concatf_reads_as_syntax() {
+        assert_eq!(listed("/m/a|b, %41#x 日本/VIDEO_TS/VTS_01_1.VOB"), "/m/a|b,\\ %41#x\\ 日本/VIDEO_TS/VTS_01_1.VOB");
+        assert_eq!(listed("c:\\w|in's\tx"), "c:\\\\w|in\\'s\\\tx");
     }
 }

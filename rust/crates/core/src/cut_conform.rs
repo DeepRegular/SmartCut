@@ -284,9 +284,9 @@ fn pictures_afresh(
     // A track with no stream to read (a DVD's subtitles being converted) is
     // done before it begins, as in [`reencode_segment`].
     let mut graphics_done = graphics_read(ctx);
-    let mut sub_done = !ctx.subpictures
-        || src.subpictures.is_empty()
-        || (writer.subpictures.is_none() && writer.converted.is_empty());
+    // Per stream: see [`crate::cut::SubsOwed`].
+    let mut subs_owed = SubsOwed::new(ctx.subpictures, src, writer);
+    let mut sub_done = subs_owed.done();
 
     // How many output frames the whole segment comes to, which is what a
     // transition's own progress is counted against. At least one: a
@@ -576,9 +576,23 @@ fn pictures_afresh(
             } else if !sub_done && stream.parameters().id() == ff::codec::Id::DVD_SUBTITLE {
                 let id = stream.id();
                 let tb = f64::from(stream.time_base());
-                sub_done = take_subpicture(seg, ctx.offset, id, tb, src, &packet, writer);
+                sub_done = subs_owed
+                    .take(id, || take_subpicture(seg, ctx.offset, id, tb, src, &packet, writer));
             }
             continue;
+        }
+        // As in [`reencode_segment`]: a converted subtitle's stop is written
+        // as the pictures pass it, not when the next unit is read. A DVD
+        // master's stretch inside a long transition comes through here, and
+        // a line's stop that waited for the end of the stretch sat behind
+        // more pictures than the muxer holds for it. See
+        // [`Writer::converted_due`].
+        if !writer.converted.is_empty() {
+            if let Some(t) = packet.pts().map(|p| p as f64 * in_tb - src.start_time) {
+                if t >= seg.start && t < seg.end {
+                    writer.converted_due(t + ctx.offset)?;
+                }
+            }
         }
         if past_end {
             if audio_done.iter().all(|&d| d)

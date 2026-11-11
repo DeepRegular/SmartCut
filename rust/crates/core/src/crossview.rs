@@ -463,6 +463,24 @@ fn overlay_of(transition: &Transition, shape: (u32, u32)) -> Result<Option<Laid>
     }
 }
 
+/// Say which YUV matrix a composite's samples are in: the master's, since
+/// [`reshape`] has brought every reel into it. The composite is a new frame
+/// at the preview's size, which states none, and the JPEG it is turned into
+/// reads an unstated matrix by the size it has -- a few hundred pixels
+/// across, so BT.601 -- and an HD master's BT.709 samples were shown through
+/// the wrong one. Stated, or read by the master's own size where it states
+/// nothing, as the cut and every player read it
+/// ([`crate::conform::read_matrix`]).
+fn in_the_masters_matrix(picture: &mut ff::frame::Video, master: &crate::VideoInfo) {
+    if let Some(space) =
+        crate::conform::read_matrix(master.shape.matrix, master.width, master.height)
+    {
+        unsafe {
+            crate::set_raw_enum(std::ptr::addr_of_mut!((*picture.as_mut_ptr()).colorspace), space);
+        }
+    }
+}
+
 /// One instant of the preview, as a JPEG.
 ///
 /// For scrubbing: each call seeks both clips, which is what makes it answer a
@@ -493,15 +511,9 @@ pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>>
     let standing = |src: &Source, at: f64| {
         let half = src.video.frame_duration() / 2.0;
         if let Some(entry) = crate::index::entry_before(&src.points, at, 1e-6) {
-            // Past where a recorder's stretch stops and before the next one
-            // has a picture, the reader -- which knows nothing of seams --
-            // shows a picture the stretch runs on with past its end, which
-            // the cut never writes. `picture_at` reads a seam as the cut does.
-            if src.joins.iter().any(|j| entry.time < j.time && at >= j.ends.min(j.time)) {
-                return crate::preview::picture_at(src, at)
-                    .ok()
-                    .and_then(|(_, f)| reshape(&f, shape, Some(master), &mut None).ok());
-            }
+            // Across a recorder's seam the reader reads as the cut does (see
+            // `Reader::pull` and `Reader::at`), so the still is the picture
+            // playback shows there too.
             if let Ok(mut reader) = Reader::on_entry(src, at, shape, master, step) {
                 if let Ok(shown) = reader.at(at).map(|f| f.cloned()) {
                     // Nor where the entry point's picture comes after the
@@ -525,7 +537,8 @@ pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>>
     };
     let near = look.near.and_then(|at| standing(seam.before, at));
     let far = look.far.and_then(|at| standing(seam.after, at));
-    let picture = compose(near.as_ref(), far.as_ref(), &look, laid.as_ref(), shape)?;
+    let mut picture = compose(near.as_ref(), far.as_ref(), &look, laid.as_ref(), shape)?;
+    in_the_masters_matrix(&mut picture, master);
     crate::preview::jpeg_of(&picture, 1.0, shape.0)
 }
 
@@ -546,6 +559,9 @@ struct Reader<'s> {
     in_tb: f64,
     start_time: f64,
     held: Option<ff::frame::Video>,
+    /// Where the stretch of a recorder's joined clip the held picture was
+    /// read in stops, where it was read before a seam. See `at`.
+    held_stops: Option<f64>,
     ahead: Option<(f64, ff::frame::Video)>,
     rescale: Option<Rescale>,
     shape: (u32, u32),
@@ -563,6 +579,12 @@ struct Reader<'s> {
     /// Where a seek by byte put a program stream, for its entry picture's
     /// time. See [`crate::preview::Landed`].
     landed: Option<crate::preview::Landed>,
+    /// Which stretch of a recorder's joined clip the read is in. See `pull`.
+    stretches: crate::preview::Stretches<'s>,
+    /// Whether the decoder holds anything a drain at a seam would hand back.
+    fed: bool,
+    /// Pictures a drain at a seam handed back, in order, not yet asked for.
+    queued: std::collections::VecDeque<(f64, ff::frame::Video)>,
 }
 
 impl<'s> Reader<'s> {
@@ -637,6 +659,7 @@ impl<'s> Reader<'s> {
             in_tb,
             start_time: src.start_time,
             held: None,
+            held_stops: None,
             ahead: None,
             rescale: None,
             shape,
@@ -646,6 +669,9 @@ impl<'s> Reader<'s> {
             drained: false,
             first: None,
             landed,
+            stretches: crate::preview::Stretches::new(src),
+            fed: false,
+            queued: Default::default(),
         })
     }
 
@@ -653,7 +679,10 @@ impl<'s> Reader<'s> {
     fn at(&mut self, want: f64) -> Result<Option<&ff::frame::Video>> {
         loop {
             match self.ahead.take() {
-                Some((t, frame)) if t <= want + self.slack => self.held = Some(frame),
+                Some((t, frame)) if t <= want + self.slack => {
+                    self.held = Some(frame);
+                    self.held_stops = self.stretch_stops(t);
+                }
                 Some(pair) => {
                     self.ahead = Some(pair);
                     break;
@@ -675,18 +704,64 @@ impl<'s> Reader<'s> {
         // instant, and with the clip before already gone the preview took
         // that for the end of the material and stopped at the join. The
         // first picture stands in, as the cut places it at the range's start.
-        if self.held.is_none() {
+        //
+        // And the same past a recorder's seam: where the stretch the held
+        // picture was read in stops, the range before the seam ends, and the
+        // cut opens the range after it on the next stretch's first picture --
+        // which can come a fifth of a second after the seam's time. Held on,
+        // the window showed the old stretch's last picture there while its
+        // still ([`shot`]) and the output showed the new one.
+        let past = self.held_stops.is_some_and(|stop| want >= stop - self.seam_tol());
+        if self.held.is_none() || (past && self.ahead.is_some()) {
             return Ok(self.ahead.as_ref().map(|(_, f)| f));
         }
         Ok(self.held.as_ref())
     }
 
+    /// Where the stretch of a recorder's joined clip that a picture shown at
+    /// `t` was read in stops: the earlier of the next seam's two instants, as
+    /// [`crate::preview`]'s walk ends a stretch. `None` past the last seam,
+    /// and on every recording without one.
+    fn stretch_stops(&self, t: f64) -> Option<f64> {
+        let tol = self.seam_tol();
+        self.src
+            .joins
+            .iter()
+            .map(|j| j.ends.min(j.time))
+            .filter(|&stop| t < stop - tol)
+            .reduce(f64::min)
+    }
+
+    /// A thousandth of a frame, as the walk compares a picture with the end
+    /// of its stretch.
+    fn seam_tol(&self) -> f64 {
+        self.src.video.frame_duration() * 1e-3
+    }
+
+    /// The next picture of the clip, in the order it is shown.
+    ///
+    /// **A recorder's seam is read across as the cut reads it**, by the rule
+    /// [`crate::preview`]'s walk reads it with: the decoder is drained of the
+    /// stretch before the seam, and a picture outside the stretch it was
+    /// read in -- one the stretch runs on with past where the range before
+    /// the seam ends, or a leading picture of the next stretch stamped before
+    /// it begins -- is never handed on, since the cut never writes it. Fed
+    /// straight on, a seam window reaching past a recorder seam played
+    /// pictures of the old stretch after its end, which neither the output
+    /// nor the window's own still ([`shot`]) shows. Nothing changes on a
+    /// recording without seams.
     fn pull(&mut self) -> Result<Option<(f64, ff::frame::Video)>> {
         let mut frame = ff::frame::Video::empty();
         loop {
+            if let Some(next) = self.queued.pop_front() {
+                return Ok(Some(next));
+            }
             if self.decoder.receive_frame(&mut frame).is_ok() {
                 let Some(pts) = frame.pts() else { continue };
                 let t = pts as f64 * self.in_tb - self.start_time;
+                if self.stretches.outside(t) {
+                    continue;
+                }
                 self.first.get_or_insert(t);
                 let shaped = reshape(&frame, self.shape, Some(self.master), &mut self.rescale)?;
                 return Ok(Some((t, shaped)));
@@ -709,8 +784,26 @@ impl<'s> Reader<'s> {
                 continue;
             }
             crate::preview::Landed::mend(&mut self.landed, &mut packet, self.src);
+            let was = self.stretches.clone();
+            if self.stretches.reach(packet.position()) && std::mem::take(&mut self.fed) {
+                let _ = self.decoder.send_eof();
+                while self.decoder.receive_frame(&mut frame).is_ok() {
+                    let Some(pts) = frame.pts() else { continue };
+                    let t = pts as f64 * self.in_tb - self.start_time;
+                    if was.outside(t) {
+                        continue;
+                    }
+                    self.first.get_or_insert(t);
+                    let shaped =
+                        reshape(&frame, self.shape, Some(self.master), &mut self.rescale)?;
+                    self.queued.push_back((t, shaped));
+                }
+                self.decoder.flush();
+            }
             // A packet the decoder will not take is not a reason to stop.
-            let _ = self.decoder.send_packet(&packet);
+            if self.decoder.send_packet(&packet).is_ok() {
+                self.fed = true;
+            }
         }
     }
 }
@@ -719,7 +812,7 @@ impl<'s> Reader<'s> {
 /// the first entry point could be decoded anyway.
 fn seek_near(ictx: &mut crate::input::Demux, src: &Source, landing: f64) {
     let target = if src.points.first().is_none_or(|p| landing <= p.time) {
-        i64::MIN / 2
+        crate::input::head_seek(ictx)
     } else {
         ((landing + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64
     };
@@ -727,23 +820,15 @@ fn seek_near(ictx: &mut crate::input::Demux, src: &Source, landing: f64) {
 }
 
 /// How far after an instant of the preview a clip's picture may arrive and
-/// still be the one on screen at it: the cutter's own answer, so that the
-/// preview of a crossing shows the pictures the output will.
-///
-/// A container that counts in milliseconds stores a picture up to half a
-/// millisecond either side of where it was taken, and the instants here are
-/// counted off exactly. Compared with no slack at all, a 29.97 Matroska clip
-/// showed one picture twice and skipped the next about every third frame.
-/// The same arithmetic as `on_screen_slack` in [`crate::cut_conform`], where
-/// the reasons are given in full; a fine clock -- a transport stream's -- is
-/// compared as it always was.
+/// still be the one on screen at it: the cutter's own answer
+/// (`far_slack` in [`crate::cut`]), so that the preview of a crossing shows
+/// the pictures the output will. Shared rather than copied: the copy here
+/// gave a fine clock (a transport stream's) a billionth of a second where
+/// the cut gives a thousandth of a frame, so a picture stamped within that
+/// after an instant was the next picture in the output and the one before
+/// in the preview.
 fn on_screen_slack(in_tb: f64, step: f64) -> f64 {
-    let fine = step * 1e-3;
-    if in_tb.is_finite() && in_tb > fine {
-        (3.5 * in_tb).min(step / 3.0).max(fine)
-    } else {
-        1e-9
-    }
+    crate::cut::far_slack(in_tb, step)
 }
 
 /// Play the preview from `from`, as a stream of pictures.
@@ -811,13 +896,14 @@ pub fn play(
         if near_frame.is_none() && far_frame.is_none() {
             break;
         }
-        let picture = compose(
+        let mut picture = compose(
             near_frame.as_ref(),
             far_frame.as_ref(),
             &look,
             laid.as_ref(),
             shape,
         )?;
+        in_the_masters_matrix(&mut picture, master);
         show(t, crate::preview::jpeg_of(&picture, 1.0, shape.0)?);
         t += step;
     }
@@ -1024,12 +1110,12 @@ mod tests {
 
     /// A clip on a millisecond clock has its pictures taken at the instant
     /// they belong to, as the cutter takes them; a transport stream's clock
-    /// is compared as it always was.
+    /// gets the cutter's thousandth of a frame.
     #[test]
     fn a_coarse_clock_gets_the_cutters_slack() {
         let step = 1001.0 / 30000.0;
         assert!((on_screen_slack(1e-3, step) - 3.5e-3).abs() < 1e-12);
-        assert_eq!(on_screen_slack(1.0 / 90_000.0, step), 1e-9);
+        assert_eq!(on_screen_slack(1.0 / 90_000.0, step), step * 1e-3);
         // Never so wide that the picture after is taken for this one.
         assert!(on_screen_slack(0.1, step) <= step / 3.0);
     }

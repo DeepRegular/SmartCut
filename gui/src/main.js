@@ -63,6 +63,14 @@ let selGone = false;
 /// on the outline's and has to be moved onto its pictures. See
 /// `pointsArrived`.
 let selArrived = null;
+/// The selection as the open put it back, and the head it was measured on
+/// where that was not a walked timeline (`selOutline` in the edit): a visit
+/// left before its walk landed set IN and OUT on its outline, and taken on
+/// the next visit as walked (`selArrived`) they stood the head's difference
+/// off -- 15 frames on a recorder's clip whose map starts late -- once that
+/// visit's walk landed. Null `outline` is a walked selection. Kept to say
+/// the same of it again where this visit is left before its own walk lands.
+let selFrom = null;
 /// What a row came back with -- IN, OUT, the playhead -- where the outline
 /// had no timeline to put it on: a recording whose container states no
 /// length comes up 0 s long, and clamped onto that the selection was gone
@@ -504,6 +512,13 @@ const shownFacts = () => (showingLeft() && outlineLeft ? outlineLeft : null);
 /// the open fails before that, since what is on screen is then not this
 /// recording's answer either. See `saveMarks`.
 let marksDue = false;
+/// Whether the row up has yet to have its mark files read at all: a first
+/// visit until `loadMarkFiles` has run for it, and a visit after one left
+/// before that (OK during the walk of a recording whose files are read only
+/// after it). Sent with the edit, so that the next visit reads them: taken
+/// as an ordinary revisit, the row never had its `.keyframe`, Trim line or
+/// `.cm.json` read on any visit, and a disc title got its chapters instead.
+let filesDue = false;
 
 /// The same string for the timeline as it arrived.
 ///
@@ -541,7 +556,21 @@ const settleUnlessTouched = (was) => {
 /// window nobody had touched.
 function putDetected(fn) {
   if (opening !== null) {
-    settle(fn);
+    // Still a step 取消 can take back, as it is once the row is in: settled,
+    // `remember` says nothing, and a detection run during the walk was the
+    // one edit in the window with no way back but deleting its marks one at
+    // a time. Only where it changed what is kept or marked, as `addKeyframes`
+    // asks.
+    const step = snapshot();
+    const sig = editSignature();
+    settle(() => {
+      fn();
+      if (editSignature() === sig) return;
+      past.push(step);
+      if (past.length > HISTORY_DEPTH) past.shift();
+      undone = [];
+      paintHistory();
+    }).catch((e) => jlog(`detection: ${e}`));
     return;
   }
   const was = touched();
@@ -647,7 +676,7 @@ function joinTimes() {
   // Not where a range resumes past a seam: nobody cut there.
   const list = keeps.slice(1).filter((k) => !k.gap).map((k) => k.a);
   const head = headTime();
-  if (keeps.length && keeps[0].a > head + frame() / 2) list.push(keeps[0].a);
+  if (keeps.length && keeps[0].a > head + endHalf()) list.push(keeps[0].a);
   return list.sort((a, b) => a - b);
 }
 
@@ -682,7 +711,7 @@ function afterCutsChanged(back = null) {
   // through the history picks nothing out here: the state being put back
   // carries the mark that was picked out when it was current.
   if (!back) {
-    const fresh = joins.filter((t) => !had.some((o) => Math.abs(o - t) < frame() / 2));
+    const fresh = joins.filter((t) => !had.some((o) => Math.abs(o - t) < endHalf()));
     // And only that mark: the cards chosen before the cut were a choice
     // about the list as it was, and left standing beside the new one they
     // were what the next Del took away.
@@ -697,7 +726,7 @@ function afterCutsChanged(back = null) {
   // all the same -- every stretch the playlist leaves out came out of the
   // file with a chapter at its end.
   const all = keyframes.concat(joins.filter((t) => !playsJoin(t))).sort((a, b) => a - b);
-  keyframes = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
+  keyframes = all.filter((t, i) => i === 0 || t - all[i - 1] > endHalf());
   paintHistory();
   playhead = outToSrc(clamp(back ? srcToOutSeam(back.playhead) : before, 0, outDur));
   selA = clamp(back ? back.selA : selA, 0, outDur);
@@ -715,11 +744,11 @@ function afterCutsChanged(back = null) {
 
 /// The selected mark is remembered by time, not by its place in the list:
 /// cutting inserts joins and renumbers everything below them.
-const isActive = (t) => activeKey !== null && Math.abs(t - activeKey) < frame() / 2;
+const isActive = (t) => activeKey !== null && Math.abs(t - activeKey) < endHalf();
 
 /// Is this mark one of the ones chosen for a Del? Compared the way
 /// [`isActive`] compares, and for the same reason.
-const isPicked = (t) => pickedKeys.some((k) => Math.abs(k - t) < frame() / 2);
+const isPicked = (t) => pickedKeys.some((k) => Math.abs(k - t) < endHalf());
 
 /// Is this output time a join a cut left behind? Cutting the head of the
 /// recording leaves no *internal* join, but its new first picture is one all
@@ -850,7 +879,7 @@ function paintCards(times, imgs) {
 function addKeyframes(times, focus = null) {
   const all = keyframes.concat(times.filter((t) => isFinite(t)).map(onFrame));
   all.sort((a, b) => a - b);
-  const next = all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
+  const next = all.filter((t, i) => i === 0 || t - all[i - 1] > endHalf());
   if (focus !== null) focus = onFrame(focus);
   // A mark is not a cut, but it is still something that was done, and 取消
   // steps back through what was done. A press that puts nothing down -- the
@@ -878,7 +907,7 @@ function liveKeyframes() {
   const live = keyframes.filter((t) => srcToOut(t) !== null);
   return live.filter((t, i) => {
     const next = live[i + 1];
-    return next === undefined || srcToOut(next) - srcToOut(t) > frame() / 2;
+    return next === undefined || srcToOut(next) - srcToOut(t) > endHalf();
   });
 }
 
@@ -1045,7 +1074,7 @@ function renderKeyframes(scroll = true) {
   // A cut can take a chosen card away with it, and what is left of the run
   // is still chosen.
   if (pickedKeys.length) {
-    pickedKeys = pickedKeys.filter((t) => live.some((x) => Math.abs(x - t) < frame() / 2));
+    pickedKeys = pickedKeys.filter((t) => live.some((x) => Math.abs(x - t) < endHalf()));
   }
   el("key-count").textContent = live.length ? tr("editor.keyCount", { n: live.length }) : "";
   // The same marks as last time: dress the cards and leave them where they
@@ -1147,7 +1176,7 @@ function renderKeyframes(scroll = true) {
       }
       if (ev.ctrlKey || ev.metaKey) {
         pickedKeys = isPicked(t)
-          ? pickedKeys.filter((k) => Math.abs(k - t) >= frame() / 2)
+          ? pickedKeys.filter((k) => Math.abs(k - t) >= endHalf())
           : pickedKeys.concat([t]);
         // The anchor follows the last card touched, so a Shift after a Ctrl
         // measures its run from there.
@@ -1221,8 +1250,8 @@ function toKeyframe(dir) {
   const here = playOut();
   const next =
     dir > 0
-      ? stops.find((k) => k.o > here + frame() / 2)
-      : [...stops].reverse().find((k) => k.o < here - frame() / 2);
+      ? stops.find((k) => k.o > here + endHalf())
+      : [...stops].reverse().find((k) => k.o < here - endHalf());
   if (!next) return;
   activeKey = next.t;
   renderKeyframes();
@@ -1237,7 +1266,7 @@ function toKeyframe(dir) {
 /// one, so a key that only ever added would look broken there.
 function toggleKeyframe() {
   if (!src) return;
-  const on = keyframes.find((t) => Math.abs(t - playhead) < frame() / 2);
+  const on = keyframes.find((t) => Math.abs(t - playhead) < endHalf());
   if (on === undefined) {
     addKeyframes([playhead], playhead);
     return;
@@ -1385,7 +1414,7 @@ const flatEnd = (r) =>
 /// whose marks were turned off in 環境設定, or one end of which was deleted
 /// from the list, still found the stretch, and the picture says so.
 function flatAt(t) {
-  const half = frame() / 2;
+  const half = endHalf();
   const at = onFrame(t);
   const out = [];
   for (const kind of ["black", "white", "quiet"]) {
@@ -1428,8 +1457,8 @@ function toFlatEdge(dir, kinds, from = playhead) {
   const edges = flatEdges(kinds);
   const next =
     dir > 0
-      ? edges.find((t) => t > from + frame() / 2)
-      : edges.reverse().find((t) => t < from - frame() / 2);
+      ? edges.find((t) => t > from + endHalf())
+      : edges.reverse().find((t) => t < from - endHalf());
   if (next === undefined) return;
   showFrame(next);
 }
@@ -2630,7 +2659,7 @@ function paintMarks() {
     return;
   }
   const o = playOut();
-  const half = frame() / 2;
+  const half = endHalf();
   const left = [];
   const right = [];
   const put = (list, cls, text) => {
@@ -5538,6 +5567,11 @@ const atLastPicture = (o) =>
 /// had IN on any of them taken for the head, and ✂ took the pictures before
 /// IN as well, which the editor showed as kept; OUT on the picture before
 /// the last, 33 ms before it on a recording averaging 10.9, went to the end.
+///
+/// And every other "is this mark on that picture" test: two marks put down
+/// on two pictures 33 ms apart, on a recording averaging 92 ms, were one
+/// mark (`addKeyframes`, `toggleKeyframe` and the rest of the family read
+/// it as the same picture). Half a frame wherever the pictures are even.
 function endHalf() {
   if (!src || !src.variable || src.pulldown || !walked()) return frame() / 2;
   const floor = pictureFloor();
@@ -6858,7 +6892,7 @@ async function recountEarly(before) {
       }))
     );
     const keys = before.keyframes.map(onFrame).sort((x, y) => x - y);
-    keyframes = keys.filter((t, i) => i === 0 || t - keys[i - 1] > frame() / 2);
+    keyframes = keys.filter((t, i) => i === 0 || t - keys[i - 1] > endHalf());
     activeKey = before.activeKey === null ? null : onFrame(before.activeKey);
     pickedKeys = [];
     rebuildTimeline();
@@ -7090,7 +7124,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
   // first's outline -- these are already that row's, not the recording's
   // that is up, and that open's own snapshot is the one to put back.
   const left = outlineLeft || {
-    sideBase, discChapters, chaptersDue, marksDue, playsDue, unplayedCuts, walkFailed, recountHead,
+    sideBase, discChapters, chaptersDue, marksDue, filesDue, playsDue, unplayedCuts, walkFailed, recountHead,
   };
   outlineLeft = left;
   // Whether this open has put its own recording up (`src = outline` below).
@@ -7098,7 +7132,8 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
   // can be the one recording under two names, and a failed open of the
   // second kept the second's name over the first's marks.
   let replaced = false;
-  marksDue = first;
+  filesDue = first || !!(saved && saved.filesDue);
+  marksDue = filesDue;
   // The playlist's cuts, where the list still owes them: on a first visit,
   // or on one after a first visit left before its walk had landed.
   playsDue = Array.isArray(plays) && plays.length > 0 && (first || !!(saved && saved.playsDue));
@@ -7343,6 +7378,11 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     selB = !first ? Math.min(saved.selB, outDur) : outDur;
     selGone = first || !!saved.selGone || (selA <= 0 && selB >= outDur - 1e-9);
     selArrived = { selA, selB, selGone };
+    const measured = !first && Number.isFinite(saved.selOutline) ? saved.selOutline : null;
+    selFrom = { selA, selB, selGone, outline: measured };
+    // Set on an outline: moved onto its pictures when the walk lands, as a
+    // selection made during this walk is (`pointsArrived`).
+    if (measured !== null) selArrived = null;
     // And the playhead, which the picture below puts on its frame: until
     // then it was the last recording's instant, and a mark or a cover set in
     // the wait for the files beside the recording landed there.
@@ -7392,7 +7432,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // is no timeline to read them onto before the walk -- every mark was
     // past the end and dropped, a Trim line cut nothing -- and as `early`
     // they were not read again after it, so the row came up without them.
-    const early = first && src.points.length === 0 && src.head !== null && src.duration > 0;
+    const early = filesDue && src.points.length === 0 && src.head !== null && src.duration > 0;
     let marks = false;
     // What the timeline held before the files were read, and the head they
     // were counted from, for the one case the walk answers differently: see
@@ -7417,6 +7457,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
         outDur,
       };
       marks = await settle(() => loadMarkFiles());
+      if (!overtaken()) filesDue = false;
       if (marks && (markFileKind === "keyframe" || markFileKind === "trim")) readEarly = before;
       if (playsDue) filed = { before, after: cuts.map((c) => ({ a: c.a, b: c.b })) };
     }
@@ -7461,8 +7502,9 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     if (playsDue) await settle(() => applyPlays(plays, filed ? arrivedCuts(filed) : first ? cuts : []));
     if (overtaken()) return;
     playsDue = false;
-    if (first && !early) marks = await settle(() => loadMarkFiles());
+    if (filesDue && !early) marks = await settle(() => loadMarkFiles());
     if (overtaken()) return;
+    filesDue = false;
     marksDue = false;
     // The disc's own chapters, which fill a timeline no file beside the
     // recording had anything to say about. Left until here either way: they
@@ -7536,7 +7578,7 @@ async function openPath(picked, saved, side, name, chapters, dropPids, detected,
     // failed left Ctrl+H refused on the last recording as 「まだ読み込んでいない」,
     // and a last recording whose own walk had failed lost that failure.
     if (!replaced) {
-      ({ sideBase, discChapters, chaptersDue, marksDue, playsDue, unplayedCuts, walkFailed, recountHead } =
+      ({ sideBase, discChapters, chaptersDue, marksDue, filesDue, playsDue, unplayedCuts, walkFailed, recountHead } =
         left);
     }
     outlineLeft = null;
@@ -7590,7 +7632,10 @@ async function pointsArrived(exact, picked) {
     }
     throw e;
   }
-  if (!src || src.path !== picked) return;
+  // Nor under another open: two rows of one recording (a division) switched
+  // as the first walk lands are the same path, and the path alone let that
+  // walk land on the second row's timeline.
+  if (gen !== openGen || !src || src.path !== picked) return;
   // What the row came back with, where the outline could not hold it
   // (`heldSel`): put back now there is a timeline, unless the wait moved it.
   const held = heldSel;
@@ -8098,7 +8143,12 @@ async function cutOutside() {
   const end = src.variable ? await exactEnd() : selEnd();
   if (end === undefined) return;
   const keep = outRangeToSrc(selA, selB);
-  applyCuts(cuts.concat(outRangeToSrc(0, selA)).concat(outRangeToSrc(end, outDur)));
+  const next = cuts.concat(outRangeToSrc(0, selA)).concat(outRangeToSrc(end, outDur));
+  // The whole recording selected: nothing lies outside it. Taken as a cut,
+  // that was a step 取消 took back to the same timeline, and it emptied the
+  // redo list -- as 全削除 with nothing to clear did.
+  if (JSON.stringify(normalise(next)) === JSON.stringify(normalise(cuts))) return;
+  applyCuts(next);
   // What is left is what was selected, and a selection of all of it is one
   // Del short of nothing; see `cutSelection`.
   selA = 0;
@@ -8591,7 +8641,7 @@ function applyPlays(plays, own = cuts) {
   };
   const marksOn = (keys, list) => {
     const all = keys.map(ontoEnd(list)).sort((x, y) => x - y);
-    return all.filter((t, i) => i === 0 || t - all[i - 1] > frame() / 2);
+    return all.filter((t, i) => i === 0 || t - all[i - 1] > endHalf());
   };
   // IN and OUT are places on the output, and these cuts move the output
   // under them: set during the walk, they stood the length of every cut
@@ -9243,7 +9293,17 @@ function takeFlatFound(said) {
   // detected with is no longer known.
   detectedWith[which] = said.partial ? null : prefs.flatAsked(which);
   putDetected(() => applyFlatRuns(flatKinds(which), said.runs, flatMarks(which)));
+  tellFlatLanded();
   el("status").textContent = flatSaid(which, said.runs.length);
+}
+
+/// Tell the list that a flat detection has just landed on the timeline, with
+/// the state it landed in: its answer is not an edit, and キャンセル goes back
+/// to a state that has it, as it does for a commercial detection (the list
+/// tells that one by its sentence; a flat one has none it could tell by).
+function tellFlatLanded() {
+  const state = captureEdit();
+  if (state && emit) emit("editor-flat", state);
 }
 
 /// One of the two detections, on the menu line that asks for it.
@@ -9283,6 +9343,7 @@ async function runFlat(id, label, which, kinds, call) {
     // how to get the rest of it -- nor the answer it replaces on the timeline.
     detectedWith[which] = found.partial ? null : question;
     putDetected(() => applyFlatRuns(kinds, runs, flatMarks(which)));
+    tellFlatLanded();
     el("status").textContent = flatSaid(which, runs.length);
   } catch (e) {
     if (editId === asked && gen === openGen) el("status").textContent = tr("flat.failed", { e });
@@ -9505,7 +9566,7 @@ function relayout() {
 }
 
 /// Everything this session has done to the recording, in source time.
-function captureEdit() {
+function captureEdit(waited = false) {
   // Nothing while another row is taking over: `editId` names the new row
   // from the start of that, and `src` and the cuts are the old one's until
   // they are replaced -- sent in between, the old row's edit landed on the
@@ -9518,7 +9579,12 @@ function captureEdit() {
   // that row was owed, which the open on its way has already set for itself
   // and keeps the row's own of in `outlineLeft`.
   const left = showingLeft() ? outlineLeft : null;
-  if (!src || (swapping && !left)) return null;
+  // And the row OK is waiting on (`waited`, from the `editor-open` handler)
+  // where the next row is sent before its files are read: that row's
+  // timeline is on screen and OK asked for it, and the read will not finish
+  // for it now -- the open that replaces it stops it.
+  const owed = waited && shownId !== null && shownId === editId;
+  if (!src || (swapping && !left && !owed)) return null;
   // Before the walk of a recording with no length has landed, what the row
   // came back with rather than its clamped image (`heldSel`).
   const held =
@@ -9555,6 +9621,9 @@ function captureEdit() {
     // it is run before; see `markFileKind`.
     markFileKind,
     chaptersDue: left ? left.chaptersDue : chaptersDue,
+    // False is said too, so that the list's copy of an earlier visit's true
+    // is replaced (a project writes neither false nor this when false).
+    filesDue: left ? !!left.filesDue : filesDue,
     // Which cuts the disc's playlist made, and whether its cuts are still
     // owed because this visit's walk has not landed. See `unplayedCuts` and
     // `playsDue`.
@@ -9578,12 +9647,26 @@ function captureEdit() {
     selA: held ? held.selA : selA,
     selB: held ? held.selB : selB,
     selGone: held ? held.selGone : selGone,
+    // The head IN and OUT were measured from, where that is an outline and
+    // not a walked timeline; absent otherwise. See `selFrom`.
+    selOutline: selOutlineOf(held),
   };
   // Said, so that the list can pass over one for a row it has divided or put
   // back together since the window left it (see `editor-state` in app.js).
   // Not kept with the edit.
   if (left) state.shown = true;
   return state;
+}
+
+/// The `selOutline` of what `captureEdit` sends: undefined where IN and OUT
+/// stand on a walked timeline or select nothing.
+function selOutlineOf(held) {
+  if (walked() || (held ? held.selGone : selGone)) return undefined;
+  const same =
+    held !== null ||
+    (selFrom !== null && selA === selFrom.selA && selB === selFrom.selB && selGone === selFrom.selGone);
+  if (same) return selFrom && selFrom.outline !== null ? selFrom.outline : undefined;
+  return headTime();
 }
 
 let syncTimer = null;
@@ -9636,20 +9719,67 @@ el("editor-ok").addEventListener("click", async () => {
   // is over: a cut made in that wait and OK went nowhere. Waited for, within
   // reason -- a read that never ends leaves things as they were.
   const about = editId;
-  for (let i = 0; i < 100 && swapping && shownId !== null && shownId === editId; i++) {
-    await new Promise((r) => setTimeout(r, 50));
+  okWaiting = about;
+  try {
+    for (let i = 0; i < 100 && swapping && shownId !== null && shownId === editId; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  } finally {
+    okWaiting = null;
   }
-  sync();
+  // Nor where キャンセル was taken in that wait: the visit has been thrown
+  // away, and the state said below would have put its cut back on the row.
+  // Nor before the question that キャンセル put up in that wait is answered:
+  // a wait run out with it still up handed over the visit the answer then
+  // threw away (and the window was going by then, so the answer did nothing).
+  while (asking) await new Promise((r) => setTimeout(r, 50));
+  if (leaving) return;
   // The list is a window of its own and still takes a double-click during
   // that wait. A row sent then is the one somebody now wants to edit, and
-  // closing would have shut the editor on it. The `sync` above still sends
-  // the row OK was pressed on, which is on screen until that open replaces
-  // it (`captureEdit`, `showingLeft`).
-  if (editId !== about) return;
-  // After the debounce, so the last cut is over the wire before the window
-  // that made it goes away.
-  setTimeout(() => invoke("close_editor"), 220);
+  // closing would have shut the editor on it. The row OK was pressed on is
+  // still sent, and at once: it is on screen only until that open replaces
+  // it (`captureEdit`, `showingLeft`), and the debounce of `sync` outlasted
+  // that on a quick recording -- the cut went nowhere in 1 run of 3.
+  if (editId !== about) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+    const left = captureEdit();
+    if (left && emit) emit("editor-state", left);
+    return;
+  }
+  // Said now rather than after the debounce, and followed by word that it
+  // is what OK handed over (`editor-ok`): the list takes it as what
+  // キャンセル goes back to from here on.
+  clearTimeout(syncTimer);
+  syncTimer = null;
+  // And where the wait ran out with the files still being read (a share
+  // that stopped answering): the row's own timeline is still what is on
+  // screen, and sent nothing for (`captureEdit` sends nothing while
+  // `swapping`) the cut made on it went nowhere. Sent as the row OK waited
+  // on, still owing its files (`filesDue`), which its next visit reads.
+  const state = captureEdit(swapping && shownId !== null && shownId === about);
+  if (state && emit) {
+    emit("editor-state", state);
+    emit("editor-ok", { id: state.id });
+  }
+  // A moment for that to cross before the window goes. The list can send a
+  // row in that moment -- the same one pressed again, or another -- and the
+  // window then stays for it (the `editor-open` handler); until then an
+  // Escape is not a way out of a visit OK has already ended: it put the row
+  // back to where the visit began, and the cut OK handed over was gone.
+  okClosing = about;
+  clearTimeout(okTimer);
+  okTimer = setTimeout(() => {
+    okTimer = null;
+    invoke("close_editor");
+  }, 220);
 });
+
+/// The row OK was pressed on, while the window waits to close; see above.
+let okClosing = null;
+/// The row OK was pressed on, while it waits for that row's files (above).
+let okWaiting = null;
+let okTimer = null;
 
 /// Leave without what was done in here. The list is told to drop it -- `sync`
 /// has been reporting every cut as it happened -- and the window goes. Both
@@ -9660,6 +9790,7 @@ el("editor-ok").addEventListener("click", async () => {
 /// -- and what is being thrown away is then that row's visit as well: its
 /// cuts are the ones in front of whoever pressed it.
 function cancelEdit(shown = showingLeft() ? shownId : null) {
+  if (okClosing !== null) return;
   clearTimeout(syncTimer);
   syncTimer = null;
   // And nothing after it: a report sent once the list has put the row back
@@ -9685,6 +9816,7 @@ let asking = false;
 /// and Escape is a reflex, as likely the hand that meant to put a menu
 /// away.
 async function askCancelEdit() {
+  if (okClosing !== null) return;
   if (!touched() || !dialog) {
     cancelEdit();
     return;
@@ -9725,6 +9857,17 @@ if (listen) {
   hear("editor-open", async (ev) => {
     const { id, path, name, side, saved, chapters, dropPids, plays } = ev.payload;
     let { cm } = ev.payload;
+    // A row sent while the window waits to close after OK: somebody wants
+    // to edit, so it stays. On the row OK was pressed on, what OK handed over
+    // is what this visit arrives with now (the list has it as the point
+    // キャンセル goes back to: `editor-ok`), so leaving asks only about what
+    // is done from here.
+    if (okClosing !== null) {
+      clearTimeout(okTimer);
+      okTimer = null;
+      if (okClosing === id && editId === id) settleMark();
+      okClosing = null;
+    }
     // A frame number typed for the last recording is not one for this one.
     closeJump();
     // The list has spoken, so this window stops asking; see `announceReady`.
@@ -9750,10 +9893,14 @@ if (listen) {
       // The row being left is owed what it was last told it would get: a
       // change made in the last moment before the switch is sent now, under
       // its own id, rather than dropped or sent under the new one.
-      if (syncTimer) {
+      // And the row an OK is waiting on, whose files are still being read:
+      // this open stops that read, and sent nothing then, its cut went
+      // nowhere (`captureEdit` sends nothing while `swapping`).
+      const waited = okWaiting !== null && okWaiting === editId;
+      if (syncTimer || waited) {
         clearTimeout(syncTimer);
         syncTimer = null;
-        const state = captureEdit();
+        const state = captureEdit(waited);
         if (state && emit) emit("editor-state", state);
       }
       opening = id;

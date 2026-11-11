@@ -559,6 +559,28 @@ pub fn read_laid(
     want: ff::format::Pixel,
     full: bool,
 ) -> Result<Laid> {
+    read_laid_in(path, width, height, want, full, None)
+}
+
+/// As [`read_laid`], into the YUV matrix `matrix` (an `AVColorSpace`, as
+/// [`crate::conform::read_matrix`] answers it) of the frames it is laid
+/// over; `None` reads it by their size, as a player reads an unstated one.
+///
+/// **An image is RGB, and the frames' YUV has a matrix.** libswscale makes
+/// YUV out of RGB with BT.601's unless told another, so a title laid over a
+/// high-definition master went in through the wrong matrix and showed in
+/// other colours than the image -- a pure red some 8 % darker, greens bluer
+/// -- in the output and in the window that sets it alike. Told the frames'
+/// matrix, the image is what it was. A standard-definition master's is
+/// BT.601 already, and there nothing changes.
+pub fn read_laid_in(
+    path: &str,
+    width: u32,
+    height: u32,
+    want: ff::format::Pixel,
+    full: bool,
+    matrix: Option<i32>,
+) -> Result<Laid> {
     let mut ictx = crate::input::open_local(path)
         .map_err(|e| anyhow::anyhow!("the image over the transition, {path}: {e}"))?;
     let stream = ictx
@@ -595,11 +617,50 @@ pub fn read_laid(
     // Into the range of the pictures it is laid over, `full`: read off the
     // format alone, an image over a full-range picture in a plain format
     // went in at studio levels, its black a grey. See [`Scaler`].
-    Scaler::new(
-        (frame.width(), frame.height(), frame.format(), full_range_frame(&frame)),
+    let full_in = full_range_frame(&frame);
+    let mut scaler = Scaler::new(
+        (frame.width(), frame.height(), frame.format(), full_in),
         (w, h, want, full),
-    )?
-    .run(&frame, &mut colour)?;
+    )?;
+    {
+        use ff::ffi::AVColorSpace as S;
+        let bt601 = S::AVCOL_SPC_SMPTE170M as i32;
+        let to = matrix
+            .or_else(|| crate::conform::read_matrix(S::AVCOL_SPC_UNSPECIFIED as i32, w, h))
+            .unwrap_or(bt601);
+        let rgb = |p: ff::format::Pixel| unsafe {
+            let d = ff::ffi::av_pix_fmt_desc_get(p.into());
+            d.is_null() || (*d).flags & (ff::ffi::AV_PIX_FMT_FLAG_RGB as u64) != 0
+        };
+        // An image that is YUV already (a JPEG) is BT.601 unless it says.
+        let from = if rgb(frame.format()) {
+            to
+        } else {
+            let stated = unsafe { (*frame.as_ptr()).colorspace as i32 };
+            crate::conform::read_matrix(stated, 0, 0).unwrap_or(bt601)
+        };
+        // Only where it is not libswscale's own BT.601 both ways, so that a
+        // standard-definition master's overlay is made as it always was.
+        if !rgb(want) && (from != bt601 || to != bt601) {
+            unsafe {
+                let c = match &mut scaler {
+                    Scaler::Plain(s) => s.as_mut_ptr(),
+                    Scaler::Ranged(c) => *c,
+                };
+                ff::ffi::sws_setColorspaceDetails(
+                    c,
+                    ff::ffi::sws_getCoefficients(from),
+                    i32::from(full_in),
+                    ff::ffi::sws_getCoefficients(to),
+                    i32::from(full),
+                    0,
+                    1 << 16,
+                    1 << 16,
+                );
+            }
+        }
+    }
+    scaler.run(&frame, &mut colour)?;
 
     let mut rgba = ff::frame::Video::new(ff::format::Pixel::RGBA, w, h);
     ff::software::scaling::Context::get(

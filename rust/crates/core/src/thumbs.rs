@@ -663,7 +663,7 @@ pub fn build_with_sound(
         }
         None => {
             if crate::sound::sought_at_head(&ictx, &src.input.url) {
-                let target = i64::MIN / 2;
+                let target = crate::input::head_seek(&ictx);
                 let _ = ictx.seek(target, ..target);
             }
         }
@@ -1035,6 +1035,23 @@ fn decode_on(
             }
         }
     }
+    // The end of the file, and what the decoder still holds for reordering:
+    // the recording's last pictures, which a window reaching the end asks
+    // about as much as any other. Left in, a change on one of them was never
+    // measured, and a scene search or a CM boundary near the end of a
+    // recording with B pictures stopped a picture or two short of it.
+    if fed {
+        let _ = decoder.send_eof();
+        while decoder.receive_frame(&mut frame).is_ok() {
+            let Some(t) = time(&frame) else { continue };
+            if stretches.outside(t) {
+                continue;
+            }
+            if !visit(t, &frame) {
+                return;
+            }
+        }
+    }
 }
 
 /// The timestamp a seek aims at to land at or before `landing`, in rebased
@@ -1046,7 +1063,7 @@ fn decode_on(
 /// found was missing the opening pictures.
 fn front_or(src: &Source, landing: f64) -> i64 {
     if src.points.first().is_none_or(|p| landing <= p.time) {
-        i64::MIN / 2
+        crate::input::HEAD_SEEK
     } else {
         ((landing + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64
     }
