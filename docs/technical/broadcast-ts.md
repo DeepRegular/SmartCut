@@ -172,7 +172,12 @@ service this is a recording of — and where that does not settle it, because no
 association table survived or because every map did, the tables are read as they were
 before, first description first. `si::recorded_service` is that pass, and what it
 finds filters both the event information and the service description, which carries
-several services in the one section too.
+several services in the one section too. The command line, naming a recording it
+writes onto a disc, does not leave it there: it asks for the service whose map holds
+the pictures being cut (`si::read_service`, the map the cut's own tables are written
+from), which settles a recording that kept every map as well. Up to 0.8.44 such a
+recording went onto the disc under the programme and channel of whichever service
+the file described first.
 
 ## A file another tool multiplexed does not name its channel in ARIB
 

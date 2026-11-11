@@ -139,7 +139,13 @@ Told a mux rate it writes a clean one, at the cost of padding the stream with
 null packets up to that rate, which on a 12 Mbit/s recording is half the disc
 spent on nothing.
 
-So [`bdav::stamp`](../../rust/crates/core/src/bdav.rs) writes them again. **A
+So [`bdav::stamp`](../../rust/crates/core/src/bdav.rs) writes them again, over
+the stream where it lies: nothing is written beside it, so a disc run needs no
+room for a second copy of the recording, and a killed run leaves no
+`<clip>.m2ts.ats` behind (up to 0.8.44 the stream was written out again under
+that name and renamed over the old one). A stamp that fails part way leaves a
+stream with no clip index, which is taken off the disc as any recording that
+cannot be indexed is. **A
 recording is delivered at a constant rate**, and where there was nothing to
 deliver the recorder wrote nothing and the times jump. That is exactly the
 shape a real disc's arrival times have: on both reference discs every step is
@@ -309,6 +315,18 @@ The coding of each stream is taken from the map the file itself carries rather
 than from the codec libavformat named, so the index and the map cannot
 disagree — which is the failure that would have a player hand AAC frames to a
 decoder that was told they were private data.
+
+**And the map is made to say what the index says.** libavformat's `.m2ts` mode
+declares some streams as private data (`0x06`) in the map it writes: MPEG-1
+pictures, ADTS AAC, and MPEG audio outside a broadcast's own tables. The clip
+index gave them their real codings all along, so every disc cut from an `.mp4` or
+`.mkv` with AAC said `0x0F` in its index and `0x06` in its stream. `bdav::stamp`
+now reads the first packet of each stream the map calls private data and names
+it there as the index does: `0x01` for MPEG-1 pictures, `0x0F` for ADTS AAC,
+`0x04` for MPEG audio, `0x11` for LATM. Captions and data broadcasts stay `0x06`,
+which is what they are. Only the map's packets change, one byte per stream and
+the checksum; the number of packets, their arrival times and the EP map are as
+they were.
 
 **A stream the index has no coding for is refused before the run.** There are
 five codings for pictures and a handful for sound; a transport stream holds
@@ -739,8 +757,10 @@ Given none, the disc keeps the one it has.
 What a run adds it also takes back when it does not finish. A slot is reserved
 before the cut that fills it, and the index is written once at the end over
 what the run finished; stop the run and that pass does not happen, so what is
-left is a stream no playlist names, one the next run's numbering walks past
-and any image made of the disc afterwards carries. Those streams -- and the
+left is a stream no playlist names, one the next run's numbering walks past.
+An image made of the disc meanwhile leaves out a stream that has no clip index
+yet, and says so: it is another run's reserved or unfinished recording, and up to
+0.8.44 the image carried it. Those streams -- and the
 stream of a recording whose cut failed while the rest of the list went on --
 are removed at the end of the run. Only the numbers the run itself was given
 are ever named, so nothing another run put on the disc is touched. The same
@@ -792,13 +812,16 @@ now the same thing.
 (`udfw::not_this_disc`): every stream and clip index it holds has to be in the
 folder still, the indexes byte for byte, so an image made again of a disc that has
 grown passes and an image of some other disc does not. One that cannot be read is
-refused as unreadable rather than as another disc's. The image is written as
-`<disc>.iso.part` and renamed into place, and the run writing it **holds a lock on
-the `.part`** until then: two runs into one disc may both ask for the image, and the
-second used to take the first's `.part` away while the first renamed the second's
-half-written file into place — and, with `--iso-only`, removed the folder on the
-strength of it. A `.part` somebody holds is now refused; one left by a killed run
-holds no lock and is cleared.
+refused as unreadable rather than as another disc's. The command line asks this
+before the cut, and `--analyze` does too (`udfw::refused`, the rule the image
+writer itself goes by): asked only once the image was due, a run had cut the whole
+recording and written it onto the disc before it was refused. The image is written
+as `<disc>.iso.part` and renamed into place, and the run writing it **holds a lock
+on the `.part`** until then: two runs into one disc may both ask for the image,
+and the second used to take the first's `.part` away while the first renamed the
+second's half-written file into place — and, with `--iso-only`, removed the folder
+on the strength of it. A `.part` somebody holds is now refused; one left by a
+killed run holds no lock and is cleared.
 
 **A run that is to take its folder away is checked once more before anything is
 cut** (`bdav::image_in_the_way`). With `--iso-only`, or *Remove the folder once
@@ -957,9 +980,11 @@ of recordings has — the files on one are `00001.m2ts` and `info.bdav` — but
 `BDAV` is a folder anybody can put a file in. Anything else is left out of
 the image, and now said so, with up to four of the names printed the way the
 folder spells them. A dot-file is left out silently, being nobody's recording.
-Files left out for another reason are named in a note of their own: a `.ats`
-or a `.part` another run has not finished writing, a link to a folder, or
-something that is not a file at all. Their names would do on a disc, and told
+Files left out for another reason are named in a note of their own: a stream
+with no clip index yet, a `.part` another run has not finished writing (or a
+`.ats` that a version up to 0.8.44 left), the `<clip>.m2ts.si` a cut puts its
+broadcast tables back under, a link to a folder, or something that is not a
+file at all. Their names would do on a disc, and told
 it was their names, somebody with a stamp pass's leftover in the folder went
 looking for a name to change.
 **A folder that held such a file is not taken away** after the image is made
