@@ -24,7 +24,10 @@ up wanting to check the boundaries with your own eyes anyway.
 
 A detection reads the recording for minutes. So it is written down, and you
 never wait for the same one twice: **open the same recording again and the
-earlier detection comes back**, with "from an earlier run" on the row.
+earlier detection comes back**, with "from an earlier run" on the row. An update
+that changes how the breaks are found leaves the answers an earlier version
+kept unused: those recordings are read again the next time they are detected,
+once, and the new answer is kept from then on.
 
 That copy lives in SmartCut's own cache. To carry one to another machine, or to
 hand it to somebody else, use **≡** → **Save the detection…** in the cut editor,

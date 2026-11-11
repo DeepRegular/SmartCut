@@ -89,6 +89,12 @@ under one that is — an MPEG-1 stream as `.mpg`, an MPEG-4 Part 2 stream as
 `.m4v` — it comes in as a row and is refused when it is opened, with
 `no random access points found`.
 
+**VC-1 in an `.mkv` is refused as well**, with a message saying why: libavformat
+reads only decoding times for it there, so no picture can be found to start a
+cut from. The message gives the way out, which is to remux it into an `.m2ts`
+first with FFmpeg making the times up
+(`ffmpeg -fflags +genpts -i in.mkv -c copy out.m2ts`).
+
 **A program stream holding two recordings one after the other is refused too.**
 Two `.mpg` files joined end to end (`cat`, `copy /b`), the `.VOB` files of a
 DVD whose set holds more than one title, and a DVD recorder's `.VRO` each start
@@ -1149,6 +1155,9 @@ frame** finds it again and **Clear the thumbnail** takes it off.
   writes no `covr` into a `.mov`; those are written as before.
 - Any frame of the recording will do, including one that is cut out.
 - An interlaced recording gives its cover from one field, so there is no comb.
+- An HD recording's colours are converted from BT.709 to the BT.601 a JPEG is
+  read with, as the preview and the filmstrip convert them. Up to 0.8.44 all
+  three took the samples as they were, and showed HD a little off in colour.
 - Joining clips into one file, the first clip that has a thumbnail gives it.
 - It is part of the edit and is saved in the project; the quick properties
   show it as a `Thumbnail:` line, at its time in the output (`✂` if a cut
@@ -1718,7 +1727,7 @@ carried into any image made of the disc afterwards.
 With **Check each file against the recording once it is written** on in the
 preferences (under Output settings), every file is decoded from end to end as soon as it is
 written, and lined up against the ranges of the recording it was cut from, one
-frame at a time. Four things are checked:
+frame at a time. Six things are checked:
 
 | Check | Passes when |
 |---|---|
@@ -1726,10 +1735,13 @@ frame at a time. Four things are checked:
 | Lossless copies | Every frame the plan copied is the recording's own, bit for bit |
 | Re-encoded frames | Every re-encoded frame is recognisably the frame at that place in the recording (luma PSNR of 25 dB or more) |
 | Decode errors | No more frames fail to decode than failed in the recording |
+| Length | The pictures run as long as the recording's own pictures do in the kept ranges |
+| Gaps | The file has no more time without a picture than the recording has there |
 
 Each sound track is also measured against the pictures, over the ranges as
 they are written: on a recorder's title, less the time at a seam that no cut
-writes. One that runs more
+writes. Where the recording's own track has no sound for a while inside the
+ranges, that much is allowed for. One that runs more
 than half a second long or short is mentioned — the row says
 `(see the sound)` — and so is one laid out more than half a second past the last
 picture, whatever its length; but neither fails the check: a broadcast track that

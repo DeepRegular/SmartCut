@@ -307,8 +307,9 @@ These only surfaced on real material:
   non-IDR I has its picture order counts moved along where they would run backwards
   or leave the frames a decoder invents for the `frame_num` gap above the copy's I,
   so libavcodec no longer drops the copy's first pictures. Where one reel's copy meets
-  the next reel's with nothing re-encoded between them, nothing is rewritten. HEVC,
-  whose CRA entry points could meet the same thing, has not been tried.
+  the next reel's with nothing re-encoded between them, nothing is rewritten. HEVC
+  is not renumbered: a copy that opens on a CRA after a re-encoded stretch, or at the
+  head of a joined reel, has it rewritten as a BLA, which restarts the count.
   `--clean-joins` is still there for reaching an IDR instead; on a recorder's own disc
   it finds nothing, since `idrdiag` counts *one* IDR among the 1786 entry points of a
   fifteen-minute recording on one.

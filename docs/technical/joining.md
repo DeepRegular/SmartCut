@@ -154,8 +154,19 @@ channel, which are the same pictures in the same format.
 So **a comparison where either side is silent is passed over.** The output
 states what the master states, which is the only claim there was, and the
 silent recording contradicts nothing. The colour is three fields read one at a
-time, so a recording that states two of them and leaves the matrix unspecified
-is the same colour as one that states all three.
+time, so a recording that states two of them and leaves the primaries or the
+transfer unspecified is the same colour as one that states all three.
+
+**The matrix is the exception: an unstated one is read, not passed over.** A
+player reads it by the picture's size, and so does the cut where it converts a
+reel (below), and a decoder that has met a stated matrix keeps it for the
+pictures after it that state none. Passed over, a 720p recording stating BT.601
+(what a screen recorder set to its 601 colour space writes) and a 720p clip
+stating nothing were one colour, the clip was copied, and its BT.709 samples
+played through BT.601, in a `.ts`, `.mp4` or `.mkv` alike. Now an unstated
+matrix is compared as the size reads it (`conform::read_matrix`); a matrix that
+is not one pictures are converted between (RGB, YCgCo) still matches an
+unstated one.
 
 What this costs is a real difference only where a recording states something it
 is not — and a recording whose description disagrees with its content cannot be
@@ -257,6 +268,17 @@ decimal, and it has to be well under the thousandth that separates 30000/1001
 from 30. A timeline built on either of those shows the other drifting a frame
 every thirty-three seconds.
 
+**A variable master is compared by the rate both were authored at.** A
+variable recording's average is not a rate it has: two clips off one phone,
+both declaring 60 and averaging 56.59 and 58.26 for whatever the light did, were
+two rates by their averages, and the second was written afresh whole. Into a
+variable master nothing stands on the average -- the timeline is divided
+finely and every copied picture is placed by its own time -- so where the
+master varies and the two declare the same rate, the clip is copied
+(`conform::same_authored_rate`). A constant master is still compared by the
+average, since a varying clip would be rounded onto its frames; and a declared
+1000, which is Matroska's clock and no rate, is not taken for one.
+
 ### A clip that does not match has every picture written afresh
 
 There is no partial answer available. A clip of another size has no picture in
@@ -302,6 +324,16 @@ not through a transition, whose progress is counted in the master's frames on
 both sides. A variable master whose average is its rate (a phone's dropping a
 picture now and then) is counted off as before, and so is an interlaced one
 declaring its fields.
+
+**Key pictures come as often as the master's.** A seam is written with one key
+picture, at its head, because it is shorter than the GOPs either side of it. A
+reel written whole was written the same way, up to 600 pictures to a key: a
+phone clip joined onto a camera's 720p master went into a `.ts` as one IDR and
+199 pictures after it, a seek into the reel decoded nothing, and an hour of a
+DVD conformed onto a DVD master had a key picture every 20 seconds. A reel
+written whole now takes the master's own spacing, the median of the gaps
+between its entry points (`cut::master_gop`), so it can be entered where the
+master can.
 
 **The scaler is rebuilt whenever the decoder starts handing over a different
 shape.** Not paranoia: a broadcast recording can change frame size mid-file
@@ -607,6 +639,13 @@ than placed in a corner, because where to put a smaller one is a question with
 no answer that suits everybody and an image with an alpha channel answers it
 itself.
 
+**The image is RGB, and is made into the frames' YUV with their matrix.**
+libswscale makes YUV out of RGB with BT.601's unless told another, so a title
+over a high-definition master went in through the wrong matrix and showed in
+other colours than the image -- a pure red some 8 % darker. It is now given the
+master's matrix, or BT.709 where an HD master states none
+(`blend::read_laid_in`); over a standard-definition master nothing changes.
+
 ### The preview on the settings screen (`crossview.rs`)
 
 A join's transition is set in a window of its own, with the seconds either
@@ -641,7 +680,11 @@ hold the two answers together.
 A reel of another matrix is scaled into the preview through the same
 `cut_conform::matrices` and `convert_matrices` the output uses, with the
 master's matrix as the one to reach, so an SD reel joined to an HD one shows
-in the window in the colours it is written in.
+in the window in the colours it is written in. The composite is then tagged
+with that matrix before it becomes a JPEG. A new frame at the preview's size
+states none, the JPEG reads an unstated matrix by size, and a few hundred
+pixels across is BT.601: up to 0.8.44 every join staged at an HD master was
+shown through the wrong matrix in this window, while the output was right.
 
 The composite is done in studio-range `yuv420p` and the conversion to JPEG
 comes after it. The other way round, the studio black `Shade::yuv` gives

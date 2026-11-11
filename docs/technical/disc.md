@@ -326,6 +326,11 @@ Only the first is read for anything else: where a break is ([`caption::resets`])
 what the disc's own subtitles are turned into are the programme's captions and not the
 station's crawl.
 
+The captions go first in the cut's map, before the crawl, as a broadcast's own map lists
+them: libav makes a stream in the order it first meets a packet of it, and a caption
+stream silent through its probe came after the crawl, which up to 0.8.44 then went
+first in the map and took the first caption PID of a `.m2ts`.
+
 ### A 4K subtitle's times are inside the document
 
 Two things about the TTML stream are unlike every other stream a cut moves.
@@ -345,8 +350,13 @@ So a cut cannot move these packets the way it moves every other stream. What it 
 instead (`cut::take_ttml`) is move the times *inside* each document and write it back:
 a caption that falls in no kept range is left behind, one that straddles the start of a
 range begins with it, and one that would run past the end of a range ends with it. The
-document's length does not change — `HH:MM:SS.mmm` is a fixed width — which matters
-because the twelve bytes a recorder writes in front of each document count it.
+document's length does not change, which matters because the twelve bytes a recorder
+writes in front of each document count it. Each new time is written in the shape of the
+one it replaces, digit for digit: `HH:MM:SS.mmm`, what every recorder measured here
+writes, exactly as before, and a document that writes `0:02:21.67` or `00:02:21.6` in
+that shape, rounded to the places it keeps. Up to 0.8.44 such a document came out of
+the new time a different width and was dropped from every cut. A time that does not
+fit the old shape (ten hours in a one-digit hour) still drops the document.
 
 What comes out is counted from the first picture of the cut, which is where a file
 with no playlist in front of it begins. Read back, such a file — or a clip copied
@@ -528,7 +538,11 @@ disc of recordings as well: libavformat's muxer writes none for that stream
 type, so the map of the file just written is given an ISO 639 descriptor for
 each converted stream in place (`name_converted` in `cut.rs`), a packet at a
 time and only where the section still fits its packet, so no arrival time,
-clock reference or entry point moves.
+clock reference or entry point moves. A Blu-ray's own subtitles carried out of
+a file with no broadcast tables -- a Blu-ray rip's `.mkv`, or `--tables muxer`
+-- go through the same muxer and are named the same way; up to 0.8.44 they
+reached a `.m2ts` and a disc with no language, where the `.ts` of the same cut
+named them.
 
 ### A track is named by its PID
 
@@ -640,8 +654,12 @@ whole of the difference, and it comes to three rules — [`pgs.rs`](../../rust/c
    it was left behind with the material before the cut, so the cutter reads
    the eight seconds in front of every kept range, keeps the last display set
    that can stand on its own, and sends it again at the range's first frame —
-   marked as opening an epoch, because for this output it does. A set begun
-   in those eight seconds and shown only after the range opens — a set is
+   marked as opening an epoch, because for this output it does. A set sent
+   after it that changes what is standing without redrawing all of it (moves
+   it, fades its palette, shows an object) is kept with it and sent after it,
+   each a millisecond after the one before it ends; up to 0.8.44 only the first
+   was put up, and the range opened on the subtitle as it stood before the
+   change. A set begun in those eight seconds and shown only after the range opens — a set is
    sent 2 to 70 ms ahead of its moment — is finished rather than cut off at
    the range's start, left out of what is put up again, and written at its
    own time. Until 0.8.4 the read stopped at the range's start with that set
@@ -1405,14 +1423,19 @@ So inside an image the whole title set is **one byte range**, and a title is
 one `subfile` the same as a Blu-ray clip. On a folder the pieces are nine
 files, and libavformat's `concat` protocol joins them — with `subfile` around
 the join to take the title out of it. Nothing is unpacked and nothing is copied
-first, either way.
+first, either way. `concat` splits its list on `|` and has no escape for one,
+so a folder whose path holds one (`a|b/VIDEO_TS`, possible outside Windows) is
+handed over as a list of lines instead, which the `concatf` protocol reads out
+of a `data:` URL; up to 0.8.44 such a folder listed its titles and could not
+open one.
 
 Nesting one protocol inside another needs saying: whatever is allowed at the
 top level, the protocol *inside* one is checked against a whitelist holding
 `file` and nothing else. `input::demux` sets `protocol_whitelist` to
 `file,subfile,concat` for every recording it opens, plain paths included:
 since 0.8.3, because a "recording" can be a playlist under a `.ts` name, and
-libavformat would fetch whatever one lists.
+libavformat would fetch whatever one lists. Only the list of lines above adds
+`concatf` and `data` to it, and `data` reads nothing but the URL itself.
 
 ### A title is a run of cells
 
@@ -1437,7 +1460,12 @@ A chain holding an angle block or an interleaved unit is not read: the sectors
 it plays belong to more than one path. One whose cells merely jump about the
 stream becomes a row for each stretch it plays in order. A pressed disc does
 this when every title ends on one short cell they share, written before the
-first of them; refusing such a chain lost the disc's main programme.
+first of them; refusing such a chain lost the disc's main programme. Such a
+shared cell is listed once, as a piece of the first title that plays it, and
+a title's pieces are numbered among the rows it is listed as, not among the
+stretches it plays: up to 0.8.44 the other titles ending on that cell were
+each called `(1/2)` with no `(2/2)` anywhere in the list. Their rows (and the
+names a cut of them is offered under) now carry no number.
 
 Since a title is a stretch and not a file, its name has to say which stretch:
 
@@ -1525,12 +1553,15 @@ while the preview showed the second's. Such a file is now refused when it is
 opened (`index::clock_restart`, asked in `assemble` of a fresh walk and of a
 held `.scix` alike), with the byte where the clock starts again. The entry
 points are taken in byte order and compared with the latest time so far: a
-step back of more than a second is a restart, and so is a leap forward of more
+step back of more than a quarter of a second is a restart (a second up to
+0.8.44, which let through two `.mpg` whose clocks overlapped by half a second,
+their pictures in the overlap read interleaved), and so is a leap forward of more
 than half the 33-bit clock, which is what libavformat makes of a restart when
 the first picture is more than a minute into its clock and it takes the new
 clock for a wrap. A title read off a disc never holds one, because a title is
-cut into rows wherever its clock leaves off by more than a second
-(`dvd::runs_of`), so a DVD's folder or `.iso` opens as before.
+cut into rows wherever its clock jumps on by more than a second or goes back by
+more than that quarter (`dvd::runs_of`), so a DVD's folder or `.iso` opens as
+before.
 
 ### The container's seek table has to cover the recording, not just reach the end
 
@@ -1688,6 +1719,18 @@ by decoding nothing. Until 0.8.3 that nothing was passed over, and the line it
 should have taken down stood until the next one arrived. It now clears the
 plane at the moment the unit is shown.
 
+**A unit goes up when its own start says, and says whether it is forced.** A
+unit's start command can run at a delay of its own, which is nearly always
+none; taken as none, a unit that starts a second after its time went up a
+second early, in the cut and in the preview alike. And a forced unit (one
+shown even with subtitles off) starts with another command than a plain one.
+Both are read off the unit now: the display set goes up at the unit's time
+plus its delay, and a forced unit's object is marked forced in the set
+(`Composer::show_drawn` in `pgs.rs`). A unit that changes a colour part way
+through (karaoke's command, whose length is in its own parameters) used to end
+the read of its commands, so a stop written after it was never seen and the
+line stood until the next one; the stop is found now.
+
 **Where the erase sits in the file is its own time, too.** A unit that names
 its stop was timed right, but until 0.8.42 the display sets that take it down
 were written only when the next unit was read — on a pressed DVD often half a
@@ -1698,6 +1741,10 @@ got there. The sets are now written as the pictures being written pass the stop
 (`Writer::converted_due`, two seconds behind the pictures' clock, since a
 disc muxes its pictures a little ahead of its subtitles). Their times,
 numbering and bytes are what they were; only their place in the file moved.
+Up to 0.8.44 a stretch written afresh at a join -- a long transition, or a
+reel conformed to the master -- did not do this, and a line's erase inside one
+waited for the stretch's end: in a 30-second fade from a DVD, 3.96 seconds
+late.
 
 #### A Blu-ray's subtitles, written as a DVD's
 

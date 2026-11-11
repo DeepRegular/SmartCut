@@ -68,9 +68,9 @@ MPEG-2 does not have this problem in the first place, because its sequence heade
 are in band already.
 
 **A transport stream's record holds one set, and it is the first in the file.** In a
-cut SmartCut wrote, that is the re-encoded head's, under the same ids as the copied
-pictures' own and with other contents. A re-encode reading such a file seeks, lands
-ahead of the entry point it aimed at, and the run-up pictures before the next
+cut SmartCut wrote up to 0.8.44, that is the re-encoded head's, under the same ids as
+the copied pictures' own and with other contents. A re-encode reading such a file
+seeks, lands ahead of the entry point it aimed at, and the run-up pictures before the next
 in-band set were parsed with the head's. They were accepted and left wrong
 references behind: on x264 material with no IDR, every B picture of the re-encoded
 stretch came out at 28-35 dB in a re-cut of a cut. So **nothing before the read's
@@ -78,6 +78,22 @@ first key packet goes to the decoder** (`cut::RunUp`, in the re-encode, the
 conformed reel and the crossing's far side), as the preview has always done. A file
 whose key packets are not marked is fed from the entry point the read aimed at, and
 one that says nothing from a few hundred pictures in.
+
+**An H.264 seam is written under parameter set numbers of its own.** x264 numbers
+its sets 0, and so does nearly every recording, so a seam's set redefined the
+recording's in the middle of its sequence. After a copy that opens on an I that is
+not an IDR nothing restarts it, and a player that seeks into the first copied GOP
+after a seam, before the recording restates its own set, decodes it with the seam's:
+an x264 open-GOP recording cut into a `.ts` showed broken B pictures to the end of
+the file after 4 to 15 % of `ffmpeg -ss` seeks. The seam now takes the lowest number
+from 1 up that the recording's own record and opening packets do not use
+(`cut::seam_set_id`). Never 0, so that a cut of a cut whose head was re-encoded does
+not take the number its copies use. It is coded in as many slices as the recording's
+first key picture, up to 32: a disc's 1080-line H.264 is coded in four or more so
+that a player can share a picture out, and a seam of one slice among them is a
+picture such a player need not take. And where a seam is held to the reference
+frames the copy after it keeps (three or fewer), the B pyramid is turned off as
+well, since x264 keeps at least four whenever it builds one.
 
 ### 2. The access point index has to scan *packets*
 
@@ -331,8 +347,11 @@ of this. An earlier attempt (2026-09-09) rewrote the head's counts unconditional
 made things worse, and was dropped; this one acts only where the reversal, or an
 invented frame above the copy's I, is derived, and was measured never to lower a
 decoded count. Not covered: the seam between two
-reels of a join with no transition, and HEVC, whose CRA entry points have not been
-tried.
+reels of a join with no transition. HEVC is not renumbered either. There a copy that
+opens on a CRA right after a re-encoded stretch of its own recording, or at the head
+of a joined reel, has the CRA rewritten as a BLA (`BLA_W_LP`), the type the format
+has for a picture after a splice: it restarts the count, and the pictures before it
+are shown first. Up to 0.8.44 the copy after a re-encoded stretch was left a CRA.
 
 **`--clean-joins` remains as an option.** It spends a little more re-encoding to
 reach an IDR instead, which restarts the sequence. What it costs is exactness: the

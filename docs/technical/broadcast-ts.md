@@ -81,6 +81,32 @@ gigabytes — so a cut spanning a programme boundary describes both programmes. 
 clock in the TOT is moved on as the output runs; left as the snapshot it would name
 the same second for the length of the file.
 
+**The clock is the time of the range's own opening picture.** The time a TOT or
+TDT carries is the time when that section arrived, and one goes out every five
+seconds, so the first after the range's entry point can arrive several seconds
+after the picture the range opens on. Up to 0.8.44 that time was written as the
+time at the range's start, and every range's clock ran up to five seconds ahead.
+The snapshot now notes how long after the opening picture is shown the section
+arrived (against the presentation time of the first picture after the byte it
+is read at), and the output's clock is counted back by that much.
+
+**A range whose present/following says something else says so with its
+version.** A receiver keeps the table it has until the version number changes.
+Two ranges whose programmes differ can carry the same version -- the five bits
+come round after 32 changes, and a recording can reuse one -- and the second
+range's sections were then never read: the output named the first range's
+programme over it. Such a range now goes out under the next version, with its
+CRC made again; every other range keeps the recording's bytes.
+
+**One service number in every table.** The muxer is told which service the
+pictures are in, and writes it into its list of programmes (the PAT); the map,
+the service description and the event are of the service whose map names the
+pictures (`si::read_service`). On a recording with two maps for the same
+pictures the two could differ, and a list naming a number the map does not have
+is a file a player cannot follow. The muxer is now told the number the tables
+are of, and the list is written again wherever it still says another; every
+recording measured had one number already, and its list goes out untouched.
+
 Five descriptors are not carried across into the rebuilt map.
 
 Two of them are about scrambling the cut does not have: the conditional access

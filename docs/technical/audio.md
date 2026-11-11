@@ -42,7 +42,9 @@ where the last picture stops being shown (`cut::sound_span`). Only a
 re-encoded end can sit between pictures, since a copy starts and stops on entry
 points; a bound on a picture, which is what the editor sends, comes back as it
 went in, and a reel written afresh on the master's frames keeps the range's own
-times.
+times. The captions, the subtitles a disc draws and the data broadcast are laid
+from the same picture; up to 0.8.44 they were laid from the bound asked for,
+and went in up to a frame later than their pictures.
 
 There was a trap. **An MP4 audio track expresses time through sample durations
 (`stts`); it does not keep a timestamp per packet.** All it keeps is the track's start
@@ -234,7 +236,9 @@ which states it the same way in `.mkv`, `.mka`, `.mp4`, `.m4a` and `.flac`.
 
 One case still loses the low bits: `--sound-only` into a `.flac` re-encodes the whole
 track (the file opens on a header that states its length and checksum), and a 32-bit
-track is written at 24 bits there.
+track is written at 24 bits there. An `.ogg` or `.oga` of FLAC opens on the same
+header, and is re-encoded the same way; up to 0.8.44 it was copied, and a player
+read ten seconds kept out of a forty-second recording as forty.
 
 So smart rendering reaches **AAC**, **AC-3**, **E-AC-3**, **MP2** and **Blu-ray LPCM** —
 everything lossy a broadcast or a disc carries that there is an encoder for. DTS and
@@ -1393,6 +1397,15 @@ for 281 in six seconds. Such a range now starts where the cut starts it
 (`primed_from`). Only that frame goes: the half second a broadcast sends ahead
 of its first picture is the recording's own and is kept as before.
 
+**A recording joined on starts on its first picture.** The sound a recording
+sends ahead of its first picture is its own only at the head of the file;
+joined on, it is at the head of nothing, and the cut with pictures starts that
+recording on its first picture. The sound alone now does the same
+(`joined_lead`, where the range runs from before the recording's first entry
+point). Up to 0.8.44 the lead went in at the join, on the end of the
+recording before -- 0.89 s of a satellite recording's -- and a join's fade-in
+was spent on it, so the programme came in at full level.
+
 The frames of a join's fade-in are decoded from a seek, and a seek to the head
 lands on a picture, where a broadcast's sound starts half a second before it.
 So in smart mode, a joined transport stream kept from its head had its fade-in
@@ -1453,7 +1466,11 @@ that container writes PCM as — keeping its width, since the muxer names its
 sixteen-bit default and a 24-bit track would otherwise be cut down to it, and
 keeping float samples float: up to 0.8.25 an `.aiff`, `.au` or `.caf` was
 handed float sound as sixteen-bit integers, `--audio-bits 24` or not. The
-CLI writes a `.wav` as linear PCM whatever the recording's own sound is. And a
+CLI writes a `.wav` as linear PCM whatever the recording's own sound is. Where
+that sound is 32-bit float and no width is asked for, a `.wav` or `.aiff` of it
+alone is written in 32-bit float; up to 0.8.44 it was 24-bit integers, which
+clip whatever went over full scale. 64-bit float goes to 16-bit integers, as
+before. And a
 container with no room for the codec at all — MP2 in an `.m4a` — says only
 "Invalid argument", once the header is being written; `avformat_query_codec` is
 asked first, so the run stops naming the codec and the file.

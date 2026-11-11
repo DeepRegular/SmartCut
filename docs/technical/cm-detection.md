@@ -247,6 +247,26 @@ With silence alone, the second and third blocks come out at the odd lengths 104.
 and 105.2 s. Adding the logo makes them 119.8 s and 120.2 s, back on the multiple of
 15 — evidence that the missing last commercial got filled in.
 
+**The end of the recording ends the wait.** A return is held for the window's
+length to tell it from a commercial that grazes the template, and a logo still
+up when the pictures run out is not that. A return in the last seconds of the
+recording now ends the absence where the return began; up to 0.8.44 the last block ran
+on over the programme that had come back, by up to the five seconds the wait
+is. An absence that does run off the end runs to the end of the recording, not
+to the last entry picture scored up to a GOP before it, and the block made of
+it is not pulled back onto a junction or a grid position short of the end.
+
+**The template takes in the head of the recording too.** Its frames are read in
+24 runs spread over the recording, each started on an entry point. The first
+was aimed at nought, which on a broadcast is the sound's start, a fraction of a
+second ahead of the first picture: there was no entry point at or before it,
+that run was passed over, and every template was built from the other
+twenty-three. It now starts on the first entry point. A run is started on an
+entry point whose byte is known, the one at or before where it is aimed; a
+program stream ffmpeg wrote hands back two to four in a hundred of its entry
+points without a byte, and up to 0.8.44 any one of them sent the pass to a
+second read of the whole file.
+
 ### A pale logo is not one blob
 
 The detector found nothing at all on a BS recording whose logo is a pale grey
