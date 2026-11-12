@@ -10192,6 +10192,880 @@ def ordinary_more_material(cfg, t):
 
 
 
+# -- 50th pass, appjs --------------------------------------------------------
+def twins_case_and_taken(cfg, t):
+    """(50th pass, appjs.) Three rows written into one folder: `x` (a.ts),
+    `X` (b.mkv) and `x_1` (c.ts). `outNo` (49th) compares names without case
+    and skips a number another row's own name already is: `x` and `X` are
+    twins (one file on Windows) and are numbered past `x_1` -- `cut_x_2.ts`,
+    `cut_X_3.mkv` -- while the third row keeps `cut_x_1.ts`. Every file is
+    written and none over another."""
+    rows = [
+        {"path": cfg.a, "renamed": "x", "edit": {"cuts": [{"a": 0.0, "b": 15.0}]}},
+        {"path": cfg.b, "renamed": "X", "edit": {"cuts": [{"a": 0.0, "b": 15.0}]}},
+        {"path": cfg.c, "renamed": "x_1", "edit": {"cuts": [{"a": 0.0, "b": 15.0}]}},
+    ]
+    with App(cfg, "twins_case_and_taken", rows, {"number": False, "container": ""}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("the rows on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == 3, 60)
+        label = wait_for("the start button", lambda: app.s.js(
+            "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 60)
+        shown = []
+        for k in (0, 1, 2):
+            shown.append(wait_for(f"row {k + 1}'s output name", lambda k=k: app.s.js(
+                "const s = document.getElementById('outset-clip');"
+                f"s.selectedIndex = {k}; s.dispatchEvent(new Event('change'));"
+                "return document.getElementById('outset-format').innerText"), 30))
+        t.check("50a the output screen numbers past the taken name",
+                "cut_x_2.ts" in shown[0] and "cut_X_3.mkv" in shown[1] and "cut_x_1.ts" in shown[2],
+                f"shown {[s[-120:] for s in shown]!r}")
+        time.sleep(0.5)
+        app.s.click("#run-export")
+        time.sleep(1.0)
+        wait_for("the run to finish", lambda: app.s.js(
+            "return document.getElementById('run-export').innerText") == label, 300, 0.5)
+        names = sorted(n for n in os.listdir(app.out) if not n.endswith(".log"))
+        t.check("50a three files, none written over", names == ["cut_X_3.mkv", "cut_x_1.ts", "cut_x_2.ts"],
+                f"files {names}")
+
+
+def _m50_dir(cfg):
+    return os.path.join(cfg.work, "media50")
+
+
+def _num_graph(w, h, r, sec, tail="format=yuv420p"):
+    return (f"testsrc2=s={w}x{h - STRIP}:r={r}:d={sec}[a];"
+            f"color=c=black:s={w}x{STRIP}:r={r}:d={sec},format=yuv420p,"
+            f"geq=lum='16+28*mod(floor(N/pow(8\\,floor(X*4/W)))\\,8)':cb=128:cr=128[s];"
+            f"[a][s]vstack,{tail}[v]")
+
+
+def _m50_ff(args):
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error"] + args, check=True)
+
+
+def _m50_make_one(d, name, h):
+    out = os.path.join(d, name)
+    part = out + ".part" + os.path.splitext(name)[1]
+    x264 = ["-c:v", "libx264", "-preset", "veryfast", "-g", "60", "-bf", "3", "-pix_fmt", "yuv420p"]
+    sine = lambda sec, ch=1, rate=48000: ["-f", "lavfi", "-i",
+                                          f"sine=frequency=440:duration={sec}:sample_rate={rate}"]
+    if name == "editlist.mp4":
+        # An mp4 cut by `ffmpeg -ss X -c copy`: it starts on the key picture
+        # before X with an edit list that hides the pictures before X.
+        full = os.path.join(d, "editlist.full.mp4")
+        _m50_ff(sine(14) + ["-filter_complex", _num_graph(1280, h, "30", 14), "-map", "[v]", "-map", "0:a"]
+                + x264 + ["-c:a", "aac", "-b:a", "128k", "-shortest", full])
+        _m50_ff(["-ss", "2.4", "-i", full, "-c", "copy", "-avoid_negative_ts", "disabled", part])
+        os.remove(full)
+    elif name == "tmcd.mp4":
+        # A camera's .mp4: a timecode track beside the pictures.
+        _m50_ff(sine(10) + ["-filter_complex", _num_graph(1920, h, "30000/1001", 10), "-map", "[v]", "-map", "0:a"]
+                + x264 + ["-c:a", "aac", "-b:a", "128k", "-timecode", "01:02:03;04", "-shortest", part])
+    elif name == "hevc10.mp4":
+        _m50_ff(sine(10) + ["-filter_complex", _num_graph(1280, h, "25", 10, "format=yuv420p10le"),
+                            "-map", "[v]", "-map", "0:a",
+                            "-c:v", "libx265", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le",
+                            "-x265-params", "keyint=50:min-keyint=50:bframes=4:chromaloc=2:log-level=error",
+                            "-tag:v", "hvc1", "-c:a", "aac", "-b:a", "128k", "-shortest", part])
+    elif name == "h264_422.mov":
+        _m50_ff(sine(8) + ["-filter_complex", _num_graph(640, h, "25", 8, "format=yuv422p10le"),
+                           "-map", "[v]", "-map", "0:a",
+                           "-c:v", "libx264", "-preset", "veryfast", "-g", "25", "-bf", "2",
+                           "-pix_fmt", "yuv422p10le", "-c:a", "pcm_s24le", "-shortest", part])
+    elif name == "makemkv.mkv":
+        # As MakeMKV writes a title: H.264, a 5.1 AC-3 and a stereo AAC,
+        # chapters, and a picture attached.
+        meta = out + ".meta"
+        with open(meta, "w") as f:
+            f.write(";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=4000\ntitle=A\n"
+                    "[CHAPTER]\nTIMEBASE=1/1000\nSTART=4000\nEND=12000\ntitle=B\n")
+        cover = out + ".png"
+        _m50_ff(["-f", "lavfi", "-i", "color=c=red:s=320x240:d=1", "-frames:v", "1", cover])
+        _m50_ff(["-f", "lavfi", "-i", "sine=frequency=440:duration=12:sample_rate=48000",
+                 "-f", "lavfi", "-i", "sine=frequency=660:duration=12:sample_rate=48000",
+                 "-i", meta, "-filter_complex",
+                 _num_graph(1280, h, "24000/1001", 12) + ";[0:a]pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0[s6]",
+                 "-map", "[v]", "-map", "[s6]", "-map", "1:a", "-map_chapters", "2"]
+                + ["-c:v", "libx264", "-preset", "veryfast", "-g", "48", "-bf", "3", "-pix_fmt", "yuv420p"]
+                + ["-c:a:0", "ac3", "-b:a:0", "384k", "-c:a:1", "aac", "-b:a:1", "128k",
+                   "-attach", cover, "-metadata:s:t", "mimetype=image/png", "-shortest", part])
+        os.remove(meta)
+        os.remove(cover)
+    elif name == "cover.mp4":
+        # A downloaded .mp4 with its cover art (an attached picture) and E-AC-3.
+        cover = out + ".jpg"
+        _m50_ff(["-f", "lavfi", "-i", "color=c=blue:s=320x240:d=1", "-frames:v", "1", cover])
+        _m50_ff(sine(10) + ["-i", cover, "-filter_complex", _num_graph(1280, h, "30", 10),
+                            "-map", "[v]", "-map", "0:a", "-map", "1:v"]
+                + ["-c:v:0", "libx264", "-preset", "veryfast", "-g", "60", "-bf:v:0", "3",
+                   "-pix_fmt:v:0", "yuv420p"]
+                + ["-c:v:1", "copy", "-disposition:v:1", "attached_pic",
+                   "-c:a", "eac3", "-b:a", "192k", "-t", "10", part])
+        os.remove(cover)
+    elif name == "twovideo.mp4":
+        # Two video tracks (a camera's main and a small proxy track).
+        _m50_ff(sine(10) + ["-filter_complex",
+                            _num_graph(1280, h, "30", 10) + ";[v]split[v1][v2];[v2]scale=320:-2[v3]",
+                            "-map", "[v1]", "-map", "[v3]", "-map", "0:a"] + x264
+                + ["-c:a", "aac", "-b:a", "128k", "-shortest", part])
+    elif name == "flacmono.mkv":
+        _m50_ff(sine(10, rate=44100) + ["-filter_complex", _num_graph(640, h, "30000/1001", 10),
+                                        "-map", "[v]", "-map", "0:a"] + x264
+                + ["-c:a", "flac", "-shortest", part])
+    elif name == "alac.mov":
+        _m50_ff(sine(10) + ["-filter_complex", _num_graph(1280, h, "60000/1001", 10),
+                            "-map", "[v]", "-map", "0:a"]
+                + ["-c:v", "libx264", "-preset", "veryfast", "-g", "120", "-bf", "2", "-pix_fmt", "yuv420p"]
+                + ["-c:a", "alac", "-shortest", part])
+    os.replace(part, out)
+
+
+def _m50_specs():
+    """name -> height (the recording is made by `_m50_make_one`)."""
+    return {"editlist.mp4": 720, "tmcd.mp4": 1080, "hevc10.mp4": 720, "h264_422.mov": 360,
+            "makemkv.mkv": 720, "cover.mp4": 720, "twovideo.mp4": 720, "flacmono.mkv": 360,
+            "alac.mov": 720}
+
+
+def _m50_make(cfg):
+    d = _m50_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    for name, h in _m50_specs().items():
+        if not os.path.exists(os.path.join(d, name)):
+            _m50_make_one(d, name, h)
+    return d
+
+
+def _m50_clear(cfg):
+    d = _m50_dir(cfg)
+    keep = set(_m50_specs())
+    for f in os.listdir(d):
+        if f not in keep:
+            p = os.path.join(d, f)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+
+
+def ordinary_material_50(cfg, t):
+    """(50th pass, mainjs.) Ordinary recordings no pass had driven through
+    the editor: an mp4 cut by `ffmpeg -ss -c copy` (an edit list hiding the
+    pictures before its start), a camera's .mp4 with a timecode track, x265
+    10-bit with a chroma location, H.264 4:2:2 10-bit .mov with 24-bit PCM, a
+    MakeMKV-like .mkv (5.1 AC-3 + AAC, chapters, an attached picture), a
+    downloaded .mp4 with cover art and E-AC-3, an .mp4 with two video
+    tracks, FLAC mono 44.1 kHz in .mkv, 59.94p ALAC .mov. J at and around key
+    pictures shows the recording's picture; two cuts (one with IN on a key
+    picture), K on two pictures, Ctrl+Z / Ctrl+Y, OK, 出力開始: the output
+    holds exactly the pictures the editor left."""
+    d = _m50_make(cfg)
+    _m50_clear(cfg)
+    specs = _m50_specs()
+    names = list(specs)
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    with App(cfg, "ordinary_material_50", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            h = specs[name]
+            path = os.path.join(d, name)
+            src = _numbers(path)
+            keys = _keys_of(path)
+            app.to_list()
+            app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+            try:
+                app.open_row(i, name, wait=True)
+                _walk_done(app)
+            except Exception as e:  # noqa: BLE001
+                said = ""
+                try:
+                    said = app.state()["status"] if app.editor() else ""
+                except Exception:  # noqa: BLE001
+                    pass
+                app.to_list()
+                row = app.s.js(f"return document.querySelector('#cliplist > li:nth-child({i})').innerText")
+                t.check(f"50m {name}: refused with a message", bool(said or row),
+                        f"{type(e).__name__}: {e}; editor status {said!r}; row {row!r}")
+                if app.editor():
+                    app.to_editor()
+                    app.escape(discard=True, expect_dialog=False)
+                    app.gone()
+                continue
+            time.sleep(1.5)
+            total = app.state()["frames"]
+            t.check(f"50m {name}: the counter counts the recording's pictures", total in (len(src), len(src) + 1),
+                    f"counter {total}, pictures {len(src)}")
+            mid = [k for k in keys if 3 <= k < len(src) - 3]
+            probe = sorted({f for k in (mid[1:3] if len(mid) > 3 else mid[:2]) for f in (k - 1, k, k + 1)}
+                           | {0, len(src) // 3, len(src) - 1})
+            bad = []
+            for f in probe:
+                if 0 <= f < len(src):
+                    n = _shown_at(app, f, h)
+                    if n != src[f]:
+                        bad.append((f, n, src[f]))
+            t.check(f"50m {name}: J shows the recording's picture", not bad,
+                    f"counter {total} src {len(src)} keys {keys[:5]} wrong {bad[:6]}")
+            # Two marks on neighbouring pictures stay two.
+            k0 = app.state()["keys"]
+            app.goto(10)
+            app.s.keys("k")
+            app.goto(11)
+            app.s.keys("k")
+            time.sleep(0.5)
+            k1 = app.state()["keys"]
+            big = [k for k in keys if total * 0.2 < k < total * 0.5]
+            ka = big[0] if big else int(total * 0.3)
+            plan = [(ka, ka + 7), (int(total * 0.6) + 3, int(total * 0.75) + 1)]
+            removed = []
+            off = 0
+            for j, (a, b) in enumerate(plan):
+                left = app.state()["frames"]
+                na = _ord_mark(app, a - off, "i", h)
+                nb = _ord_mark(app, b - off, "o", h)
+                app.s.keys("Delete")
+                wait_for(f"{name} cut {a}-{b}", lambda: app.state()["frames"] == left - (b - a + 1), 10)
+                if j == 0:
+                    # Taken back and put again.
+                    app.s.keys("Control+z")
+                    wait_for(f"{name} undo", lambda: app.state()["frames"] == left, 10)
+                    app.s.keys("Control+y")
+                    wait_for(f"{name} redo", lambda: app.state()["frames"] == left - (b - a + 1), 10)
+                removed.append((na, nb, src[a], src[b]))
+                off += b - a + 1
+            shown[i] = (name, src, removed, k0, k1)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=900)
+        outs = _ord_outputs(app)
+        for i, (name, src, removed, k0, k1) in shown.items():
+            marks = (cuts_of(p, i), (p["clips"][i - 1].get("edit") or {}).get("keyframes") or [])
+            count = lambda s: int((re.findall(r"\d+", s or "") or ["0"])[0])
+            t.check(f"50m {name}: K on two neighbouring pictures puts down two marks",
+                    count(k1) - count(k0) == 2, f"marks before {k0!r} after {k1!r}; saved {len(marks[1])}")
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log", ".keyframe"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            gone = set()
+            for na, nb, wa, wb in removed:
+                gone.update(src[src.index(wa):src.index(wb) + 1])
+            want = [n for n in src if n not in gone]
+            marks_ok = all(na == wa and nb == wb for na, nb, wa, wb in removed)
+            detail = (f"src {len(src)}, shown/wanted at IN/OUT {removed}, cuts {fmt(marks[0])}, "
+                      f"outputs {[os.path.basename(f) for f in files]}")
+            if got is not None and got != want:
+                diff = [(k, a, b) for k, (a, b) in enumerate(zip(got, want)) if a != b][:4]
+                detail += f"; got {len(got)} want {len(want)}; first differences {diff}"
+            t.check(f"50m {name}: output = what the editor left", marks_ok and got == want, detail)
+            if len(vids) == 1:
+                info = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                                       "stream=codec_type,codec_name,pix_fmt,channels", "-of", "csv=p=0",
+                                       vids[0]], capture_output=True, text=True).stdout.strip().replace("\n", " | ")
+                print(f"        {os.path.basename(vids[0])}: {info}", flush=True)
+            for f in files:
+                os.remove(f)
+
+
+
+def cut_while_marks_read_then_row(cfg, t):
+    """(50th pass, mainjs.) `ok_wait_then_row` without the OK: a first visit
+    to a row whose mark file beside it takes a while to read (a 60 MB
+    `.keyframe`), a cut made on its timeline while the file is still being
+    read, and then another row double-clicked in the list before the read is
+    over. The cut is row 2's and must reach the list: `captureEdit` sends
+    nothing while `swapping`, the debounced report went nowhere, and the open
+    of row 3 stops the read that would have ended the wait -- only OK's wait
+    (`okWaiting`) was sent for. Then the same with the switch made after the
+    debounce (0.5 s)."""
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    e = os.path.join(d, "slowmarks50.ts")
+    side = os.path.join(d, "slowmarks50.keyframe")
+    o = os.path.join(d, "other50.ts")
+    for f in (e, o):
+        shutil.copyfile(cfg.a, f)
+    try:
+        for pause in (0.05, 0.5):
+            rows = [{"path": cfg.a}, {"path": e}, {"path": o}]
+            with App(cfg, f"cut_while_marks_read_then_row_{int(pause * 1000)}", rows) as app:
+                app.open_row(1, "a.ts")
+                _walk_done(app)
+                time.sleep(1)
+                with open(side, "w") as f:
+                    f.write("1\n" * 30_000_000)
+                app.open_row(2, "slowmarks50.ts", wait=False)
+                app.to_editor()
+                wait_for("row 2's timeline", lambda: (lambda st: "slowmarks50" in st["title"]
+                                                       and st["frames"] is not None)(app.state()), 60, 0.02)
+                st0 = app.state()
+                app.s.keys("i")
+                app.s.keys("o")
+                app.s.keys("Delete")
+                time.sleep(pause)
+                st1 = app.state()
+                reading = "読み込" in (st1["plan"] or "") or st1["keys"] == ""
+                app.open_row(3, "other50.ts", wait=False)
+                time.sleep(6)
+                app.to_editor()
+                wait_for("the editor on row 3", lambda: (lambda st: st and "other50" in st["title"]
+                                                           and st["frames"] is not None)(app.state()), 60, 0.2)
+                app.escape(discard=True, expect_dialog=False)
+                app.gone(timeout=60)
+                time.sleep(1)
+                p = app.save()
+                c2 = cuts_of(p, 2)
+                took = st1["frames"] is not None and st0["frames"] is not None and st1["frames"] < st0["frames"]
+                t.check(f"50c a cut made while row 2's mark file is read, then row 3 opened after {pause} s: "
+                        "row 2 keeps the cut",
+                        (not took) or len(c2) == 1,
+                        f"counter {st0['frames']} -> {st1['frames']} (cut {'taken' if took else 'NOT taken: inconclusive'}); "
+                        f"marks then {st1['keys']!r}; row 2 {fmt(c2)} row 3 {fmt(cuts_of(p, 3))}")
+            if os.path.exists(side):
+                os.remove(side)
+    finally:
+        for f in (e, side, o):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+def _okc_observe(app):
+    """In the list window: what it sends the editor and hears back, with the
+    time, so a scenario can say in which order the two windows met."""
+    app.to_list()
+    app.s.js(
+        "window.__okc = [];"
+        "const ev = window.__TAURI__.event;"
+        "ev.listen('editor-open', (e) => window.__okc.push(['open', Date.now(), !!(e.payload && e.payload.pressed)]));"
+        "ev.listen('editor-ok', () => window.__okc.push(['ok', Date.now()]));")
+
+
+# The editor held busy for `secs`, then OK pressed in the same turn of its
+# event loop: whatever the list sent it meanwhile is handled after OK has
+# set the close going, i.e. inside the 220 ms close delay, at any VM speed.
+_OKC_HOLD = (
+    "const end = Date.now() + arguments[0] * 1000;"
+    "while (Date.now() < end) {}"
+    "const at = Date.now();"
+    "document.getElementById('editor-ok').click();"
+    "return at;")
+
+
+def ok_closing_cm_lane(cfg, t):
+    """(50th pass, p2gui.) The commercial detection booked from the LIST on
+    the row the editor has up (Ctrl+D), its answer arriving while the editor
+    waits the 220 ms to close after OK. The list sends the row again for the
+    finding (`runCm` -> `tellEditor`); 0.8.45 took that for a press, cancelled
+    the close and the window stayed up after OK. Now the window goes, the cut
+    OK handed over stays, and the finding is not lost: the row still owes it
+    to the editor (`cmPending`/`cmNothingOwed`), and the reopened window shows
+    it with the pass greyed."""
+    with App(cfg, "ok_closing_cm_lane", clips(cfg)) as app:
+        app.to_list()
+        wait_for("rows read", lambda: app.s.js(
+            "return [...document.querySelectorAll('#cliplist > li .badge')]"
+            ".every((b) => b.classList.contains('ready'))"), 60)
+        app.open_row(1, "a.ts")
+        _walk_done(app)
+        app.cut(100, 150)
+        time.sleep(1)
+        _okc_observe(app)
+        app.s.click("#cliplist > li:nth-child(1) .nm")
+        app.s.keys("Control+d")
+        app.to_editor()
+        ok_at = app.s.js(_OKC_HOLD, 10)
+        try:
+            app.gone(timeout=5)
+            closed = True
+        except Failure:
+            closed = False
+        app.to_list()
+        seen = app.s.js("return window.__okc")
+        lane = [s for s in seen if s[0] == "open" and not s[2]]
+        row = app.s.js("return document.querySelector('#cliplist > li:nth-child(1)').innerText")
+        reached = bool(lane) and lane[0][1] < ok_at
+        if not closed:
+            # 0.8.45: up on the row; leave it the way OK meant to.
+            app.to_editor()
+            app.ok()
+            app.gone()
+        p = app.save()
+        c = cuts_of(p, 1)
+        t.check("50g OK while the list's CM answer for the row arrives: the window closes",
+                closed or not reached,
+                f"{'closed' if closed else 'STAYED UP'}; lane's editor-open "
+                f"{'before' if reached else 'NOT before (NOT REACHED)'} OK ({seen}, OK at {ok_at})")
+        t.check("50g ... and the cut OK handed over is the row's", len(c) == 1, f"row 1 {fmt(c)}")
+        app.open_row(1, "a.ts")
+        time.sleep(2)
+        note = app.s.js("return document.getElementById('cm-note').textContent")
+        greyed = app.s.js("return document.getElementById('detect-cm').disabled")
+        st = app.state()
+        t.check("50g ... and the reopened window shows the lane's finding",
+                bool(note.strip()) and greyed and st["frames"] == FRAMES - 51,
+                f"note {note!r}, pass {'greyed' if greyed else 'offered'}, {st['frames']} pictures "
+                f"(want {FRAMES - 51}); list row {row!r}")
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+
+
+def ok_closing_double_press(cfg, t):
+    """(50th pass, p2gui.) The same row double-clicked in the list inside the
+    220 ms after OK (made certain by holding the editor busy while the press
+    is sent, then OK in the same turn). The press is `pressed`, so the window
+    stays on the row, as one built for it would; Escape there asks nothing
+    (nothing done since OK) and the cut OK handed over stays. This is the
+    `ok_then_reopen_fast` race, deterministic; it checks the `pressed` early
+    return does not drop a real press."""
+    with App(cfg, "ok_closing_double_press", clips(cfg)) as app:
+        app.open_row(1, "a.ts")
+        _walk_done(app)
+        left = app.cut(100, 150)
+        time.sleep(1)
+        _okc_observe(app)
+        app.s.js("const li = document.querySelector('#cliplist > li:nth-child(1) .nm');"
+                 "setTimeout(() => li.dispatchEvent(new MouseEvent('dblclick', {bubbles: true})), 1500);")
+        app.to_editor()
+        ok_at = app.s.js(_OKC_HOLD, 5)
+        time.sleep(2)
+        up = app.editor() is not None
+        app.to_list()
+        seen = app.s.js("return window.__okc")
+        press = [s for s in seen if s[0] == "open" and s[2]]
+        reached = bool(press) and press[0][1] < ok_at
+        st = app.state() if up and app.to_editor() else None
+        asked = None
+        if up:
+            asked = app.escape(discard=True, expect_dialog=False)
+            app.gone()
+        p = app.save()
+        c = cuts_of(p, 1)
+        t.check("50h the row pressed again inside the close delay: the window stays on it",
+                (up and st is not None and "a.ts" in st["title"] and st["frames"] == left) or not reached,
+                f"{'up' if up else 'CLOSED'} {st}; press {'before' if reached else 'NOT before (NOT REACHED)'} "
+                f"OK ({seen}, OK at {ok_at})")
+        t.check("50h ... and Escape there keeps the cut OK handed over",
+                len(c) == 1 and not asked,
+                f"row 1 {fmt(c)}; Escape {'asked' if asked else 'did not ask'}")
+
+
+def _dvd50_make(cfg):
+    """DVD-form .mpg (MPEG-2 + DVD LPCM / AC-3), 10 s each: mono and stereo
+    16-bit LPCM, 20-bit stereo LPCM (ffmpeg's encoder writes 16 or 24 only, so
+    a 24-bit one with its LPCM headers set to 20), and mono LPCM + AC-3."""
+    d = os.path.join(cfg.work, "media50dvd")
+    os.makedirs(d, exist_ok=True)
+    ff = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error"]
+    v = ["-f", "lavfi", "-i", "testsrc2=size=720x480:rate=30000/1001:duration=10"]
+    a = ["-f", "lavfi", "-i", "sine=frequency=997:sample_rate=48000:duration=10"]
+    a2 = ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=10"]
+    vc = ["-c:v", "mpeg2video", "-b:v", "5M", "-g", "15"]
+    specs = {
+        "mono": a + vc + ["-c:a", "pcm_dvd", "-ac", "1"],
+        "stereo": a + vc + ["-c:a", "pcm_dvd", "-ac", "2"],
+        "b24": a + vc + ["-c:a", "pcm_dvd", "-ac", "2", "-sample_fmt", "s32"],
+        "monoac3": a + a2 + ["-map", "0", "-map", "1", "-map", "2"] + vc
+        + ["-c:a:0", "pcm_dvd", "-ac:a:0", "1", "-c:a:1", "ac3", "-b:a:1", "192k"],
+    }
+    for name, args in specs.items():
+        f = os.path.join(d, f"{name}.mpg")
+        if not os.path.exists(f):
+            subprocess.run(ff + v + args + ["-f", "dvd", f + ".part"], check=True)
+            os.replace(f + ".part", f)
+    b20 = os.path.join(d, "b20.mpg")
+    if not os.path.exists(b20):
+        data = bytearray(open(os.path.join(d, "b24.mpg"), "rb").read())
+        i = 0
+        while True:
+            i = data.find(b"\x00\x00\x01\xbd", i)
+            if i < 0:
+                break
+            s = i + 9 + data[i + 8]
+            if data[s] == 0xA0 and data[s + 5] >> 6 == 2:
+                data[s + 5] = (data[s + 5] & 0x3F) | 0x40
+            i += 4
+        with open(b20 + ".part", "wb") as f:
+            f.write(data)
+        os.replace(b20 + ".part", b20)
+    return d, ["mono", "stereo", "b20", "b24", "monoac3"]
+
+
+def disc_gauge_dvd_lpcm(cfg, t):
+    """(50th pass, p2gui.) The disc gauge prices a DVD title's sound as the
+    cut writes it onto the disc: LPCM as Blu-ray's (channels in pairs, 16 or
+    24 bits), so a mono or 20-bit track costs more than the DVD states. The
+    figure the list hands `disc_room` for each row against what the CLI's
+    `--fit --bdav --analyze` prices the same recording at (fit.rs
+    `written_rate`): the two must say the same, to the MB the CLI prints."""
+    d, names = _dvd50_make(cfg)
+    disc = 20_000_000
+    rows = [{"path": os.path.join(d, f"{n}.mpg")} for n in names]
+    with App(cfg, "disc_gauge_dvd_lpcm", rows,
+             {"mode": "bdav", "dir": os.path.join(cfg.work, "dvd50out"), "subfolder": "", "discTitle": "G"}) as app:
+        app.to_list()
+        for n in range(1, len(names) + 1):
+            wait_for(f"row {n} read", lambda: _walked(app, n), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        app.s.js("const s = document.getElementById('out-disc'); const o = document.createElement('option');"
+                 " o.value = String(arguments[0]); o.textContent = 'test'; s.appendChild(o); s.value = o.value;"
+                 " s.dispatchEvent(new Event('input', {bubbles: true}));", disc)
+        # Each row's segment grows with what `disc_room` priced it at, as a
+        # share of the disc in per cent (the invoke itself cannot be watched:
+        # `__TAURI_INTERNALS__.invoke` will not be wrapped).
+        g = wait_for("the gauge with every row", lambda: (lambda g: g if len(g["segs"]) == len(names)
+                                                          else None)(_gauge(app)), 60, 0.25)
+        time.sleep(1)
+        g = _gauge(app)
+    # The five recordings have the same pictures, so the segments differ by
+    # the sound alone. Written onto the disc, mono LPCM is Blu-ray stereo
+    # (1536 kbit/s, as the stereo one), 20-bit is 24-bit, and mono LPCM +
+    # AC-3 192k lies 192/768 of the way from mono to 24-bit stereo. The CLI
+    # (`--fit --analyze`, fit.rs written_rate) prices them the same way: its
+    # fit thresholds for these files were measured at 10413176 / 10413176 /
+    # 11578368 / 11578368 / 10701201 bytes (50th pass, p2gui), i.e. 0.247 of
+    # the way; 0.8.45 priced mono at 9247985 and 20-bit at 10995177.
+    grow = {n: float(g["segs"][i][1]) for i, n in enumerate(names)}
+    way = (grow["monoac3"] - grow["mono"]) / (grow["b24"] - grow["mono"]) if grow["b24"] != grow["mono"] else 0
+    t.check("50i DVD LPCM onto a disc: mono priced as stereo, 20-bit as 24-bit, as the CLI's --fit",
+            abs(grow["mono"] - grow["stereo"]) < 1e-6 and abs(grow["b20"] - grow["b24"]) < 1e-6
+            and abs(way - 0.247) < 0.01,
+            f"segments {grow}; mono+AC-3 {way:.3f} of the way (CLI 0.247); {g['note']}")
+    for x in ("dvd50out",):
+        shutil.rmtree(os.path.join(cfg.work, x), ignore_errors=True)
+
+
+def _fds_on(pid, paths):
+    """How many of the process's open files are one of `paths`."""
+    want = {os.path.realpath(p) for p in paths}
+    n = 0
+    try:
+        for f in os.listdir(f"/proc/{pid}/fd"):
+            try:
+                if os.path.realpath(os.readlink(f"/proc/{pid}/fd/{f}")) in want:
+                    n += 1
+            except OSError:
+                pass
+    except OSError:
+        return -1
+    return n
+
+
+def _rchar(pid):
+    with open(f"/proc/{pid}/io") as f:
+        for line in f:
+            if line.startswith("rchar:"):
+                return int(line.split()[1])
+    return 0
+
+
+class _SameProfile(App):
+    """A second start of the program on the profile of an App that is gone,
+    on no project: what a start after a crash is."""
+
+    def __init__(self, cfg, name, was):
+        super().__init__(cfg, name, [])
+        for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+            self.env[k] = was.env[k]
+        self.project = was.project
+
+    def __enter__(self):
+        from wd import Driver, Session
+        self.driver = Driver(self.cfg.webdriver, self.env, self.log)
+        try:
+            self.s = Session(self.driver, self.cfg.gui, [])
+            self.main = self.s.handle()
+            wait_for("the list window", lambda: "app wired" in self.read_log(), 300, 0.25)
+        except Exception:
+            self.close()
+            raise
+        return self
+
+
+def recovery_after_kill(cfg, t):
+    """(50th pass, p2gui; the 49th's recovery lock by rename.) A cut OK'd in
+    the editor and the list left unsaved; the copy put down beside (recovery
+    dir); the program killed with SIGKILL. Left beside it as a kill in the
+    middle of a write leaves them: a `<id>.lock.part` of a window that died
+    between making its lock and naming it, and a half-written `<id>.part` of
+    the dead window's next copy. Started again on nothing: the work is
+    offered, taken, and the row has its cut; the dead window's copy, lock and
+    `.part` are gone, the stray `.lock.part` is passed over."""
+    a = App(cfg, "recovery_after_kill", clips(cfg))
+    with a as app:
+        app.open_row(1, "a.ts")
+        _walk_done(app)
+        app.cut(100, 150)
+        app.ok()
+        app.gone()
+        rec = wait_for("the recovery dir", lambda: (glob_one(app.env["XDG_DATA_HOME"], "recovery")), 30, 0.5)
+        def with_cut():
+            found = []
+            for f in os.listdir(rec):
+                if f.endswith(".scproj"):
+                    try:
+                        doc = json.load(open(os.path.join(rec, f)))["doc"]
+                    except (OSError, ValueError, KeyError):
+                        continue
+                    if len(((doc["clips"][0].get("edit") or {}).get("cuts") or [])) == 1:
+                        found.append(f)
+            return found
+        body = wait_for("the copy with the cut", with_cut, 30, 0.5)
+        pid = app.gui_pid()
+        os.kill(pid, 9)
+        time.sleep(1)
+    dead = body[0][: -len(".scproj")]
+    with open(os.path.join(rec, f"{dead}.part"), "w") as f:
+        f.write('{"recovered": 1, "doc": {"smartcut": 1, "cli')
+    stray = os.path.join(rec, "4242-1.lock.part")
+    open(stray, "w").close()
+    before = sorted(os.listdir(rec))
+    with _SameProfile(cfg, "recovery_after_kill_b", a) as app:
+        offered = app.answer(True, timeout=30)
+        wait_for("the rows put back", lambda: app.rows() == 2, 30)
+        time.sleep(4)
+        after = sorted(os.listdir(rec))
+        p = app.save()
+        c = cuts_of(p, 1)
+        t.check("50j after a kill: the unsaved cut is offered and put back",
+                offered and len(c) == 1, f"{'asked' if offered else 'NOT asked'}; row 1 {fmt(c)}")
+        t.check("50j ... the dead window's copy, lock and .part are gone, the stray .lock.part passed over",
+                not any(f.startswith(dead + ".") for f in after) and os.path.exists(stray),
+                f"before {before} after {after}")
+    shutil.rmtree(os.path.join(cfg.work, "runs", "recovery_after_kill_b"), ignore_errors=True)
+
+
+def glob_one(root, leaf):
+    for d, subs, _ in os.walk(root):
+        if leaf in subs:
+            return os.path.join(d, leaf)
+    return None
+
+
+def queue_lock_other_process(cfg, t):
+    """(50th pass, p2gui; the 49th's with_queue_lock as an OS lock.) Another
+    process (the batch tool) holding `batch.lock` while it rewrites the queue:
+    the list's バッチに登録 (batch_append) waits for it and adds its job to the
+    queue that process wrote, losing neither; held past the five seconds the
+    list waits, it is refused with "busy" and nothing is written over."""
+    with App(cfg, "queue_lock_other_process", clips(cfg)) as app:
+        app.to_list()
+        # The queue's folder is the program's config dir; made by asking once.
+        app.s.js("return window.__TAURI__.core.invoke('batch_append', {jobs: []})")
+        q = wait_for("batch.json", lambda: [os.path.join(d, "batch.json") for d, _, fs in
+                                           os.walk(app.env["XDG_CONFIG_HOME"]) if "batch.json" in fs], 10)[0]
+        lockf = os.path.join(os.path.dirname(q), "batch.lock")
+        job = lambda p: {"path": p, "label": os.path.basename(p), "state": "waiting", "note": "", "edited": 0}
+
+        def other(hold, then_write):
+            fd = open(lockf, "a+")
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_append', {jobs: [arguments[0]]})"
+                     ".then((r) => window.__q = 'ok ' + r.jobs.length, (e) => window.__q = 'err ' + e);",
+                     job(f"/list/{hold}.scproj"))
+            time.sleep(hold)
+            if then_write:
+                with open(q) as f:
+                    body = json.load(f)
+                body["jobs"].append(job(f"/tool/{hold}.scproj"))
+                with open(q + ".t", "w") as f:
+                    json.dump(body, f)
+                os.replace(q + ".t", q)
+            early = app.s.js("return window.__q")
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            fd.close()
+            said = wait_for("batch_append's answer", lambda: app.s.js("return window.__q"), 15, 0.1)
+            with open(q) as f:
+                paths = [j["path"] for j in json.load(f)["jobs"]]
+            return early, said, paths
+
+        early, said, paths = other(2, True)
+        t.check("50k the list's job waits for the other process's lock and both jobs are kept",
+                early is None and said.startswith("ok") and "/tool/2.scproj" in paths and "/list/2.scproj" in paths,
+                f"while held {early!r}; answer {said!r}; queue {paths}")
+        early, said, paths = other(7, False)
+        t.check("50k held past five seconds: refused as busy, nothing written",
+                said.startswith("err") and "busy" in said and "/list/7.scproj" not in paths,
+                f"answer {said!r}; queue {paths}")
+
+
+def divide_box_stops_walk(cfg, t):
+    """(50th pass, p2gui; the 49th's stop_divide.) 分割 on a row whose walk
+    is not kept (its .scix removed; a.ts sixteen times over, ~190 MB):
+    the box's question walks the recording, and closing the box stops that
+    walk -- the program reads little more after it. Opened again and
+    answered, the division is still worked out."""
+    big = os.path.join(cfg.media, "big50.ts")
+    with open(big, "wb") as o:
+        for _ in range(16):
+            with open(cfg.a, "rb") as f:
+                shutil.copyfileobj(f, o, 1 << 20)
+    with App(cfg, "divide_box_stops_walk", [{"path": big}]) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 180, 0.5)
+        time.sleep(2)
+        # Its walk not kept (a cache pruned, a disc row over a share): the
+        # box's question has to walk the recording again.
+        gone = 0
+        for dd, _, fs in os.walk(app.env["XDG_CACHE_HOME"]):
+            for f in fs:
+                if f.endswith(".scix"):
+                    os.remove(os.path.join(dd, f))
+                    gone += 1
+        app.s.click("#cliplist > li:nth-child(1) .nm")
+        wait_for("分割 to be offered", lambda: app.s.js(
+            "return !document.getElementById('divide-clip').disabled"), 60)
+        pid = app.gui_pid()
+        size = os.path.getsize(big)
+        r0 = _rchar(pid)
+        app.s.click("#divide-clip")
+        wait_for("the divide box", lambda: app.s.js(
+            "return !document.getElementById('divide').hidden"), 5)
+        answered = app.s.js("return !document.getElementById('divide-ok').disabled")
+        app.s.click("#divide-cancel")
+        r1 = _rchar(pid)
+        time.sleep(8)
+        r2 = _rchar(pid)
+        t.check("50l closing 分割 stops the walk its question started",
+                answered or (r1 - r0) > size or (r2 - r1) < size / 2,
+                f"{'answered before the close (NOT REACHED)' if answered else 'closed while walking' if (r1 - r0) < size else 'closed after a whole walk (NOT REACHED)'}; "
+                f"read {(r1 - r0) / 1e6:.0f} MB before the close, {(r2 - r1) / 1e6:.0f} MB in 8 s after "
+                f"(recording {size / 1e6:.0f} MB; {gone} index file(s) removed first)")
+        app.s.click("#divide-clip")
+        wait_for("the divide box", lambda: app.s.js(
+            "return !document.getElementById('divide').hidden"), 5)
+        app.s.js("const f = document.getElementById('divide-rule'); f.value = 'parts';"
+                 "f.dispatchEvent(new Event('change'));"
+                 "const v = document.getElementById('divide-value'); v.value = '2';"
+                 "v.dispatchEvent(new Event('input'));")
+        ok = wait_for("分割 to be pressable", lambda: app.s.js(
+            "return !document.getElementById('divide-ok').disabled"), 120)
+        app.s.click("#divide-ok")
+        two = wait_for("two rows", lambda: app.rows() == 2, 10)
+        t.check("50l ... asked again, the division is worked out", ok and two, "")
+    os.remove(big)
+
+
+def seam_close_during_load(cfg, t):
+    """(50th pass, p2gui; the 49th's cross_load after close.) 継ぎ目の編集
+    closed while its join is still being loaded: the pair it was loading is
+    not kept (lib.rs, read only), and opened again the window loads the
+    join and shows it."""
+    with App(cfg, "seam_close_during_load", clips(cfg), {"joinAll": True}) as app:
+        app.to_list()
+        for n in (1, 2):
+            wait_for(f"row {n} read", lambda: _walked(app, n), 120, 0.5)
+        app.s.click('button.tab[data-screen="outset"]')
+        wait_for("the seam button", lambda: app.s.js(
+            "const r = document.getElementById('row-cross');"
+            "const b = document.getElementById('open-cross');"
+            "return !!r && !r.hidden && !!b && !b.disabled;"), 90)
+        tried = []
+        for attempt in range(4):
+            handles = set(app.s.handles())
+            app.s.click("#open-cross")
+            seam = wait_for("the seam window", lambda: (
+                [h for h in app.s.handles() if h not in handles] or [None])[0], 60, 0.01)
+            app.s.switch(seam)
+            loaded = app.s.js("return document.getElementById('out-clip-time').textContent") not in (
+                "--:--:--.--", "00:00:00.00", "")
+            _close_seam(app, seam)
+            time.sleep(2)
+            tried.append((loaded, 0))
+        seam = _open_seam_window(app)
+        shown = app.s.js("return document.getElementById('out-clip-time').textContent")
+        _close_seam(app, seam)
+        # The core opens per read, so open files say nothing about the pair
+        # being kept; what is checked is that a window closed mid-load leaves
+        # the next one loading and showing the join.
+        t.check("50m the seam window closed during its load, four times, then opened: it loads and shows the join",
+                shown not in ("--:--:--.--", "00:00:00.00", ""),
+                f"closes (loaded at close) {[l for l, _ in tried]}; shown {shown!r}")
+
+
+def detect_cm_during_walk(cfg, t):
+    """(50th pass, p2gui; detect_now with `walked`.) The commercial detection
+    pressed in the editor on a first visit while the recording is still being
+    walked (the late-head recording): it ends with an answer, and the answer
+    is the CLI's --detect-cm on the same file."""
+    make_late_head(cfg)
+    with App(cfg, "detect_cm_during_walk", [{"path": cfg.d}]) as app:
+        app.to_list()
+        app.s.js("document.getElementById('stop-batch').click()")
+        app.open_row(1, "d.ts", wait=False)
+        app.to_editor()
+        wait_for("the editor's timeline", lambda: app.state()["frames"] is not None, 120, 0.2)
+        walking = (lambda s: bool(s["plan"]) and ("読み込んで" in s["plan"] or "Reading" in s["plan"]))(app.state())
+        app.s.js("document.getElementById('detect-cm').click();")
+        note = wait_for("the detection's answer", lambda: (lambda n: n if n and "%" not in n and "調べ" not in n
+                                                           and "まとめ" not in n and "検出中" not in n else None)(
+            app.s.js("return document.getElementById('cm-note').textContent")), 300, 0.5)
+        _walk_done(app)
+        bands = app.s.js("return (document.getElementById('status') || {}).innerText || ''")
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+    t.check("50n CM detection pressed during the walk ends with an answer",
+            walking and bool(note.strip()), f"{'during the walk' if walking else 'walk already over (NOT REACHED)'}; "
+            f"note {note!r}; status {bands!r}")
+
+
+def verify_fields_batch(cfg, t):
+    """(50th pass, p2gui; the 49th's Checked fields.) ベリファイ on, two rows
+    each with a cut written one after another: every verify_output answer has
+    the new fields filled (runsAsKept, keptFrom/To and slack, the gaps), the
+    output's length lies inside what was kept, no gap beyond the source's, and
+    the rows say ベリファイ OK."""
+    rows = [{"path": cfg.a, "edit": {"cuts": [{"a": 3.0, "b": 5.0}], "keyframes": []}},
+            {"path": cfg.b, "edit": {"cuts": [{"a": 10.0, "b": 12.5}], "keyframes": []}}]
+    with App(cfg, "verify_fields_batch", rows) as app:
+        app.to_list()
+        for n in (1, 2):
+            wait_for(f"row {n} read", lambda: _walked(app, n), 120, 0.5)
+        app.s.js("const b = document.getElementById('pref-verify'); if (!b.checked) b.click();")
+        files = app.export()
+        notes = app.s.js("return [...document.querySelectorAll('#out-list > li .note')].map((n) => [n.innerText, n.title]);")
+        for f in files:
+            os.remove(f)
+    t.check("50o two rows with cuts, ベリファイ on: both say ベリファイ OK (verdict reads runsAsKept/kept*/gap*)",
+            len(notes) == 2 and all("ベリファイ OK" in a and "注意" not in a for a, _ in notes), f"{notes}")
+
+
+def editor_close_lets_go(cfg, t):
+    """(50th pass, p2gui; the 49th's Opened let go on the editor's close.)
+    The editor up on row 1 holds the recording open; closed by OK, the
+    program lets go of it; the row opened again comes up with its cut, and
+    after the second close a run writes the cut (export opens by path)."""
+    with App(cfg, "editor_close_lets_go", clips(cfg)) as app:
+        app.open_row(1, "a.ts")
+        _walk_done(app)
+        pid = app.gui_pid()
+        held = _fds_on(pid, [cfg.a])
+        left = app.cut(100, 150)
+        app.ok()
+        app.gone()
+        time.sleep(3)
+        after = _fds_on(pid, [cfg.a])
+        app.open_row(1, "a.ts")
+        again = app.state()["frames"]
+        reheld = _fds_on(pid, [cfg.a])
+        app.escape(discard=True, expect_dialog=False)
+        app.gone()
+        time.sleep(3)
+        last = _fds_on(pid, [cfg.a])
+        files = app.export()
+        got = [pictures(f) for f in files if "a" in os.path.basename(f) and f.endswith(".ts")]
+        t.check("50p reopened after the close (Opened let go) with its cut", again == left,
+                f"open files on a.ts: up {held}, closed {after}, reopened {reheld}, closed {last} (the core opens per "
+                f"read, so 0 throughout says nothing); reopened with {again} pictures (want {left})")
+        t.check("50p ... a run after the close writes the cut", got == [left],
+                f"{got} (want [{left}]) of {[os.path.basename(f) for f in files]}")
+        for f in files:
+            os.remove(f)
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -10327,6 +11201,18 @@ SCENARIOS = [
     ps_heads_exact,
     ok_while_marks_read,
     ordinary_more_material,
+    ordinary_material_50,
+    cut_while_marks_read_then_row,
+    ok_closing_cm_lane,
+    ok_closing_double_press,
+    disc_gauge_dvd_lpcm,
+    recovery_after_kill,
+    queue_lock_other_process,
+    divide_box_stops_walk,
+    seam_close_during_load,
+    detect_cm_during_walk,
+    verify_fields_batch,
+    editor_close_lets_go,
     ok_wait_then_row,
     ok_wait_then_escape,
     ok_wait_long_read,
@@ -10334,6 +11220,7 @@ SCENARIOS = [
     ok_wait_asked_then_row,
     cut_outside_whole_keeps_redo,
     engine_refusal_row_language,
+    twins_case_and_taken,
 ]
 
 
