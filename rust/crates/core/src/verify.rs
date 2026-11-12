@@ -701,6 +701,11 @@ pub fn check_placed(
         let source_side = scope.spawn(move || -> Result<()> {
             for (src, ranges) in &owned {
                 for (a, b, head, copies) in ranges {
+                    // Opened where the sets the cut decoded it by are stated,
+                    // where the range's entry picture carries none: see
+                    // [`opened_by_sets_in_force`].
+                    let lent = opened_by_sets_in_force(src, *a);
+                    let src = lent.as_ref().unwrap_or(src);
                     let mut gone = false;
                     // The grid is only read where the pictures are compared.
                     let grids = compare == Compare::Pictures;
@@ -1242,6 +1247,8 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
         // A sound packet with no length of its own, until the next one says.
         let mut open: Vec<Option<f64>> = vec![None; tracks.len()];
         let mut ends: Vec<Option<f64>> = vec![None; tracks.len()];
+        // How far each track's packets have come, for where the read stops.
+        let mut heard_to: Vec<f64> = vec![f64::NEG_INFINITY; tracks.len()];
         let frame: Vec<f64> = src
             .audios
             .iter()
@@ -1267,7 +1274,19 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
             let tb = f64::from(stream.time_base());
             if stream.index() == video {
                 // By where the file stands, as in [`listen`].
-                if crate::audio::read_reached(&stream, &packet, start).is_some_and(|t| t > b + 1.5) {
+                //
+                // **And not before every track has come to the range's end.**
+                // A muxer may lay the sound well behind the pictures --
+                // ffmpeg's MPEG-PS writer puts it some 3 s back -- and a read
+                // stopped by the pictures alone had not met the sound of the
+                // range's last seconds, which was then allowed for as sound
+                // the recording lacks: 3.2 s of an .mpg's two ranges, enough
+                // to let a cut that lost that much pass. Read on for it, as
+                // far as 10 s past the range: a track that has stopped in
+                // the recording has nothing more to come.
+                if crate::audio::read_reached(&stream, &packet, start)
+                    .is_some_and(|t| t > b + 10.0 || (t > b + 1.5 && heard_to.iter().all(|&h| h >= b)))
+                {
                     to_the_end = false;
                     break;
                 }
@@ -1276,6 +1295,7 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
                 shown.push((t, t + if d > 0 { d as f64 * tb } else { fd }));
             } else if let Some(k) = tracks.iter().position(|&i| i == stream.index()) {
                 let Some(t) = packet.pts().map(|q| q as f64 * tb - start).or(ends[k]) else { continue };
+                heard_to[k] = heard_to[k].max(t);
                 if let Some(o) = open[k].take() {
                     if t > o {
                         sound[k].push((o, t.min(o + 0.5)));
@@ -1394,6 +1414,99 @@ impl Kept {
     fn whole(&self) -> bool {
         self.holes.is_none_or(|(out, src)| out <= src + self.slack)
     }
+}
+
+/// `src` as the source side is to decode the range opening at `from`, where
+/// that is not `src` itself: the same recording with its entry points between
+/// the last restatement of the H.264 parameter sets and `from` left out, so
+/// the read opens where the sets in force there are stated.
+///
+/// **The cut decodes a set-less key picture by the sets in force, and the
+/// check has to as well.** Two encodes put one after the other into a
+/// transport stream restate the second one's sets, under the same numbers,
+/// only in front of its IDR (see [`crate::cut::sets_in_force`]). The cut puts
+/// those in front of a copy that opens on a later key picture carrying none,
+/// and its pictures are right; read from that key picture by the stream
+/// record's sets -- the first encode's -- the source side decoded something
+/// else, and a correct `--keep 16-20` of such a splice was called a mismatch.
+///
+/// Only an H.264 recording in start codes that can be read by bytes, whose
+/// entry picture before `from` carries no sets and where the sets in force
+/// are not the record's: a broadcast, whose key pictures carry their own,
+/// reads its entry picture's packet and nothing more, and is read as before.
+/// `None` also wherever the restatement cannot be placed on an entry point in
+/// front of `from` within the cut's own look-back, or a recorder's seam lies
+/// between: read as before.
+fn opened_by_sets_in_force(src: &Source, from: f64) -> Option<Source> {
+    use crate::bitstream::NalFraming;
+    if src.video.codec != "h264" || src.video.framing != NalFraming::AnnexB || !src.byte_seekable {
+        return None;
+    }
+    let restates = |data: &[u8]| {
+        crate::bitstream::nal_payloads(data, NalFraming::AnnexB)
+            .iter()
+            .any(|n| n.first().is_some_and(|b| matches!(b & 0x1F, 7 | 8)))
+    };
+    // The entry point the read would open on, as `pictures_in` picks it.
+    let entry = src.points.iter().rev().find(|p| p.time <= from + 1e-6)?;
+    let at = u64::try_from(entry.pos).ok().filter(|&at| at > 0)?;
+    let video = src.video.stream_index;
+    let mut ictx = crate::input::demux(&src.input.url).ok()?;
+    crate::input::keep_only(&mut ictx, &[video]);
+    let record = crate::cut::record_sets_of(&ictx.stream(video)?.parameters());
+    // Stream index -1 with AVSEEK_FLAG_BYTE: the timestamp is a byte.
+    let seek = |ictx: &mut crate::input::Demux, to: u64| unsafe {
+        ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, to as i64, ff::ffi::AVSEEK_FLAG_BYTE) >= 0
+    };
+    if !seek(&mut ictx, at) {
+        return None;
+    }
+    let key = ictx.read_packets().find(|(s, _)| s.index() == video).map(|(_, p)| p)?;
+    if u64::try_from(key.position()).ok() != Some(at) || restates(key.data().unwrap_or(&[])) {
+        return None;
+    }
+    if crate::cut::sets_in_force(src, at, 0, &record) == record {
+        return None;
+    }
+    // Where they were last restated in front of it, read back as far as the
+    // cut reads.
+    let mut end = at;
+    let mut stated: Option<u64> = None;
+    for back in [2u64 << 20, 8 << 20, 32 << 20] {
+        let start = at.saturating_sub(back);
+        if start >= end {
+            continue;
+        }
+        if !seek(&mut ictx, start) {
+            return None;
+        }
+        for (stream, packet) in ictx.read_packets() {
+            if stream.index() != video {
+                continue;
+            }
+            let Ok(pos) = u64::try_from(packet.position()) else { continue };
+            if pos >= end {
+                break;
+            }
+            if pos >= start && restates(packet.data().unwrap_or(&[])) {
+                stated = Some(pos);
+            }
+        }
+        if stated.is_some() || start == 0 {
+            break;
+        }
+        end = start;
+    }
+    let stated = stated?;
+    // The entry point the restatement arrives with, or the last before it.
+    let opens = src.points.iter().rev().find(|p| p.pos >= 0 && (p.pos as u64) <= stated && p.time < entry.time)?;
+    if src.joins.iter().any(|j| j.at > opens.pos as u64 && j.at <= at) {
+        return None;
+    }
+    let (t0, t1) = (opens.time, entry.time);
+    let mut lent = src.clone();
+    lent.points.retain(|p| p.time <= t0 || p.time > t1);
+    Some(lent)
 }
 
 /// A piece's ranges as the cut writes them: less [`Source::unwritten`], the

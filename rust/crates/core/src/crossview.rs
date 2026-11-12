@@ -456,10 +456,23 @@ fn compose(
 ///
 /// At studio levels, which is what [`reshape`] brings every picture of the
 /// preview to; the output lays it in the master's range.
-fn overlay_of(transition: &Transition, shape: (u32, u32)) -> Result<Option<Laid>> {
+///
+/// **And in the master's YUV matrix**, which the composite it is laid on is
+/// said to be in ([`in_the_masters_matrix`]). Read by the preview's own size
+/// -- a few hundred pixels across, so BT.601 -- the image went in through
+/// BT.601 and was then shown through an HD master's BT.709 with the rest of
+/// the composite: a red title orange in the window and red in the output.
+fn overlay_of(
+    transition: &Transition,
+    shape: (u32, u32),
+    master: &crate::VideoInfo,
+) -> Result<Option<Laid>> {
+    let matrix = masters_matrix(master);
     match transition.overlay.as_deref() {
         None => Ok(None),
-        Some(path) => crate::blend::read_laid(path, shape.0, shape.1, SHAPE, false).map(Some),
+        Some(path) => {
+            crate::blend::read_laid_in(path, shape.0, shape.1, SHAPE, false, matrix).map(Some)
+        }
     }
 }
 
@@ -472,13 +485,52 @@ fn overlay_of(transition: &Transition, shape: (u32, u32)) -> Result<Option<Laid>
 /// nothing, as the cut and every player read it
 /// ([`crate::conform::read_matrix`]).
 fn in_the_masters_matrix(picture: &mut ff::frame::Video, master: &crate::VideoInfo) {
-    if let Some(space) =
-        crate::conform::read_matrix(master.shape.matrix, master.width, master.height)
-    {
+    if let Some(space) = masters_matrix(master) {
         unsafe {
             crate::set_raw_enum(std::ptr::addr_of_mut!((*picture.as_mut_ptr()).colorspace), space);
         }
     }
+}
+
+/// The matrix [`in_the_masters_matrix`] and [`overlay_of`] put the window's
+/// pictures in: [`crate::conform::read_matrix`]'s, and where that has none --
+/// a master stating YCgCo or a reserved value, which no reel is converted to
+/// or from -- the one its size reads, as the editor's still and JPEG read
+/// such a picture (`preview::to_rgb`, `preview::jpeg_matrix`) and the cut
+/// lays the transition image in it (`cut_conform::read_overlay`). Left to
+/// the composite's own size, an HD master of that kind showed through
+/// BT.601 in this window and through BT.709 everywhere else. Not an RGB
+/// master's, whose reels the scaler turns into YUV through BT.601.
+///
+/// **Nor any master whose pictures are RGB (or a palette), stated or not.** The
+/// scaler turns those -- its own pictures and every reel's -- into the
+/// composite's YUV through BT.601 whatever they say ([`crate::cut::matrices`]
+/// swaps nothing for them), and a QuickTime Animation (`qtrle`) master states
+/// no matrix: read by its HD size, the window showed BT.601 samples through
+/// BT.709, red 255,26,0 where the editor shows 252,1,0. Left unstated, as
+/// before 0.8.45.
+fn masters_matrix(master: &crate::VideoInfo) -> Option<i32> {
+    use ff::ffi::AVColorSpace as S;
+    if master.shape.pix_fmt >= 0 {
+        let rgb = unsafe {
+            let d = ff::ffi::av_pix_fmt_desc_get(std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(
+                master.shape.pix_fmt,
+            ));
+            !d.is_null()
+                && (*d).flags
+                    & (ff::ffi::AV_PIX_FMT_FLAG_RGB | ff::ffi::AV_PIX_FMT_FLAG_PAL) as u64
+                    != 0
+        };
+        if rgb {
+            return None;
+        }
+    }
+    let (w, h) = (master.width, master.height);
+    crate::conform::read_matrix(master.shape.matrix, w, h).or_else(|| {
+        (master.shape.matrix != S::AVCOL_SPC_RGB as i32)
+            .then(|| crate::conform::read_matrix(S::AVCOL_SPC_UNSPECIFIED as i32, w, h))
+            .flatten()
+    })
 }
 
 /// One instant of the preview, as a JPEG.
@@ -499,7 +551,7 @@ pub fn shot(seam: &Seam, window: &Window, t: f64, width: u32) -> Result<Vec<u8>>
     let shape = seam.shape(width);
     let master = &seam.master().video;
     let look = window.look(t);
-    let laid = overlay_of(&seam.transition, shape).ok().flatten();
+    let laid = overlay_of(&seam.transition, shape, master).ok().flatten();
     // The master's frame, as `play` is handed it: only the slack depends on it.
     let fps = master.frame_rate;
     let step = 1.0 / if fps.is_finite() && fps > 0.0 { fps.clamp(1.0, 1000.0) } else { 30.0 };
@@ -855,7 +907,7 @@ pub fn play(
     crate::init()?;
     let shape = seam.shape(width);
     let master = &seam.master().video;
-    let laid = overlay_of(&seam.transition, shape).ok().flatten();
+    let laid = overlay_of(&seam.transition, shape, master).ok().flatten();
     // Held to the rates a recording can have (see where `frame_rate` is
     // worked out). The rate arrives from the window, and a huge one made the
     // step too small to move `t` at all: the same instant, composited for

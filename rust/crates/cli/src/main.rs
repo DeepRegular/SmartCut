@@ -2496,6 +2496,25 @@ fn run() -> Result<()> {
         if the_log(std::path::Path::new(&out)) {
             bail!("--log names {out}, which --proxy writes: name another file for the log");
         }
+        // Nor the marks written beside the proxy once it is built
+        // (`proxy::marks_path`): the log there was replaced by them, and the
+        // run ended well.
+        let marks = smartcut_core::proxy::marks_path(std::path::Path::new(&out));
+        // And not the proxy itself: `-o x.marks` named both, and the
+        // pictures renamed into place took the place of the marks.
+        if one_place(&out, &marks.to_string_lossy()) {
+            bail!(
+                "--proxy writes its marks beside the proxy as {}, the name -o gives the proxy: \
+                 name the proxy .mp4",
+                marks.display()
+            );
+        }
+        if the_log(&marks) {
+            bail!(
+                "--log names {}, which --proxy writes beside {out}: name another file for the log",
+                marks.display()
+            );
+        }
         let opts = smartcut_core::ProxyOptions::default();
         let built = smartcut_core::proxy::build(
             &src,

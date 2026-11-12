@@ -1437,9 +1437,11 @@ fn jpeg_matrix(picture: &ff::frame::Video) -> Option<(f64, f64)> {
         S::AVCOL_SPC_BT2020_NCL | S::AVCOL_SPC_BT2020_CL => Some((0.2627, 0.0593)),
         S::AVCOL_SPC_FCC => Some((0.30, 0.11)),
         S::AVCOL_SPC_SMPTE240M => Some((0.212, 0.087)),
-        S::AVCOL_SPC_UNSPECIFIED if picture.width() >= 1280 || picture.height() > 576 => {
-            Some((0.2126, 0.0722))
-        }
+        S::AVCOL_SPC_BT470BG | S::AVCOL_SPC_SMPTE170M => None,
+        // Every other answer by the size, as [`to_rgb`] reads it: not only
+        // an unstated one. A matrix neither knows (YCgCo, a reserved value)
+        // on an HD picture was BT.709 in the still and BT.601 here.
+        _ if picture.width() >= 1280 || picture.height() > 576 => Some((0.2126, 0.0722)),
         _ => None,
     }
 }

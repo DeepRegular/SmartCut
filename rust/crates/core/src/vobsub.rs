@@ -182,6 +182,62 @@ pub fn stopped_after(spu: &[u8], after: f64) -> Vec<u8> {
     out
 }
 
+/// Whether one sequence puts the display up: a start, forced or not.
+fn puts_it_up(spu: &[u8], at: usize) -> bool {
+    let size = u16be(spu, 0) as usize;
+    let mut p = at + 4;
+    while p < size.min(spu.len()) {
+        match spu[p] {
+            0x00 | 0x01 => return true,
+            END => return false,
+            STOP => p += 1,
+            0x03 | 0x04 => p += 3,
+            0x05 => p += 7,
+            0x06 => p += 5,
+            0x07 => match spu.get(p + 1..p + 3) {
+                Some(n) if u16::from_be_bytes([n[0], n[1]]) >= 2 => {
+                    p += 1 + usize::from(u16::from_be_bytes([n[0], n[1]]));
+                }
+                _ => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// When this unit puts its picture up, in seconds after the moment it is
+/// handed over: nearly always none. The mirror of [`stops_after`].
+pub fn starts_after(spu: &[u8]) -> Option<f64> {
+    sequences(spu)
+        .into_iter()
+        .find(|&at| puts_it_up(spu, at))
+        .map(|at| u16be(spu, at) as f64 * TICK)
+}
+
+/// The same unit, put up no later than `after` seconds from the moment it
+/// is handed over -- the start's own delay brought forward, the other half
+/// of [`stopped_after`].
+///
+/// For a unit written again at a range's first frame: its start counted
+/// from when it was first handed over, and part or all of that delay has
+/// gone by at the range's opening. A unit that already starts sooner is
+/// left alone, and the length never changes.
+pub fn started_after(spu: &[u8], after: f64) -> Vec<u8> {
+    let delay = (after.max(0.0) / TICK).round().min(u16::MAX as f64) as u16;
+    let size = u16be(spu, 0) as usize;
+    if size > spu.len() || size < 4 {
+        return spu.to_vec();
+    }
+    let mut out = spu.to_vec();
+    if let Some(at) = sequences(&out).into_iter().find(|&at| puts_it_up(&out, at)) {
+        if u16be(&out, at) > delay {
+            out[at..at + 2].copy_from_slice(&delay.to_be_bytes());
+        }
+    }
+    out
+}
+
 /// A file named after the cut, with `ext` where the cut's own extension
 /// was: `ep.01.mkv` gives `ep.01.idx`. `Path::with_extension` cannot be
 /// used twice for this -- stripping the extension and then setting one
@@ -1631,6 +1687,30 @@ mod tests {
         let earlier = stopped_after(&spu, 1.0);
         assert!(stops_after(&earlier).is_some_and(|u| (u - 1.0).abs() < TICK));
         assert_eq!(earlier.len(), spu.len(), "rewritten, not appended to");
+    }
+
+    /// A unit whose start runs at a delay, written again at a range's
+    /// opening part way into that delay, starts after what is left of it;
+    /// one already up starts at once, and one without a delay is unchanged.
+    #[test]
+    fn a_start_delay_is_brought_forward() {
+        crate::init().expect("libav");
+        let mut ink = Ink::default();
+        let plain = unit(&picture(32, 16), &mut ink).expect("a unit");
+        assert_eq!(started_after(&plain, 0.0), plain);
+        assert_eq!(starts_after(&plain), Some(0.0));
+        let dcsqt = u16be(&plain, 2) as usize;
+        let mut late = plain.clone();
+        late[dcsqt..dcsqt + 2].copy_from_slice(&176u16.to_be_bytes()); // 2.0 s
+        assert!(starts_after(&late).is_some_and(|s| (s - 176.0 * TICK).abs() < 1e-9));
+        assert!(starts_after(&started_after(&late, 0.5)).is_some_and(|s| (s - 0.5).abs() < TICK));
+        let mut reader = Reader::open(&ink.palette(), (720, 480)).expect("a decoder");
+        let half = reader.read(&started_after(&late, 0.5)).expect("decodes").expect("draws");
+        assert!((half.from - 0.5).abs() < TICK, "{}", half.from);
+        let now = reader.read(&started_after(&late, 0.0)).expect("decodes").expect("draws");
+        assert_eq!(now.from, 0.0);
+        // Never later than it was.
+        assert_eq!(started_after(&late, 5.0), late);
     }
 
     /// A picture that draws nothing is not a unit. What clears a screen is

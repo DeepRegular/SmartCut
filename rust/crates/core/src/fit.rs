@@ -283,6 +283,17 @@ fn written_rate(a: &crate::AudioInfo, asked: &SoundAsked) -> f64 {
             || asked.bit_rate.is_some()
             || (pcm && asked.bits.is_some_and(|b| b != a.bits)));
     if !rewritten {
+        // A DVD's linear PCM goes into a transport stream as Blu-ray's
+        // (`carriage` in `cut`), which holds its channels in pairs and its
+        // samples at 16 or 24 bits. What the DVD states is its own: a mono
+        // track 768 kbit/s written as 1536, 20 bits written as 24. Priced at
+        // the DVD's figure, a mono title fitted onto a disc came out 10% past
+        // it. A track already Blu-ray's states the padded figure itself.
+        if asked.to_ts && a.codec == "pcm_dvd" && a.channels > 0 && a.sample_rate > 0 {
+            let bits = if a.bits > 16 { 24 } else { 16 };
+            let paid = u32::from(a.channels) + u32::from(a.channels % 2);
+            return f64::from(a.sample_rate) * f64::from(paid) * f64::from(bits);
+        }
         return audio_rate(a);
     }
     if pcm {
@@ -782,6 +793,25 @@ mod tests {
     #[test]
     fn a_stated_nought_is_not_a_rate() {
         assert_eq!(audio_rate(&track("aac", 1, Some(0))), 96_000.0);
+    }
+
+    /// A DVD's LPCM copied into a transport stream is Blu-ray's: channels
+    /// in pairs, 16 or 24 bits. Into a file it stays what the DVD states.
+    #[test]
+    fn dvd_lpcm_into_a_transport_stream_is_priced_as_written() {
+        let ts = SoundAsked { to_ts: true, ..SoundAsked::default() };
+        let file = SoundAsked::default();
+        let mono = track("pcm_dvd", 1, Some(768_000));
+        assert_eq!(written_rate(&mono, &ts), 1_536_000.0);
+        assert_eq!(written_rate(&mono, &file), 768_000.0);
+        let stereo = track("pcm_dvd", 2, Some(1_536_000));
+        assert_eq!(written_rate(&stereo, &ts), 1_536_000.0);
+        let mut twenty = track("pcm_dvd", 2, Some(1_920_000));
+        twenty.bits = 24;
+        assert_eq!(written_rate(&twenty, &ts), 2_304_000.0);
+        // Blu-ray's own states the padded figure already.
+        let bd = track("pcm_bluray", 1, Some(1_536_000));
+        assert_eq!(written_rate(&bd, &ts), 1_536_000.0);
     }
 
     /// A recorder's title of 2752 s whose seams hold 19.4 s of clock with

@@ -405,6 +405,16 @@ fn run(
             }
         }
     }
+    // Matroska holds floats in one byte order only, the little-endian one
+    // (`A_PCM/FLOAT/IEEE`), where it holds integers either way round. A
+    // QuickTime file's big-endian floats (`fl32`) asked for as an `.mka` were
+    // refused with advice to name the file `.mka`; they are put the other way
+    // round, as a `.wav` puts them, which loses nothing.
+    if setup.target == ff::codec::Id::PCM_F32BE && octx.format().name() == "matroska" {
+        setup.target = ff::codec::Id::PCM_F32LE;
+        setup.mode = AudioMode::Reencode;
+        setup.frame_as = None;
+    }
     // A FLAC frame numbers its own first sample, and a `.flac` opens on the
     // stream's STREAMINFO, which states the recording's length and the
     // checksum of all its samples. Copied, ten seconds out of a forty second

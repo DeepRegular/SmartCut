@@ -328,6 +328,9 @@ fn pictures_afresh(
     // See [`RunUp`].
     let mut run_up = RunUp::new(seg.seek_from);
     let mut past_end = false;
+    // Whether the decoder has handed back any picture at all, the run-up's
+    // included. See [`NOTHING_SHOWN`].
+    let mut shown_any = false;
     // The instant the range stops asking for pictures. A range may be asked
     // for past where the recording stops, and a last picture written out to
     // an hour is an hour of nothing.
@@ -525,6 +528,7 @@ fn pictures_afresh(
         () => {
             let mut frame = ff::frame::Video::empty();
             while decoder.receive_frame(&mut frame).is_ok() {
+                shown_any = true;
                 let Some(pts) = frame.pts() else { continue };
                 let t = pts as f64 * in_tb - src.start_time;
                 if t >= until {
@@ -610,6 +614,29 @@ fn pictures_afresh(
             }
             continue;
         }
+        // As in [`reencode_segment`]: a decoder that has shown nothing ten
+        // seconds past the range is not going to show it anything (see
+        // [`NOTHING_SHOWN`]) -- an AVCHD reel, entered on I pictures it never
+        // starts from, read the rest of the clip before "no pictures
+        // decoded". Only the read stops; the decoder is drained below as at
+        // the end of the file, so a picture it was still holding comes out.
+        //
+        // **By decode time only, never a presentation time in its place.**
+        // Matroska states no decode time on the first packets after a seek or
+        // the open; a P picture there is shown after the B pictures decoded
+        // behind it, and on a recording that holds a picture -- a screencast
+        // that stood still for 15 s -- it was shown long after a range the
+        // B pictures are in: read by its presentation time, it stopped the
+        // read before them, and a fade over the range showed the key picture
+        // in place of the two after it. Decode times only climb, and the
+        // pictures decoded after a packet are never shown before its.
+        if !shown_any
+            && packet
+                .dts()
+                .is_some_and(|p| p as f64 * in_tb - src.start_time > seg.end + NOTHING_SHOWN)
+        {
+            break;
+        }
         // A packet the decoder will not take is not a reason to stop; see
         // [`reencode_segment`], where the same is said at more length --
         // and counted on the same terms: a packet of the run-up the seek
@@ -642,7 +669,7 @@ fn pictures_afresh(
         // the macro sets here goes nowhere, and saying so keeps the macro
         // one macro rather than two.
         feed!();
-        let _ = past_end;
+        let _ = (past_end, shown_any);
     }
     // And the last picture stands until the range's own end.
     lay!(until);
@@ -1035,11 +1062,15 @@ fn read_overlay(path: &str, into: &Shaped) -> Result<crate::blend::Laid> {
     // what every one met so far turned out to be; a picture that is not
     // meets [`crate::blend::over`]'s refusal rather than a scaler's abort.
     let want = master_pixels(into).unwrap_or(ff::format::Pixel::YUV420P);
-    crate::blend::read_laid(
+    // Into the master's own matrix, as the seam window reads it
+    // (`crossview::overlay_of`): an HD master that states BT.601 is not
+    // BT.709 because of its size.
+    crate::blend::read_laid_in(
         path,
         into.video.width,
         into.video.height,
         want,
         into.video.shape.full_range(),
+        crate::conform::read_matrix(into.video.shape.matrix, into.video.width, into.video.height),
     )
 }

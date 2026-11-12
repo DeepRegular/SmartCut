@@ -607,7 +607,7 @@ async function edit(clip) {
     // Lost if the window is still starting up, which is what `editor-ready`
     // is for; sent anyway for the case where it is already open on another
     // clip and there will be no `editor-ready` at all.
-    tellEditor();
+    tellEditor(true);
   } catch (e) {
     sayNote("list.cannotOpenEditor", { e });
     editing = null;
@@ -649,10 +649,15 @@ function tellFold(always = false) {
 /// described exactly as it found it, or the second call describes less than
 /// the first. `cmPending` is cleared where it is actually met: on the
 /// `editor-state` that comes back with the detection's note on it.
-function tellEditor() {
+/// `pressed` is true where somebody asked for the row (a double-click, or
+/// the window that was built for it saying it is up), not where the list only
+/// has something new for the row on screen: the editor waiting to close after
+/// OK stays for the first and not for the second.
+function tellEditor(pressed = false) {
   if (!editing || !emit) return;
   tellFold(true);
   emit("editor-open", {
+    pressed,
     id: editing.id,
     path: editing.path,
     // What the row is called: what somebody renamed it to, and failing that
@@ -725,7 +730,7 @@ function tellEditor() {
 }
 
 if (listen) {
-  listen("editor-ready", () => tellEditor());
+  listen("editor-ready", () => tellEditor(true));
 
   // The editor as it works, not only when it is done.
   listen("editor-state", (ev) => {
@@ -7536,7 +7541,17 @@ function soundRate(clip) {
 /// is worth at the count being written -- or, for the recording's own codec,
 /// its own figure taken down with the channels.
 function trackRate(clip, track, container) {
-  if (!rewritten(clip, track)) return track.rate;
+  if (!rewritten(clip, track)) {
+    // A DVD's linear PCM goes into a transport stream as Blu-ray's:
+    // channels in pairs, 16 or 24 bits (fit.rs `written_rate`). A mono
+    // title priced at the DVD's own figure came out past the disc.
+    if (track.codec === "pcm_dvd" && isTsContainer(container)) {
+      const ch = track.channels || 0;
+      const rate = track.sample_rate || 0;
+      if (ch && rate) return rate * (ch + (ch % 2)) * ((track.bits || 16) > 16 ? 24 : 16);
+    }
+    return track.rate;
+  }
   const named = audioCodecOut();
   const target = named || track.codec;
   if (target === "lpcm" || target.startsWith("pcm_")) return lpcmBitRate(clip, container, track);

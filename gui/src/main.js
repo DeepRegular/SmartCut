@@ -9862,6 +9862,10 @@ if (listen) {
     // is what this visit arrives with now (the list has it as the point
     // キャンセル goes back to: `editor-ok`), so leaving asks only about what
     // is done from here.
+    // Only a row somebody asked for: a detection finishing on this row in
+    // that moment sends the row again too, and the window then stayed up
+    // after OK. That one is the list's to keep; the window goes as asked.
+    if (okClosing !== null && !ev.payload.pressed) return;
     if (okClosing !== null) {
       clearTimeout(okTimer);
       okTimer = null;
@@ -9896,7 +9900,14 @@ if (listen) {
       // And the row an OK is waiting on, whose files are still being read:
       // this open stops that read, and sent nothing then, its cut went
       // nowhere (`captureEdit` sends nothing while `swapping`).
-      const waited = okWaiting !== null && okWaiting === editId;
+      // And the same row without an OK, where it was cut in that wait: the
+      // report `sync` asked for found `swapping` and sent nothing, and this
+      // open stops the read whose end would have sent it -- a cut made while
+      // a slow `.keyframe` was read, then another row double-clicked, was
+      // gone. `editedWhileArriving` is set only by a hand on this row's own
+      // timeline (`remember`), so an untouched arrival still sends nothing.
+      const reading = swapping && editedWhileArriving && shownId !== null && shownId === editId;
+      const waited = (okWaiting !== null && okWaiting === editId) || reading;
       if (syncTimer || waited) {
         clearTimeout(syncTimer);
         syncTimer = null;

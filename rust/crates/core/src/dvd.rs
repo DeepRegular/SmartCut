@@ -171,8 +171,9 @@ pub fn read(at: &Path) -> Result<Disc> {
             new
         })
         .collect();
-    let numbers: Vec<usize> = titles.iter().map(|t| t.number).collect();
-    for (t, part) in titles.into_iter().zip(pieces_named(&numbers)) {
+    let pieces: Vec<(usize, usize, usize)> =
+        titles.iter().map(|t| (t.number, t.part, t.parts)).collect();
+    for (t, part) in titles.into_iter().zip(pieces_named(&pieces)) {
         let sectors = t.last_sector + 1 - t.first_sector;
         let path = vol.stream(t.vts, t.first_sector, t.last_sector);
         let label_row = format!("{label} {}{part}", t.number);
@@ -228,20 +229,20 @@ pub fn read(at: &Path) -> Result<Disc> {
 /// What each row says about the piece of its title it is: ` (2/3)`, or
 /// nothing for a title listed as one row.
 ///
-/// Counted among the rows a title is listed as, which are not always the
-/// pieces it is made of. A disc that ends three titles on one short cell they
-/// share lists that cell once, as the first title's second piece -- and the
-/// other two titles were each called "(1/2)" with no "(2/2)" anywhere in the
-/// list.
-fn pieces_named(numbers: &[usize]) -> Vec<String> {
-    numbers
+/// A title listed as one row says nothing, however many pieces it is made
+/// of. A disc that ends three titles on one short cell they share lists that
+/// cell once, as the first title's second piece -- and the other two titles
+/// were each called "(1/2)" with no "(2/2)" anywhere in the list. A title
+/// listed as several rows keeps its pieces' own numbers, `(part, parts)`:
+/// they are in the row's name, which is the name its marks and detection
+/// results were saved under, and a renumbered row would no longer find them.
+fn pieces_named(pieces: &[(usize, usize, usize)]) -> Vec<String> {
+    pieces
         .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            let parts = numbers.iter().filter(|m| *m == n).count();
-            let k = numbers[..=i].iter().filter(|m| *m == n).count();
-            if parts > 1 {
-                format!(" ({k}/{parts})")
+        .map(|&(n, part, parts)| {
+            let rows = pieces.iter().filter(|p| p.0 == n).count();
+            if rows > 1 && parts > 1 {
+                format!(" ({part}/{parts})")
             } else {
                 String::new()
             }
@@ -1486,8 +1487,20 @@ mod tests {
     fn a_title_is_numbered_among_the_rows_it_is_listed_as() {
         // Titles 2 and 3 each end on the cell title 1 ends on, which is
         // listed once, as title 1's second piece.
-        assert_eq!(pieces_named(&[1, 1, 2, 3]), vec![" (1/2)", " (2/2)", "", ""]);
-        assert_eq!(pieces_named(&[4, 4, 4, 5]), vec![" (1/3)", " (2/3)", " (3/3)", ""]);
+        assert_eq!(
+            pieces_named(&[(1, 1, 2), (1, 2, 2), (2, 1, 2), (3, 1, 2)]),
+            vec![" (1/2)", " (2/2)", "", ""]
+        );
+        assert_eq!(
+            pieces_named(&[(4, 1, 3), (4, 2, 3), (4, 3, 3), (5, 1, 1)]),
+            vec![" (1/3)", " (2/3)", " (3/3)", ""]
+        );
+        // A title still listed as several rows keeps the numbers its rows
+        // were named by before: only a title left as one row loses them.
+        assert_eq!(
+            pieces_named(&[(6, 1, 3), (6, 3, 3), (7, 2, 2)]),
+            vec![" (1/3)", " (3/3)", ""]
+        );
         assert!(pieces_named(&[]).is_empty());
     }
 

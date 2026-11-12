@@ -1020,6 +1020,10 @@ struct Writer {
     ends: Option<i64>,
     /// The latest display position written, so the last picture is known.
     top_written: Option<i64>,
+    /// The H.264 parameter sets last known to be in force in a recording:
+    /// its `url`, the bytes from and to which nothing restated them, and
+    /// the sets. See [`sets_at_key`].
+    h264_sets: Option<(String, u64, u64, Vec<Vec<u8>>)>,
 }
 
 /// Writing the pictures back smaller, so that a run fits where it has to.
@@ -2740,6 +2744,21 @@ mod poc_seam {
                 b.ue()
             }
             8 => b.ue(),
+            _ => None,
+        }
+    }
+
+    /// The picture parameter set a slice NAL names. See
+    /// [`super::with_record_sets`].
+    pub(super) fn slice_pps(nal: &[u8]) -> Option<u32> {
+        let rbsp = unescape(&nal[..nal.len().min(32)]);
+        let mut b = Bits { data: &rbsp, pos: 8 };
+        match rbsp.first()? & 0x1F {
+            1 | 5 => {
+                b.ue()?; // first_mb_in_slice
+                b.ue()?; // slice_type
+                b.ue()
+            }
             _ => None,
         }
     }
@@ -4795,6 +4814,25 @@ fn copy_segment(
     } else {
         None
     };
+    // The H.264 parameter sets in force, owed in front of a copied key
+    // picture that does not carry them, where the pictures go out in start
+    // codes as they came in: the record's, until the pictures read here
+    // restate them -- or, where the first key picture met carries none, the
+    // ones in force where it is (see [`sets_in_force`]). See
+    // [`with_record_sets`].
+    let restating = src.video.codec == "h264"
+        && src.video.framing == NalFraming::AnnexB
+        && reframe.is_none()
+        && ctx.unframe.is_none()
+        && !writer.octx.format().flags().contains(ff::format::Flags::GLOBAL_HEADER);
+    // Whether the sets in force are known: restated by a picture read here,
+    // or looked back for at the first key picture.
+    let mut settled = false;
+    // Where they were last restated, or looked back for.
+    let mut known_from: Option<u64> = None;
+    let mut learnt_to: Option<u64> = None;
+    let mut record_sets: Option<Vec<Vec<u8>>> =
+        restating.then(|| record_sets_of(&ictx.stream(ist_index).unwrap().parameters()));
 
     let mut started = false;
     let mut overshot = false;
@@ -4913,6 +4951,15 @@ fn copy_segment(
             video_done = true;
             continue;
         }
+        // The sets this stretch states, whether or not its picture is copied:
+        // see [`with_record_sets`].
+        if let Some(sets) = record_sets.as_mut() {
+            if learn_sets(sets, packet.data().unwrap_or(&[])) {
+                settled = true;
+                known_from = read_at;
+            }
+            learnt_to = read_at;
+        }
         let Some(pts) = packet.pts() else { continue };
         let t = pts as f64 * in_tb - src.start_time;
         // A converted subtitle whose stop the pictures have passed comes down
@@ -4988,6 +5035,9 @@ fn copy_segment(
                 shape = restated;
             }
         }
+        // Whether this picture is the second field of a pair, which goes out
+        // as it came: see [`with_record_sets`].
+        let mut second_field = false;
         let (display, fields) = match (
             crate::bitstream::is_field_picture(
                 data,
@@ -4997,7 +5047,10 @@ fn copy_segment(
             ),
             first_field.take(),
         ) {
-            (true, Some(first)) => (first + ctx.grid.sub, ctx.grid.sub),
+            (true, Some(first)) => {
+                second_field = true;
+                (first + ctx.grid.sub, ctx.grid.sub)
+            }
             (true, None) => {
                 let at = display_base + slot;
                 first_field = Some(at);
@@ -5015,6 +5068,16 @@ fn copy_segment(
         };
         span.fields = span.fields.max(display - display_base + fields);
         span.pictures += 1;
+        // The first key picture met, carrying no sets (it would have
+        // restated them above): the ones it is decoded by are from before
+        // this copy's read.
+        if !settled && packet.is_key() && !second_field {
+            settled = true;
+            if let (Some(sets), Ok(at)) = (record_sets.as_mut(), u64::try_from(packet.position())) {
+                *sets = sets_at_key(src, writer, at, sets);
+                known_from = Some(at);
+            }
+        }
         let packet = match (reframe, ctx.unframe) {
             (Some(r), _) if packet.is_key() || r.from != NalFraming::Length(r.nal_length) => {
                 let data = packet.data().unwrap_or(&[]);
@@ -5050,6 +5113,19 @@ fn copy_segment(
                     out.set_flags(ff::packet::Flags::KEY);
                 }
                 out
+            }
+            (None, None) if packet.is_key() && !second_field => {
+                match record_sets
+                    .as_deref()
+                    .and_then(|sets| with_record_sets(packet.data().unwrap_or(&[]), sets))
+                {
+                    Some(data) => {
+                        let mut out = ff::Packet::copy(&data);
+                        out.set_flags(packet.flags());
+                        out
+                    }
+                    None => packet,
+                }
             }
             _ => packet,
         };
@@ -5155,6 +5231,12 @@ fn copy_segment(
             display,
             fields,
         })?;
+    }
+    // Up to the last packet the sets were learnt from, not `read_at`: the
+    // read goes on past the pictures for the sound, and a restatement there
+    // was never looked at.
+    if let (Some(sets), Some(from), Some(to)) = (record_sets, known_from, learnt_to) {
+        writer.h264_sets = Some((src.input.url.clone(), from, to, sets));
     }
     for (k, packet) in late.rest() {
         if !audio_done[k] {
@@ -5545,6 +5627,193 @@ fn h264_set_ids<'a>(nals: impl IntoIterator<Item = &'a [u8]>) -> u64 {
         .fold(0, |ids, id| ids | (1u64 << id))
 }
 
+/// A copied H.264 key picture with the recording's own parameter sets
+/// (`sets`, from its record) put in front of its slices, after its access
+/// unit delimiter; `None` where it carries a set of its own already, or its
+/// first slice names a picture set the record does not hold.
+///
+/// **A seam's sets are numbered apart from the recording's, so they no
+/// longer stand in for them.** A transport stream that an MP4 or Matroska
+/// file was copied into (`ffmpeg -c copy x.ts`) carries the sets in front of
+/// its IDRs alone: the I pictures of an open-GOP x264 encode, which are its
+/// entry points, have none, and a decoder knows the sets from the head of
+/// the file. A cut that opens on a seam writes the seam's sets at its head
+/// and nothing else, so the copy after it named a set the cut never stated:
+/// "non-existing PPS 0 referenced", 40 of 137 pictures decoded. A recording
+/// that restates its sets at every entry point -- every broadcast, every
+/// disc -- is not touched.
+///
+/// **The sets in force, not the record's.** The record holds the sets the
+/// recording opened with; two encodes put one after the other into a
+/// transport stream (`ffmpeg -f concat -c copy`) state the second one's
+/// under the same numbers in front of its own IDR, and the record's put in
+/// front of each of its I pictures had them decoded by the first encode's
+/// sets from there on: a range from the first encode into the second
+/// decoded 49 of the 149 pictures it copied. `sets` is what the pictures
+/// read so far have restated (see [`learn_sets`]), and is the record only
+/// until they have.
+pub(crate) fn with_record_sets(data: &[u8], sets: &[Vec<u8>]) -> Option<Vec<u8>> {
+    let kind = |nal: &[u8]| nal.first().map(|b| b & 0x1F);
+    let nals = crate::bitstream::nal_payloads(data, NalFraming::AnnexB);
+    if nals.iter().any(|n| matches!(kind(n), Some(7 | 8))) {
+        return None;
+    }
+    let slice = nals.iter().find(|n| matches!(kind(n), Some(1 | 5)))?;
+    let pps = poc_seam::slice_pps(slice)?;
+    if !sets.iter().any(|s| kind(s) == Some(8) && poc_seam::set_id(s) == Some(pps)) {
+        return None;
+    }
+    // After the delimiter, which opens the access unit where there is one.
+    let at = match (nals.first(), nals.get(1)) {
+        (Some(aud), Some(next)) if kind(aud) == Some(9) => {
+            let mut at = (next.as_ptr() as usize - data.as_ptr() as usize).checked_sub(3)?;
+            if at > 0 && data[at - 1] == 0 {
+                at -= 1;
+            }
+            at
+        }
+        _ => 0,
+    };
+    let mut out = Vec::with_capacity(data.len() + sets.iter().map(|s| s.len() + 4).sum::<usize>());
+    out.extend_from_slice(&data[..at]);
+    // Sequence sets first: a picture set is read against its sequence set.
+    let sequence = sets.iter().filter(|s| kind(s) == Some(7));
+    for s in sequence.chain(sets.iter().filter(|s| kind(s) == Some(8))) {
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(s);
+    }
+    out.extend_from_slice(&data[at..]);
+    Some(out)
+}
+
+/// `sets` with a packet's own H.264 parameter sets taken in, as a decoder
+/// takes them: each replaces the set of its kind and number. Whether the
+/// packet restated any. See [`with_record_sets`].
+fn learn_sets(sets: &mut Vec<Vec<u8>>, data: &[u8]) -> bool {
+    let kind = |nal: &[u8]| nal.first().map(|b| b & 0x1F);
+    let mut restated = false;
+    for nal in crate::bitstream::nal_payloads(data, NalFraming::AnnexB) {
+        let k = kind(nal);
+        if !matches!(k, Some(7 | 8)) {
+            continue;
+        }
+        restated = true;
+        let id = poc_seam::set_id(nal);
+        match sets.iter_mut().find(|s| kind(s) == k && poc_seam::set_id(s) == id) {
+            Some(s) => {
+                if s.as_slice() != nal {
+                    *s = nal.to_vec();
+                }
+            }
+            None => sets.push(nal.to_vec()),
+        }
+    }
+    restated
+}
+
+/// The H.264 parameter sets a stream's record holds.
+pub(crate) fn record_sets_of(params: &ff::codec::Parameters) -> Vec<Vec<u8>> {
+    let record = unsafe {
+        let p = params.as_ptr();
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+        }
+    };
+    crate::bitstream::nal_payloads(&record, NalFraming::AnnexB)
+        .into_iter()
+        .filter(|nal| nal.first().is_some_and(|b| matches!(b & 0x1F, 7 | 8)))
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
+/// [`sets_in_force`] at byte `at` of `src`: what the last read of the same
+/// recording knew, where `at` lies in the bytes it read after the sets were
+/// last restated; else read back no further than where it stopped, where
+/// that is in front of `at`; and remembered for the next. `record` is what
+/// is in force where nothing is known. A range's re-encoded tail lies in
+/// the bytes its copy read, and reads nothing.
+fn sets_at_key(src: &Source, writer: &mut Writer, at: u64, record: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let sets = match &writer.h264_sets {
+        Some((url, from, to, known)) if *url == src.input.url && (*from..=*to).contains(&at) => {
+            known.clone()
+        }
+        Some((url, _, to, known)) if *url == src.input.url && *to < at => {
+            sets_in_force(src, at, *to, known)
+        }
+        _ => sets_in_force(src, at, 0, record),
+    };
+    writer.h264_sets = Some((src.input.url.clone(), at, at, sets.clone()));
+    sets
+}
+
+/// How far in front of a copy's first key picture [`sets_in_force`] reads,
+/// nearest first: 32 MiB in all.
+const SETS_LOOK_BACK: [u64; 3] = [2 << 20, 8 << 20, 32 << 20];
+
+/// The H.264 parameter sets in force at byte `at` of a recording whose key
+/// picture there carries none: `known` (what is in force at byte `floor`)
+/// with what the pictures between restate, the nearest restatement found
+/// reading back from `at` (see [`SETS_LOOK_BACK`]); `known` where none is
+/// found that far back, or the recording cannot be read by bytes.
+///
+/// **What a copy's own read meets is not enough.** Two encodes put one after
+/// the other into a transport stream (`ffmpeg -f concat -c copy`) restate
+/// the second one's sets, under the same numbers, only in front of its IDR.
+/// A range that opens past that IDR, with the seek landing after it, meets
+/// nothing but the record's -- the first encode's -- and the copy was
+/// decoded by them: `--keep 16-20` of such a splice, 90 pictures, none of
+/// them right. Nor is what an earlier copy of the recording left, unless it
+/// was read in front of this one: a join of two pieces of one file, the
+/// later piece first, opened the earlier piece on the later part's sets.
+/// Only a recording whose key pictures carry no sets reads here, so a
+/// broadcast or a disc reads nothing more.
+pub(crate) fn sets_in_force(src: &Source, at: u64, floor: u64, known: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    if !src.byte_seekable || at <= floor {
+        return known.to_vec();
+    }
+    let Ok((mut ictx, ist_index)) = open_input(&src.input.url) else {
+        return known.to_vec();
+    };
+    let mut end = at;
+    for back in SETS_LOOK_BACK {
+        let from = at.saturating_sub(back).max(floor);
+        if from >= end {
+            continue;
+        }
+        // Stream index -1 with AVSEEK_FLAG_BYTE: the timestamp is a byte.
+        let placed = unsafe {
+            ff::ffi::av_seek_frame(ictx.as_mut_ptr(), -1, from as i64, ff::ffi::AVSEEK_FLAG_BYTE) >= 0
+        };
+        if !placed {
+            break;
+        }
+        let mut sets = known.to_vec();
+        let mut restated = false;
+        for (stream, packet) in ictx.read_packets() {
+            if stream.index() != ist_index {
+                continue;
+            }
+            let Ok(pos) = u64::try_from(packet.position()) else { continue };
+            if pos >= end {
+                break;
+            }
+            if pos >= from {
+                restated |= learn_sets(&mut sets, packet.data().unwrap_or(&[]));
+            }
+        }
+        if restated {
+            return sets;
+        }
+        if from <= floor {
+            break;
+        }
+        end = from;
+    }
+    known.to_vec()
+}
+
 #[cfg(test)]
 mod seam_set_id_tests {
     use super::{h264_set_ids, seam_set_id};
@@ -5564,6 +5833,38 @@ mod seam_set_id_tests {
         // A cut of a cut that opened on its seam: never 0, never the seam's.
         assert_eq!(seam_set_id(1 << 1), 2);
         assert_eq!(seam_set_id(0b111), 3);
+    }
+
+    #[test]
+    fn a_key_picture_without_sets_gets_the_record_s_after_its_delimiter() {
+        use super::with_record_sets;
+        let sps0: Vec<u8> = vec![0x67, 0x64, 0x00, 0x1e, 0xac, 0xd9];
+        let pps0: Vec<u8> = vec![0x68, 0xeb, 0xe3, 0xcb];
+        let pps2: Vec<u8> = vec![0x68, 0x6b, 0xe3, 0xcb];
+        // AUD, then a non-IDR I slice naming PPS 0 (first_mb 0, type 7, pps 0).
+        let au = [0, 0, 0, 1, 0x09, 0x10, 0, 0, 0, 1, 0x01, 0b1000_1000, 0x80];
+        let out = with_record_sets(&au, &[sps0.clone(), pps0.clone()]).expect("restated");
+        let mut want = vec![0, 0, 0, 1, 0x09, 0x10];
+        for s in [&sps0, &pps0] {
+            want.extend_from_slice(&[0, 0, 0, 1]);
+            want.extend_from_slice(s);
+        }
+        want.extend_from_slice(&au[6..]);
+        assert_eq!(out, want);
+        // A record whose picture set is another number: left alone.
+        assert!(with_record_sets(&au, &[sps0.clone(), pps2]).is_none());
+        // A key picture carrying its own: left alone.
+        let own = [&[0u8, 0, 0, 1][..], &sps0, &[0, 0, 0, 1], &pps0, &au[6..]].concat();
+        assert!(with_record_sets(&own, &[sps0.clone(), pps0.clone()]).is_none());
+        // What a later IDR restates replaces the record's sets of its number.
+        let sps0b: Vec<u8> = vec![0x67, 0x4d, 0x00, 0x1e, 0xac, 0xd9];
+        let pps0b: Vec<u8> = vec![0x68, 0xee, 0x3c, 0x80];
+        let mut sets = vec![sps0.clone(), pps0.clone()];
+        let idr = [&[0u8, 0, 0, 1][..], &sps0b, &[0, 0, 0, 1], &pps0b, &[0, 0, 0, 1, 0x65, 0x88]].concat();
+        super::learn_sets(&mut sets, &idr);
+        assert_eq!(sets, vec![sps0b.clone(), pps0b.clone()]);
+        let out = with_record_sets(&au, &sets).expect("restated");
+        assert_eq!(out[10..16], sps0b[..]);
     }
 }
 
@@ -7609,6 +7910,10 @@ fn reencode_segment(
     let mut damaged = 0usize;
     // Whether the decoder has taken a key picture of this read yet.
     let mut keyed = false;
+    // Whether the decoder reads H.264 in start codes, whose key pictures
+    // may lean on parameter sets stated before them. See below, where the
+    // first one is fed.
+    let opens_by_record = src.video.codec == "h264" && src.video.framing == NalFraming::AnnexB;
     let mut run_up = RunUp::new(seg.seek_from);
     // **The decoder is shown one stretch of a joined clip and no more.**
     //
@@ -7858,10 +8163,12 @@ fn reencode_segment(
             continue;
         }
         // See [`NOTHING_SHOWN`].
+        // By decode time only: Matroska gives the first packets after a seek
+        // no dts, and the pts of a P shown after a long hold is far past a
+        // window whose B pictures are still to come.
         if !shown_any
             && packet
                 .dts()
-                .or(packet.pts())
                 .is_some_and(|p| p as f64 * in_tb - src.start_time > seg.end + NOTHING_SHOWN)
         {
             // There are pictures past the end -- this packet is one -- even
@@ -7902,6 +8209,33 @@ fn reencode_segment(
         if !run_up.passes(&packet, in_tb, src.start_time) {
             continue;
         }
+        // The decoder's first key picture, where it carries no parameter
+        // sets, gets the ones in force there, as a copy's does: see
+        // [`sets_in_force`]. Read by the record's alone, the head of a range
+        // in the second of two encodes spliced together was decoded by the
+        // first one's sets and written so.
+        let restated = if !keyed && packet.is_key() && opens_by_record {
+            u64::try_from(packet.position()).ok().and_then(|at| {
+                let data = packet.data().unwrap_or(&[]);
+                if crate::bitstream::nal_payloads(data, NalFraming::AnnexB)
+                    .iter()
+                    .any(|n| n.first().is_some_and(|b| matches!(b & 0x1F, 7 | 8)))
+                {
+                    return None;
+                }
+                let sets = sets_at_key(src, writer, at, &record_sets_of(&params));
+                let data = with_record_sets(data, &sets)?;
+                let mut out = ff::Packet::copy(&data);
+                unsafe {
+                    use ff::codec::packet::{Mut, Ref};
+                    ff::ffi::av_packet_copy_props(out.as_mut_ptr(), packet.as_ptr());
+                }
+                Some(out)
+            })
+        } else {
+            None
+        };
+        let packet = restated.unwrap_or(packet);
         if decoder.send_packet(&packet).is_err() {
             let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
             if keyed || at.is_none_or(|t| t >= seg.start - tol) {
@@ -13011,6 +13345,7 @@ fn cut_into(
         hold_latest: false,
         ends: None,
         top_written: None,
+        h264_sets: None,
     };
 
     // What a reel that does not match is written into: the master's own
@@ -13458,6 +13793,13 @@ fn cut_into(
                 let unit = match stops {
                     Some(after) => crate::vobsub::stopped_after(&unit, shown + after - look),
                     None => unit,
+                };
+                // And the start, the same way: a delay that ran from when
+                // the unit was handed over is not counted again from the
+                // range's first frame.
+                let unit = match crate::vobsub::starts_after(&unit) {
+                    Some(d) if d > 0.0 => crate::vobsub::started_after(&unit, shown + d - look),
+                    _ => unit,
                 };
                 if let Some(subs) = writer.subpictures.as_mut() {
                     subs.take(id, head, &unit);
@@ -14299,7 +14641,7 @@ mod tests {
             audio: Vec::new(), lengths: Default::default(), captions: Vec::new(),
             graphics: Vec::new(), subpictures: None, converted: Vec::new(),
             progress: None, expected: 0, shrink: None, held: None, opening: false,
-            keep_last: true, hold_latest: true, ends: None, top_written: None,
+            keep_last: true, hold_latest: true, ends: None, top_written: None, h264_sets: None,
         };
         // Exercise the real 256 MiB threshold without allocating that much.
         // These packets share one refcounted payload; queue counts their
