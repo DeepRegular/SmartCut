@@ -95,6 +95,23 @@ picture such a player need not take. And where a seam is held to the reference
 frames the copy after it keeps (three or fewer), the B pyramid is turned off as
 well, since x264 keeps at least four whenever it builds one.
 
+**A copied key picture that carries no sets is given the ones in force where it
+is.** Numbered apart, a seam's sets no longer stand in for the recording's, and
+some recordings restate theirs only at an IDR: a transport stream remuxed from
+an MP4 or Matroska file (`ffmpeg -c copy`), whose open-GOP I pictures are its
+entry points, and two encodes put one after the other (`ffmpeg -f concat -c
+copy`), the second restating its own sets under the first one's numbers. A
+copy that opened on such an I picture named a set the cut never stated, or
+was decoded by the wrong encode's. Where the pictures go out in start codes as
+they came in, a copied H.264 key picture with no SPS/PPS of its own now gets
+them put in front of its slices, after its delimiter: what the pictures read so
+far have restated, or, at the first key picture of a read, the nearest
+restatement found reading back up to 32 MiB from it, else the record's
+(`cut::with_record_sets`, `cut::sets_in_force`). The re-encode's decoder is
+handed the same sets at the first key picture it takes. A recording that
+restates its sets at every entry point, every broadcast and every disc, reads
+nothing more and is written as before.
+
 ### 2. The access point index has to scan *packets*
 
 `ffprobe -skip_frame nokey` **misses access points in open GOPs**, because the
@@ -273,6 +290,19 @@ implemented.
 The reference side of `--verify` must not be built with `-ss`. On open GOPs the
 reference itself shifts, for the same reason as #6, and **a correct cut gets reported
 as wrong**. Decode from the beginning and slice by frame number.
+
+**The reference is decoded by the parameter sets the cut was.** A copy of H.264
+that opens on a key picture carrying no sets is given the ones in force there
+([pitfall 1](#1-the-parameter-sets-spspps-do-not-match)), and the reference has
+to be decoded by them as well. Read from that key picture by the stream
+record's sets, a splice of two encodes was decoded by the first one's, and a
+correct `--keep 16-20` was called a mismatch. Where the entry picture of a
+range carries no sets and those in force differ from the record's, the source
+side now opens on the entry point the last restatement in front of it arrives
+with, looked for as far back as the cut looks (`opened_by_sets_in_force` in
+[`verify.rs`](../../rust/crates/core/src/verify.rs)). A broadcast, whose key
+pictures carry their own sets, is read as before, as is a range with a
+recorder's seam between the two.
 
 ### 9. Never plan a re-encode window with no picture in it
 

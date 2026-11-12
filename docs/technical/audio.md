@@ -417,6 +417,17 @@ and runs ahead of the sound by no more than the pictures held back for
 reordering (`audio::read_reached`): `--verify`'s reads, the sound-only file,
 the sound's shape and the decode around a seam, and the cut's own copy.
 
+**The read of what a range holds waits for every track.** Where `--verify`
+measures how much sound the recording itself has in a kept range
+(`held_in`), the read stopped once the pictures were 1.5 s past the range's
+end. A muxer may lay the sound well behind the pictures -- ffmpeg's MPEG-PS
+writer puts it some 3 s back -- so the sound of the range's last seconds had not
+been met yet, and was allowed for as sound the recording lacks: 3.2 s on an
+`.mpg` cut into two ranges, enough to let a cut that lost that much pass. The
+read now goes on until every track has come to the range's end as well, and
+stops 10 s past it in any case, since a track that has stopped in the
+recording has nothing more to come.
+
 **And the last picture is as long as the track says.** `--verify` took the last
 picture to be up for a frame of the average, which is where it puts the end of
 the pictures to measure the sound against. A variable-rate cut ending on a still
@@ -1470,7 +1481,10 @@ CLI writes a `.wav` as linear PCM whatever the recording's own sound is. Where
 that sound is 32-bit float and no width is asked for, a `.wav` or `.aiff` of it
 alone is written in 32-bit float; up to 0.8.44 it was 24-bit integers, which
 clip whatever went over full scale. 64-bit float goes to 16-bit integers, as
-before. And a
+before. Matroska holds float samples little-endian only, where it holds
+integers either way round, so a QuickTime file's big-endian 32-bit float
+(`fl32`) asked for as an `.mka` is turned the other way round, as a `.wav`
+holds it, which loses nothing; up to 0.8.45 it was refused. And a
 container with no room for the codec at all — MP2 in an `.m4a` — says only
 "Invalid argument", once the header is being written; `avformat_query_codec` is
 asked first, so the run stops naming the codec and the file.

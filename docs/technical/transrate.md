@@ -260,6 +260,16 @@ like those fitted to 30 MB was written at 51% and came to 26.0 MB, where
 57% had made 28.9. Those are told apart by the clock, which is the sound's
 own samples in an MP4 and milliseconds in Matroska.
 
+**A DVD's linear PCM is priced as the Blu-ray LPCM it is written as.** Copied
+into a transport stream, and so onto a disc, it goes out as Blu-ray's
+([see disc.md](disc.md#a-dvds-sound-is-lpcm-in-a-stream-nothing-else-declares)),
+which holds its channels in pairs and its samples at 16 or 24 bits; what the
+DVD states is its own figure. Up to 0.8.45 a mono track was priced at 768
+kbit/s and written at 1536, a 20-bit one priced at 20 bits and written at 24,
+and a mono title fitted onto a disc came out 10% past it. `written_rate` now prices
+it as written, and the GUI's gauge (`trackRate` in `app.js`) does the same.
+Into a file the track stays the DVD's and keeps the DVD's figure.
+
 **A disc's tables are priced by the second, not as a share.** The list of
 programmes and the map go out every frame, the clock in a packet of its own,
 and a partial stream's SIT and SDT besides -- at the same rate whatever the

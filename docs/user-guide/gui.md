@@ -586,7 +586,9 @@ header where it is the row on screen, and the row being opened comes up under
 its new name. A commercial, black or silence detection that the next row's open
 stopped takes its count down, and says nothing of having been stopped where the
 window has come back round to its row by then. `Esc` asks before it throws away
-cuts made on the row while its own marks were still being put down. Up to
+cuts made on the row while its own marks were still being put down. A cut made
+while the row's mark file is still being read stays on that row when the next
+row is asked for before the reading ends; up to 0.8.45 it went nowhere. Up to
 0.8.34 renaming the row being opened put its name over the recording on
 screen and renaming the row on screen did not reach the window, a stopped
 detection's count stood on the status line for good, and those cuts could go
@@ -1185,7 +1187,9 @@ give it ends.
 
 ### Finishing with a recording
 
-- **OK** — take the cuts and marks back to the list and close.
+- **OK** — take the cuts and marks back to the list and close. A commercial
+  detection the list finishes on the recording at that moment is kept for its
+  row and does not hold the window open; up to 0.8.45 the window stayed up.
 - **Cancel** (`Esc`) — throw away what was done here and close. It asks first
   where anything was done.
 

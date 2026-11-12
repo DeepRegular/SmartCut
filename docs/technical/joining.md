@@ -643,8 +643,11 @@ itself.
 libswscale makes YUV out of RGB with BT.601's unless told another, so a title
 over a high-definition master went in through the wrong matrix and showed in
 other colours than the image -- a pure red some 8 % darker. It is now given the
-master's matrix, or BT.709 where an HD master states none
-(`blend::read_laid_in`); over a standard-definition master nothing changes.
+matrix the master states, read by size only where it states none
+(`blend::read_laid_in`, `conform::read_matrix`): an HD master tagged BT.601
+gets BT.601 and an SD master tagged BT.709 gets BT.709. Up to 0.8.45 the cut
+read the master's matrix by its size alone; over an untagged SD master nothing
+changes.
 
 ### The preview on the settings screen (`crossview.rs`)
 
@@ -685,6 +688,16 @@ with that matrix before it becomes a JPEG. A new frame at the preview's size
 states none, the JPEG reads an unstated matrix by size, and a few hundred
 pixels across is BT.601: up to 0.8.44 every join staged at an HD master was
 shown through the wrong matrix in this window, while the output was right.
+
+The transition image is laid into the window's composite in that same matrix
+(`crossview::overlay_of`). Read by the preview's own size it went in through
+BT.601 and was then shown through an HD master's BT.709: up to 0.8.45 a red
+title was orange in this window and red in the output. A master stating a
+matrix no reel is converted to or from (YCgCo, a reserved value) is read by its
+size, as the editor's stills read it. A master whose pictures are RGB or a
+palette is left untagged, stated or not, since the scaler turns its pictures
+and every reel's into YUV through BT.601 whatever they say; read by its HD size,
+a QuickTime Animation master showed BT.601 samples through BT.709 in 0.8.45.
 
 The composite is done in studio-range `yuv420p` and the conversion to JPEG
 comes after it. The other way round, the studio black `Shade::yuv` gives

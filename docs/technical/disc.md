@@ -1461,11 +1461,13 @@ it plays belong to more than one path. One whose cells merely jump about the
 stream becomes a row for each stretch it plays in order. A pressed disc does
 this when every title ends on one short cell they share, written before the
 first of them; refusing such a chain lost the disc's main programme. Such a
-shared cell is listed once, as a piece of the first title that plays it, and
-a title's pieces are numbered among the rows it is listed as, not among the
-stretches it plays: up to 0.8.44 the other titles ending on that cell were
-each called `(1/2)` with no `(2/2)` anywhere in the list. Their rows (and the
-names a cut of them is offered under) now carry no number.
+shared cell is listed once, as a piece of the first title that plays it. A
+title listed as one row carries no number, however many pieces it is made of:
+up to 0.8.44 the other titles ending on that cell were each called `(1/2)`
+with no `(2/2)` anywhere in the list. Their rows (and the names a cut of them
+is offered under) now carry none. A title still listed as several rows keeps
+its pieces' own numbers, since they are in the names its marks and detection
+results were saved under.
 
 Since a title is a stretch and not a file, its name has to say which stretch:
 
@@ -1686,6 +1688,11 @@ A unit written again at a range's opening has its stop, where it has one,
 counted from the range's first frame. A stop counts from when its unit is
 shown, and until 0.8.3 the unit went out as it was: the line stood for as long
 again as it had already been up before the range began.
+
+A start that runs at a delay is treated the same way. A unit handed over before
+the range opens but not yet up by then comes up after what is left of its
+delay; until 0.8.45 the whole delay was counted again from the range's first
+frame, and the line came up late by as much as had already gone by.
 
 #### A DVD's subtitles, converted into a Blu-ray's
 
