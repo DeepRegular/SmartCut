@@ -216,6 +216,24 @@ by size, as mpv reads it: BT.709 at 1280 across or more than 576 lines, BT.601
 below, so a 720p film cropped to 1280x536 counts as HD. A reel whose matrix
 agrees with the master's is written as before.
 
+RGB has no matrix, but the YUV on the other side of it has one. A QuickTime
+Animation or PNG reel (RGB) joined onto an HD master went into its YUV through
+libswscale's BT.601 and was shown through BT.709, a pure green a sixth darker
+and red at 255,25,0; an HD reel went into an RGB master through BT.601 the same
+way. Up to 0.8.46 both were written so. Now both sides of such a conversion are
+given the YUV side's matrix: the master's for an RGB reel, the reel's own for an
+RGB master. Where that is BT.601 nothing changes.
+
+A palette reel (a 256-colour QuickTime Animation, a palette PNG `.mov`, an
+8-bit `.avi`) has its colours looked up into RGBA first
+(`blend::palette_as_rgba`), as a palette image does, and goes on as an RGB
+reel: libswscale turns a palette into YUV with BT.601's numbers whatever matrix
+it is told, and up to 0.8.46 such a reel went into an HD master with red at
+255,25,0 even after the RGB fix above. Its output is now the RGB reel's to the
+byte; on an SD master only the rounding moves. No reel can be written afresh
+into a palette master (libswscale makes no palette), and that is refused with a
+sentence of its own.
+
 ### What actually differs, measured
 
 A month of broadcast: 1186 recordings off 32 channels, read with `conformdiag
@@ -599,9 +617,20 @@ A half-sample apart is a coloured fringe travelling across the picture.
 
 Everything is integer arithmetic — a per-sample float multiply over a 4K frame
 is the difference between a transition that encodes as fast as it writes and
-one that does not — and the formats accepted are planar YUV, eight or ten or
-twelve bits, which is everything this program decodes. A packed or RGB frame is
-refused rather than guessed at.
+one that does not. The formats accepted are planar YUV, eight or ten or twelve
+bits, which is what nearly every recording decodes to, and RGB. Planar RGB
+(`gbrp` and its kind) is blended as it is. Packed RGB of eight or sixteen bits
+a sample (a QuickTime Animation master's `rgb24` or `argb`, a PNG `.mov`'s
+`rgb48`, the `bgr0` FFV1 hands back) is turned into planar RGB around each
+blend and back; both ways only rearrange the samples, and the alpha, which
+libswscale moves by one on the way, is copied across by hand. In RGB a fade
+goes to nought and to full scale, which are RGB's black and white. A fourth,
+alpha plane (ProRes 4444, a PNG `.mov` with transparency) is dissolved and
+wiped with the rest; up to 0.8.46 the crossing's alpha was whatever the new
+frame's memory held, and an RGB master was refused at the crossing while the
+window that sets it showed it. A palette, packed RGB of five or six bits
+(`rgb555`, `rgb565`) and `x2rgb10`, which do not come back exact, and anything
+else are refused rather than guessed at.
 
 ### Easing
 
@@ -649,6 +678,14 @@ gets BT.601 and an SD master tagged BT.709 gets BT.709. Up to 0.8.45 the cut
 read the master's matrix by its size alone; over an untagged SD master nothing
 changes.
 
+A palette image (an indexed PNG, an 8-bit BMP) is RGB too, but libswscale turns
+a palette into YUV with BT.601's numbers whatever matrix it is told: up to
+0.8.46 such an image over an HD master came out with red at 255,24,0 where the
+same image saved as RGB was right. Its colours are now looked up into RGBA
+first, at its own size, and it goes on from there as an RGB image does: an
+opaque one gives the RGB image's output to the byte. A GIF is decoded to RGBA
+already.
+
 ### The preview on the settings screen (`crossview.rs`)
 
 A join's transition is set in a window of its own, with the seconds either
@@ -695,9 +732,12 @@ BT.601 and was then shown through an HD master's BT.709: up to 0.8.45 a red
 title was orange in this window and red in the output. A master stating a
 matrix no reel is converted to or from (YCgCo, a reserved value) is read by its
 size, as the editor's stills read it. A master whose pictures are RGB or a
-palette is left untagged, stated or not, since the scaler turns its pictures
-and every reel's into YUV through BT.601 whatever they say; read by its HD size,
-a QuickTime Animation master showed BT.601 samples through BT.709 in 0.8.45.
+palette is composited in BT.601, stated or not, and the composite is tagged so:
+the scaler turns its own pictures and every RGB reel's into YUV through BT.601,
+and a YUV reel is brought from its own matrix to BT.601. Read by its HD size, a
+QuickTime Animation master showed BT.601 samples through BT.709 in 0.8.45, and
+left untagged in 0.8.46 it still did so in a window wide enough for a picture
+1280 pixels across, which is read as HD.
 
 The composite is done in studio-range `yuv420p` and the conversion to JPEG
 comes after it. The other way round, the studio black `Shade::yuv` gives
