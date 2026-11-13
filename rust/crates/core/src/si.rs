@@ -2498,8 +2498,12 @@ fn began_at(raw: &[u8]) -> Option<Began> {
     let (hour, minute, second) = (d(2)?, d(3)?, d(4)?);
     // Two decimal digits are not a time of day: 45:70 is as well formed
     // as BCD as 21:00, and [`Began::parse`] would refuse it on the way back.
-    (hour < 24 && minute < 60 && second < 60).then_some(Began {
-        year: (yp + k + 1900) as u16,
+    // Nor is a year before any broadcast this could be a recording of, which
+    // it refuses the same way: a moment written into a disc that the disc's
+    // own reader turns away.
+    let year = yp + k + 1900;
+    (hour < 24 && minute < 60 && second < 60 && year >= 1970).then_some(Began {
+        year: year as u16,
         month: (mp - 1 - k * 12) as u8,
         day: day as u8,
         hour,
@@ -5568,11 +5572,17 @@ mod tests {
     /// rather than wrapped.
     #[test]
     fn a_made_up_start_time_reads_back_as_itself() {
-        for mjd in 15079u16..0xFFFF {
+        // 1970-01-01 is MJD 40587: what [`Began::parse`] reads back.
+        for mjd in 40587u16..0xFFFF {
             let [hi, lo] = mjd.to_be_bytes();
             let raw = [hi, lo, 0x23, 0x59, 0x07];
             let at = began_at(&raw).expect("a date");
             assert_eq!(broadcast_time(&at), Some(raw), "{at:?}");
+            assert_eq!(Began::parse(&at.to_string()), Some(at), "{at:?}");
+        }
+        for mjd in 15079u16..40587 {
+            let [hi, lo] = mjd.to_be_bytes();
+            assert_eq!(began_at(&[hi, lo, 0x23, 0x59, 0x07]), None, "{mjd}");
         }
         let early = Began { year: 1900, month: 2, day: 28, hour: 0, minute: 0, second: 0 };
         assert_eq!(broadcast_time(&early), None);

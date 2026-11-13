@@ -29,6 +29,11 @@ use tauri::Manager;
 pub struct Recovery {
     own: Mutex<Option<Own>>,
     claimed: Mutex<Vec<(String, File)>>,
+    /// Set by [`on_exit`] with `own`'s lock held, and asked under it: a copy
+    /// still on its way when the window closed normally made a new one
+    /// after the old had been taken away, and the next start offered back
+    /// work that had been thrown away.
+    closed: std::sync::atomic::AtomicBool,
 }
 
 struct Own {
@@ -79,6 +84,9 @@ pub fn recovery_put(
 ) -> Result<(), String> {
     let dir = dir(&app)?;
     let mut own = locked(&state.own);
+    if state.closed.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
+    }
     if own.is_none() {
         let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -219,7 +227,11 @@ pub fn recovery_forget(app: tauri::AppHandle, state: tauri::State<Recovery>, id:
 pub fn on_exit(app: &tauri::AppHandle) {
     let Ok(dir) = dir(app) else { return };
     let state = app.state::<Recovery>();
-    let own = locked(&state.own).take();
+    let own = {
+        let mut held = locked(&state.own);
+        state.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        held.take()
+    };
     if let Some(own) = own {
         let id = own.id.clone();
         // The copy first and the lock last, as in [`recovery_forget`]: let go

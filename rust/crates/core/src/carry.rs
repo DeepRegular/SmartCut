@@ -118,7 +118,15 @@ const PS_AUDIO: &[&str] = &["mp1", "mp2", "mp3", "ac3", "dts", "pcm_s16be"];
 /// way a WAV stores it, unsigned, and the muxer has no tag for the signed
 /// kind an old QuickTime file carries. Asked for as 24 bit it is written
 /// wide, which every container here holds.
-const MKV_REFUSES: &[&str] = &["pcm_s8"];
+///
+/// And uncompressed pictures, which it keeps only under a fourcc naming their
+/// layout. The copy goes out with none, and the muxer turns it away at the
+/// header -- "Raw RGB is not supported Natively in Matroska" for every
+/// layout, YUV ones included -- and the cut planned and stopped with a bare
+/// "Invalid argument". QuickTime Animation is written, and loses the sample
+/// depth its decoder needs: "Unsupported colorspace: 0 bits/sample" on every
+/// picture, the same as `ffmpeg -c copy` makes of it.
+const MKV_REFUSES: &[&str] = &["pcm_s8", "rawvideo", "qtrle"];
 
 /// What a QuickTime file refuses. It takes the MP4 family's pictures except
 /// the three WebM carries, and its sound stops at the lossless ones: "vp9
@@ -147,6 +155,9 @@ pub fn family(output: &str) -> &'static str {
         "mkv" => "mkv",
         "webm" => "webm",
         "mpg" | "mpeg" | "vob" => "ps",
+        // Not offered by the window; a name the command line can be given.
+        // Asked about only by [`pictures_refused`].
+        "avi" => "avi",
         _ => "",
     }
 }
@@ -183,6 +194,88 @@ pub fn holds(family: &str, codec: &str) -> bool {
         "mkv" => !MKV_REFUSES.contains(&codec),
         // An unknown name is not this module's to refuse.
         _ => true,
+    }
+}
+
+/// Why a container of this family cannot carry these particular pictures,
+/// where the codec's name alone does not answer it: `None` where it can.
+///
+/// Two of them read the pictures by a fourcc, and what they are told is not
+/// always what the recording was:
+///
+/// - **An AVI** names its pictures by the fourcc alone. A codec it has no
+///   fourcc for (ProRes, DNxHD, HAP, HEVC, QuickTime Animation) is written
+///   with none, and read back as uncompressed RGB: a file of the right size
+///   and no pictures. Uncompressed pictures keep the recording's fourcc where
+///   an AVI has it (see where the cut declares its video stream); with none,
+///   an AVI reads 24, 32 and 16 bit samples as BGR, BGRA and 15-bit RGB, so
+///   `rgb24` or `argb` came back with their colours swapped, and anything
+///   else (48 bit RGB, grey from a QuickTime file) not at all.
+/// - **A QuickTime file** has a layout for a short list of uncompressed
+///   pictures. Anything else is written all the same, under the nearest
+///   tag: a 4:2:0 AVI cut into a `.mov` was "Invalid pixel format" on every
+///   picture, a 4:2:2 planar one read as 15-bit RGB, and an AVI's greys
+///   (`Y800`) as a palette of no colours it had (`ffmpeg -c copy` the same).
+///
+/// `format` and `tag` are the recording's stream's, as libav read them.
+pub fn pictures_refused(family: &str, id: ff::codec::Id, format: i32, tag: u32) -> Option<&'static str> {
+    use ff::ffi::AVPixelFormat as F;
+    let is = |list: &[F]| list.iter().any(|&f| f as i32 == format);
+    let raw = id == ff::codec::Id::RAWVIDEO;
+    // SAFETY: lookups in libavformat's static tag tables, ended by the null
+    // pointer the call expects.
+    let riff = |of_tag: Option<u32>| unsafe {
+        let tables = [ff::ffi::avformat_get_riff_video_tags(), std::ptr::null()];
+        match of_tag {
+            Some(tag) => ff::ffi::av_codec_get_id(tables.as_ptr(), tag) == id.into(),
+            None => ff::ffi::av_codec_get_tag(tables.as_ptr(), id.into()) != 0,
+        }
+    };
+    match family {
+        "avi" if raw => {
+            // Kept as it is: the recording's own AVI fourcc, or an AVI's own
+            // fourcc-less RGB (its palette in the stream's header).
+            let kept = tag != 0 && riff(Some(tag));
+            let bare = tag == 0 && is(&[F::AV_PIX_FMT_PAL8]);
+            // What an AVI with no fourcc reads the samples as.
+            let as_read = is(&[F::AV_PIX_FMT_BGR24, F::AV_PIX_FMT_BGRA, F::AV_PIX_FMT_RGB555LE]);
+            (!(kept || bare || as_read)).then_some(
+                "an AVI names the layout of uncompressed pictures by a fourcc, and has none for \
+                 these, so they would be read back in another layout",
+            )
+        }
+        // AV1 has a fourcc and the muxer still turns it away, with
+        // "Operation not permitted".
+        "avi" if !riff(None) || id == ff::codec::Id::AV1 => Some(
+            "an AVI names its pictures by a fourcc and has none for these, so they would be read \
+             back as uncompressed pictures",
+        ),
+        "mov" if raw
+            && !is(&[
+                F::AV_PIX_FMT_YUYV422,
+                F::AV_PIX_FMT_UYVY422,
+                F::AV_PIX_FMT_RGB555BE,
+                F::AV_PIX_FMT_RGB555LE,
+                F::AV_PIX_FMT_RGB565LE,
+                F::AV_PIX_FMT_RGB565BE,
+                F::AV_PIX_FMT_GRAY16BE,
+                F::AV_PIX_FMT_RGB24,
+                F::AV_PIX_FMT_BGR24,
+                F::AV_PIX_FMT_ARGB,
+                F::AV_PIX_FMT_BGRA,
+                F::AV_PIX_FMT_RGBA,
+                F::AV_PIX_FMT_ABGR,
+                F::AV_PIX_FMT_RGB48BE,
+                F::AV_PIX_FMT_PAL8,
+                F::AV_PIX_FMT_MONOWHITE,
+            ]) =>
+        {
+            Some(
+                "a QuickTime file has no layout for uncompressed pictures of this kind, so they \
+                 would be read back in another one",
+            )
+        }
+        _ => None,
     }
 }
 
@@ -310,6 +403,34 @@ mod tests {
         for codec in ["aac", "eac3", "opus", "vorbis", "flac", "pcm_s24be", "pcm_s16le", "truehd"] {
             assert!(!holds("ps", codec), "{codec}");
         }
+    }
+
+    #[test]
+    fn what_a_fourcc_decides() {
+        use ff::codec::Id;
+        use ff::ffi::AVPixelFormat as F;
+        let tag = |t: &[u8; 4]| u32::from_le_bytes(*t);
+        assert_eq!(family("x.AVI"), "avi");
+        // An AVI: no fourcc for these codecs; one for these.
+        for id in [Id::PRORES, Id::DNXHD, Id::HAP, Id::HEVC, Id::QTRLE, Id::AV1] {
+            assert!(pictures_refused("avi", id, 0, 0).is_some(), "{id:?}");
+        }
+        for id in [Id::H264, Id::MPEG4, Id::MJPEG, Id::UTVIDEO, Id::FFV1, Id::DVVIDEO] {
+            assert!(pictures_refused("avi", id, 0, 0).is_none(), "{id:?}");
+        }
+        // Uncompressed: kept under an AVI fourcc, or read back as it was.
+        let raw = |fam, f: F, t| pictures_refused(fam, Id::RAWVIDEO, f as i32, t);
+        assert!(raw("avi", F::AV_PIX_FMT_YUV420P, tag(b"I420")).is_none());
+        assert!(raw("avi", F::AV_PIX_FMT_UYVY422, tag(b"2vuy")).is_none());
+        assert!(raw("avi", F::AV_PIX_FMT_BGR24, tag(b"24BG")).is_none());
+        assert!(raw("avi", F::AV_PIX_FMT_PAL8, 0).is_none());
+        assert!(raw("avi", F::AV_PIX_FMT_RGB24, tag(b"raw ")).is_some());
+        assert!(raw("avi", F::AV_PIX_FMT_PAL8, tag(b"raw ")).is_some());
+        assert!(raw("mov", F::AV_PIX_FMT_RGB24, 0).is_none());
+        assert!(raw("mov", F::AV_PIX_FMT_YUV420P, tag(b"I420")).is_some());
+        assert!(raw("mov", F::AV_PIX_FMT_GRAY8, tag(b"Y800")).is_some());
+        assert!(raw("mkv", F::AV_PIX_FMT_YUV420P, 0).is_none() && !holds("mkv", "rawvideo"));
+        assert!(!holds("mkv", "qtrle") && holds("mov", "qtrle"));
     }
 
     #[test]

@@ -103,20 +103,41 @@ pub(crate) fn matrices(frame: &ff::frame::Video, master: &crate::VideoInfo) -> O
             _ => None,
         }
     };
-    let yuv = |p: ff::format::Pixel| unsafe {
+    let flags = |p: ff::format::Pixel| unsafe {
         let d = ff::ffi::av_pix_fmt_desc_get(p.into());
-        !d.is_null()
-            && (*d).nb_components >= 3
-            && (*d).flags & (ff::ffi::AV_PIX_FMT_FLAG_RGB as u64) == 0
+        (!d.is_null() && (*d).nb_components >= 3).then(|| (*d).flags)
     };
+    let rgb = |f: u64| f & (ff::ffi::AV_PIX_FMT_FLAG_RGB as u64) != 0;
     let want = pixels_of(master).unwrap_or(frame.format());
-    if !yuv(frame.format()) || !yuv(want) {
+    let (Some(have), Some(wanted)) = (flags(frame.format()), flags(want)) else {
         return None;
+    };
+    let bt601 = S::AVCOL_SPC_SMPTE170M as i32;
+    // **RGB has no matrix, and the YUV on the other side of it has one.** A
+    // QuickTime Animation or PNG reel (RGB) joined onto a high-definition
+    // master went into its YUV through libswscale's BT.601 and was shown
+    // through BT.709 -- a pure green a sixth darker, red 255,25,0 -- and a
+    // high-definition reel went into an RGB master through BT.601 the same
+    // way. Both sides are given the YUV side's matrix (libswscale reads the
+    // one it needs); BT.601 is its own default and is left to it.
+    match (rgb(have), rgb(wanted)) {
+        (true, true) => None,
+        (true, false) => {
+            let to = read(master.shape.matrix, master.width, master.height)?;
+            (to != bt601).then_some((to, to))
+        }
+        (false, true) => {
+            let space = unsafe { (*frame.as_ptr()).colorspace as i32 };
+            let from = read(space, frame.width(), frame.height())?;
+            (from != bt601).then_some((from, from))
+        }
+        (false, false) => {
+            let space = unsafe { (*frame.as_ptr()).colorspace as i32 };
+            let from = read(space, frame.width(), frame.height())?;
+            let to = read(master.shape.matrix, master.width, master.height)?;
+            (from != to).then_some((from, to))
+        }
     }
-    let space = unsafe { (*frame.as_ptr()).colorspace as i32 };
-    let from = read(space, frame.width(), frame.height())?;
-    let to = read(master.shape.matrix, master.width, master.height)?;
-    (from != to).then_some((from, to))
 }
 
 /// Tell a scaler both matrices of [`matrices`], and both ranges, as
@@ -211,6 +232,13 @@ fn pictures_afresh(
         .ok_or_else(|| anyhow!("no video stream in {}", src.path))?;
     let in_tb = f64::from(stream.time_base());
     let params = stream.parameters();
+    // The sets in force where the read opens, for a key picture that carries
+    // none: the reel's range may lie in the second of two encodes spliced
+    // together, past the IDR that restated its sets, and read by the
+    // record's -- the first encode's -- it was decoded to grey (a conformed
+    // join, 182 packets "damaged"). See [`crate::preview::InForce`]; the
+    // cut's own re-encode asks the same ([`reencode_segment`]).
+    let mut in_force = crate::preview::InForce::single(&params, &src.video);
 
     let mut decoder = crate::video_decoder(params)?;
     // Which masters lay a reel's pictures at their own instants; see below.
@@ -556,7 +584,7 @@ fn pictures_afresh(
     // See [`crate::input::LateFrames`], as in the cut's own segments.
     let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
     let mut packets = ictx.read_packets();
-    for (stream, packet) in packets.by_ref() {
+    for (stream, mut packet) in packets.by_ref() {
         let index = stream.index();
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
@@ -585,6 +613,7 @@ fn pictures_afresh(
             }
             continue;
         }
+        in_force.see(&packet);
         // As in [`reencode_segment`]: a converted subtitle's stop is written
         // as the pictures pass it, not when the next unit is read. A DVD
         // master's stretch inside a long transition comes through here, and
@@ -646,6 +675,9 @@ fn pictures_afresh(
         if !run_up.passes(&packet, in_tb, src.start_time) {
             continue;
         }
+        in_force.mend(&mut packet, &mut |at, record| {
+            Some(crate::preview::sets_before(src, at, record))
+        });
         if decoder.send_packet(&packet).is_err() {
             let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
             if keyed || at.is_none_or(|t| t >= seg.start - slack) {
@@ -809,6 +841,14 @@ fn reshape(
     into: &Shaped,
     rescale: &mut Option<Rescale>,
 ) -> Result<ff::frame::Video> {
+    // A palette reel's colours looked up first, and on as an RGB reel: see
+    // [`crate::blend::palette_as_rgba`]. Into a palette master it cannot go
+    // whichever it is, as before.
+    let looked_up = match master_pixels(into) {
+        Some(p) if p != ff::format::Pixel::PAL8 => crate::blend::palette_as_rgba(frame),
+        _ => None,
+    };
+    let frame = looked_up.as_ref().unwrap_or(frame);
     let want = master_pixels(into).unwrap_or(frame.format());
     // Whether the samples are full range, the picture's and the master's.
     // A clip on the other side from the master is converted on the way
@@ -822,6 +862,14 @@ fn reshape(
         return Ok(frame.clone());
     }
     if rescale.as_ref().is_none_or(|r| r.was != have || r.matrices != swap) {
+        // libswscale makes no palette: said so, rather than "cannot convert
+        // ... to PAL8 ... between ranges".
+        if want == ff::format::Pixel::PAL8 {
+            bail!(
+                "pictures cannot be written afresh into a palette (PAL8) master such as \
+                 this one: join onto a recording in another pixel format"
+            );
+        }
         let mut ctx = crate::blend::Scaler::new(
             (have.0, have.1, have.2, full_in),
             (into.video.width, into.video.height, want, full_out),
@@ -873,7 +921,7 @@ fn retouched(
     what: crate::plan::Retouch,
     through: f64,
     elapsed: f64,
-    far: Option<&mut FarSide>,
+    far: Option<&mut FarSide<'_>>,
     into: &Shaped,
 ) -> Result<()> {
     use crate::transition::Crossing;
@@ -919,7 +967,9 @@ fn retouched(
 /// that was on screen at each of them, which is exactly what reading
 /// forwards and holding the last one gives. The one read ahead is what says
 /// when the held one stops being the answer.
-struct FarSide {
+struct FarSide<'s> {
+    /// The clip, for what is in force where it is read (`in_force`).
+    src: &'s Source,
     ictx: crate::input::Demux,
     ist: usize,
     decoder: ff::decoder::Video,
@@ -947,16 +997,20 @@ struct FarSide {
     /// reordered picture it was holding, and stopping at the first of them
     /// leaves the rest unread.
     drained: bool,
+    /// The H.264 sets in force where the clip is read, for a key picture
+    /// that carries none. See [`crate::preview::InForce`].
+    in_force: crate::preview::InForce,
 }
 
-impl FarSide {
-    fn open(src: &Source, from: f64) -> Result<FarSide> {
+impl<'s> FarSide<'s> {
+    fn open(src: &'s Source, from: f64) -> Result<FarSide<'s>> {
         let (mut ictx, ist) = open_input(&src.input.url)?;
         let stream = ictx
             .stream(ist)
             .ok_or_else(|| anyhow!("no video stream in {}", src.path))?;
         let in_tb = f64::from(stream.time_base());
         let params = stream.parameters();
+        let in_force = crate::preview::InForce::single(&params, &src.video);
         let decoder = crate::video_decoder(params)?;
         // Back a little, because the picture wanted at the crossing's first
         // instant is the one standing there, and it may have been coded
@@ -964,6 +1018,7 @@ impl FarSide {
         seek_to(&mut ictx, src, (from - src.seek_margin).max(0.0))?;
         crate::input::keep_only(&mut ictx, &[ist]);
         Ok(FarSide {
+            src,
             ictx,
             ist,
             decoder,
@@ -984,6 +1039,7 @@ impl FarSide {
             rescale: None,
             spent: false,
             drained: false,
+            in_force,
         })
     }
 
@@ -1027,7 +1083,7 @@ impl FarSide {
                 let read = packets.next().map(|(stream, packet)| (stream.index(), packet));
                 (read, packets.finished())
             };
-            let Some((index, packet)) = read else {
+            let Some((index, mut packet)) = read else {
                 // A read that failed is not the end of the clip: taken for
                 // one, the crossing froze on the last picture it had and the
                 // cut said it had succeeded. See [`crate::input::Packets`].
@@ -1044,11 +1100,16 @@ impl FarSide {
             if index != self.ist {
                 continue;
             }
+            self.in_force.see(&packet);
             // A packet the decoder will not take is not a reason to stop
             // the cut; see [`reencode_segment`].
             if !self.run_up.passes(&packet, self.in_tb, self.start_time) {
                 continue;
             }
+            let src = self.src;
+            self.in_force.mend(&mut packet, &mut |at, record| {
+                Some(crate::preview::sets_before(src, at, record))
+            });
             let _ = self.decoder.send_packet(&packet);
         }
     }

@@ -659,6 +659,122 @@ fn channel_mut(frame: &mut ff::frame::Audio, ch: usize) -> &mut [f32] {
     }
 }
 
+/// Thirty-two bit integer PCM, the one sound these planar float buffers
+/// cannot hold sample for sample: a float keeps 24 bits of it.
+///
+/// **What it costs where nothing about the sound changes.** A 32-bit track
+/// written the other way round (an `.mov`'s little-endian samples into an
+/// `.aiff` or a `.caf`), and the frames a smart cut rewrites at a boundary of
+/// one, went through the float buffers and came out with the bottom eight
+/// bits rounded off while still saying 32 bit: not one sample of a two range
+/// `.aiff` the same as the recording's. So the samples are carried beside the
+/// float ones as integers ([`Wide`]) and the encoder is fed those, wherever
+/// the track is read and written as 32-bit PCM at its own rate and in its own
+/// channels.
+fn int32_pcm(id: ff::codec::Id) -> bool {
+    matches!(id, ff::codec::Id::PCM_S32LE | ff::codec::Id::PCM_S32BE)
+}
+
+/// One plane per channel of 32-bit samples, beside a [`Pcm`] of the same
+/// samples as floats. See [`int32_pcm`].
+type Ints = Vec<Vec<i32>>;
+
+/// `[a, b)` of a decoded frame's samples as integers, onto `into`, where the
+/// frame holds them as 32-bit integers in `into`'s channels -- and where they
+/// are the same samples as `floats` holds from `at` on (which is what makes
+/// sure no channel was moved on the way into those): false and nothing taken
+/// otherwise.
+fn take_ints(
+    frame: &ff::frame::Audio,
+    into: &mut Ints,
+    range: (usize, usize),
+    floats: &Pcm,
+    at: usize,
+) -> bool {
+    let channels = into.len();
+    let (a, b) = range;
+    if !matches!(frame.format(), ff::format::Sample::I32(_))
+        || frame.channels() as usize != channels
+        || b > frame.samples()
+        || floats.len() < channels
+    {
+        return false;
+    }
+    let planar = frame.is_planar();
+    let value = |ch: usize, i: usize| unsafe {
+        if planar {
+            *(*(*frame.as_ptr()).extended_data.add(ch) as *const i32).add(i)
+        } else {
+            *((*frame.as_ptr()).data[0] as *const i32).add(i * channels + ch)
+        }
+    };
+    // As swresample turns them into floats.
+    let same = (0..channels).all(|ch| {
+        floats[ch].len() >= at + (b - a)
+            && (a..b).all(|i| value(ch, i) as f32 * (1.0 / 2_147_483_648.0) == floats[ch][at + i - a])
+    });
+    if !same {
+        return false;
+    }
+    for (ch, buf) in into.iter_mut().enumerate() {
+        buf.extend((a..b).map(|i| value(ch, i)));
+    }
+    true
+}
+
+/// A sample at a fade's gain, as the float buffers ride it.
+fn scaled(v: i32, gain: f32) -> i32 {
+    if gain >= 1.0 {
+        v
+    } else if gain <= 0.0 {
+        0
+    } else {
+        (f64::from(v) * f64::from(gain)).round() as i32
+    }
+}
+
+/// A frame of `n` integer samples from `at` in each of `planes`, in the
+/// 32-bit format `format` names; `None` for any other format.
+fn int_frame(
+    planes: &Ints,
+    at: usize,
+    n: usize,
+    layout: ff::channel_layout::ChannelLayout,
+    format: ff::format::Sample,
+    rate: u32,
+) -> Option<ff::frame::Audio> {
+    if !matches!(format, ff::format::Sample::I32(_)) {
+        return None;
+    }
+    let channels = planes.len();
+    let mut frame = ff::frame::Audio::new(format, n, layout);
+    frame.set_rate(rate);
+    unsafe {
+        if frame.is_planar() {
+            for (ch, plane) in planes.iter().enumerate() {
+                let data = *(*frame.as_mut_ptr()).extended_data.add(ch) as *mut i32;
+                std::slice::from_raw_parts_mut(data, n).copy_from_slice(&plane[at..at + n]);
+            }
+        } else {
+            let data = std::slice::from_raw_parts_mut((*frame.as_mut_ptr()).data[0] as *mut i32, n * channels);
+            for (ch, plane) in planes.iter().enumerate() {
+                for i in 0..n {
+                    data[i * channels + ch] = plane[at + i];
+                }
+            }
+        }
+    }
+    Some(frame)
+}
+
+/// The integers a [`Reencoder`] carries beside its float buffers, one for
+/// each of them. See [`int32_pcm`].
+struct Wide {
+    stage: Ints,
+    pending: Ints,
+    ready: Ints,
+}
+
 /// The decoder a [`Reencoder`] reads a track with, told the time base its
 /// packets are stamped in.
 ///
@@ -772,6 +888,11 @@ pub struct Reencoder {
     /// header on an empty packet at the end (FLAC's). See `collect`.
     held: Option<(ff::Packet, i64)>,
     restates: bool,
+    /// The same samples as integers, where the track is 32-bit PCM written as
+    /// 32-bit PCM. Given up (and the floats used from there on, which hold
+    /// the same samples) the moment anything would change them other than a
+    /// fade. See [`int32_pcm`].
+    wide: Option<Wide>,
 }
 
 /// How many samples late an encoder's output is beyond the delay it declares.
@@ -845,6 +966,17 @@ impl Reencoder {
         } else {
             0
         };
+        let wide = (int32_pcm(params.id())
+            && int32_pcm(encoder_for(target))
+            && matches!(enc_format, ff::format::Sample::I32(_))
+            && out_rate == audio.sample_rate
+            && channels == audio.channels
+            && framing.is_none())
+        .then(|| Wide {
+            stage: vec![Vec::new(); channels as usize],
+            pending: vec![Vec::new(); channels as usize],
+            ready: vec![vec![0; lead as usize]; channels as usize],
+        });
         // Planar float in and planar float out: the resampler is here to
         // change the rate and nothing else, because the channels have
         // already been put right per frame on the way in and the encoder's
@@ -895,6 +1027,7 @@ impl Reencoder {
             hidden: undeclared_delay(target),
             held: None,
             restates: encoder_for(target) == ff::codec::Id::FLAC,
+            wide,
         })
     }
 
@@ -920,6 +1053,9 @@ impl Reencoder {
     /// What is kept is everything that describes the output -- the encoder,
     /// the count, and the samples already decoded and not yet framed.
     pub fn retune(&mut self, params: ff::codec::Parameters, audio: &AudioInfo) -> Result<()> {
+        if !int32_pcm(params.id()) || audio.sample_rate != self.sample_rate {
+            self.wide = None;
+        }
         self.decoder = track_decoder(params, audio)?;
         self.last_pts = None;
         self.last_pos = -1;
@@ -1165,7 +1301,8 @@ impl Reencoder {
             self.layout,
             PLANAR_F32,
         )?;
-        let src = if src.rate() > 0 && src.rate() != self.sample_rate {
+        let rerated = src.rate() > 0 && src.rate() != self.sample_rate;
+        let src = if rerated {
             rerate(&mut self.rerate, &mut self.rerated, src, self.sample_rate)?
         } else {
             src
@@ -1177,6 +1314,13 @@ impl Reencoder {
         let a = ((lo - first) as usize).min(have);
         let b = ((hi - first) as usize).min(have);
         take_samples(src, self.channels, &mut self.stage, (a, b));
+        // And as integers, from the frame as it was decoded.
+        if let Some(w) = self.wide.as_mut() {
+            let at = self.stage[0].len() - (b - a);
+            if rerated || !take_ints(frame, &mut w.stage, (a, b), &self.stage, at) {
+                self.wide = None;
+            }
+        }
         // The fade rides on the samples as they are taken, before the
         // resampler and before the encoder: what is asked for is a shape
         // on the recording's sound, and this is the last place the sound
@@ -1189,6 +1333,14 @@ impl Reencoder {
                 let held = ch.len();
                 fade_run(&mut ch[held - added..], first + a as i64, (opens, window.1), head);
             }
+            if let Some(w) = self.wide.as_mut() {
+                for ch in w.stage.iter_mut() {
+                    let held = ch.len();
+                    for (i, v) in ch[held - added..].iter_mut().enumerate() {
+                        *v = scaled(*v, fade_gain(first + (a + i) as i64, (opens, window.1), head));
+                    }
+                }
+            }
         }
         self.spill();
         Ok(())
@@ -1198,6 +1350,11 @@ impl Reencoder {
     fn silence(&mut self, samples: usize) {
         for ch in self.stage.iter_mut().take(self.channels) {
             ch.extend(std::iter::repeat_n(0.0, samples));
+        }
+        if let Some(w) = self.wide.as_mut() {
+            for ch in w.stage.iter_mut() {
+                ch.extend(std::iter::repeat_n(0, samples));
+            }
         }
         self.spill();
     }
@@ -1212,6 +1369,12 @@ impl Reencoder {
         for ch in 0..self.channels {
             let out: Vec<f32> = self.stage[ch].drain(..len - keep).collect();
             self.pending[ch].extend(out);
+        }
+        if let Some(w) = self.wide.as_mut() {
+            for ch in 0..self.channels {
+                let out: Vec<i32> = w.stage[ch].drain(..len - keep).collect();
+                w.pending[ch].extend(out);
+            }
         }
     }
 
@@ -1233,11 +1396,24 @@ impl Reencoder {
                 for ch in self.stage.iter_mut().take(self.channels) {
                     fade_run(ch, first, (from, self.next), fades);
                 }
+                if let Some(w) = self.wide.as_mut() {
+                    for ch in w.stage.iter_mut() {
+                        for (i, v) in ch.iter_mut().enumerate() {
+                            *v = scaled(*v, fade_gain(first + i as i64, (from, self.next), fades));
+                        }
+                    }
+                }
             }
         }
         for ch in 0..self.channels {
             let out = std::mem::take(&mut self.stage[ch]);
             self.pending[ch].extend(out);
+        }
+        if let Some(w) = self.wide.as_mut() {
+            for ch in 0..self.channels {
+                let out = std::mem::take(&mut w.stage[ch]);
+                w.pending[ch].extend(out);
+            }
         }
     }
 
@@ -1296,8 +1472,16 @@ impl Reencoder {
                 let taken = std::mem::take(&mut self.pending[ch]);
                 self.ready[ch].extend(taken);
             }
+            if let Some(w) = self.wide.as_mut() {
+                for ch in 0..self.channels {
+                    let taken = std::mem::take(&mut w.pending[ch]);
+                    w.ready[ch].extend(taken);
+                }
+            }
             return Ok(());
         };
+        // Resampled, the samples are no longer the recording's.
+        self.wide = None;
         let n = self.pending[0].len();
         let mut input = ff::frame::Audio::new(PLANAR_F32, n, self.layout);
         input.set_rate(self.sample_rate);
@@ -1366,6 +1550,17 @@ impl Reencoder {
                 channel_mut(&mut frame, ch)[..size].copy_from_slice(&self.ready[ch][at..at + size]);
             }
             frame.set_pts(Some(self.fed));
+            let ints = self
+                .wide
+                .as_ref()
+                .and_then(|w| int_frame(&w.ready, at, size, self.layout, self.enc_format, self.out_rate));
+            if let Some(mut ints) = ints {
+                ints.set_pts(Some(self.fed));
+                self.fed += self.frame_size as i64;
+                self.encoder.send_frame(&ints)?;
+                self.collect(out)?;
+                continue;
+            }
             self.fed += self.frame_size as i64;
             let feed = conform(
                 &mut self.to_encoder,
@@ -1379,6 +1574,11 @@ impl Reencoder {
         }
         for ch in 0..self.channels {
             self.ready[ch].drain(..whole * size);
+        }
+        if let Some(w) = self.wide.as_mut() {
+            for ch in w.ready.iter_mut() {
+                ch.drain(..whole * size);
+            }
         }
         Ok(())
     }
@@ -1398,6 +1598,11 @@ impl Reencoder {
                 for ch in 0..self.channels {
                     self.ready[ch].extend(std::iter::repeat_n(0.0, short));
                 }
+                if let Some(w) = self.wide.as_mut() {
+                    for ch in w.ready.iter_mut() {
+                        ch.extend(std::iter::repeat_n(0, short));
+                    }
+                }
             } else {
                 // Nothing to pad up to. The tail goes out at its own length,
                 // so the track ends where the recording did rather than up to
@@ -1413,6 +1618,11 @@ impl Reencoder {
         if self.hidden > 0 {
             for ch in 0..self.channels {
                 self.ready[ch].extend(std::iter::repeat_n(0.0, self.hidden as usize));
+            }
+            if let Some(w) = self.wide.as_mut() {
+                for ch in w.ready.iter_mut() {
+                    ch.extend(std::iter::repeat_n(0, self.hidden as usize));
+                }
             }
             self.drain(out)?;
         }
@@ -1670,6 +1880,8 @@ struct Decoded {
     /// be mono where the programme is stereo -- see [`foreign_reach`].
     shape: (u16, u32),
     pcm: Pcm,
+    /// The same samples as integers, for 32-bit PCM. See [`int32_pcm`].
+    wide: Option<Ints>,
 }
 
 impl Decoded {
@@ -2244,6 +2456,12 @@ fn decode_on(
             let n = floats.samples();
             let mut pcm: Pcm = vec![Vec::with_capacity(n); channels];
             take_samples(floats, channels, &mut pcm, (0, n));
+            let wide = int32_pcm(params.id())
+                .then(|| {
+                    let mut ints: Ints = vec![Vec::with_capacity(n); channels];
+                    (frame.samples() == n && take_ints(&frame, &mut ints, (0, n), &pcm, 0)).then_some(ints)
+                })
+                .flatten();
             held += pcm.first().map_or(0, Vec::len) as i64;
             frames.push(Decoded {
                 pts,
@@ -2251,6 +2469,7 @@ fn decode_on(
                 bytes,
                 shape,
                 pcm,
+                wide,
             });
             if t > at {
                 past += 1;
@@ -2585,6 +2804,27 @@ fn patch_run(
         }
     }
 
+    // And as integers, where the run is 32-bit PCM: the same silence and the
+    // same fades, on the recording's own samples. See [`int32_pcm`].
+    let wide: Option<Ints> = (int32_pcm(params.id())
+        && lead_in == 0
+        && matches!(enc_format, ff::format::Sample::I32(_))
+        && run.iter().all(|f| f.wide.as_ref().is_some_and(|w| w.len() == channels)))
+    .then(|| {
+        let mut planes: Ints = vec![Vec::with_capacity(run.len() * size); channels];
+        for f in run {
+            let mut gain = vec![1.0f32; f.len()];
+            mask(&mut gain, f.first, window);
+            fade_run(&mut gain, f.first, window, fades);
+            let ints = f.wide.as_ref().expect("checked above");
+            for (ch, buf) in planes.iter_mut().enumerate() {
+                buf.extend(ints[ch].iter().zip(&gain).map(|(&v, &g)| scaled(v, g)));
+            }
+        }
+        planes
+    })
+    .filter(|w| w[0].len() == fed[0].len());
+
     let total = fed[0].len();
     let mut got: Vec<(i64, Vec<u8>)> = Vec::new();
     let mut at = 0usize;
@@ -2600,7 +2840,16 @@ fn patch_run(
             channel_mut(&mut frame, ch)[..n].copy_from_slice(&buf[at..at + n]);
         }
         frame.set_pts(Some(at as i64));
+        let ints = wide
+            .as_ref()
+            .and_then(|w| int_frame(w, at, n, enc_layout, enc_format, audio.sample_rate));
         at += n;
+        if let Some(mut ints) = ints {
+            ints.set_pts(frame.pts());
+            encoder.send_frame(&ints)?;
+            collect_patch(&mut encoder, &mut got)?;
+            continue;
+        }
         let feed = conform(
             &mut to_encoder,
             &mut feeding,
@@ -2922,6 +3171,7 @@ mod tests {
             bytes: 0,
             shape,
             pcm: vec![vec![1.0; n]],
+            wide: None,
         }
     }
 
@@ -3185,6 +3435,7 @@ mod tests {
             bytes,
             shape: (6, 48_000),
             pcm: vec![vec![0.0; 1536]],
+            wide: None,
         };
         // 1792 bytes of a 1536 sample frame at 48 kHz is 448 kbit/s, which
         // is what the frames of a 5.1 AC-3 track are.

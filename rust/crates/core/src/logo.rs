@@ -198,9 +198,31 @@ fn crop(frame: &ff::frame::Video, corner: Corner, cw: usize, ch: usize, out: &mu
     }
 }
 
+/// Whether the decoder said this picture is not what was broadcast.
+///
+/// A damaged entry picture is concealed from whatever buffer the decoder
+/// has at hand after the flush that precedes it (see [`crate::entrypool`]),
+/// which is not the same buffer from one run to the next. On a smeared CS
+/// recording -- most of its key pictures damaged -- the corners summed to a
+/// different template every run, and four runs gave four answers: a logo
+/// top right, another strength of it, a corner with nothing in it, no logo.
+/// Left out of both passes, a picture the decoder flagged is neither summed
+/// into the template nor scored, and the answer is the recording's own.
+fn damaged(frame: &ff::frame::Video) -> bool {
+    // SAFETY: reads two plain fields of the frame the decoder just filled,
+    // as verify.rs does.
+    unsafe {
+        let f = frame.as_ptr();
+        ((*f).flags & ff::ffi::AV_FRAME_FLAG_CORRUPT) != 0 || (*f).decode_error_flags != 0
+    }
+}
+
 /// All four corners of one picture, at full size. What the first pass
 /// averages.
 fn corners_of(frame: &ff::frame::Video, cw: usize, ch: usize) -> Option<Vec<Vec<u8>>> {
+    if damaged(frame) {
+        return None;
+    }
     if (frame.width() as usize) < cw || (frame.height() as usize) < ch {
         return None;
     }
@@ -230,7 +252,7 @@ fn wanted_of(
     wanted: &[Vec<usize>],
 ) -> Option<Vec<Vec<u8>>> {
     let (w, h) = (frame.width() as usize, frame.height() as usize);
-    if w < cw || h < ch {
+    if w < cw || h < ch || damaged(frame) {
         return None;
     }
     let luma = crate::Luma8::of(frame);
@@ -289,6 +311,10 @@ fn walk_keyframes<T: Send + 'static>(
         .stream(idx)
         .ok_or_else(|| anyhow!("video stream vanished"))?
         .parameters();
+    // Each entry picture may go to any decoder of the pool, and a run placed
+    // past the IDR the second of two spliced encodes restated its sets on was
+    // decoded by the first one's: see [`crate::preview::InForce`].
+    let mut in_force = crate::preview::InForce::pool(&params, &src.video);
     let mut pool = crate::entrypool::Pool::new(
         params,
         &src.video,
@@ -337,6 +363,7 @@ fn walk_keyframes<T: Send + 'static>(
             if !src.on_a_ts {
                 landed = crate::preview::Landed::at(src, entry);
             }
+            in_force.restart();
         }
         // A seek leaves whatever was half sent behind it.
         pending.clear();
@@ -349,7 +376,14 @@ fn walk_keyframes<T: Send + 'static>(
                 continue;
             }
             crate::preview::Landed::mend(&mut landed, &mut packet, src);
-            match entries.step(&packet) {
+            in_force.see(&packet);
+            let step = entries.step(&packet);
+            if step != crate::Step::Skip {
+                in_force.mend(&mut packet, &mut |at, record| {
+                    Some(crate::preview::sets_before(src, at, record))
+                });
+            }
+            match step {
                 crate::Step::Skip => continue,
                 crate::Step::Half => pending.push(packet),
                 crate::Step::Whole => {

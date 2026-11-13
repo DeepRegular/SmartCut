@@ -940,6 +940,39 @@ pub mod write {
         /// come down -- `None` where nothing said, which leaves it standing
         /// until the next one or the end of the range.
         standing: Option<(Window, Option<f64>)>,
+        /// When the standing picture went up. A DVD's unit can put its
+        /// picture up some way after its own time (see
+        /// [`Composer::show_drawn`]), past the end of the range it was read
+        /// in: taken down at that end, the clear came before the picture it
+        /// clears, which then stood into the next range.
+        up_at: f64,
+        /// DVD units read but not yet up, their starts running at a delay of
+        /// their own, in the order they go up: each put up once the clock
+        /// reaches it (see [`Composer::due`]) or a later picture arrives,
+        /// and never where the range ends first.
+        /// Written at once, a picture going up past the end of its range had
+        /// its sets in front of the clear that ends it and of the next
+        /// range's first line, which the writer then held back behind them:
+        /// a DVD whose units start 1.0 s after they are handed over, `--keep
+        /// 80-84.5 --keep 86-95`, had the second range's opening line up
+        /// 0.57 s late, and the line before the late one standing past the
+        /// first range's end.
+        late: Vec<Late>,
+        /// How many pictures went up, for the note that counts them: one
+        /// held back and then dropped at a range's end is not in the cut.
+        put_ups: usize,
+    }
+
+    /// See [`Composer::late`]: the picture, owned, and when it goes up and
+    /// comes down.
+    #[derive(Debug)]
+    struct Late {
+        at: f64,
+        until: Option<f64>,
+        window: Window,
+        indices: Vec<u8>,
+        palette: Vec<(u8, u8, u8, u8)>,
+        forced: bool,
     }
 
     impl Composer {
@@ -952,7 +985,9 @@ pub mod write {
             until: Option<f64>,
             picture: &Picture,
         ) -> Vec<Held> {
-            self.put_up(screen, at, until, picture, false)
+            let mut out = self.release(screen, |up| up <= at);
+            out.extend(self.put_up(screen, at, until, picture, false));
+            out
         }
 
         /// [`Composer::show`] for a DVD's unit read at `at`, as the unit
@@ -974,7 +1009,48 @@ pub mod write {
                 palette: &drawn.palette,
             };
             let until = drawn.until.map(|d| at + d);
-            self.put_up(screen, at + drawn.from, until, &picture, drawn.forced)
+            // What is held back goes up by the clock, which is this unit's
+            // own time: not by when this one goes up, which would write one
+            // the range's end is still to drop.
+            let up = at + drawn.from;
+            let mut out = self.release(screen, |late| late <= at);
+            if drawn.from > 0.0 {
+                let k = self.late.partition_point(|l| l.at <= up);
+                self.late.insert(
+                    k,
+                    Late {
+                        at: up,
+                        until,
+                        window: (drawn.x, drawn.y, drawn.width, drawn.height),
+                        indices: drawn.indices.clone(),
+                        palette: drawn.palette.clone(),
+                        forced: drawn.forced,
+                    },
+                );
+                return out;
+            }
+            out.extend(self.put_up(screen, up, until, &picture, drawn.forced));
+            out
+        }
+
+        /// Put up, in turn, the pictures held back in [`Composer::late`]
+        /// whose time `goes` says has come.
+        fn release(&mut self, screen: (u16, u16), goes: impl Fn(f64) -> bool) -> Vec<Held> {
+            let mut out = Vec::new();
+            while self.late.first().is_some_and(|l| goes(l.at)) {
+                let late = self.late.remove(0);
+                let (x, y, width, height) = late.window;
+                let picture = Picture {
+                    x,
+                    y,
+                    width,
+                    height,
+                    indices: &late.indices,
+                    palette: &late.palette,
+                };
+                out.extend(self.put_up(screen, late.at, late.until, &picture, late.forced));
+            }
+            out
         }
 
         fn put_up(
@@ -989,17 +1065,47 @@ pub mod write {
             self.number = self.number.wrapping_add(1);
             out.extend(drawn_as(screen, self.number, at, picture, forced));
             self.standing = Some(((picture.x, picture.y, picture.width, picture.height), until));
+            self.up_at = at;
+            self.put_ups += 1;
             out
         }
 
+        /// How many pictures have gone up so far.
+        pub fn put_ups(&self) -> usize {
+            self.put_ups
+        }
+
         /// Take down whatever is standing, at the moment it was due or at
-        /// `at`, whichever comes first.
+        /// `at`, whichever comes first. A picture still to go up goes up
+        /// first if it does so before `at`, and is dropped otherwise: none
+        /// of it would be shown.
         pub fn take_down(&mut self, screen: (u16, u16), at: f64) -> Vec<Held> {
+            let mut out = self.release(screen, |up| up < at);
+            self.late.clear();
+            out.extend(self.clear(screen, at));
+            out
+        }
+
+        /// For a DVD's unit that only takes the last picture down, read at
+        /// `at`: what is standing comes down there, and a picture held back
+        /// to go up later still goes up at its own time. Not dropped as at a
+        /// range's end: the preview (`subs`) and the `.idx`/`.sub` beside the
+        /// cut, which keep the unit as it is, both show it.
+        pub fn stop(&mut self, screen: (u16, u16), at: f64) -> Vec<Held> {
+            let mut out = self.release(screen, |up| up <= at);
+            out.extend(self.clear(screen, at));
+            out
+        }
+
+        /// [`Composer::take_down`] of what is standing alone.
+        fn clear(&mut self, screen: (u16, u16), at: f64) -> Vec<Held> {
             let Some((window, until)) = self.standing.take() else {
                 return Vec::new();
             };
             self.number = self.number.wrapping_add(1);
-            let when = until.filter(|&u| u < at).unwrap_or(at);
+            // Never before it went up: a clear in front of its picture
+            // clears nothing.
+            let when = until.filter(|&u| u < at).unwrap_or(at).max(self.up_at);
             erase(screen, self.number, when, window)
         }
 
@@ -1015,15 +1121,19 @@ pub mod write {
         /// Asked as the pictures pass, it is written where it is due, and the
         /// numbering and the bytes are those `show` would have written.
         pub fn due(&mut self, screen: (u16, u16), now: f64) -> Vec<Held> {
+            // A picture held back until its own start goes up first, and
+            // takes down what it replaces as it would have written at once.
+            let mut out = self.release(screen, |up| up <= now);
             match self.standing {
-                Some((_, Some(until))) if until <= now => self.take_down(screen, until),
-                _ => Vec::new(),
+                Some((_, Some(until))) if until <= now => out.extend(self.clear(screen, until)),
+                _ => {}
             }
+            out
         }
 
-        /// Whether anything is on screen.
+        /// Whether anything is on screen, or held back to go up.
         pub fn standing(&self) -> bool {
-            self.standing.is_some()
+            self.standing.is_some() || !self.late.is_empty()
         }
 
         fn take_down_before(&mut self, screen: (u16, u16), at: f64) -> Vec<Held> {
@@ -1031,7 +1141,7 @@ pub mod write {
                 // The one that is up says when it goes, and it goes before
                 // this one arrives: an empty screen in between, as the disc
                 // had it.
-                Some((_, Some(until))) if until <= at => self.take_down(screen, until),
+                Some((_, Some(until))) if until <= at => self.clear(screen, until),
                 // Otherwise the new composition replaces it, which is what a
                 // fresh epoch means.
                 _ => {
@@ -1345,6 +1455,116 @@ mod tests {
         assert!((last[0].pts - 9.0).abs() < 1e-9);
         assert!(!composer.standing());
         assert!(composer.take_down((720, 480), 10.0).is_empty());
+        // One that goes up after the range it was read in has ended is
+        // cleared where it went up, not in front of it.
+        let late = composer.show((720, 480), 12.0, None, &picture(0));
+        assert_eq!(late.len(), 5);
+        let cleared = composer.take_down((720, 480), 11.0);
+        assert!((cleared[0].pts - 12.0).abs() < 1e-9, "{}", cleared[0].pts);
+    }
+
+    /// A DVD's unit whose start runs at a delay goes up when the clock gets
+    /// there, and not at all where the range ends before it does: the line
+    /// before it is taken down at the end, and nothing is written in front
+    /// of what comes next.
+    #[test]
+    fn a_late_start_waits_for_its_time() {
+        let screen = (720, 480);
+        let drawn = |from: f64| crate::vobsub::Drawn {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            indices: vec![1; 4],
+            palette: vec![(0, 0, 0, 0), (255, 255, 255, 255)],
+            until: None,
+            from,
+            forced: false,
+        };
+        let mut composer = write::Composer::default();
+        assert_eq!(composer.show_drawn(screen, 5.0, &drawn(0.0)).len(), 5);
+        // Read at 10.0, up at 11.0: the range ends at 10.5 first.
+        assert!(composer.show_drawn(screen, 10.0, &drawn(1.0)).is_empty());
+        let end = composer.take_down(screen, 10.5);
+        assert_eq!(end.len(), 3, "the line before it, cleared");
+        assert!(end.iter().all(|h| (h.pts - 10.5).abs() < 1e-9));
+        assert!(!composer.standing());
+        // Read at 20.0, up at 21.0, inside the range: up when due.
+        assert!(composer.show_drawn(screen, 20.0, &drawn(1.0)).is_empty());
+        assert!(composer.standing());
+        assert!(composer.due(screen, 20.9).is_empty());
+        let up = composer.due(screen, 21.0);
+        assert_eq!(up.len(), 5);
+        assert!((up[0].pts - 21.0).abs() < 1e-9);
+        // And the same bytes as one written at once.
+        let mut at_once = write::Composer::default();
+        at_once.show_drawn(screen, 5.0, &drawn(0.0));
+        at_once.take_down(screen, 10.5);
+        let now = at_once.show_drawn(screen, 21.0, &drawn(0.0));
+        let bytes = |sets: &[Held]| -> Vec<(u64, u64, Vec<u8>)> {
+            sets.iter().map(|h| (h.pts.to_bits(), h.dts.to_bits(), h.data.clone())).collect()
+        };
+        assert_eq!(bytes(&up), bytes(&now));
+        // One still waiting when a later one arrives that goes up sooner
+        // goes up at its own time, after it.
+        assert!(composer.show_drawn(screen, 30.0, &drawn(1.0)).is_empty());
+        let next = composer.show_drawn(screen, 30.5, &drawn(0.0));
+        assert_eq!(next.len(), 5);
+        assert!((next[0].pts - 30.5).abs() < 1e-9);
+        let then = composer.due(screen, 31.0);
+        assert_eq!(then.len(), 5);
+        assert!((then[0].pts - 31.0).abs() < 1e-9);
+        // Two waiting where the range ends: neither is written.
+        assert!(composer.show_drawn(screen, 32.0, &drawn(1.0)).is_empty());
+        assert!(composer.show_drawn(screen, 32.5, &drawn(1.0)).is_empty());
+        let end = composer.take_down(screen, 32.9);
+        assert_eq!(end.len(), 3);
+        assert!((end[0].pts - 32.9).abs() < 1e-9);
+        assert!(!composer.standing());
+        // And one up before the range ends is up, then cleared.
+        assert!(composer.show_drawn(screen, 40.0, &drawn(1.0)).is_empty());
+        let end = composer.take_down(screen, 42.0);
+        assert_eq!(end.len(), 8);
+        assert!((end[0].pts - 41.0).abs() < 1e-9 && (end[5].pts - 42.0).abs() < 1e-9);
+        // Up: at 5.0, 21.0, 30.5, 31.0, 41.0. The two dropped at 32.9 and
+        // the one at 11.0 are not counted.
+        assert_eq!(composer.put_ups(), 5);
+    }
+
+    /// A unit that only takes the last picture down clears what stands, and
+    /// leaves a picture held back to go up at its own time, as the preview
+    /// and the `.idx`/`.sub` beside the cut show it.
+    #[test]
+    fn a_stop_leaves_a_late_start_to_go_up() {
+        let screen = (720, 480);
+        let drawn = |from: f64| crate::vobsub::Drawn {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            indices: vec![1; 4],
+            palette: vec![(0, 0, 0, 0), (255, 255, 255, 255)],
+            until: None,
+            from,
+            forced: false,
+        };
+        let mut composer = write::Composer::default();
+        assert_eq!(composer.show_drawn(screen, 5.0, &drawn(0.0)).len(), 5);
+        assert!(composer.show_drawn(screen, 10.0, &drawn(1.0)).is_empty());
+        let stop = composer.stop(screen, 10.5);
+        assert_eq!(stop.len(), 3, "the line before it, cleared");
+        assert!((stop[0].pts - 10.5).abs() < 1e-9);
+        assert!(composer.standing(), "still to go up");
+        let up = composer.due(screen, 11.0);
+        assert_eq!(up.len(), 5);
+        assert!((up[0].pts - 11.0).abs() < 1e-9);
+        // One due by then goes up first and is cleared at the stop.
+        assert!(composer.show_drawn(screen, 20.0, &drawn(0.2)).is_empty());
+        let stop = composer.stop(screen, 20.5);
+        assert_eq!(stop.len(), 8);
+        assert!((stop[0].pts - 20.2).abs() < 1e-9 && (stop[5].pts - 20.5).abs() < 1e-9);
+        assert!(!composer.standing());
+        assert_eq!(composer.put_ups(), 3);
     }
 
     /// A picture that says when it goes is taken down once the clock has
@@ -1508,7 +1728,9 @@ mod tests {
         };
         let screen = (720, 480);
         let mut composer = write::Composer::default();
-        let set = composer.show_drawn(screen, 10.0, &drawn);
+        // Held back until the clock reaches its start.
+        assert!(composer.show_drawn(screen, 10.0, &drawn).is_empty());
+        let set = composer.due(screen, 10.5);
         assert!((set[0].pts - 10.5).abs() < 1e-9);
         let (_, body) = segments(&set[0].data).next().unwrap();
         assert_eq!(body[14], 0x40, "the object is forced");

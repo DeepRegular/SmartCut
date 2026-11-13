@@ -160,8 +160,10 @@ pub fn mount_of(share: &Share) -> Option<PathBuf> {
 /// The mount of the whole of `share` among `all`, on a host `same` takes for
 /// the share's.
 fn whole_share(all: &[Mount], share: &Share, same: &dyn Fn(&str) -> bool) -> Option<PathBuf> {
+    // The share's name first: `same` can be a lookup of every name a mount
+    // is listed under, and only a mount of this share needs one.
     all.iter()
-        .find(|m| same(&m.host) && eq_ci(&m.share, &share.share))
+        .find(|m| eq_ci(&m.share, &share.share) && same(&m.host))
         .map(|m| m.at.clone())
 }
 
@@ -252,7 +254,10 @@ pub fn local(share: &Share) -> Result<PathBuf> {
         return Ok(under(at));
     }
     all.iter()
-        .filter(|m| machine.is(&m.host))
+        .filter(|m| {
+            m.share.split_once('/').is_some_and(|(name, _)| eq_ci(name, &share.share))
+                && machine.is(&m.host)
+        })
         .find_map(|m| {
             let named = Share {
                 host: m.host.clone(),
@@ -601,4 +606,25 @@ mod tests {
         assert!(eq_ci("NAS", "nas"));
         assert!(!eq_ci("nas2", "nas"));
     }
+
+    /// Only a mount of the share asked for is asked whether its host is the
+    /// share's machine: that question can be a name lookup apiece.
+    #[test]
+    fn only_the_share_s_mounts_are_looked_up() {
+        let mount = |host: &str, share: &str| Mount {
+            host: host.to_string(),
+            share: share.to_string(),
+            at: PathBuf::from(format!("/mnt/{share}")),
+        };
+        let all = [mount("a", "music"), mount("b", "photo"), mount("192.168.0.10", "rec")];
+        let share = parse("smb://nas/rec/x.ts").unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let at = whole_share(&all, &share, &|host| {
+            asked.borrow_mut().push(host.to_string());
+            host == "192.168.0.10"
+        });
+        assert_eq!(at, Some(PathBuf::from("/mnt/rec")));
+        assert_eq!(*asked.borrow(), ["192.168.0.10"]);
+    }
 }
+

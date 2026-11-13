@@ -1826,8 +1826,25 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             // and nothing else, no pictures at all. Worth saying, because
             // "no video stream" reads like a fault in a file that is doing
             // precisely what it was written to do.
+            // A program stream names its pictures by the stream id alone
+            // (0xE0..0xEF), and libavformat guesses the codec from the bytes: an
+            // H.264 written into a .mpg or .vob (`ffmpeg -f vob -c:v copy`)
+            // is probed as MP3 sound, and "no video stream" sounds like a
+            // file with none.
+            let unseen = ictx.format().name().split(',').any(|n| n.trim() == "mpeg")
+                && ictx.streams().any(|s| {
+                    (0x1E0..=0x1EF).contains(&s.id())
+                        && s.parameters().medium() != ff::media::Type::Video
+                });
             if unreadable.iter().any(|(_, what)| *what == "menu") {
                 anyhow!("{path} is one of the disc's menus: it carries a menu's graphics and no pictures, so there is nothing here to cut")
+            } else if unseen {
+                anyhow!(
+                    "no video stream in {path}: it is a program stream whose pictures are in a \
+                     codec libav does not recognise there (H.264 or HEVC put into a .mpg or .vob \
+                     reads as sound), so there are no pictures this program can read. The \
+                     recording it was made from, or the same pictures in a .ts or .mkv, can be cut"
+                )
             } else {
                 anyhow!("no video stream in {path}")
             }

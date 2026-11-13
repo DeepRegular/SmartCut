@@ -498,7 +498,7 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
     );
     let deeper = announced_late(url, &ictx);
     let ictx = if genpts || all_maps || deeper {
-        open_with(url, genpts, all_maps, deeper, false)?
+        open_with(url, genpts, all_maps, deeper.then_some(DEEP_PROBE), None)?
     } else {
         ictx
     };
@@ -507,11 +507,95 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
     // every recording that already lost nothing opens as it did. See
     // [`sound_named_later`].
     if !all_maps && sound_named_later(url, &ictx) {
-        let mut again = open_with(url, genpts, true, deeper, deeper)?;
+        let mut again =
+            open_with(url, genpts, true, deeper.then_some(DEEP_PROBE), deeper.then_some(LONGER_ANALYSIS))?;
         keep_the_clock(&ictx, &mut again);
         return Ok(again);
     }
+    // And the fifth for pictures that begin after the analysis has ended;
+    // see [`pictures_undescribed`].
+    if pictures_undescribed(&ictx) && !late_open_failed(url, None) {
+        let cut = READS_CUT.with(|c| c.get());
+        if let Ok(again) = open_with(url, genpts, all_maps, Some(LATE_PROBE), Some(LATE_PICTURES)) {
+            if !pictures_undescribed(&again) {
+                return Ok(again);
+            }
+            // Not asked again of the same file: see [`late_open_failed`].
+            if READS_CUT.with(|c| c.get()) == cut {
+                late_open_failed(url, Some(()));
+            }
+        }
+    }
     Ok(ictx)
+}
+
+/// Whether the longer open of [`pictures_undescribed`] has been tried on this
+/// file as it is now and found nothing more; with `Some`, note that it has.
+///
+/// **Paid once, not on every open.** Where the longer open cannot help --
+/// pictures more than two minutes after the sound, or a video stream nothing
+/// decodes -- it reads its hundred megabytes and is thrown away, and a cut
+/// opens its recording dozens of times: a 7.1 PCM Matroska whose pictures
+/// begin 150 s in took 0.59 s for a sound-only file of two short ranges
+/// where it had taken 0.17. Kept while the file keeps its size and time, so
+/// that a recording still being written is tried again as it grows.
+fn late_open_failed(url: &str, note: Option<()>) -> bool {
+    use std::sync::Mutex;
+    /// Enough for any list, and no more held than that.
+    const KEPT: usize = 256;
+    static FAILED: Mutex<Vec<(String, (u64, u128))>> = Mutex::new(Vec::new());
+    let identity = file_identity(url);
+    let Ok(mut failed) = FAILED.lock() else {
+        return false;
+    };
+    let known = failed.iter().any(|(u, id)| u == url && *id == identity);
+    if note.is_some() && !known {
+        if failed.len() >= KEPT {
+            failed.remove(0);
+        }
+        failed.push((url.to_string(), identity));
+    }
+    known
+}
+
+/// How long the open goes on looking for what the pictures are where the
+/// first open ended before the first of them, in microseconds, and how many
+/// bytes it may read for it ([`LATE_PROBE`]). The read stops once the
+/// pictures are described, so what it costs is the sound ahead of them --
+/// a few megabytes of AAC or AC-3 for half a minute, 38 MB of 7.1 32-bit
+/// PCM for 25 s -- and only on a file whose first open came back without.
+const LATE_PICTURES: &str = "120000000";
+
+/// The bytes [`LATE_PICTURES`] may read.
+const LATE_PROBE: &str = "100000000";
+
+/// Whether the open ended before it saw a picture: the main video stream has
+/// a decoder but no pixel format.
+///
+/// **A Matroska file whose pictures begin well after its sound** -- a remux
+/// of a recording whose sound starts first, a screen capture whose camera
+/// came on late -- holds nothing but sound for the first seconds of its
+/// clusters, and libavformat's five seconds of analysis end there. The video
+/// stream then comes back with no pixel format and no reorder depth
+/// (`has_b_frames` 0): every picture decoded past the first few failed, and
+/// every re-encode failed to open its encoder. Measured: 5 s of sound ahead
+/// opens fine, 8 s and more did not; an `.mp4` interleaves by time and opens
+/// fine at any offset. Opened again for longer, only where this is so, so
+/// that every recording the first open described opens as it did.
+fn pictures_undescribed(ictx: &ff::format::context::Input) -> bool {
+    let Some(st) = ictx.streams().best(ff::media::Type::Video) else {
+        return false;
+    };
+    // SAFETY: the stream and its parameters belong to the open context.
+    unsafe {
+        let par = st.parameters();
+        let par = par.as_ptr();
+        let attached = (*st.as_ptr()).disposition & ff::ffi::AV_DISPOSITION_ATTACHED_PIC != 0;
+        !attached
+            && (*par).codec_type == ff::ffi::AVMediaType::AVMEDIA_TYPE_VIDEO
+            && (*par).format < 0
+            && !ff::ffi::avcodec_find_decoder((*par).codec_id).is_null()
+    }
 }
 
 /// Where a recording's clock starts, put right where the open lost the
@@ -648,6 +732,22 @@ struct Clock {
     heads: Vec<Option<(i64, i64, ff::ffi::AVRational)>>,
 }
 
+/// A file's size and time of change, where the URL names one (or names one
+/// with [`as_local`]'s `file:` in front); `(0, 0)` where it does not.
+fn file_identity(url: &str) -> (u64, u128) {
+    std::fs::metadata(url)
+        .or_else(|e| url.strip_prefix("file:").map_or(Err(e), std::fs::metadata))
+        .map(|m| {
+            let mtime = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            (m.len(), mtime)
+        })
+        .unwrap_or((0, 0))
+}
+
 /// [`Known`] of a Matroska file with WebVTT in it, worked out by `find` the
 /// first time it is asked and kept while the file keeps its size and time.
 fn remembered(url: &str, find: impl FnOnce(&str) -> Known) -> Known {
@@ -659,17 +759,7 @@ fn remembered(url: &str, find: impl FnOnce(&str) -> Known) -> Known {
     // Asked of the file where the URL is one (or is one with [`as_local`]'s
     // `file:` in front, as the demuxer's own copy of it can be); one inside
     // an image or a folder of a DVD's is never rewritten under the same name.
-    let identity = std::fs::metadata(url)
-        .or_else(|e| url.strip_prefix("file:").map_or(Err(e), std::fs::metadata))
-        .map(|m| {
-            let mtime = m
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_nanos());
-            (m.len(), mtime)
-        })
-        .unwrap_or((0, 0));
+    let identity = file_identity(url);
     if let Ok(seen) = SEEN.lock() {
         if let Some((_, _, known)) = seen.iter().find(|(u, id, _)| u == url && *id == identity) {
             return known.clone();
@@ -1681,18 +1771,18 @@ pub fn refuse_url_output(output: &str) -> Result<()> {
 }
 
 fn open(url: &str, generate_pts: bool) -> Result<Demux> {
-    open_with(url, generate_pts, false, false, false)
+    open_with(url, generate_pts, false, None, None)
 }
 
 fn open_with(
     url: &str,
     generate_pts: bool,
     all_maps: bool,
-    deep_probe: bool,
-    longer: bool,
+    probe: Option<&str>,
+    analysis: Option<&str>,
 ) -> Result<Demux> {
     if let Some((table, under)) = split_restamp(url) {
-        return restamped(under, table, generate_pts, all_maps, deep_probe, longer);
+        return restamped(under, table, generate_pts, all_maps, probe, analysis);
     }
     no_nul(url)?;
     let mut opts = ff::Dictionary::new();
@@ -1705,11 +1795,11 @@ fn open_with(
     if all_maps {
         opts.set("scan_all_pmts", "1");
     }
-    if deep_probe {
-        opts.set("probesize", DEEP_PROBE);
+    if let Some(probe) = probe {
+        opts.set("probesize", probe);
     }
-    if longer {
-        opts.set("analyzeduration", LONGER_ANALYSIS);
+    if let Some(analysis) = analysis {
+        opts.set("analyzeduration", analysis);
     }
     if generate_pts {
         opts.set("fflags", "+genpts");
@@ -1927,8 +2017,8 @@ fn restamped(
     table: Restamp,
     generate_pts: bool,
     all_maps: bool,
-    deep_probe: bool,
-    longer: bool,
+    probe: Option<&str>,
+    analysis: Option<&str>,
 ) -> Result<Demux> {
     unsafe {
         let mut below: *mut ff::ffi::AVIOContext = ptr::null_mut();
@@ -1971,11 +2061,11 @@ fn restamped(
         if all_maps {
             set(&mut opts, "scan_all_pmts", "1");
         }
-        if deep_probe {
-            set(&mut opts, "probesize", DEEP_PROBE);
+        if let Some(probe) = probe {
+            set(&mut opts, "probesize", probe);
         }
-        if longer {
-            set(&mut opts, "analyzeduration", LONGER_ANALYSIS);
+        if let Some(analysis) = analysis {
+            set(&mut opts, "analyzeduration", analysis);
         }
         if generate_pts {
             set(&mut opts, "fflags", "+genpts");

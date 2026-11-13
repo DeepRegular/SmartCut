@@ -337,7 +337,9 @@ pub fn rate(input: &crate::input::Input, pids: &[u16], pcr_pid: u16, pos: i64) -
     let (Some(first), Some(last)) = (first, last) else {
         return 0.0;
     };
-    let seconds = (last - first) as f64 / 90_000.0;
+    // Across a wrap of the clock, too: read as a step backwards, the window
+    // came out as no time at all and the rate as nothing.
+    let seconds = (last - first).rem_euclid(PCR_WRAP) as f64 / 90_000.0;
     if seconds <= 0.0 {
         return 0.0;
     }
@@ -489,6 +491,32 @@ mod tests {
     #[test]
     fn the_rate_is_what_the_recording_spends_on_it() {
         let at = a_recording("smartcut-carousel-rate.ts", 10);
+        let input = crate::input::Input::plain(&at.to_string_lossy());
+        let want = (PER_SECOND * BETWEEN * PACKET * 8) as f64;
+        let got = rate(&input, &[DATA], CLOCK, 0);
+        assert!(
+            (got - want).abs() < want * 0.05,
+            "{got} bits per second against {want}"
+        );
+        let _ = std::fs::remove_file(&at);
+    }
+
+    /// The same over a window the clock wraps in.
+    #[test]
+    fn the_rate_is_measured_across_a_wrap_of_the_clock() {
+        let mut out = Vec::new();
+        let mut n = 0u16;
+        let from = PCR_WRAP - 3 * 90_000;
+        for tick in 0..10 * PER_SECOND {
+            let at = (from + tick as i64 * 90_000 / PER_SECOND as i64) % PCR_WRAP;
+            out.extend_from_slice(&clock_packet(at));
+            for _ in 0..BETWEEN {
+                out.extend_from_slice(&data_packet(n));
+                n += 1;
+            }
+        }
+        let at = std::env::temp_dir().join("smartcut-carousel-wrap.ts");
+        std::fs::write(&at, &out).expect("write the sample");
         let input = crate::input::Input::plain(&at.to_string_lossy());
         let want = (PER_SECOND * BETWEEN * PACKET * 8) as f64;
         let got = rate(&input, &[DATA], CLOCK, 0);

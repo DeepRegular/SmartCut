@@ -683,6 +683,10 @@ pub fn build_with_sound(
 
     let mut collector = Collector::new(src, opts);
     let mut entries = crate::EntryPictures::new(&src.video);
+    // Each entry picture may go to any decoder of the pool, and one opened
+    // past the IDR a splice's second encode restated its sets on decoded it
+    // by the first encode's: see [`crate::preview::InForce`].
+    let mut in_force = crate::preview::InForce::pool(&params, &src.video);
     let mut told = -1.0;
     let mut shared = std::time::Instant::now();
 
@@ -736,7 +740,7 @@ pub fn build_with_sound(
     // entry picture the cut never writes is not held either: see
     // [`crate::preview::Stretches`].
     let mut stretches = crate::preview::Stretches::new(src);
-    for (stream, packet) in ictx.read_packets() {
+    for (stream, mut packet) in ictx.read_packets() {
         if let Some(f) = stop.as_ref() {
             if f() {
                 bail!("abandoned");
@@ -771,11 +775,18 @@ pub fn build_with_sound(
         // recorder never wrote: what follows is the next stretch, whose first
         // packet is no picture's second half. Dropped, as [`crate::preview`]'s
         // walk drops it there.
+        in_force.see(&packet);
         if stretches.reach(packet.position()) {
             pending.clear();
             entries.broke();
         }
-        match entries.step(&packet) {
+        let step = entries.step(&packet);
+        if step != crate::Step::Skip {
+            in_force.mend(&mut packet, &mut |at, record| {
+                Some(crate::preview::sets_before(src, at, record))
+            });
+        }
+        match step {
             crate::Step::Skip => continue,
             // Half a picture: nothing can come out until its partner goes in,
             // and the partner is the next packet, so the pair is one job.
@@ -998,6 +1009,13 @@ fn decode_on(
     };
     let mut frame = ff::frame::Video::empty();
     let mut stretches = crate::preview::Stretches::new(src);
+    // The sets in force where the read opens, for a key picture that carries
+    // none: see [`crate::preview::InForce`]. `decoder` is fresh from the
+    // stream's parameters.
+    let mut in_force = match ictx.stream(idx) {
+        Some(stream) => crate::preview::InForce::single(&stream.parameters(), &src.video),
+        None => crate::preview::InForce::off(),
+    };
     // Whether the decoder holds anything a drain would hand back.
     let mut fed = false;
     for (stream, mut packet) in ictx.read_packets() {
@@ -1006,6 +1024,7 @@ fn decode_on(
         }
         // See [`crate::preview::Landed`].
         crate::preview::Landed::mend(&mut landed, &mut packet, src);
+        in_force.see(&packet);
         let was = stretches.clone();
         if stretches.reach(packet.position()) && fed {
             fed = false;
@@ -1021,6 +1040,7 @@ fn decode_on(
             }
             decoder.flush();
         }
+        in_force.mend(&mut packet, &mut |at, record| Some(crate::preview::sets_before(src, at, record)));
         if decoder.send_packet(&packet).is_err() {
             continue;
         }

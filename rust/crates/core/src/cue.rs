@@ -37,10 +37,38 @@ pub fn track_starts(sheet: &[u8]) -> Vec<f64> {
             .collect();
         String::from_utf16_lossy(&units).into_bytes()
     };
+    // Or UTF-16 with no mark at all, as some tools write it: told by its
+    // nought bytes, which a sheet in UTF-8 or Shift_JIS has none of, on the
+    // side of each pair its ASCII keywords leave them -- in a quarter of the
+    // pairs at least, so that a few stray noughts in a UTF-8 sheet (padding
+    // at its end) are not taken for it. And on that side far more than on
+    // the other: a UTF-8 sheet padded out with noughts (to a sector, by a
+    // copy off a disc) has them on both sides alike, and read as UTF-16 it
+    // gave no tracks at all. Counted without the noughts it ends on, so that
+    // a UTF-16 sheet padded out the same way is still told by its own.
+    let unmarked = || {
+        let body = &sheet[..sheet.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1)];
+        let pairs = body.as_chunks::<2>().0;
+        let (even, odd) = pairs
+            .iter()
+            .fold((0usize, 0usize), |(e, o), c| (e + usize::from(c[0] == 0), o + usize::from(c[1] == 0)));
+        let (most, least) = (even.max(odd), even.min(odd));
+        (most > 0 && most * 4 >= pairs.len() && least * 4 <= most).then(|| {
+            let mut marked = if even > odd { vec![0xFE, 0xFF] } else { vec![0xFF, 0xFE] };
+            marked.extend_from_slice(sheet);
+            marked
+        })
+    };
     let decoded = match sheet {
         [0xFF, 0xFE, ..] => Some(wide(false)),
         [0xFE, 0xFF, ..] => Some(wide(true)),
-        _ => None,
+        [0xEF, 0xBB, 0xBF, ..] => None,
+        _ => {
+            if let Some(marked) = unmarked() {
+                return track_starts(&marked);
+            }
+            None
+        }
     };
     let sheet = decoded.as_deref().unwrap_or(sheet);
     // A UTF-8 byte order mark, which would make the first line's keyword
@@ -155,6 +183,23 @@ mod tests {
         }
         assert_eq!(track_starts(&le), want);
         assert_eq!(track_starts(&be), want);
+        // And with no mark: told by where the nought bytes fall.
+        assert_eq!(track_starts(&le[2..]), want);
+        assert_eq!(track_starts(&be[2..]), want);
+        // A UTF-8 sheet padded with a few noughts is still UTF-8.
+        let mut padded = text.as_bytes().to_vec();
+        padded.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(track_starts(&padded), want);
+        // ...and one padded out to twice its length, noughts on both sides.
+        let mut sector = text.as_bytes().to_vec();
+        sector.resize(text.len() * 2, 0);
+        assert_eq!(track_starts(&sector), want);
+        // ...and a sheet in UTF-16 with no mark, padded out the same way.
+        for unit in [&le[2..], &be[2..]] {
+            let mut sector = unit.to_vec();
+            sector.resize(unit.len() * 3, 0);
+            assert_eq!(track_starts(&sector), want);
+        }
         le.push(0x41);
         assert_eq!(track_starts(&le), want);
         assert!(track_starts(&[0xFF, 0xFE]).is_empty());

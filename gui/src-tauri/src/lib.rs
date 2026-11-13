@@ -801,7 +801,7 @@ async fn resolve_paths(paths: Vec<String>) -> Vec<Resolved> {
         paths
             .into_iter()
             .map(|input| match files_at(&input) {
-                Ok(files) => Resolved { input, files, error: None },
+                Ok((files, error)) => Resolved { input, files, error },
                 Err(error) => Resolved { input, files: Vec::new(), error: Some(error) },
             })
             .collect()
@@ -820,11 +820,25 @@ async fn resolve_paths(paths: Vec<String>) -> Vec<Resolved> {
 
 /// What one input names: itself, everything in it when it is a directory, or
 /// the disc when it is one.
-fn files_at(input: &str) -> Result<Vec<Found>, String> {
+///
+/// With, beside them, a sentence about any file in a folder whose name could
+/// not be handed on: see [`files_in`].
+fn files_at(input: &str) -> Result<(Vec<Found>, Option<String>), String> {
     let path = local_path(input)?;
     let meta = std::fs::metadata(&path).map_err(|e| {
         let shown = netpath::parse(input).map_or_else(|| path.display().to_string(), |s| s.unc());
-        format!("{}: {shown} ({e})", tr!("開けません", "Cannot open"))
+        // A name handed over on the command line that was not UTF-8 arrives
+        // with U+FFFD in it (see `run`), and "no such file" alone did not say
+        // why a file plainly there would not open.
+        let why = if input.contains('\u{FFFD}') {
+            tr!(
+                "。ファイル名が UTF-8 ではありません。名前を付け直してから追加してください",
+                ". The file name is not UTF-8; rename the file and add it again"
+            )
+        } else {
+            ""
+        };
+        format!("{}: {shown} ({e}){why}", tr!("開けません", "Cannot open"))
     })?;
     // A Blu-ray -- a folder holding one, or an `.iso` of one -- is a list of
     // recordings rather than one recording, and its own index is the only
@@ -833,7 +847,7 @@ fn files_at(input: &str) -> Result<Vec<Found>, String> {
     // subdirectories and nothing to open.
     if smartcut_core::disc::looks_like_disc(&path) {
         return match smartcut_core::disc::read(&path) {
-            Ok(disc) if !disc.entries.is_empty() => Ok(vec![Found::disc(&path, disc)]),
+            Ok(disc) if !disc.entries.is_empty() => Ok((vec![Found::disc(&path, disc)], None)),
             // An `.iso` that is not a disc of recordings is not an error
             // worth stopping for when it was one file among a hundred, but
             // it is the whole answer when it is what was dropped.
@@ -851,7 +865,7 @@ fn files_at(input: &str) -> Result<Vec<Found>, String> {
         };
     }
     if !meta.is_dir() {
-        return Ok(vec![Found::file(path.to_string_lossy().into_owned())]);
+        return Ok((vec![Found::file(path.to_string_lossy().into_owned())], None));
     }
     files_in(&path)
 }
@@ -865,7 +879,14 @@ fn files_at(input: &str) -> Result<Vec<Found>, String> {
 /// evening's worth of recordings named one way rather than a hundred files
 /// named another. Anything else that is a folder is passed over, as it always
 /// was.
-fn files_in(path: &std::path::Path) -> Result<Vec<Found>, String> {
+///
+/// A file whose name is not UTF-8 -- written by an old machine in Shift_JIS,
+/// on a share mounted with another character set -- cannot travel to the
+/// window and back: a name is a string up there, and the one it came back as
+/// named nothing, so the row failed to open with a name that was not the
+/// file's. Such files are left out and named, as well as they can be, in the
+/// sentence that comes back beside the rest.
+fn files_in(path: &std::path::Path) -> Result<(Vec<Found>, Option<String>), String> {
     let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(path)
         .map_err(|e| {
             format!(
@@ -880,7 +901,23 @@ fn files_in(path: &std::path::Path) -> Result<Vec<Found>, String> {
     names.sort();
 
     let mut out = Vec::new();
+    let mut unnamed = Vec::new();
     for name in names {
+        if name.to_str().is_none() {
+            // A folder that is not a disc is passed over below whatever it is
+            // called, and was before: named here, the sentence said a file
+            // could not be opened where nothing would have been listed.
+            // So is a folder shaped like a disc that holds no recording,
+            // which is read as one below and passed over as well.
+            if name.is_dir()
+                && !(smartcut_core::disc::looks_like_disc(&name)
+                    && smartcut_core::disc::read(&name).is_ok_and(|d| !d.entries.is_empty()))
+            {
+                continue;
+            }
+            unnamed.push(name.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
+            continue;
+        }
         if smartcut_core::disc::looks_like_disc(&name) {
             if let Ok(disc) = smartcut_core::disc::read(&name) {
                 if !disc.entries.is_empty() {
@@ -894,7 +931,15 @@ fn files_in(path: &std::path::Path) -> Result<Vec<Found>, String> {
         }
         out.push(Found::file(name.to_string_lossy().into_owned()));
     }
-    Ok(out)
+    let said = (!unnamed.is_empty()).then(|| {
+        let list = unnamed.join("、");
+        trf!(
+            "ファイル名が UTF-8 ではないため開けません: {list}（{}）。名前を付け直してから追加してください。",
+            "Cannot open: the file name is not UTF-8: {list} ({}). Rename the file and add it again.",
+            path.display()
+        )
+    });
+    Ok((out, said))
 }
 
 /// The local path for something the user named, translating a share the
@@ -1441,7 +1486,7 @@ fn open_now(
     // the new recording beside the old held index -- and those pictures were
     // then kept as the new recording's. Nothing that holds any of the four
     // below ever waits on `Opened`, so the nesting cannot deadlock.
-    {
+    let was = {
         let opened = app.state::<Opened>();
         let mut opened = locked(&opened.0);
         // Asked again under the lock. A later open that finished in between
@@ -1451,6 +1496,15 @@ fn open_now(
         if stale() {
             return Err("another recording was opened in the meantime".into());
         }
+        // The recording this replaces, with what its open's walk needs to be
+        // written down below: taken before the count and the two marks move
+        // on. The recording in `Opened` is always the current count's -- only
+        // an open (here) and the editor's close, which empties it, move it.
+        let was = opened.as_ref().map(|left| {
+            let generation = app.state::<Generation>().0.load(Ordering::SeqCst);
+            let short = SHORT_OPEN.load(Ordering::SeqCst) == generation;
+            (left.clone(), short, open_weighed(generation))
+        });
         // Anything still building for the file that was open belongs to
         // nothing now; the count going up is what tells it so.
         let now = app.state::<Generation>().0.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1464,12 +1518,22 @@ fn open_now(
         *locked(&app.state::<Proxy>().0) = None;
         *locked(&app.state::<Held>().0) = held;
         *opened = Some(src);
-    }
+        was
+    };
     // After the recording is in, not before: `subtitle_at` builds its reader
     // out of whatever `Opened` holds, and one built in between was the last
     // recording's, kept and answered from for as long as the same track
     // number was asked for.
     *locked(&app.state::<Subs>().0) = None;
+    // The recording left: its pictures pass was told to stop above, and the
+    // walk's index goes down with the pictures at that pass's end. See
+    // [`keep_the_walk`]; off this thread, so the new row is not kept waiting.
+    if let Some((left, short, weighed)) = was {
+        if !short && left.path != path {
+            let app = app.clone();
+            std::thread::spawn(move || keep_the_walk(&app, &left, weighed));
+        }
+    }
     Ok(info)
 }
 
@@ -2054,6 +2118,23 @@ fn without_proxy(
     Ok(PrepareInfo { proxy: None, index, track: info, note })
 }
 
+/// Write down the walk of a recording the editor has let go of before its
+/// pictures pass ended -- closed, or another row opened -- where nothing is
+/// kept for it yet. That pass is what writes the index, with the pictures,
+/// and it is stopped when the recording goes: the access points of a
+/// recording walked for a minute over a share went with it, and the next
+/// open, and the list's lane, read the whole file again. Without a thumbnail
+/// track, which the next open makes; never over an index already kept.
+fn keep_the_walk(app: &tauri::AppHandle, src: &Source, weighed: Option<Weight>) {
+    let unkept = index_dir(app)
+        .ok()
+        .and_then(|d| seek_index::cache_path(&d, &src.path).ok())
+        .is_some_and(|f| !f.exists());
+    if unkept {
+        let _ = remember(app, src, None, weighed);
+    }
+}
+
 /// Write down what this open worked out, so the next one does not repeat it.
 ///
 /// A failure here is not one worth stopping for: the recording is open and
@@ -2375,9 +2456,40 @@ async fn open_editor(title: String, app: tauri::AppHandle) -> Result<bool, Strin
                 let opened = letting_go.state::<Opened>();
                 let mut opened = locked(&opened.0);
                 if EDITORS_BUILT.load(Ordering::SeqCst) == mine {
-                    *opened = None;
+                    let walked = opened.take();
+                    let generation = letting_go.state::<Generation>().0.load(Ordering::SeqCst);
+                    // What the walk below needs, asked under the lock as
+                    // `open_now` asks it: an open landing once the lock is let
+                    // go stores its own weight over this one's, and the walk
+                    // was then written unweighed.
+                    let short = SHORT_OPEN.load(Ordering::SeqCst) == generation;
+                    let weighed = open_weighed(generation);
+                    // And what was being made for it: the pass of `prepare`
+                    // still running is told to stop (the count moves on, as
+                    // an open moves it), and its pictures, its proxy and the
+                    // held index go -- tens of megabytes and an open proxy
+                    // file, held for a window that is not there until the
+                    // next editor opened something. Under `Opened`'s lock in
+                    // the order `open_now` takes them.
+                    letting_go.state::<Generation>().0.fetch_add(1, Ordering::SeqCst);
+                    *locked(&letting_go.state::<Thumbs>().0) = None;
+                    *locked(&letting_go.state::<Proxy>().0) = None;
+                    *locked(&letting_go.state::<Held>().0) = None;
                     drop(opened);
                     *locked(&letting_go.state::<Subs>().0) = None;
+                    // The walk's own index, which nothing else writes: the
+                    // pass just stopped writes it at its end, with the
+                    // pictures. Closed before that, the access points of a
+                    // recording read for a minute over a share were thrown
+                    // away with the pictures, and the next open (and the
+                    // list's lane) read the whole file again. Not over one
+                    // already kept, nor where the walk gave up part way
+                    // (see [`SHORT_OPEN`]).
+                    if let Some(src) = walked {
+                        if !short {
+                            keep_the_walk(&letting_go, &src, weighed);
+                        }
+                    }
                 }
             });
             let _ = teller.emit("editor-closed", ());
@@ -5278,7 +5390,10 @@ struct WaveOut {
 /// 5: the same head read where that first cluster opens with a cue, so the
 ///    open never reads it (a quarter of a second to a second outlined as
 ///    silence, and the rest drawn early).
-const WAVE_VERSION: u32 = 5;
+/// 6: the decoder told the packets' time base, so the first frame of an Opus
+///    track (its pre-skip) or of an MP4 edit list that starts inside a frame is
+///    outlined where it plays, not up to 6.5-25 ms early.
+const WAVE_VERSION: u32 = 6;
 
 /// Where this recording's outline is kept: beside its flat detections.
 fn wave_path(app: &tauri::AppHandle, path: &str) -> Result<std::path::PathBuf, String> {
@@ -8370,7 +8485,10 @@ fn write_whole(path: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
         .write(true)
         .create_new(true)
         .open(&temp)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, body));
+        // On the disc before it is named: renamed while its bytes were still
+        // only in memory, a power cut could leave the name over an empty
+        // file, the project emptied after all.
+        .and_then(|mut f| std::io::Write::write_all(&mut f, body).and_then(|()| f.sync_all()));
     if let Err(e) = made {
         if e.kind() != std::io::ErrorKind::AlreadyExists {
             let _ = std::fs::remove_file(&temp);
@@ -8383,7 +8501,14 @@ fn write_whole(path: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
     let mut tries = 0;
     loop {
         match std::fs::rename(&temp, path) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                // And the rename itself, where a folder can be synced.
+                #[cfg(unix)]
+                if let Some(dir) = path.parent().and_then(|d| std::fs::File::open(d).ok()) {
+                    let _ = dir.sync_all();
+                }
+                return Ok(());
+            }
             Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied && tries < 10 => {
                 tries += 1;
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -8696,8 +8821,14 @@ fn free_in(dir: &std::path::Path, stem: &str, ext: &str) -> Result<String, Strin
             format!("{stem}-{n}.{ext}")
         };
         let at = dir.join(name);
-        if !at.exists() {
-            return Ok(at.to_string_lossy().into_owned());
+        // Taken by making it, not by finding it free: two list windows asking
+        // in the same instant were both told the same name, and the second
+        // project written there replaced the first one's. An empty file is
+        // what the caller writes over.
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&at) {
+            Ok(_) => return Ok(at.to_string_lossy().into_owned()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("{}: {e}", at.display())),
         }
     }
     Err(trf!(
@@ -8713,7 +8844,8 @@ fn free_in(dir: &std::path::Path, stem: &str, ext: &str) -> Result<String, Strin
 // the window does not draw while a plain command runs.
 #[tauri::command(async)]
 fn queue_temp_path(app: tauri::AppHandle, stem: String, ext: String) -> Result<String, String> {
-    free_in(&queue_dir(&app)?, &stem, &ext)
+    let dir = queue_dir(&app)?;
+    with_queue_lock(&batch_dir(&app)?, || free_in(&dir, &stem, &ext))
 }
 
 /// Take a copy of a project that is already on disc, for ジョブ追加.
@@ -8754,9 +8886,14 @@ fn queue_copy_now(app: &tauri::AppHandle, path: &str) -> Result<String, String> 
             tr!("プロジェクトファイルではありません", "not a project file")
         ));
     }
-    let at = free_in(&queue_dir(app)?, &stem, &ext)?;
-    std::fs::copy(from, &at)
-        .map_err(|e| trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e))?;
+    let dir = queue_dir(app)?;
+    let at = with_queue_lock(&batch_dir(app)?, || free_in(&dir, &stem, &ext))?;
+    std::fs::copy(from, &at).map_err(|e| {
+        // The name taken for it goes back: an empty project in the queue's
+        // folder is nobody's.
+        let _ = std::fs::remove_file(&at);
+        trf!("開けません: {} ({})", "Cannot open: {} ({})", path, e)
+    })?;
     Ok(at)
 }
 
@@ -9042,11 +9179,12 @@ fn now_secs() -> u64 {
 ///
 /// Its own name goes in beside the time, for [`batch_gone`]: a beat is taken
 /// away by the tool that wrote it and by nobody else.
-#[tauri::command]
+// Off the main thread: the beat is now synced to the disc before it is named.
+#[tauri::command(async)]
 fn batch_beat(app: tauri::AppHandle) {
     if let Ok(dir) = batch_dir(&app) {
         let beat = format!("{} {}", std::process::id(), now_secs());
-        let _ = std::fs::write(dir.join("batch.beat"), beat);
+        let _ = write_whole(&dir.join("batch.beat"), beat.as_bytes());
     }
 }
 
@@ -9127,7 +9265,7 @@ fn open_batch_tool(app: tauri::AppHandle) -> Result<bool, String> {
     // again found nobody and started another one.
     if let Ok(dir) = batch_dir(&app) {
         let beat = format!("{} {}", child.id(), now_secs() + 60);
-        let _ = std::fs::write(dir.join("batch.beat"), beat);
+        let _ = write_whole(&dir.join("batch.beat"), beat.as_bytes());
     }
     reap(child);
     Ok(true)
@@ -9986,7 +10124,7 @@ pub fn run() {
                     // Two minutes ahead, which the page's own beat every ten
                     // seconds takes over from once it is running.
                     let beat = format!("{} {}", std::process::id(), now_secs() + 120);
-                    let _ = std::fs::write(dir.join("batch.beat"), beat);
+                    let _ = write_whole(&dir.join("batch.beat"), beat.as_bytes());
                 }
             }
             if let Some(w) = app.get_webview_window(MAIN) {
@@ -10364,6 +10502,61 @@ mod tests {
             hand.join().unwrap().unwrap();
         }
         assert_eq!(read_queue(&root).unwrap().jobs.len(), 8);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Two windows asking for a queued project's name at once are given two
+    /// names: the name is taken by making the file, so the second asker
+    /// finds it there.
+    #[test]
+    fn a_queued_name_is_taken_when_it_is_given() {
+        let mut root = std::env::temp_dir();
+        root.push(format!("smartcut-free-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let hands: Vec<_> = (0..8)
+            .map(|_| {
+                let root = root.clone();
+                std::thread::spawn(move || free_in(&root, "list", "scproj").unwrap())
+            })
+            .collect();
+        let mut got: Vec<String> = hands.into_iter().map(|h| h.join().unwrap()).collect();
+        got.sort();
+        got.dedup();
+        assert_eq!(got.len(), 8);
+        assert!(got.iter().all(|p| std::path::Path::new(p).is_file()));
+        // And write_whole replaces the empty file it was given whole.
+        write_whole(std::path::Path::new(&got[0]), b"{}").unwrap();
+        assert_eq!(std::fs::read(&got[0]).unwrap(), b"{}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A file in a dropped folder whose name is not UTF-8 is not listed under
+    /// a name that is not its own: it is left out and said.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_name_that_is_not_utf8_is_said_not_listed() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut root = std::env::temp_dir();
+        root.push(format!("smartcut-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.ts"), b"").unwrap();
+        // 録画.ts in Shift_JIS.
+        let sjis = std::ffi::OsStr::from_bytes(b"\x98\x5e\x89\xe6.ts");
+        std::fs::write(root.join(sjis), b"").unwrap();
+        // A plain folder so named is passed over, as every folder that is not
+        // a disc is, and not said.
+        std::fs::create_dir(root.join(std::ffi::OsStr::from_bytes(b"\x83\x74\x83\x48"))).unwrap();
+        // And one shaped like a DVD that holds no title, which a UTF-8 name
+        // passes over too.
+        let husk = root.join(std::ffi::OsStr::from_bytes(b"\x83\x66\x83\x42")).join("VIDEO_TS");
+        std::fs::create_dir_all(&husk).unwrap();
+        std::fs::write(husk.join("VIDEO_TS.IFO"), b"").unwrap();
+        let (files, said) = files_in(&root).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(matches!(&files[0], Found::File { path } if path.ends_with("a.ts")));
+        assert!(said.is_some_and(|s| s.contains("UTF-8") && !s.contains('、')));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

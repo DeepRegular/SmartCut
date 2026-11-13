@@ -48,15 +48,19 @@ const EPISODE: [char; 10] = ['話', '回', '幕', '夜', '章', '篇', '編', '�
 
 /// The name the series goes by, out of one recording's name.
 ///
-/// What comes back is never empty for a name that was not: a name this can
-/// find nothing to cut is its own answer.
+/// What comes back is never empty for a name that was not, but for one of
+/// nothing but separators (`▼`), which names no series and leaves the disc to
+/// [`shared`]'s caller: a name this can find nothing to cut is its own answer.
 pub fn of(name: &str) -> String {
     let text = without_marks(name);
     let text = without_block(&text);
-    let text = before_episode(&text);
-    let text = without_subtitle(&text);
-    let text = without_trailing_label(&text);
-    let text = tidy(&text);
+    // The episode's own title in brackets only where nothing numbered the
+    // episode: where something did, what came after the number has gone
+    // with it, and brackets in front of the number are the series' own
+    // (`アニメ枠「X」 #04` is X, not `アニメ枠`).
+    let cut = before_episode(&text);
+    let text = if cut == text { without_subtitle(&cut) } else { cut };
+    let text = without_trailing_labels(&text);
     if text.is_empty() {
         tidy(name)
     } else {
@@ -157,6 +161,21 @@ fn before_bare_number(name: &str) -> String {
 /// standing once the episode number behind it has been cut away. Only at
 /// the end and only with a name in front of it, as [`without_block`] takes
 /// one only off the front.
+///
+/// Every such label, and with the separator a label can hang off taken too
+/// (`X＜A＞＜B＞`, `X＜A＞・`): taken one at a time and only once, the name
+/// that came back still ended in one, and read again gave another answer.
+fn without_trailing_labels(name: &str) -> String {
+    let mut text = tidy(name);
+    loop {
+        let next = tidy(&without_trailing_label(&text));
+        if next == text {
+            return text;
+        }
+        text = next;
+    }
+}
+
 fn without_trailing_label(name: &str) -> String {
     let raw: Vec<char> = name.chars().collect();
     let Some(end) = raw.iter().rposition(|c| !fold(*c).is_whitespace()) else {
@@ -234,7 +253,10 @@ fn without_marks(name: &str) -> String {
 fn without_block(name: &str) -> String {
     let mut raw: Vec<char> = name.chars().collect();
     loop {
-        while raw.first().is_some_and(|c| fold(*c) == ' ') {
+        // And a hanging `・` or `▼`, which [`tidy`] takes off the front at
+        // the end anyway: left here, it hid the block behind it until the
+        // name was read a second time.
+        while raw.first().is_some_and(|c| matches!(fold(*c), ' ' | '・' | '▼')) {
             raw.remove(0);
         }
         // A block in angle brackets. Long enough to hold a season of a
@@ -295,7 +317,7 @@ fn episode_at(raw: &[char], folded: &[char], i: usize) -> bool {
     folded[i] == '#' && digit(folded, i + 1)
         || raw[i] == '第' && counted(raw, i + 1)
         || (digit(folded, i) || raw[i] == '最')
-            && numbered(raw, i).is_some_and(|n| raw.get(n) == Some(&'話'))
+            && numbers(raw, i).is_some_and(|n| raw.get(n) == Some(&'話'))
         || folded[i] == '(' && bracketed_number(folded, i)
         || word(folded, i, "ep")
         || word(folded, i, "episode")
@@ -341,7 +363,20 @@ fn without_subtitle(name: &str) -> String {
 /// Whether the run of digits or kanji numerals at `i` is followed by one of
 /// the counters an episode is numbered with.
 fn counted(raw: &[char], i: usize) -> bool {
-    numbered(raw, i).is_some_and(|n| raw.get(n).is_some_and(|c| EPISODE.contains(c)))
+    numbers(raw, i).is_some_and(|n| raw.get(n).is_some_and(|c| EPISODE.contains(c)))
+}
+
+/// Where the number starting at `i` ends, or the second of two where a run
+/// of episodes is numbered first to last (`第13～24話`, `1・2話`): read as
+/// the one number, the cut fell at the second, and a run went onto a disc
+/// as `X 第13～`.
+fn numbers(raw: &[char], i: usize) -> Option<usize> {
+    let first = numbered(raw, i)?;
+    if !raw.get(first).is_some_and(|c| "～〜-－‐・,，、".contains(*c)) {
+        return Some(first);
+    }
+    let from = first + 1 + usize::from(raw.get(first + 1) == Some(&'第'));
+    Some(numbered(raw, from).unwrap_or(first))
 }
 
 /// Where the number starting at `i` ends, or `None` where there is not one.
@@ -552,5 +587,31 @@ mod tests {
         );
         // A single recording keeps its number: nothing says it is an episode.
         assert_eq!(shared(&["風待ちの丘　１８　無罪の証明"]).as_deref(), Some("風待ちの丘　１８　無罪の証明"));
+    }
+
+    /// What comes back is a series name, and read again it is the same one:
+    /// every label off the end, and a block behind a hanging separator.
+    #[test]
+    fn a_series_name_read_again_is_itself() {
+        assert_eq!(of("灯台守の休日＜チャンネル初＞＜字幕版＞ #3"), "灯台守の休日");
+        assert_eq!(of("灯台守の休日 ＜チャンネル初＞・"), "灯台守の休日");
+        assert_eq!(of("・＜アニメギルド＞灯台守の休日 #3"), "灯台守の休日");
+        assert_eq!(of("[無][字]灯台守の休日 一挙放送 第13～24話"), "灯台守の休日 一挙放送");
+        assert_eq!(of("灯台守の休日　１・２話"), "灯台守の休日");
+        assert_eq!(of("灯台守の休日 第1～2期"), "灯台守の休日 第1～2期");
+        assert_eq!(of("▼＜アニメギルド＞灯台守の休日"), "灯台守の休日");
+        // Brackets in front of the number are the series', behind it the
+        // episode's.
+        assert_eq!(of("日曜枠「灯台守の休日」　＃４３「霧の朝」[字]"), "日曜枠「灯台守の休日」");
+        assert_eq!(of("灯台守の休日「霧の朝」"), "灯台守の休日");
+        for name in [
+            "前編アニメSeason1【最終回】日【EP.1】＜ブロック＞＜ブロック＞",
+            "期第)#>[字] ＜ブロック＞・",
+            "・＜ブロック＞\u{3000}[終]最終」Season1",
+            "epep第<第A>】>▼",
+        ] {
+            let once = of(name);
+            assert_eq!(of(&once), once, "{name:?}");
+        }
     }
 }

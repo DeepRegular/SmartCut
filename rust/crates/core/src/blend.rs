@@ -13,9 +13,12 @@
 //! own size, two of chroma at that size divided by whatever the format
 //! subsamples by, and samples that are one byte or two. That covers
 //! everything SmartCut decodes -- `yuv420p` off a broadcast, `yuv422p10le`
-//! off a professional recorder, `yuv420p10le` off a 4K one. A format that is
-//! not planar YUV is refused rather than guessed at: what a transition would
-//! do to a packed or RGB frame is write nonsense into it and carry on.
+//! off a professional recorder, `yuv420p10le` off a 4K one. Planar RGB
+//! (`gbrp`) is three planes of one size, and is blended as it is; packed RGB
+//! (a QuickTime Animation master's `rgb24`, `argb`) is turned into planar RGB
+//! around each blend and back ([`working`]). Any other format is refused
+//! rather than guessed at: what a transition would do to a frame it does not
+//! understand is write nonsense into it and carry on.
 //!
 //! Two-byte samples are little-endian in every such format libavutil has,
 //! and the descriptor says so; what is not little-endian is refused with
@@ -37,12 +40,18 @@ pub struct Shape {
     /// How much the chroma planes are divided by, as shifts.
     pub log2_w: u32,
     pub log2_h: u32,
+    /// Planar RGB (`gbrp` and its kind) rather than YUV: no chroma, and a
+    /// black and a white that are the same number in every plane.
+    pub rgb: bool,
+    /// How many planes there are: three, or four where the fourth is alpha.
+    pub planes: usize,
 }
 
 impl Shape {
     /// The width and height of one plane, in samples.
     pub fn plane(&self, width: u32, height: u32, nth: usize) -> (usize, usize) {
-        if nth == 0 {
+        // The alpha plane, where there is one, is at the luma's size.
+        if nth == 0 || nth == 3 {
             (width as usize, height as usize)
         } else {
             // Rounded up, as libav sizes them: an odd-sized 4:2:0 picture
@@ -75,13 +84,15 @@ pub fn shape_of(format: ff::format::Pixel) -> Result<Shape> {
     // first asked for a plane that is not there.
     let three = d.comp[0].plane != d.comp[1].plane && d.comp[1].plane != d.comp[2].plane;
     let low = d.comp[0].shift == 0;
-    if !planar || rgb || big_endian || d.nb_components < 3 || !three || !low {
+    // Planar RGB is blended as it is, three planes of the same size.
+    if !planar || big_endian || d.nb_components < 3 || !three || !low {
         bail!(
-            "a transition needs pictures in a planar YUV format and these are {format:?}. \
-             Every recording this program decodes is one; a format that is not can still be \
+            "a transition cannot be made in {format:?} pictures: it is made in planar YUV or \
+             RGB, or in packed RGB of 8 or 16 bits a sample. Such a recording can still be \
              joined, with no transition between the clips"
         );
     }
+    let alpha = d.flags & ff::ffi::AV_PIX_FMT_FLAG_ALPHA as u64 != 0 && d.nb_components == 4;
     // One byte per sample up to eight bits, two above it. Anything the
     // descriptor says is packed into a stride this does not expect is
     // refused above.
@@ -91,7 +102,117 @@ pub fn shape_of(format: ff::format::Pixel) -> Result<Shape> {
         step,
         log2_w: u32::from(d.log2_chroma_w),
         log2_h: u32::from(d.log2_chroma_h),
+        rgb,
+        planes: if alpha { 4 } else { 3 },
     })
+}
+
+/// The planar format a packed RGB picture is blended in, where `format` is
+/// one: `gbrp` (or `gbrap` with alpha), sixteen-bit where the samples are
+/// wider than eight.
+///
+/// **A QuickTime Animation master is RGB24, and packed.** Refused, a join of
+/// two such recordings with any transition stopped at the crossing, while
+/// the window that sets the transition showed it -- that window composites
+/// in YUV whatever the master is. The picture is turned into planes and back
+/// around each blend; both ways are a rearrangement of the same numbers, so
+/// what is not blended comes out as it went in.
+fn working(format: ff::format::Pixel) -> Option<ff::format::Pixel> {
+    use ff::format::Pixel as P;
+    let d = unsafe { ff::ffi::av_pix_fmt_desc_get(format.into()) };
+    if d.is_null() {
+        return None;
+    }
+    let d = unsafe { &*d };
+    let flag = |f: u32| d.flags & u64::from(f) != 0;
+    if !flag(ff::ffi::AV_PIX_FMT_FLAG_RGB as u32)
+        || flag(ff::ffi::AV_PIX_FMT_FLAG_PLANAR as u32)
+        || flag(ff::ffi::AV_PIX_FMT_FLAG_PAL as u32)
+        || flag(ff::ffi::AV_PIX_FMT_FLAG_BITSTREAM as u32)
+        || flag(ff::ffi::AV_PIX_FMT_FLAG_HWACCEL as u32)
+        || d.nb_components < 3
+    {
+        return None;
+    }
+    let alpha = flag(ff::ffi::AV_PIX_FMT_FLAG_ALPHA as u32);
+    // Eight bits a sample or sixteen, which go into the planes and back
+    // exact. The five- and six-bit ones (`rgb565`, `rgb555`) and `x2rgb10`
+    // come back with samples moved (measured), and are refused as before.
+    let all = |bits: i32| (0..usize::from(d.nb_components)).all(|c| d.comp[c].depth == bits);
+    let wide = if all(8) {
+        false
+    } else if all(16) {
+        true
+    } else {
+        return None;
+    };
+    Some(match (wide, alpha) {
+        (false, false) => P::GBRP,
+        (false, true) => P::GBRAP,
+        (true, false) => P::GBRP16LE,
+        (true, true) => P::GBRAP16LE,
+    })
+}
+
+/// `frame` in `format`, at its own size, nothing mixed.
+fn rearranged(frame: &ff::frame::Video, format: ff::format::Pixel) -> Result<ff::frame::Video> {
+    let mut out = ff::frame::Video::new(format, frame.width(), frame.height());
+    ff::software::scaling::Context::get(
+        frame.format(),
+        frame.width(),
+        frame.height(),
+        format,
+        frame.width(),
+        frame.height(),
+        ff::software::scaling::Flags::POINT | ff::software::scaling::Flags::BITEXACT,
+    )?
+    .run(frame, &mut out)?;
+    out.set_color_range(frame.color_range());
+    alpha_as_it_was(frame, &mut out);
+    Ok(out)
+}
+
+/// **The alpha copied across by hand, where it is eight bits.** libswscale
+/// turns `rgba`, `argb` and their kind into `gbrap` with some of the alpha
+/// samples one higher than they were, and the same again on the way back
+/// (measured: about half of them each way), so every picture of a crossing
+/// over such a master, the untouched ones too, came out a little more solid.
+/// The sixteen-bit ones come back exact. One of the two frames is packed and
+/// the other planar.
+fn alpha_as_it_was(from: &ff::frame::Video, to: &mut ff::frame::Video) {
+    let desc = |p: ff::format::Pixel| unsafe { &*ff::ffi::av_pix_fmt_desc_get(p.into()) };
+    let (df, dt) = (desc(from.format()), desc(to.format()));
+    let eight = |d: &ff::ffi::AVPixFmtDescriptor| d.nb_components == 4 && d.comp[3].depth == 8;
+    if !eight(df) || !eight(dt) {
+        return;
+    }
+    // One of the two packed, its alpha in plane 0, and the other planar.
+    let (fp, tp) = (df.comp[3].plane as usize, dt.comp[3].plane as usize);
+    if (fp == 0) == (tp == 0) {
+        return;
+    }
+    let (w, h) = (from.width() as usize, from.height() as usize);
+    let (fs, ts) = (from.stride(fp), to.stride(tp));
+    let (fstep, foff) = (df.comp[3].step as usize, df.comp[3].offset as usize);
+    let (tstep, toff) = (dt.comp[3].step as usize, dt.comp[3].offset as usize);
+    let src = from.data(fp);
+    let dst = to.data_mut(tp);
+    for y in 0..h {
+        for x in 0..w {
+            dst[y * ts + x * tstep + toff] = src[y * fs + x * fstep + foff];
+        }
+    }
+}
+
+/// Write `planar` back into `out`, which is in the packed format it was
+/// made from.
+fn put_back(planar: &ff::frame::Video, out: &mut ff::frame::Video) -> Result<()> {
+    let back = rearranged(planar, out.format())?;
+    let ok = unsafe { ff::ffi::av_frame_copy(out.as_mut_ptr(), back.as_ptr()) };
+    if ok < 0 {
+        bail!("a picture could not be copied: {}", ff::Error::from(ok));
+    }
+    Ok(())
 }
 
 /// Whether two frames can stand in for each other, which is what every
@@ -158,6 +279,11 @@ pub fn copy_into(from: &ff::frame::Video, to: &mut ff::frame::Video) -> Result<(
 /// Take a picture towards a colour. `mix` is 0 for the picture untouched and
 /// 1 for the colour alone.
 pub fn tint(frame: &mut ff::frame::Video, shade: Shade, mix: f64) -> Result<()> {
+    if let (Err(_), Some(work)) = (shape_of(frame.format()), working(frame.format())) {
+        let mut planar = rearranged(frame, work)?;
+        tint(&mut planar, shade, mix)?;
+        return put_back(&planar, frame);
+    }
     let shape = shape_of(frame.format())?;
     let mix = mix.clamp(0.0, 1.0);
     if mix <= 0.0 {
@@ -167,6 +293,14 @@ pub fn tint(frame: &mut ff::frame::Video, shade: Shade, mix: f64) -> Result<()> 
     // studio levels in it are a dark grey and a light one.
     let full = full_range_frame(frame);
     let (luma, chroma) = shade.yuv_in(shape.depth, full);
+    // RGB's black is nought in every plane and its white full scale, which
+    // is the full-range luma's.
+    let (luma, chroma) = if shape.rgb {
+        let (l, _) = shade.yuv_in(shape.depth, true);
+        (l, l)
+    } else {
+        (luma, chroma)
+    };
     let (width, height) = (frame.width(), frame.height());
     let scaled = (mix * 4096.0).round() as u32;
     for nth in 0..3 {
@@ -200,10 +334,17 @@ pub fn dissolve(
 ) -> Result<()> {
     alike(a, b)?;
     alike(a, out)?;
+    if let (Err(_), Some(work)) = (shape_of(a.format()), working(a.format())) {
+        let mut planar = ff::frame::Video::new(work, a.width(), a.height());
+        dissolve(&rearranged(a, work)?, &rearranged(b, work)?, &mut planar, mix)?;
+        return put_back(&planar, out);
+    }
     let shape = shape_of(a.format())?;
     let scaled = (mix.clamp(0.0, 1.0) * 4096.0).round() as u32;
     let (width, height) = (a.width(), a.height());
-    for nth in 0..3 {
+    // The alpha too, where there is one: `out` is a fresh frame, and a plane
+    // left alone in it is whatever the allocation held.
+    for nth in 0..shape.planes {
         let (w, h) = shape.plane(width, height, nth);
         let (sa, sb, so) = (a.stride(nth), b.stride(nth), out.stride(nth));
         let step = shape.step;
@@ -242,10 +383,17 @@ pub fn wipe(
 ) -> Result<()> {
     alike(a, b)?;
     alike(a, out)?;
+    if let (Err(_), Some(work)) = (shape_of(a.format()), working(a.format())) {
+        let mut planar = ff::frame::Video::new(work, a.width(), a.height());
+        let (a, b) = (rearranged(a, work)?, rearranged(b, work)?);
+        wipe(&a, &b, &mut planar, side, at, moving)?;
+        return put_back(&planar, out);
+    }
     let shape = shape_of(a.format())?;
     let at = at.clamp(0.0, 1.0);
     let (width, height) = (a.width(), a.height());
-    for nth in 0..3 {
+    // The alpha too, as in [`dissolve`].
+    for nth in 0..shape.planes {
         let (w, h) = shape.plane(width, height, nth);
         let (sa, sb, so) = (a.stride(nth), b.stride(nth), out.stride(nth));
         let step = shape.step;
@@ -345,6 +493,24 @@ pub struct Laid {
 /// Draw one over the frame.
 pub fn over(frame: &mut ff::frame::Video, laid: &Laid, opacity: f64) -> Result<()> {
     alike(&laid.picture, frame)?;
+    if let (Err(_), Some(work)) = (shape_of(frame.format()), working(frame.format())) {
+        if opacity <= 0.0 {
+            return Ok(());
+        }
+        let mut planar = rearranged(frame, work)?;
+        over_planes(&mut planar, &rearranged(&laid.picture, work)?, &laid.alpha, opacity)?;
+        return put_back(&planar, frame);
+    }
+    over_planes(frame, &laid.picture, &laid.alpha, opacity)
+}
+
+/// [`over`], in a planar format.
+fn over_planes(
+    frame: &mut ff::frame::Video,
+    picture: &ff::frame::Video,
+    alpha: &[u8],
+    opacity: f64,
+) -> Result<()> {
     let shape = shape_of(frame.format())?;
     let opacity = opacity.clamp(0.0, 1.0);
     if opacity <= 0.0 {
@@ -354,14 +520,14 @@ pub fn over(frame: &mut ff::frame::Video, laid: &Laid, opacity: f64) -> Result<(
     let scale = (opacity * 4096.0).round() as u32;
     for nth in 0..3 {
         let (w, h) = shape.plane(width, height, nth);
-        let (si, so) = (laid.picture.stride(nth), frame.stride(nth));
+        let (si, so) = (picture.stride(nth), frame.stride(nth));
         let step = shape.step;
         let (shift_w, shift_h) = if nth == 0 {
             (0, 0)
         } else {
             (shape.log2_w, shape.log2_h)
         };
-        let over = laid.picture.data(nth);
+        let over = picture.data(nth);
         let data = frame.data_mut(nth);
         for y in 0..h {
             let ri = &over[y * si..y * si + w * step];
@@ -373,7 +539,7 @@ pub fn over(frame: &mut ff::frame::Video, laid: &Laid, opacity: f64) -> Result<(
                 // luma sample one past the edge.
                 let ly = (y << shift_h).min(height as usize - 1);
                 let lx = (x << shift_w).min(width as usize - 1);
-                let a = u32::from(laid.alpha[ly * width as usize + lx]);
+                let a = u32::from(alpha[ly * width as usize + lx]);
                 let mix = (a * scale) / 255;
                 if mix == 0 {
                     continue;
@@ -530,6 +696,50 @@ pub(crate) fn full_by_format(p: ff::format::Pixel) -> bool {
     matches!(p, YUVJ420P | YUVJ422P | YUVJ444P | YUVJ440P | YUVJ411P)
 }
 
+/// **A palette picture's colours, looked up.** libswscale turns a palette
+/// into YUV with BT.601's numbers whatever matrix it is told (see
+/// [`read_laid_in`]), so a reel of one -- a 256-colour QuickTime Animation,
+/// a palette PNG `.mov`, an 8-bit `.avi` -- joined onto a high-definition
+/// master went in through BT.601 where the same reel in RGB was right. Its
+/// colours as RGBA, each index looked up as it is, with what the frame says
+/// about itself; `None` for a picture that is not a palette.
+pub(crate) fn palette_as_rgba(frame: &ff::frame::Video) -> Option<ff::frame::Video> {
+    if frame.format() != ff::format::Pixel::PAL8 {
+        return None;
+    }
+    let (w, h) = (frame.width() as usize, frame.height() as usize);
+    let mut out = ff::frame::Video::new(ff::format::Pixel::RGBA, frame.width(), frame.height());
+    // The palette is 256 entries of a native-endian 0xAARRGGBB each, in the
+    // frame's second data pointer (not a plane to `data()`).
+    let table = unsafe { (*frame.as_ptr()).data[1] };
+    if table.is_null() {
+        return None;
+    }
+    let table = unsafe { std::slice::from_raw_parts(table, 1024) };
+    let colours: Vec<[u8; 4]> = table
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| {
+            let p = u32::from_ne_bytes(*c);
+            [(p >> 16) as u8, (p >> 8) as u8, p as u8, (p >> 24) as u8]
+        })
+        .collect();
+    let (fs, ts) = (frame.stride(0), out.stride(0));
+    let src = frame.data(0);
+    let dst = out.data_mut(0);
+    for y in 0..h {
+        for x in 0..w {
+            let c = colours[usize::from(src[y * fs + x])];
+            dst[y * ts + 4 * x..y * ts + 4 * x + 4].copy_from_slice(&c);
+        }
+    }
+    unsafe {
+        ff::ffi::av_frame_copy_props(out.as_mut_ptr(), frame.as_ptr());
+    }
+    Some(out)
+}
+
 /// Whether a decoded picture's samples are full range: said so, or implied
 /// by its format.
 pub(crate) fn full_range_frame(frame: &ff::frame::Video) -> bool {
@@ -581,6 +791,12 @@ pub fn read_laid_in(
     full: bool,
     matrix: Option<i32>,
 ) -> Result<Laid> {
+    // A format no blend can be made in is refused as the blend would refuse
+    // it, before a scaler is asked for it: a palette master's transition
+    // image stopped the run with "cannot convert RGBA ... to PAL8".
+    if working(want).is_none() {
+        shape_of(want)?;
+    }
     let mut ictx = crate::input::open_local(path)
         .map_err(|e| anyhow::anyhow!("the image over the transition, {path}: {e}"))?;
     let stream = ictx
@@ -606,6 +822,36 @@ pub fn read_laid_in(
         if decoder.receive_frame(&mut frame).is_err() {
             bail!("{path} could not be decoded into a picture");
         }
+    }
+    // **A palette image is RGB too.** libswscale turns a palette into YUV
+    // with BT.601's numbers whatever matrix it is told, so an indexed PNG or
+    // a GIF over a high-definition master went in through BT.601 and showed
+    // through BT.709 -- a pure red 255,25,0, a green a sixth darker -- where
+    // the same image saved as RGB was right. Its colours are looked up first,
+    // at its own size and nothing mixed, and it goes on from there as an RGB
+    // image does.
+    let palette = unsafe {
+        let d = ff::ffi::av_pix_fmt_desc_get(frame.format().into());
+        !d.is_null() && (*d).flags & (ff::ffi::AV_PIX_FMT_FLAG_PAL as u64) != 0
+    };
+    if palette {
+        let mut looked_up =
+            ff::frame::Video::new(ff::format::Pixel::RGBA, frame.width(), frame.height());
+        ff::software::scaling::Context::get(
+            frame.format(),
+            frame.width(),
+            frame.height(),
+            ff::format::Pixel::RGBA,
+            frame.width(),
+            frame.height(),
+            ff::software::scaling::Flags::POINT,
+        )?
+        .run(&frame, &mut looked_up)?;
+        looked_up.set_color_range(frame.color_range());
+        unsafe {
+            (*looked_up.as_mut_ptr()).colorspace = (*frame.as_ptr()).colorspace;
+        }
+        frame = looked_up;
     }
 
     let (w, h) = (width, height);
@@ -851,5 +1097,131 @@ mod tests {
         assert!(shape_of(ff::format::Pixel::YUYV422).is_err());
         let ten = shape_of(ff::format::Pixel::YUV420P10LE).unwrap();
         assert_eq!((ten.depth, ten.step, ten.log2_w, ten.log2_h), (10, 2, 1, 1));
+    }
+
+    fn packed(fill: [u8; 3]) -> ff::frame::Video {
+        let mut f = ff::frame::Video::new(ff::format::Pixel::RGB24, 16, 8);
+        let stride = f.stride(0);
+        let data = f.data_mut(0);
+        for y in 0..8 {
+            for x in 0..16 {
+                data[y * stride + x * 3..y * stride + x * 3 + 3].copy_from_slice(&fill);
+            }
+        }
+        f
+    }
+
+    fn rgb_at(f: &ff::frame::Video, x: usize, y: usize) -> [u8; 3] {
+        let at = y * f.stride(0) + x * 3;
+        [f.data(0)[at], f.data(0)[at + 1], f.data(0)[at + 2]]
+    }
+
+    /// A packed RGB master (QuickTime Animation) takes a transition too:
+    /// blended in planes and put back, its black nought and its white full.
+    #[test]
+    fn packed_rgb_is_blended_in_planes() {
+        let mut f = packed([200, 90, 150]);
+        tint(&mut f, Shade::Black, 1.0).unwrap();
+        assert_eq!(rgb_at(&f, 3, 2), [0, 0, 0]);
+        let mut f = packed([200, 90, 150]);
+        tint(&mut f, Shade::White, 1.0).unwrap();
+        assert_eq!(rgb_at(&f, 15, 7), [255, 255, 255]);
+        let mut f = packed([200, 90, 150]);
+        tint(&mut f, Shade::White, 0.0).unwrap();
+        assert_eq!(rgb_at(&f, 0, 0), [200, 90, 150]);
+        let (a, b) = (packed([100, 0, 200]), packed([200, 100, 0]));
+        let mut out = packed([0, 0, 0]);
+        dissolve(&a, &b, &mut out, 0.5).unwrap();
+        assert_eq!(rgb_at(&out, 5, 5), [150, 50, 100]);
+        wipe(&a, &b, &mut out, Side::Left, 0.5, false).unwrap();
+        assert_eq!((rgb_at(&out, 0, 0), rgb_at(&out, 15, 0)), ([200, 100, 0], [100, 0, 200]));
+    }
+
+    /// A palette picture's colours come out as its palette has them, alpha
+    /// and all, with the frame's own details carried across.
+    #[test]
+    fn palette_is_looked_up() {
+        use ff::format::Pixel as P;
+        let mut f = ff::frame::Video::new(P::PAL8, 5, 3);
+        let stride = f.stride(0);
+        for y in 0..3 {
+            for x in 0..5 {
+                f.data_mut(0)[y * stride + x] = (x + 5 * y) as u8;
+            }
+        }
+        unsafe {
+            let table = std::slice::from_raw_parts_mut((*f.as_mut_ptr()).data[1], 1024);
+            for i in 0..256u32 {
+                let p = (i << 24) | ((255 - i) << 16) | (i << 8) | (i / 2);
+                table[4 * i as usize..4 * i as usize + 4].copy_from_slice(&p.to_ne_bytes());
+            }
+        }
+        f.set_pts(Some(77));
+        let out = palette_as_rgba(&f).unwrap();
+        assert_eq!((out.format(), out.width(), out.height(), out.pts()), (P::RGBA, 5, 3, Some(77)));
+        for y in 0..3 {
+            for x in 0..5 {
+                let i = (x + 5 * y) as u8;
+                let at = y * out.stride(0) + 4 * x;
+                assert_eq!(&out.data(0)[at..at + 4], &[255 - i, i, i / 2, i]);
+            }
+        }
+        assert!(palette_as_rgba(&ff::frame::Video::new(P::RGBA, 4, 4)).is_none());
+    }
+
+    /// Packed RGB whose samples would not come back exact is not taken.
+    #[test]
+    fn packed_rgb_that_would_not_come_back_is_refused() {
+        use ff::format::Pixel as P;
+        for format in [P::RGB565LE, P::RGB555BE, P::X2RGB10LE, P::PAL8] {
+            assert!(working(format).is_none(), "{format:?}");
+        }
+        assert_eq!(working(P::RGB48BE), Some(P::GBRP16LE));
+        assert_eq!(working(P::BGRZ), Some(P::GBRP));
+        assert_eq!(working(P::ARGB), Some(P::GBRAP));
+    }
+
+    /// What a packed RGB picture is blended in comes back as it went in, for
+    /// every packed RGB a decoder hands over: a fade that has not started
+    /// goes through the planes and back, and must change no sample.
+    #[test]
+    fn packed_rgb_goes_back_as_it_came() {
+        use ff::format::Pixel as P;
+        let mut bad = Vec::new();
+        for format in [
+            P::RGB24, P::BGR24, P::ARGB, P::RGBA, P::ABGR, P::BGRA, P::ZRGB, P::RGBZ,
+            P::ZBGR, P::BGRZ, P::RGB48BE, P::RGB48LE, P::BGR48LE, P::RGBA64BE,
+            P::RGBA64LE, P::BGRA64LE,
+        ] {
+            let mut f = ff::frame::Video::new(format, 17, 9);
+            let stride = f.stride(0);
+            let bytes = unsafe {
+                let d = &*ff::ffi::av_pix_fmt_desc_get(format.into());
+                // Bytes from one pixel to the next, times the width.
+                usize::from(d.comp[0].step as u16) * 17
+            };
+            let mut seed = 12345u32;
+            for y in 0..9 {
+                for b in &mut f.data_mut(0)[y * stride..y * stride + bytes] {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    *b = (seed >> 16) as u8;
+                }
+            }
+            let padded = matches!(format, P::ZRGB | P::RGBZ | P::ZBGR | P::BGRZ);
+            let was = f.data(0).to_vec();
+            tint(&mut f, Shade::White, 0.0).unwrap();
+            for y in 0..9 {
+                for x in 0..bytes {
+                    let at = y * stride + x;
+                    // The unused byte of a padded format is not a sample.
+                    let pad = padded
+                        && matches!((format, x % 4), (P::ZRGB | P::ZBGR, 0) | (P::RGBZ | P::BGRZ, 3));
+                    if !pad && f.data(0)[at] != was[at] {
+                        bad.push(format!("{format:?} byte {x} row {y}: {} -> {}", was[at], f.data(0)[at]));
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{} samples changed: {:?}", bad.len(), &bad[..bad.len().min(8)]);
     }
 }

@@ -700,11 +700,13 @@ pub fn check_placed(
         let measuring = scope.spawn(|| heard.iter().map(|p| held_in(p, stop)).collect::<Vec<_>>());
         let source_side = scope.spawn(move || -> Result<()> {
             for (src, ranges) in &owned {
+                // What the last range's look-back found in force, and where.
+                let mut known = None;
                 for (a, b, head, copies) in ranges {
                     // Opened where the sets the cut decoded it by are stated,
                     // where the range's entry picture carries none: see
                     // [`opened_by_sets_in_force`].
-                    let lent = opened_by_sets_in_force(src, *a);
+                    let lent = opened_by_sets_in_force(src, *a, &mut known);
                     let src = lent.as_ref().unwrap_or(src);
                     let mut gone = false;
                     // The grid is only read where the pictures are compared.
@@ -1437,8 +1439,19 @@ impl Kept {
 /// `None` also wherever the restatement cannot be placed on an entry point in
 /// front of `from` within the cut's own look-back, or a recorder's seam lies
 /// between: read as before.
-fn opened_by_sets_in_force(src: &Source, from: f64) -> Option<Source> {
+///
+/// `known` is the sets an earlier range of the same recording found in force
+/// and the byte it found them at, as the cut's own `sets_at_key` keeps them:
+/// a later range reads back no further than there. Without it every range
+/// of a remux whose sets are stated only at its head read the whole 32 MiB
+/// look-back once more -- 600 MB more than 0.8.45 read for an hour's
+/// recording cut in 20 ranges.
+fn opened_by_sets_in_force(src: &Source, from: f64, known: &mut Option<(u64, Vec<Vec<u8>>)>) -> Option<Source> {
     use crate::bitstream::NalFraming;
+    // Kept only where this range's own look-back follows from it: a range
+    // that leaves early (a key picture with its own sets) forgets it, and the
+    // next reads back as far as ever.
+    let was = known.take();
     if src.video.codec != "h264" || src.video.framing != NalFraming::AnnexB || !src.byte_seekable {
         return None;
     }
@@ -1465,7 +1478,12 @@ fn opened_by_sets_in_force(src: &Source, from: f64) -> Option<Source> {
     if u64::try_from(key.position()).ok() != Some(at) || restates(key.data().unwrap_or(&[])) {
         return None;
     }
-    if crate::cut::sets_in_force(src, at, 0, &record) == record {
+    let in_force = match was {
+        Some((was, sets)) if was <= at => crate::cut::sets_in_force(src, at, was, &sets),
+        _ => crate::cut::sets_in_force(src, at, 0, &record),
+    };
+    *known = Some((at, in_force.clone()));
+    if in_force == record {
         return None;
     }
     // Where they were last restated in front of it, read back as far as the

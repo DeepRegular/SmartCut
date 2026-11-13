@@ -97,13 +97,14 @@ impl IndexSource for PacketScan {
 
     fn build(&self, input: IndexInput) -> Result<Index> {
         let IndexInput {
+            path,
             video,
             start_time,
             ictx,
             on,
             stop,
-            ..
         } = input;
+        crate::seek_index::opened(path);
         walk(video, start_time, ictx, on, |_| Ok(()), stop)
     }
 }
@@ -151,6 +152,16 @@ pub fn walk(
         let u = (*ictx.as_ptr()).url;
         (!u.is_null()).then(|| std::ffi::CStr::from_ptr(u).to_string_lossy().into_owned())
     };
+    // What the recording is as the walk begins, for an index of it to be kept
+    // as: see [`crate::seek_index::opened`]. Asked of a file by the name the
+    // demuxer was given, for the walk that comes with the pictures, which is
+    // not handed the name the recording goes by. A name inside an image or a
+    // disc's folder is noted by the index source that is handed it.
+    if let Some(file) = url.as_deref().map(|u| u.strip_prefix("file:").unwrap_or(u)) {
+        if std::path::Path::new(file).is_file() {
+            crate::seek_index::opened(file);
+        }
+    }
     if url.is_some_and(|u| crate::sound::sought_at_head(&ictx, &u)) {
         let target = crate::input::head_seek(&ictx);
         // Refused where the seek fails -- a file with no index (Cues), one
@@ -499,6 +510,7 @@ impl IndexSource for DiscIndex {
             mut ictx,
             ..
         } = input;
+        crate::seek_index::opened(path);
         let held = crate::disc::clip_entry_points(path)
             .ok_or_else(|| anyhow!("no entry-point map beside this recording"))?;
         // The map counts on the stream's own clock, the same one the demuxer
@@ -606,11 +618,13 @@ impl IndexSource for ContainerIndex {
 
     fn build(&self, input: IndexInput) -> Result<Index> {
         let IndexInput {
+            path,
             video,
             start_time,
             mut ictx,
             ..
         } = input;
+        crate::seek_index::opened(path);
         // **An MPEG program or transport stream keeps no table at all**, so
         // what libavformat hands over for one is never a table to take --
         // and [`covers`] cannot tell that where the probe read most of a

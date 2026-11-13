@@ -1065,6 +1065,9 @@ struct Stream {
     id: u8,
     language: Option<String>,
     at: Vec<(f64, u64)>,
+    /// For each of `at`, when its picture goes up where its start runs at
+    /// a delay of its own; `None` for at once. See [`Sidecar::withdraw_late`].
+    up: Vec<Option<f64>>,
 }
 
 /// The pair being built.
@@ -1099,6 +1102,7 @@ impl Sidecar {
                 id,
                 language,
                 at: Vec::new(),
+                up: Vec::new(),
             });
         }
     }
@@ -1139,7 +1143,60 @@ impl Sidecar {
         self.write_unit(id, at, spu);
         if let Some(s) = self.streams.iter_mut().find(|s| s.id == id) {
             s.at.push((at.max(0.0), filepos));
+            s.up.push(starts_after(spu).filter(|&d| d > 0.0).map(|d| at + d));
         }
+    }
+
+    /// Take back out of the pair every unit whose start delay puts its
+    /// picture up only at `end` or later, and say how many there were.
+    ///
+    /// For the end of a kept range: such a unit is on screen for none of
+    /// the cut, and left in, it went up after the unit that ends the range
+    /// -- or, with that unit timed to stand until the picture went up, the
+    /// take-down came after the next range's first unit and the index was
+    /// out of order. See `cut::Subpictures::end_range`. Every unit starts on
+    /// a sector of its own, so what follows one moves back by whole sectors.
+    pub fn withdraw_late(&mut self, end: f64) -> usize {
+        let mut gone: Vec<u64> = Vec::new();
+        for s in &mut self.streams {
+            let mut k = 0;
+            while k < s.at.len() {
+                if s.up[k].is_some_and(|up| up >= end) {
+                    gone.push(s.at.remove(k).1);
+                    s.up.remove(k);
+                } else {
+                    k += 1;
+                }
+            }
+        }
+        if gone.is_empty() {
+            return 0;
+        }
+        // Where each unit ends is where the next begins, whichever stream
+        // that is; a withdrawn one is never empty, so the next is past it.
+        let mut starts: Vec<u64> = self.streams.iter().flat_map(|s| s.at.iter().map(|&(_, p)| p)).collect();
+        starts.extend_from_slice(&gone);
+        starts.sort_unstable();
+        gone.sort_unstable();
+        let total = self.sub.len() as u64;
+        let spans: Vec<(u64, u64)> = gone
+            .iter()
+            .map(|&g| (g, starts.iter().copied().find(|&p| p > g).unwrap_or(total)))
+            .collect();
+        let mut sub = Vec::with_capacity(self.sub.len());
+        let mut from = 0u64;
+        for &(a, b) in &spans {
+            sub.extend_from_slice(&self.sub[from as usize..a as usize]);
+            from = b;
+        }
+        sub.extend_from_slice(&self.sub[from as usize..]);
+        self.sub = sub;
+        for stream in &mut self.streams {
+            for (_, p) in &mut stream.at {
+                *p -= spans.iter().filter(|&&(a, _)| a < *p).map(|&(a, b)| b - a).sum::<u64>();
+            }
+        }
+        gone.len()
     }
 
     /// Put one unit into the `.sub` as the program stream packets it
@@ -1437,6 +1494,40 @@ mod tests {
         side.add(0x20, 1.0, &standing(5000));
         assert_eq!(side.sub.len(), 3 * SECTOR);
         assert!(side.index().contains("filepos: 000000000"));
+    }
+
+    /// Units taken back out leave the pair as if they had never been given:
+    /// the units after them, of any stream, move back by their sectors.
+    #[test]
+    fn withdrawn_units_leave_no_trace() {
+        // Put up 1.0 s after it is handed over.
+        let delayed = |size: u16| {
+            let mut out = standing(size);
+            let at = u16be(&out, 2) as usize;
+            out[at..at + 2].copy_from_slice(&88u16.to_be_bytes());
+            out
+        };
+        let late = delayed(64);
+        assert!(starts_after(&late).is_some_and(|d| d > 0.9));
+        let long = delayed(5000);
+        let mut side = Sidecar::new(720, 480, Palette::grey());
+        side.add(0x20, 1.0, &late);
+        side.add(0x21, 1.5, &standing(64));
+        side.add(0x20, 2.0, &long);
+        side.add(0x21, 2.5, &late);
+        side.add(0x21, 2.6, &standing(64));
+        // Up at 2.0, 3.0 and 3.5: the last two are past 2.9.
+        assert_eq!(side.withdraw_late(2.9), 2);
+        assert_eq!(side.withdraw_late(2.9), 0);
+        side.add(0x20, 2.9, &take_down());
+        let mut plain = Sidecar::new(720, 480, Palette::grey());
+        plain.add(0x20, 1.0, &late);
+        plain.add(0x21, 1.5, &standing(64));
+        plain.add(0x21, 2.6, &standing(64));
+        plain.add(0x20, 2.9, &take_down());
+        assert_eq!(side.index(), plain.index());
+        assert_eq!(side.sub, plain.sub);
+        assert_eq!(side.counts(), vec![(0x20, 2), (0x21, 2)]);
     }
 
     /// The streams are named in the order they were declared, whatever order

@@ -610,6 +610,11 @@ fn run(
     // Where the ranges written so far would have brought the sound had each
     // been laid to the sample: their lengths, end to end. See `drift` below.
     let mut laid = 0.0f64;
+    // Where the ranges written so far end on the cut's own timeline: their
+    // lengths end to end, each to where the cut ends it ([`shown_to`]).
+    // What a re-encoded track is put back onto at a join, as the cut puts
+    // its re-encoder there (`target_start` in [`crate::cut`]).
+    let mut placed = 0.0f64;
     // Whether the track's first frame has been laid yet. Until it has,
     // nothing is owed: see `head_owed`.
     let mut opened = false;
@@ -760,6 +765,22 @@ fn run(
                 ranges_in_all,
                 win,
             );
+            // Where the cut ends this range, for what follows it. Not where
+            // the next clip comes in over this one: an overlapping crossing
+            // lays it from its own length, not from where this range's last
+            // picture ends (a dissolve after `--keep 33.3-39.99` put the
+            // joined recording 41 ms late against the cut, 19 before).
+            let crossed = k + 1 == ranges.len() && n + 1 < pieces.len() && piece.after.kind.overlaps();
+            let ends = if crossed { range.1 } else { shown_to(piece.src, range.1) };
+            // **A recording joined on, re-encoded, opens where the cut opens
+            // it.** Laid end to end, its sound came after the samples the
+            // ranges before it held, and the cut, which lays it where its
+            // pictures begin (and pads or skips more than 20 ms to get
+            // there), had it elsewhere: a .ts joined with a .mkv whose AAC
+            // differs, after `--keep 33.3-39.99`, was 31 ms early. Not into
+            // an overlapping crossing, whose stretch sound-only lays its own
+            // way.
+            let at_out = (k == 0 && n > 0 && !pieces[n - 1].after.kind.overlaps()).then_some(placed);
             let (reached, first, holes) = take_range(
                 piece.src,
                 &track,
@@ -774,6 +795,7 @@ fn run(
                 written,
                 range.0 + drift,
                 joins_at_sync && at > 0,
+                at_out,
             )?;
             written = reached;
             if std::env::var("SMARTCUT_DEBUG").is_ok() {
@@ -827,7 +849,8 @@ fn run(
             // the seam and resumes, on the stretch at the seam that no cut
             // writes (0.28 and 0.44 s on a BD-RE title kept across two).
             laid -= holes;
-            laid += range.1 - range.0;
+            laid += ends - range.0;
+            placed += ends - range.0;
             ranges_done += 1;
             say(ranges_done);
         }
@@ -910,6 +933,59 @@ fn on_its_pictures(
     let from = if a > first + slack && moved(a, from) { from } else { a };
     let to = if moved(b, to) && to > from { to } else { b };
     (from, to)
+}
+
+/// Where the cut with pictures puts the next range after one that ends at
+/// `b`: `b`, unless `b` falls inside the recording's last picture, which
+/// the cut shows whole.
+///
+/// **The cut lays what follows where its pictures end** (`target_start` in
+/// [`crate::cut`]), and a range ending part of the way into the last
+/// picture still writes that picture for its whole length. [`sound_span`]
+/// moves such an end onto the next picture, and the last one has none
+/// after it. Counted to `b`, a join after `--keep 33.3-40` of a 40 s .mkv
+/// whose last picture ends at 40.021 laid the recording joined on 21 ms (an
+/// AAC frame) ahead of where the cut has it, from the join to the end.
+///
+/// [`sound_span`]: crate::cut::sound_span
+fn shown_to(src: &Source, b: f64) -> f64 {
+    let fd = src.video.frame_duration();
+    if !(fd.is_finite() && fd > 0.0 && b.is_finite()) || b >= src.duration {
+        return b;
+    }
+    // Not on a recording whose pictures vary: there the cut holds the last
+    // picture to the range's end, not for an average frame past its start
+    // (a phone-style mp4 cut `--keep 15-19.97` and joined on was laid 21 ms
+    // late against the cut, which was exact before).
+    if src.video.variable_rate {
+        return b;
+    }
+    let slack = crate::cut::on_a_picture_slack(&src.video);
+    // Nor at a recorder's seam, which the cut's own end rule leaves alone
+    // (`near_a_seam` in [`sound_span`]): the next picture there is the next
+    // stretch's. From where the stretch before it stops (`ends`), which can
+    // be most of a second ahead of `time`: a recorder's last picture there
+    // is often a field on its own, which the cut ends after its own half
+    // frame, and counted a whole frame from its start the range after it
+    // was laid an AAC frame late against the cut (a BD-RE title `--keep
+    // 1980-1988.41`, 18 ms ahead of its seam's `ends`, 0.8 s ahead of the
+    // next stretch).
+    if src.joins.iter().any(|s| s.ends.min(s.time) - 2.25 * fd < b && b < s.time + 2.0 * fd) {
+        return b;
+    }
+    // Only the last picture: anywhere else the next picture's start is the
+    // end, and `on_its_pictures` has that already. Told by the pictures, not
+    // by the duration: a recording whose sound runs on past its pictures
+    // (half a second of it after the last) is longer than they are, and a
+    // range ending inside the last picture was still laid to its own end,
+    // 10-20 ms off the cut after a join.
+    if crate::plan::picture_after(src, b, slack).is_some() {
+        return b;
+    }
+    match crate::plan::picture_on_screen(src, b) {
+        Some(s) if s < b - slack && s + fd > b + slack => (s + fd).min(src.duration),
+        _ => b,
+    }
 }
 
 /// How much later than its range's start the cut with pictures starts the
@@ -1545,6 +1621,9 @@ fn take_range(
     mut written: f64,
     pick_from: f64,
     mut need_sync: bool,
+    // Where on the output a re-encoded range's first sample belongs, where
+    // that is decided (see `placed` in `run`).
+    at_out: Option<f64>,
 ) -> Result<(f64, Option<Opening>, f64)> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Half a second before the range, so the frame it opens on has been
@@ -1650,7 +1729,7 @@ fn take_range(
             // left out -- a whole second of WavPack in a short .mkv. The
             // window trims what is early.
             if dur <= 0.0 || t + 2.0 * dur > range.0 {
-                re.take(&packet, track, src.start_time, win, ramp, None)?;
+                re.take(&packet, track, src.start_time, win, ramp, at_out)?;
                 let mut out = Vec::new();
                 re.drain(&mut out)?;
                 for (p, at) in out {

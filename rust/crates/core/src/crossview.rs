@@ -351,6 +351,10 @@ fn reshape(
     master: Option<&crate::VideoInfo>,
     rescale: &mut Option<Rescale>,
 ) -> Result<ff::frame::Video> {
+    // A palette reel's colours looked up first, as the cut looks them up
+    // ([`crate::blend::palette_as_rgba`]).
+    let looked_up = crate::blend::palette_as_rgba(frame);
+    let frame = looked_up.as_ref().unwrap_or(frame);
     // Every picture brought to studio levels, whatever range it was in. The
     // two clips at a seam can be in different ranges -- that is one of the
     // reasons a clip is written afresh -- and a dissolve or a wipe mixes
@@ -362,6 +366,16 @@ fn reshape(
     let full = crate::blend::full_range_frame(frame);
     let have = (frame.width(), frame.height(), frame.format(), full);
     let swap = master.and_then(|m| crate::cut::matrices(frame, m));
+    // An RGB master's composite is BT.601 YUV, not the RGB the cut writes:
+    // a YUV reel the cut turns into RGB through its own matrix comes into
+    // this one from that matrix to BT.601, or it showed in other colours.
+    let bt601 = ff::ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32;
+    let swap = match swap {
+        Some((from, _)) if master.is_some_and(rgb_master) => {
+            (from != bt601).then_some((from, bt601))
+        }
+        other => other,
+    };
     if swap.is_none() && have == (w, h, SHAPE, false) {
         return Ok(frame.clone());
     }
@@ -507,23 +521,14 @@ fn in_the_masters_matrix(picture: &mut ff::frame::Video, master: &crate::VideoIn
 /// composite's YUV through BT.601 whatever they say ([`crate::cut::matrices`]
 /// swaps nothing for them), and a QuickTime Animation (`qtrle`) master states
 /// no matrix: read by its HD size, the window showed BT.601 samples through
-/// BT.709, red 255,26,0 where the editor shows 252,1,0. Left unstated, as
-/// before 0.8.45.
+/// BT.709, red 255,26,0 where the editor shows 252,1,0. Said to be BT.601,
+/// which is what they are: left unstated, the composite was read by its own
+/// size, and the window is up to 1280 across -- an RGB master's pictures,
+/// and its transition image, through BT.709 in a wide window.
 fn masters_matrix(master: &crate::VideoInfo) -> Option<i32> {
     use ff::ffi::AVColorSpace as S;
-    if master.shape.pix_fmt >= 0 {
-        let rgb = unsafe {
-            let d = ff::ffi::av_pix_fmt_desc_get(std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(
-                master.shape.pix_fmt,
-            ));
-            !d.is_null()
-                && (*d).flags
-                    & (ff::ffi::AV_PIX_FMT_FLAG_RGB | ff::ffi::AV_PIX_FMT_FLAG_PAL) as u64
-                    != 0
-        };
-        if rgb {
-            return None;
-        }
+    if rgb_master(master) {
+        return Some(S::AVCOL_SPC_SMPTE170M as i32);
     }
     let (w, h) = (master.width, master.height);
     crate::conform::read_matrix(master.shape.matrix, w, h).or_else(|| {
@@ -531,6 +536,21 @@ fn masters_matrix(master: &crate::VideoInfo) -> Option<i32> {
             .then(|| crate::conform::read_matrix(S::AVCOL_SPC_UNSPECIFIED as i32, w, h))
             .flatten()
     })
+}
+
+/// Whether a master's pictures are RGB or a palette, whose composite
+/// [`masters_matrix`] says is BT.601.
+fn rgb_master(master: &crate::VideoInfo) -> bool {
+    master.shape.pix_fmt >= 0
+        && unsafe {
+            let d = ff::ffi::av_pix_fmt_desc_get(std::mem::transmute::<i32, ff::ffi::AVPixelFormat>(
+                master.shape.pix_fmt,
+            ));
+            !d.is_null()
+                && (*d).flags
+                    & (ff::ffi::AV_PIX_FMT_FLAG_RGB | ff::ffi::AV_PIX_FMT_FLAG_PAL) as u64
+                    != 0
+        }
 }
 
 /// One instant of the preview, as a JPEG.
@@ -637,6 +657,11 @@ struct Reader<'s> {
     fed: bool,
     /// Pictures a drain at a seam handed back, in order, not yet asked for.
     queued: std::collections::VecDeque<(f64, ff::frame::Video)>,
+    /// The H.264 sets in force where the clip is read, for a key picture
+    /// that carries none: a clip opened past the IDR the second of two
+    /// spliced encodes restated its sets on was decoded by the first one's.
+    /// See [`crate::preview::InForce`].
+    in_force: crate::preview::InForce,
 }
 
 impl<'s> Reader<'s> {
@@ -700,6 +725,7 @@ impl<'s> Reader<'s> {
             .ok_or_else(|| anyhow!("no video stream in {}", src.path))?;
         let in_tb = f64::from(stream.time_base());
         let params = stream.parameters();
+        let in_force = crate::preview::InForce::single(&params, &src.video);
         let decoder = crate::video_decoder(params)?;
         let landed = seek(&mut ictx);
         crate::input::keep_only(&mut ictx, &[ist]);
@@ -724,6 +750,7 @@ impl<'s> Reader<'s> {
             stretches: crate::preview::Stretches::new(src),
             fed: false,
             queued: Default::default(),
+            in_force,
         })
     }
 
@@ -836,6 +863,7 @@ impl<'s> Reader<'s> {
                 continue;
             }
             crate::preview::Landed::mend(&mut self.landed, &mut packet, self.src);
+            self.in_force.see(&packet);
             let was = self.stretches.clone();
             if self.stretches.reach(packet.position()) && std::mem::take(&mut self.fed) {
                 let _ = self.decoder.send_eof();
@@ -852,6 +880,10 @@ impl<'s> Reader<'s> {
                 }
                 self.decoder.flush();
             }
+            let src = self.src;
+            self.in_force.mend(&mut packet, &mut |at, record| {
+                Some(crate::preview::sets_before(src, at, record))
+            });
             // A packet the decoder will not take is not a reason to stop.
             if self.decoder.send_packet(&packet).is_ok() {
                 self.fed = true;

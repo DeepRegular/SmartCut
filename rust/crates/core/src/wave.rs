@@ -148,9 +148,17 @@ impl WaveBuilder {
             .stream(audio.stream_index)
             .ok_or_else(|| anyhow!("audio stream vanished"))?
             .parameters();
-        let decoder = ff::codec::context::Context::from_parameters(params)?
-            .decoder()
-            .audio()?;
+        // Told the time base its packets are stamped in, as the re-encoder's
+        // decoder is (`track_decoder` in [`crate::audio`]): without it the
+        // samples a packet asks to have skipped -- an MP4 edit list's AAC
+        // priming, an Opus pre-skip -- are dropped while the frame keeps the
+        // packet's stamp: that first frame was outlined early by the skip (an
+        // Opus track's 6.5 ms), with a gap before the one after it.
+        let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder();
+        if audio.time_base > 0.0 && audio.time_base.is_finite() {
+            decoder.set_packet_time_base(ff::Rational::from(audio.time_base));
+        }
+        let decoder = decoder.audio()?;
         Ok(Self {
             stream_index: audio.stream_index,
             decoder,

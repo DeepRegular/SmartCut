@@ -47,6 +47,10 @@ fn fmt_hms(t: f64) -> String {
 /// used to go through: `--preview nan` wrote a JPEG "asked NaNs", and
 /// `--cut-near -5` answered with a picture five seconds before the recording.
 fn parse_time(s: &str) -> Result<f64> {
+    // Hours, minutes and seconds at most: `1:2:3:4` was 62 hours.
+    if s.trim().split(':').count() > 3 {
+        bail!("bad timestamp {s:?}: a time is seconds, or as 1:23:45.6 at most");
+    }
     let mut total = 0.0;
     for part in s.trim().split(':') {
         let v: f64 = part
@@ -812,7 +816,8 @@ fn run() -> Result<()> {
                     Some("copy") => smartcut_core::AudioMode::Copy,
                     Some("smart") => smartcut_core::AudioMode::Smart,
                     Some("reencode") => smartcut_core::AudioMode::Reencode,
-                    other => bail!("--audio-mode wants copy, smart or reencode, got {other:?}"),
+                    Some(other) => bail!("--audio-mode wants copy, smart or reencode, got {other:?}"),
+                    None => bail!("--audio-mode needs copy, smart or reencode"),
                 };
             }
             "--audio-codec" => {
@@ -908,7 +913,8 @@ fn run() -> Result<()> {
                     Some("auto") => smartcut_core::AacVersion::Auto,
                     Some("mpeg2") => smartcut_core::AacVersion::Mpeg2,
                     Some("mpeg4") => smartcut_core::AacVersion::Mpeg4,
-                    other => bail!("--aac wants auto, mpeg2 or mpeg4, got {other:?}"),
+                    Some(other) => bail!("--aac wants auto, mpeg2 or mpeg4, got {other:?}"),
+                    None => bail!("--aac needs auto, mpeg2 or mpeg4"),
                 };
             }
             "--preview" => {
@@ -1007,8 +1013,14 @@ fn run() -> Result<()> {
                 }
                 video_share = Some(share);
             }
-            "--data-broadcast" => data_broadcast = Some(true),
-            "--no-data-broadcast" => data_broadcast = Some(false),
+            // Both given, one of them was taken without a word: the last.
+            "--data-broadcast" | "--no-data-broadcast" => {
+                let asked = args[i] == "--data-broadcast";
+                if data_broadcast == Some(!asked) {
+                    bail!("--data-broadcast and --no-data-broadcast ask for opposite things: give one");
+                }
+                data_broadcast = Some(asked);
+            }
             "--no-chapters" => chapters_wanted = false,
             "--proxy" => make_proxy = true,
             "--as-proxy" => as_proxy = true,
@@ -1220,8 +1232,17 @@ fn run() -> Result<()> {
     if fit.is_some() && video_share.is_some() {
         bail!("--fit works the share out and --video-share names it: give one");
     }
-    if sound_only && (video_share.is_some() || audio_es) {
-        bail!("--sound-only writes the sound alone: --video-share and --audio-es have nothing to act on");
+    // Named as given: both were named whichever one was.
+    if sound_only {
+        let moot = match (video_share.is_some(), audio_es) {
+            (true, true) => Some("--video-share and --audio-es have"),
+            (true, false) => Some("--video-share has"),
+            (false, true) => Some("--audio-es has"),
+            (false, false) => None,
+        };
+        if let Some(moot) = moot {
+            bail!("--sound-only writes the sound alone: {moot} nothing to act on");
+        }
     }
     if fit.is_some() && sound_only {
         bail!("--fit shrinks the pictures, and --sound-only writes none");
@@ -1280,6 +1301,13 @@ fn run() -> Result<()> {
         if output.is_some() && matches!(first, "--cut-near" | "--detect-cm") {
             bail!("{first} prints what it finds and writes no file: -o has nothing to name");
         }
+    }
+    // A list of the scene changes, as `--detect-cm` lists the breaks: it
+    // writes no cut (it goes on to the plan, for `--analyze --scenes`). With
+    // `-o` the whole recording was written as well, which `--detect-cm -o`
+    // was refused for.
+    if scenes && stopping_at.is_none() && (output.is_some() || bdav.is_some()) {
+        bail!("--scenes lists the scene changes and writes no cut: run the cut on its own");
     }
     // Asked here rather than once the recording is open: that is after the
     // index has been read or the whole recording walked for one, minutes on
@@ -1504,9 +1532,9 @@ fn run() -> Result<()> {
     // Where the log is, once it is open, for the names that are only known
     // once the recording is: see `the_log`.
     let mut log_file: Option<std::path::PathBuf> = None;
-    // And whether this run made it, so that a log refused once the
+    // And what was under its name before, so that a log refused once the
     // recording is open goes as one refused above does.
-    let mut log_made = false;
+    let mut log_was = LogWas::Made;
     if let Some(at) = written_to(log_to)? {
         let log = std::path::Path::new(&at);
         // Opened to be added to, so named as the recording it wrote the run
@@ -1678,6 +1706,7 @@ fn run() -> Result<()> {
             }
         }
         let existed = log.exists();
+        let held = std::fs::metadata(log).map(|m| m.len()).unwrap_or(0);
         // A link to nothing yet: opening the log makes the file it names, so
         // a refused log takes that file away and leaves the user's link.
         let dangling = !existed && log.symlink_metadata().is_ok();
@@ -1726,7 +1755,13 @@ fn run() -> Result<()> {
             );
         }
         log_file = Some(log.to_path_buf());
-        log_made = !existed && !dangling;
+        log_was = if dangling {
+            LogWas::Linked
+        } else if existed {
+            LogWas::Held(held)
+        } else {
+            LogWas::Made
+        };
         smartcut_core::log::write_only(&format!(
             "# smartcut {} -- {}",
             smartcut_core::VERSION,
@@ -1886,7 +1921,7 @@ fn run() -> Result<()> {
     let recorded = smartcut_core::input::Input::parse(&input)
         .ok()
         .and_then(|i| modified(&i.file));
-    let held = match &index_file {
+    let mut held = match &index_file {
         Some(p) if p.is_file() && recorded.is_some_and(|r| modified(p).is_none_or(|ix| ix < r)) => {
             smartcut_core::say!("note: {} is older than the recording; it is made again", p.display());
             None
@@ -1902,10 +1937,40 @@ fn run() -> Result<()> {
     };
     // `--as-proxy` reads the input as a proxy of something else: same file,
     // but its timestamps are the recording's and must not be rebased again.
+    // An index that read but does not fit the recording -- made while it
+    // was still being written, so of fewer bytes than are there now, or one
+    // holding no entry point -- is made again, as one that does not read is.
+    // Refused, the run ended on "delete it" for a file it could rewrite.
+    // Only the index's own refusals (`seek_index::Unfit`): a recording that
+    // will not open stops the run as before.
+    let from_held = match held.as_ref().filter(|_| !as_proxy) {
+        Some(ix) => match smartcut_core::scan_with(&input, ix) {
+            Ok(src) => Some(src),
+            Err(e) => match e.downcast_ref::<smartcut_core::seek_index::Unfit>() {
+                Some(smartcut_core::seek_index::Unfit::Another { .. }) => {
+                    let ix = index_file.as_deref().map(|p| p.display().to_string()).unwrap_or_default();
+                    smartcut_core::say!(
+                        "note: {ix} was made from another recording than {input}, or from it as it \
+                         was then; it is made again"
+                    );
+                    None
+                }
+                Some(unfit @ smartcut_core::seek_index::Unfit::Empty) => {
+                    smartcut_core::say!("note: {unfit}; it is made again");
+                    None
+                }
+                None => return Err(e),
+            },
+        },
+        None => None,
+    };
+    if from_held.is_none() && !as_proxy {
+        held = None;
+    }
     let mut src = if as_proxy {
         smartcut_core::proxy::open(&input)?
-    } else if let Some(ix) = &held {
-        smartcut_core::scan_with(&input, ix)?
+    } else if let Some(src) = from_held {
+        src
     } else {
         match smartcut_core::scan_with(&input, index_source.as_ref()) {
             Ok(src) => src,
@@ -1953,7 +2018,7 @@ fn run() -> Result<()> {
             .as_deref()
             .is_some_and(|l| one_place(&l.to_string_lossy(), &at.to_string_lossy()));
         if clash {
-            log_refused(log_file.as_deref(), log_made);
+            log_refused(log_file.as_deref(), log_was);
         }
         clash
     };
@@ -3542,7 +3607,7 @@ fn run() -> Result<()> {
     if let Some(log) = log_file.as_deref() {
         let subs = std::iter::once(&src).chain(&joined_src).any(|s| subtitled_beside(s, &out));
         if let Some(side) = beside_the_cut(&out, log, audio_es, subs) {
-            log_refused(Some(log), log_made);
+            log_refused(Some(log), log_was);
             bail!("--log {} is {side}: name another file for the log", log.display());
         }
     }
@@ -4649,12 +4714,40 @@ fn one_place(a: &str, b: &str) -> bool {
     }
 }
 
-/// The log, refused once the recording was open: closed, and taken away
-/// where this run made it (`made`), as one refused before anything was read.
-fn log_refused(log: Option<&std::path::Path>, made: bool) {
+/// What was under the log's name before this run opened it.
+#[derive(Clone, Copy)]
+enum LogWas {
+    /// Nothing: the run made the file.
+    Made,
+    /// A link to nothing yet: the run made the file it points to.
+    Linked,
+    /// A file this long, which the run's lines were added onto.
+    Held(u64),
+}
+
+/// The log, refused once the recording was open: closed, and put back as it
+/// was (`was`), as one refused before anything was read -- taken away where
+/// this run made it, and cut back to its old length where it was there
+/// already. Only taken away, a file that was there kept the lines the run
+/// had added to it: `--log x.proxy.marks` beside a proxy built before was
+/// refused, and the marks had the run's head on the end of them.
+fn log_refused(log: Option<&std::path::Path>, was: LogWas) {
     smartcut_core::log::close();
-    if let Some(log) = log.filter(|_| made) {
-        let _ = std::fs::remove_file(log);
+    let Some(log) = log else { return };
+    match was {
+        LogWas::Made => {
+            let _ = std::fs::remove_file(log);
+        }
+        LogWas::Linked => {
+            if let Ok(file) = std::fs::canonicalize(log) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        LogWas::Held(len) => {
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(log) {
+                let _ = f.set_len(len);
+            }
+        }
     }
 }
 

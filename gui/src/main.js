@@ -593,14 +593,17 @@ const HISTORY_DEPTH = 100;
 /// dragged along the scrubber moves IN or OUT on every pointer event, and a
 /// step per event is a history nobody can walk back. The drag hands in where
 /// the selection was when the hand closed on it. See the pointer handlers.
-function remember(state = snapshot()) {
+/// `hand` is for an edit that reaches here after an await: `window.event` is
+/// gone by then, and a ✂ on a variable-rate recording waits on the stage
+/// (`exactEnd`) before it cuts. Its handler says whether a hand started it.
+function remember(state = snapshot(), hand = null) {
   // A settle spans the reads it waits on -- a mark file or the cache over a
   // share, seconds of them -- and a Del pressed in that wait is somebody's
   // edit, not the recording's own marks: said nothing for, it had no undo
   // step and was counted as what the row arrived with, so Escape threw it
   // away without asking. What a settle puts down itself runs from the answer
   // to a read, never inside an input event.
-  const byHand = !!(window.event && window.event.isTrusted);
+  const byHand = hand !== null ? hand : !!(window.event && window.event.isTrusted);
   if (settling && !byHand) return;
   // An edit made while the row is still coming up -- a cut placed during the
   // walk, which is allowed -- is somebody's work, and the arrival that ends
@@ -662,9 +665,9 @@ function stepHistory(from, to) {
 /// take. 取消 has always stopped for the same reason; the cut buttons did not
 /// because nothing but the keyboard used to reach them while something was
 /// playing.
-function applyCuts(next) {
+function applyCuts(next, hand = null) {
   if (playing) stopPlay();
-  remember();
+  remember(snapshot(), hand);
   cuts = normalise(next);
   afterCutsChanged();
 }
@@ -8082,6 +8085,10 @@ async function exactEnd() {
 /// on it. Read as an end to cut up to, it would take the very frame the mark
 /// is sitting on. The start of the last picture is what the mark meant.
 async function cutSelection(inner) {
+  // Taken before the await below, after which `window.event` is gone and a
+  // Del during a settle was taken for the recording's own marks: no undo
+  // step, and counted as what the row arrived with (`remember`).
+  const hand = !!(window.event && window.event.isTrusted);
   // A second Del straight after the first. The selection went with the
   // material; what IN and OUT were collapsed onto is the join, and taking
   // that would take the frames after it, which nobody chose.
@@ -8104,7 +8111,7 @@ async function cutSelection(inner) {
     el("status").textContent = tr("editor.cutAll");
     return;
   }
-  applyCuts(cuts.concat(outRangeToSrc(a, b)));
+  applyCuts(cuts.concat(outRangeToSrc(a, b)), hand);
   // The material that was selected is gone and the timeline has closed over
   // it. Collapse the selection onto the join.
   // Not marked on the picture or the timeline any more: left standing on
@@ -8139,6 +8146,8 @@ function whileCutting(p) {
 el("cut-range").addEventListener("click", () => whileCutting(cutSelection(false)));
 el("cut-outside").addEventListener("click", () => whileCutting(cutOutside()));
 async function cutOutside() {
+  // As `cutSelection`: before the await.
+  const hand = !!(window.event && window.event.isTrusted);
   if (!src || selB < selA || selGone) return;
   const end = src.variable ? await exactEnd() : selEnd();
   if (end === undefined) return;
@@ -8148,7 +8157,7 @@ async function cutOutside() {
   // that was a step 取消 took back to the same timeline, and it emptied the
   // redo list -- as 全削除 with nothing to clear did.
   if (JSON.stringify(normalise(next)) === JSON.stringify(normalise(cuts))) return;
-  applyCuts(next);
+  applyCuts(next, hand);
   // What is left is what was selected, and a selection of all of it is one
   // Del short of nothing; see `cutSelection`.
   selA = 0;
@@ -9912,7 +9921,9 @@ if (listen) {
         clearTimeout(syncTimer);
         syncTimer = null;
         const state = captureEdit(waited);
-        if (state && emit) emit("editor-state", state);
+        // Not once キャンセル has thrown the visit away (`leaving`): sent
+        // after `editor-cancel`, the report put the dropped cut back.
+        if (state && emit && !leaving) emit("editor-state", state);
       }
       opening = id;
       lateOpen = null;

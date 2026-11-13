@@ -340,9 +340,16 @@ fn read_sound(
         .stream(audio.stream_index)
         .ok_or_else(|| anyhow!("audio stream vanished"))?
         .parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?
-        .decoder()
-        .audio()?;
+    // Told the time base its packets are stamped in, as the waveform's
+    // decoder is ([`crate::wave`]): without it the samples a packet asks to
+    // have skipped -- an MP4 edit list's AAC priming, an Opus pre-skip -- are
+    // dropped while the frame keeps the packet's stamp, and every quiet
+    // stretch was put 6-21 ms early, off the outline the waveform draws.
+    let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder();
+    if audio.time_base > 0.0 && audio.time_base.is_finite() {
+        decoder.set_packet_time_base(ff::Rational::from(audio.time_base));
+    }
+    let mut decoder = decoder.audio()?;
 
     let floor = 10f64.powf(opts.threshold_db / 20.0);
     let rate = audio.sample_rate.max(1) as f64;
@@ -752,6 +759,13 @@ pub fn blocks_from_logo(
             if let Some(&last) = mine.last() {
                 grid.extend((1..=8).map(|k| last + 15.0 * k as f64));
             }
+            // Not past the end of the recording. A logo back in its last
+            // few seconds is a return (see logo::intervals_from), and a
+            // grid position the recording never reached is not where it
+            // came back: the block ran off the end over that programme.
+            if duration > 0.0 {
+                grid.retain(|&t| t <= duration);
+            }
             let end = nearest(b, snap, &grid).unwrap_or(b);
             let inside = mine.iter().filter(|&&t| t <= end + 0.1).count();
             // At the head there is nothing before the recording to keep, so
@@ -1092,6 +1106,27 @@ mod tests {
         );
         assert_eq!(blocks.len(), 1);
         assert_eq!((blocks[0].start, blocks[0].end), (1700.0, 1800.0));
+    }
+
+    /// A logo back a couple of seconds before the end is not an absence off
+    /// the end, and the grid continuing past its last junction can then
+    /// stand beyond the recording: the block ends where the logo returned,
+    /// not on a grid position the recording never reached.
+    #[test]
+    fn a_return_near_the_end_is_not_snapped_past_it() {
+        let at = |time: f64| Candidate {
+            time,
+            silence: 1.0,
+            start: time - 0.5,
+            end: time + 0.5,
+            run: 2,
+            score: 0.8,
+        };
+        let opts = DetectOptions::default();
+        let junctions: Vec<Candidate> = (0..6).map(|k| at(1710.5 + 15.0 * k as f64)).collect();
+        let blocks = blocks_from_logo(&junctions, &[(1710.6, 1798.0)], &[], &opts, 3.0, 1800.0, None);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!((blocks[0].start, blocks[0].end), (1710.5, 1798.0));
     }
 
     /// An interleaved frame's element index is not its sample position.

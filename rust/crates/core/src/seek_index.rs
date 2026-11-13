@@ -244,6 +244,73 @@ fn identity(spec: &str) -> Option<(u64, u64)> {
     Some((len, h))
 }
 
+/// The [`identity`] each recording had when a scan last opened it, by the
+/// name it was scanned under. See [`opened`].
+static OPENED: std::sync::Mutex<Vec<(String, Option<Identity>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// A recording's length and head hash; see [`identity`].
+type Identity = (u64, u64);
+
+/// Note what `spec` is as a scan opens it, for [`SeekIndex::of`] to hold the
+/// index to.
+///
+/// **A recording still being written is not what its walk read.** The
+/// identity used to be taken as the index was saved: where the recorder wrote
+/// its last bytes after the walk had reached the end of the file and before
+/// the save, the index of the shorter file went down under the finished
+/// file's length, with a time newer than the recording's, and the next
+/// `--seek-index` run believed it -- the recording ending where the walk had
+/// stopped. Taken here, at the open, an index whose recording has changed
+/// since is written as the recording it was made from, and is refused by
+/// the next run as another recording's (see [`index::IndexSource::build`]
+/// below) rather than believed.
+pub(crate) fn opened(spec: &str) {
+    let now = identity(spec);
+    if let Ok(mut seen) = OPENED.lock() {
+        seen.retain(|(s, _)| s != spec);
+        if seen.len() >= 256 {
+            seen.remove(0);
+        }
+        seen.push((spec.to_string(), now));
+    }
+}
+
+/// What [`opened`] noted of `spec`, if a scan of it opened it.
+fn as_opened(spec: &str) -> Option<Option<Identity>> {
+    let seen = OPENED.lock().ok()?;
+    seen.iter().find(|(s, _)| s == spec).map(|(_, id)| *id)
+}
+
+/// Why a held index that read was not taken for the recording it was handed
+/// to: the index's own fault, not the recording's, so whoever holds the file
+/// can make it again -- the command line's `--seek-index` does, and tells
+/// these from a recording that will not open by this type rather than by
+/// the words.
+#[derive(Debug)]
+pub enum Unfit {
+    /// It holds no access point.
+    Empty,
+    /// It was made from another recording than `recording` -- or from that
+    /// one as it was then, still being written -- of `len` bytes.
+    Another { recording: String, len: u64 },
+}
+
+impl std::fmt::Display for Unfit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unfit::Empty => write!(f, "the seek index holds no access points"),
+            Unfit::Another { recording, len } => write!(
+                f,
+                "the seek index was made from another recording than {recording} (it was made \
+                 from one of {len} bytes): name another file for it, or delete it"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Unfit {}
+
 /// A held index drops straight into [`crate::scan_with`] in place of the
 /// walk it came from.
 ///
@@ -257,8 +324,9 @@ impl index::IndexSource for SeekIndex {
 
     fn build(&self, input: index::IndexInput) -> Result<index::Index> {
         if self.points.is_empty() {
-            bail!("the seek index holds no access points");
+            return Err(Unfit::Empty.into());
         }
+        opened(input.path);
         // **An index made from another recording is refused.** `--seek-index`
         // is a path somebody typed, and the same one given for the next
         // recording handed that recording the first one's byte positions and
@@ -268,12 +336,12 @@ impl index::IndexSource for SeekIndex {
         // written before there was such a word has none, and is believed as
         // it always was.
         if let Some((len, head)) = self.identity {
-            if identity(input.path).is_some_and(|now| now != (len, head)) {
-                bail!(
-                    "the seek index was made from another recording than {} (it was made from \
-                     one of {len} bytes): name another file for it, or delete it",
-                    input.path
-                );
+            if as_opened(input.path).flatten().is_some_and(|now| now != (len, head)) {
+                return Err(Unfit::Another {
+                    recording: input.path.to_string(),
+                    len,
+                }
+                .into());
             }
         }
         Ok(index::Index {
@@ -304,7 +372,10 @@ impl SeekIndex {
             // keep.
             end: Some(src.duration),
             track: track.map(clone_track),
-            identity: identity(&src.path),
+            // As the scan found the recording where it noted it (see
+            // [`opened`]); as it is now otherwise, which it is unless it
+            // changed while it was read.
+            identity: as_opened(&src.path).unwrap_or_else(|| identity(&src.path)),
             whole: src.read_whole,
         }
     }
@@ -1035,4 +1106,27 @@ mod tests {
         assert!(SeekIndex::load(&at).unwrap().points.is_empty());
         let _ = std::fs::remove_file(&at);
     }
+
+    /// An index goes down as the recording was when its scan opened it, not
+    /// as it is by the time the index is written: one still being recorded
+    /// grows in between.
+    #[test]
+    fn the_recording_as_the_scan_found_it() {
+        let dir = std::env::temp_dir().join(format!("smartcut-scix-open-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let rec = dir.join("rec.ts");
+        let name = rec.to_string_lossy().into_owned();
+        std::fs::write(&rec, vec![0x47u8; 100_000]).unwrap();
+        assert_eq!(as_opened(&name), None);
+        opened(&name);
+        let then = identity(&name);
+        std::fs::write(&rec, vec![0x47u8; 150_000]).unwrap();
+        assert_ne!(identity(&name), then);
+        assert_eq!(as_opened(&name), Some(then));
+        // Opened again, it is noted afresh.
+        opened(&name);
+        assert_eq!(as_opened(&name), Some(identity(&name)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
+
