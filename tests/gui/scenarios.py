@@ -3850,9 +3850,20 @@ def no_free_folder(cfg, t):
         label = wait_for("the start button", lambda: app.s.js(
             "const b = document.getElementById('run-export'); return !b.disabled && b.innerText"), 60)
         time.sleep(0.5)
-        app.s.click("#run-export")
+        # On a loaded VM (load 12-25) the press could be lost: the label never
+        # turned 中止 and nothing was said. Pressed again only where neither
+        # the run (中止) nor its sentence has shown up.
+        taken = ("return document.getElementById('run-export').innerText !== arguments[0]"
+                 " || !!document.getElementById('out-note').textContent")
+        for _ in range(3):
+            app.s.click("#run-export")
+            try:
+                wait_for("the press taken", lambda: app.s.js(taken, label), 5, 0.05)
+                break
+            except Failure:
+                continue
         said = wait_for("the run's sentence", lambda: app.s.js(
-            "return document.getElementById('out-note').textContent"), 30, 0.2)
+            "return document.getElementById('out-note').textContent"), 120, 0.2)
         time.sleep(1.0)
         written = [os.path.join(r, f) for r, _, fs in os.walk(app.out) for f in fs]
         button = app.s.js("return document.getElementById('run-export').innerText")
@@ -9751,7 +9762,11 @@ def ok_wait_then_escape(cfg, t):
                 _walk_done(app)
                 time.sleep(1)
                 with open(side, "w") as f:
-                    f.write("1\n" * 10_000_000)
+                    # Long enough that OK's wait is still on when Escape comes
+                    # 0.1 s later: at 10 M lines a quiet VM had read it by then
+                    # and OK closed first (2/2 runs of the 51st, "not asked").
+                    # Under the 64 MiB a mark file may be (read_mark_file).
+                    f.write("1\n" * 30_000_000)
                 app.open_row(2, "slowmarks.ts", wait=False)
                 app.to_editor()
                 wait_for("row 2's timeline", lambda: (lambda st: "slowmarks" in st["title"]
@@ -11066,6 +11081,301 @@ def editor_close_lets_go(cfg, t):
             os.remove(f)
 
 
+def _warm(app):
+    return app.s.js("const w = document.getElementById('warm'); return w ? w.innerText : ''") or ""
+
+
+def _proxy_dir(app):
+    return glob_one(app.env["XDG_CACHE_HOME"], "proxy")
+
+
+def _proxies(app):
+    d = _proxy_dir(app)
+    if not d:
+        return {}
+    return {f: os.stat(os.path.join(d, f)).st_ino for f in os.listdir(d)
+            if f.endswith(".mp4") and ".part" not in f}
+
+
+def proxy_cuts_and_stop(cfg, t):
+    """(51st pass, tauri.) The proxy path (環境設定 プロキシ; SMARTCUT_PROXY=1
+    as its starting value), which no scenario had driven: (1) three
+    ordinary recordings, one named with Japanese, spaces and quotes, each
+    opened until its proxy is built and the editor's pictures come from it,
+    two cuts each made on the proxy's pictures, OK, 出力開始: the output must
+    hold exactly the pictures the editor did not show as cut. (2) A long
+    recording whose proxy is built, closed, opened again -- the proxy reused,
+    the thumbnails made again from it (load_cached) -- and another row opened
+    while that pass runs: the stopped pass must not take the proxy for an
+    unreadable one and delete it; the other row opens; the first opened
+    again reuses the same proxy file."""
+    d = _ord_make(cfg)
+    _ord_clear(cfg)
+    specs = _ord_specs()
+    names = ["dvd.vob", "pal25.mp4", ORD_JA]
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    app = App(cfg, "proxy_cuts_and_stop", rows)
+    app.env["SMARTCUT_PROXY"] = "1"
+    with app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            h = specs[name][1]
+            src = _numbers(os.path.join(d, name))
+            app.open_row(i, name)
+            _walk_done(app)
+            warm = wait_for(f"{name}'s proxy", lambda: (lambda w: w if "サムネイル" in w or "準備:" in w else None)(_warm(app)), 300, 0.5)
+            t.check(f"51t {name}: a proxy is built", re.search(r"プロキシ \d+x\d+", warm) is not None, warm)
+            time.sleep(1)
+            total = app.state()["frames"]
+            plan = [(int(total * 0.2) + 1, int(total * 0.35) + 2),
+                    (int(total * 0.6) + 3, int(total * 0.7) + 1)]
+            removed = []
+            for a, b in plan:
+                left = app.state()["frames"]
+                na = _ord_mark(app, a, "i", h)
+                nb = _ord_mark(app, b, "o", h)
+                app.s.keys("Delete")
+                wait_for(f"{name} cut {a}-{b}", lambda: app.state()["frames"] == left - (b - a + 1), 10)
+                removed.append((na, nb))
+            shown[i] = (name, src, total, removed)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=600)
+        outs = _ord_outputs(app)
+        for i, (name, src, total, removed) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            gone = set()
+            ok_marks = True
+            for na, nb in removed:
+                if na is None or nb is None or na not in src or nb not in src:
+                    ok_marks = False
+                    continue
+                gone.update(src[src.index(na):src.index(nb) + 1])
+            want = [n for n in src if n not in gone]
+            detail = (f"src {len(src)} pictures, counter {total}, shown cut {removed}, "
+                      f"cuts {fmt(cuts_of(p, i))}, outputs {[os.path.basename(f) for f in files]}")
+            if got is not None and got != want:
+                diff = [(k, x, y) for k, (x, y) in enumerate(zip(got, want)) if x != y][:4]
+                detail += f"; got {len(got)} want {len(want)}; first differences {diff}"
+            t.check(f"51t {name}: output = what the editor left on the proxy's pictures",
+                    ok_marks and got == want, detail)
+            for f in files:
+                os.remove(f)
+
+    # (2) The thumbnail pass over a reused proxy, stopped by another open.
+    work = os.path.join(cfg.work, "tauri51")
+    os.makedirs(work, exist_ok=True)
+    long = os.path.join(work, "long.ts")
+    if not os.path.exists(long):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "testsrc2=size=720x480:rate=30000/1001:duration=240",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=240:sample_rate=48000",
+                        "-c:v", "mpeg2video", "-g", "15", "-bf", "2", "-b:v", "2M",
+                        "-c:a", "mp2", "-b:a", "128k", "-f", "mpegts", long + ".part"], check=True)
+        os.replace(long + ".part", long)
+    app = App(cfg, "proxy_cuts_and_stop_2", [{"path": long}, {"path": cfg.a}])
+    app.env["SMARTCUT_PROXY"] = "1"
+    try:
+        with app:
+            app.open_row(1, "long.ts")
+            _walk_done(app)
+            warm = wait_for("long.ts's proxy", lambda: (lambda w: w if "サムネイル" in w or "準備:" in w else None)(_warm(app)), 600, 0.5)
+            built = _proxies(app)
+            app.escape(expect_dialog=False)
+            app.gone()
+            time.sleep(1)
+            app.open_row(1, "long.ts")
+            seen = []
+            def in_thumbs():
+                w = _warm(app)
+                seen.append(w)
+                return "サムネイル準備中" in w or "サムネイル" in w and "枚" in w
+            wait_for("the thumbnail pass over the reused proxy", in_thumbs, 120, 0.05)
+            mid = "サムネイル準備中" in seen[-1]
+            app.open_row(2, "a.ts")
+            _walk_done(app)
+            time.sleep(3)
+            after = _proxies(app)
+            log = app.read_log()
+            t.check("51t a reused proxy's thumbnail pass stopped by another open keeps the proxy",
+                    # The proxies there before: a.ts builds one of its own here.
+                    all(after.get(k) == v for k, v in built.items()) and "discarding" not in log,
+                    f"{'stopped mid-pass' if mid else 'pass had finished (NOT REACHED)'}; "
+                    f"proxies before {built} after {after}; log has discarding: {'discarding' in log}; "
+                    f"first warm {warm!r}")
+            warm_a = wait_for("a.ts prepared", lambda: (lambda w: w if "サムネイル" in w and "枚" in w or "準備:" in w else None)(_warm(app)), 120, 0.3)
+            t.check("51t ... the other row is prepared from its own recording",
+                    "準備:" not in warm_a, warm_a)
+            app.open_row(1, "long.ts")
+            _walk_done(app)
+            again = wait_for("long.ts again", lambda: (lambda w: w if "サムネイル" in w and "枚" in w or "準備:" in w else None)(_warm(app)), 300, 0.3)
+            t.check("51t ... opened again, the same proxy file is reused",
+                    "前回のものを再利用" in again and all(_proxies(app).get(k) == v for k, v in built.items()),
+                    f"{again!r}; {_proxies(app)}")
+            # (3) The editor closed while a proxy is being built: the build
+            # stops (it no longer runs on for a window that has gone) and
+            # leaves no half-made file; opened again, it is built whole.
+            app.escape(expect_dialog=False)
+            app.gone()
+            pd = _proxy_dir(app)
+            for f in os.listdir(pd):
+                if f.startswith("long-"):
+                    os.remove(os.path.join(pd, f))
+            app.open_row(1, "long.ts")
+            wait_for("the proxy build under way", lambda: "プロキシ準備中" in _warm(app), 120, 0.2)
+            time.sleep(2)
+            app.escape(expect_dialog=False)
+            app.gone()
+            parts = lambda: [f for f in os.listdir(pd) if ".part" in f]
+            try:
+                wait_for("the build to stop", lambda: not parts(), 20, 0.5)
+                stopped = True
+            except Failure:
+                stopped = False
+            t.check("51t the editor closed during a proxy build: the build stops, no .part left",
+                    stopped and not any(f.startswith("long-") for f in os.listdir(pd)),
+                    f"{sorted(os.listdir(pd))}")
+            app.open_row(1, "long.ts")
+            _walk_done(app)
+            whole = wait_for("long.ts built again", lambda: (lambda w: w if "サムネイル" in w and "枚" in w or "準備:" in w else None)(_warm(app)), 600, 0.5)
+            t.check("51t ... opened again, the proxy is built whole", "作成" in whole and "プロキシ 720x480" in whole, whole)
+    finally:
+        # The VM's disk is tight: the long recording and its 130 MB proxy go.
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(os.path.join(cfg.work, "runs", "proxy_cuts_and_stop_2"), ignore_errors=True)
+
+
+def recovery_two_windows(cfg, t):
+    """(51st pass, tauri.) Two list windows up at once on one profile, each
+    with an unsaved cut and its copy put down (recovery dir); one of them
+    killed. A third started on nothing is offered the dead window's work
+    once -- not the living window's -- and puts it back; the living window's
+    copy and lock are left alone, and its own save takes its copy away."""
+    a = App(cfg, "recovery_two_a", clips(cfg))
+    b = App(cfg, "recovery_two_b", [{"path": cfg.c}])
+    for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+        b.env[k] = a.env[k]
+
+    def copies(rec):
+        found = {}
+        for f in os.listdir(rec):
+            if f.endswith(".scproj"):
+                try:
+                    doc = json.load(open(os.path.join(rec, f)))["doc"]
+                except (OSError, ValueError, KeyError):
+                    continue
+                found[f] = [(os.path.basename(c["path"]), len(((c.get("edit") or {}).get("cuts") or [])))
+                            for c in doc["clips"]]
+        return found
+
+    with a:
+        a.open_row(1, "a.ts")
+        _walk_done(a)
+        a.cut(100, 150)
+        a.ok()
+        a.gone()
+        rec = wait_for("the recovery dir", lambda: glob_one(a.env["XDG_DATA_HOME"], "recovery"), 30, 0.5)
+        pa = a.gui_pid()
+        wait_for("A's copy", lambda: any(f.startswith(f"{pa}-") and v and v[0] == ("a.ts", 1)
+                                         for f, v in copies(rec).items()), 30, 0.5)
+        with b:
+            b.open_row(1, "c.ts")
+            _walk_done(b)
+            b.cut(200, 260)
+            b.ok()
+            b.gone()
+            pb = b.gui_pid()
+            wait_for("B's copy", lambda: any(f.startswith(f"{pb}-") and v == [("c.ts", 1)]
+                                             for f, v in copies(rec).items()), 30, 0.5)
+            os.kill(pa, 9)
+            time.sleep(1)
+            before = sorted(os.listdir(rec))
+            with _SameProfile(cfg, "recovery_two_c", a) as c:
+                offered = c.answer(True, timeout=30)
+                wait_for("the rows put back", lambda: c.rows() == 2, 30)
+                again = c.answer(True, timeout=4)
+                names = c.s.js("return [...document.querySelectorAll('#cliplist > li .nm')].map((e) => e.innerText)")
+                time.sleep(4)
+                after = sorted(os.listdir(rec))
+                pc = c.gui_pid()
+                t.check("51r two windows, one killed: a start offers the dead one's work once, not the living one's",
+                        offered and not again and len(names) == 2 and any("a.ts" in n for n in names)
+                        and not any("c.ts" in n for n in names),
+                        f"{'asked' if offered else 'NOT asked'}; asked again: {again}; rows {names}")
+                t.check("51r ... the living window's copy and lock are left; the dead one's are gone",
+                        not any(f.startswith(f"{pa}-") for f in after)
+                        and any(f.startswith(f"{pb}-") and f.endswith(".scproj") for f in after)
+                        and any(f.startswith(f"{pb}-") and f.endswith(".lock") for f in after),
+                        f"A {pa} B {pb} C {pc}; before {before} after {after}")
+                p = c.save()
+                t.check("51r ... the work put back has the dead window's cut", len(cuts_of(p, 1)) == 1,
+                        fmt(cuts_of(p, 1)))
+            pb_copy = lambda: [f for f in os.listdir(rec) if f.startswith(f"{pb}-") and f.endswith(".scproj")]
+            b.save()
+            gone = None
+            try:
+                gone = wait_for("B's copy taken away by its save", lambda: not pb_copy(), 15, 0.3)
+            except Failure:
+                gone = False
+            t.check("51r ... the living window's save takes its own copy away", bool(gone),
+                    f"left {sorted(os.listdir(rec))}")
+    for n in ("recovery_two_c",):
+        shutil.rmtree(os.path.join(cfg.work, "runs", n), ignore_errors=True)
+
+
+def queue_names_and_beat(cfg, t):
+    """(51st pass, tauri; the maintainer's S3 fixes.) (1) Eight
+    queue_temp_path asks at once (two list windows registering an unnamed
+    list in the same instant) get eight names, each already a file; eight
+    queue_copy of one project at once get eight copies, each the project.
+    (2) batch_beat leaves "pid seconds". (3) A dropped folder holding a file
+    whose name is not UTF-8 (Shift_JIS): the other file is listed, and the
+    answer says which name could not be opened and why."""
+    with App(cfg, "queue_names_and_beat", clips(cfg)) as app:
+        app.to_list()
+        app.s.js("window.__n = null; Promise.all([...Array(8)].map(() => window.__TAURI__.core.invoke("
+                 "'queue_temp_path', {stem: 'list', ext: 'scproj'}))).then((r) => window.__n = r, "
+                 "(e) => window.__n = 'err ' + e);")
+        names = wait_for("the eight names", lambda: app.s.js("return window.__n"), 30, 0.1)
+        ok = isinstance(names, list) and len(set(names)) == 8 and all(os.path.isfile(n) for n in names)
+        t.check("51q eight queued names asked at once are eight, each taken", ok, f"{names}")
+        app.s.js("window.__c = null; Promise.all([...Array(8)].map(() => window.__TAURI__.core.invoke("
+                 "'queue_copy', {path: arguments[0]}))).then((r) => window.__c = r, "
+                 "(e) => window.__c = 'err ' + e);", app.project)
+        copies = wait_for("the eight copies", lambda: app.s.js("return window.__c"), 30, 0.1)
+        want = open(app.project, "rb").read()
+        ok = isinstance(copies, list) and len(set(copies)) == 8 and \
+            all(open(c, "rb").read() == want for c in copies)
+        t.check("51q eight copies of one project asked at once are eight, each the project", ok, f"{copies}")
+        app.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(app.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        said = open(beat).read().split()
+        t.check("51q the beat says pid and time", len(said) == 2 and said[0] == str(app.gui_pid()),
+                f"{said}; leftovers {[f for f in os.listdir(os.path.dirname(beat)) if f.endswith('.part')]}")
+        drop = os.path.join(app.dir, "drop")
+        os.makedirs(drop)
+        os.symlink(cfg.a, os.path.join(drop, "ok.ts"))
+        with open(os.path.join(drop.encode(), b"\x98\x5e\x89\xe6.ts"), "wb") as f:
+            f.write(b"")
+        # And a plain folder with such a name, which is passed over as any
+        # folder that is not a disc is (51st, p2gui): not named as a file.
+        os.makedirs(os.path.join(drop.encode(), b"\x83\x74\x83\x48"))
+        r = app.s.js("return window.__TAURI__.core.invoke('resolve_paths', {paths: [arguments[0]]})"
+                     ".then((r) => r)", drop)
+        r = r if isinstance(r, list) else None
+        files = [f.get("path") for f in r[0]["files"]] if r else None
+        err = r[0].get("error") if r else None
+        t.check("51q a folder with a non-UTF-8 name: the rest listed, the name said",
+                files == [os.path.join(drop, "ok.ts")] and bool(err) and "UTF-8" in err
+                and "、" not in err and ".ts（" in err, f"{files}; {err!r}")
+
+
 SCENARIOS = [
     escape_discard,
     escape_after_detection,
@@ -11221,6 +11531,9 @@ SCENARIOS = [
     cut_outside_whole_keeps_redo,
     engine_refusal_row_language,
     twins_case_and_taken,
+    proxy_cuts_and_stop,
+    recovery_two_windows,
+    queue_names_and_beat,
 ]
 
 
@@ -11230,6 +11543,528 @@ EXTRA = [av1_whole_verify, seam_sar_av1_mp4, ok_then_reopen_fast, disc_join_cros
          disc_plays_recount, disc_plays_due, disc_plays_trim_first,
          real_old_projects_ok_unchanged, disc_plays_trim_left,
          overtaken_walk_stops, walk_switch_back, glimpse_after_cut]
+
+
+def _r51_slow_row2(app, side, stem):
+    """Row 1 walked, the 60 MB `.keyframe` beside row 2, row 2 opened, a cut
+    (I, O, Del on picture 0) made on its timeline while the file is still
+    read. Returns (counter before, after, whether the read was still on)."""
+    app.open_row(1, "a.ts")
+    _walk_done(app)
+    time.sleep(1)
+    with open(side, "w") as f:
+        f.write("1\n" * 30_000_000)
+    app.open_row(2, stem, wait=False)
+    app.to_editor()
+    wait_for("row 2's timeline", lambda: (lambda st: stem in st["title"]
+                                           and st["frames"] is not None)(app.state()), 60, 0.02)
+    st0 = app.state()
+    app.s.keys("i")
+    app.s.keys("o")
+    app.s.keys("Delete")
+    time.sleep(0.05)
+    st1 = app.state()
+    took = st0["frames"] is not None and st1["frames"] is not None and st1["frames"] < st0["frames"]
+    reading = st1["keys"] == "" or "読み込" in (st1["plan"] or "")
+    return st0, st1, took and reading
+
+
+def read_cut_phases_51(cfg, t):
+    """(51st pass, mainjs.) The 50th's `editedWhileArriving -> captureEdit(true)`
+    through the phases `cut_while_marks_read_then_row` did not drive. Row 2 is
+    a first visit whose `.keyframe` takes seconds to read, cut while it is
+    read, then:
+      a) Ctrl+Z in the read, row 3 opened: row 2 has no cut (the report the
+         switch sends is the timeline after the undo, not the cut);
+      b) Escape in the read, 破棄: asked (the cut is somebody's), row 2 has no
+         cut, and the next visit reads the mark file;
+      c) row 3 opened, then row 2 again: row 2 comes back with its cut AND the
+         mark file it never finished reading (`filesDue` sent with the cut)."""
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    e = os.path.join(d, "slowmarks51.ts")
+    side = os.path.join(d, "slowmarks51.keyframe")
+    o = os.path.join(d, "other51.ts")
+    for f in (e, o):
+        shutil.copyfile(cfg.a, f)
+    rows = [{"path": cfg.a}, {"path": e}, {"path": o}]
+    try:
+        # a) cut, undo, switch.
+        with App(cfg, "read_cut_phases_51_undo", rows) as app:
+            st0, st1, ok = _r51_slow_row2(app, side, "slowmarks51")
+            app.s.keys("Control+z")
+            time.sleep(0.05)
+            st2 = app.state()
+            app.open_row(3, "other51.ts", wait=False)
+            time.sleep(6)
+            app.to_editor()
+            wait_for("the editor on row 3", lambda: (lambda st: st and "other51" in st["title"]
+                                                       and st["frames"] is not None)(app.state()), 60, 0.2)
+            app.escape(discard=True, expect_dialog=False)
+            app.gone(timeout=60)
+            time.sleep(1)
+            p = app.save()
+            c2 = cuts_of(p, 2)
+            undone = st2["frames"] == st0["frames"]
+            t.check("51a cut then Ctrl+Z while row 2's mark file is read, row 3 opened: row 2 has no cut",
+                    (not ok) or (undone and len(c2) == 0),
+                    f"counter {st0['frames']} -> {st1['frames']} -> {st2['frames']} "
+                    f"({'in the read' if ok else 'NOT in the read: inconclusive'}); row 2 {fmt(c2)}")
+        if os.path.exists(side):
+            os.remove(side)
+        # b) cut, Escape + 破棄 in the read.
+        with App(cfg, "read_cut_phases_51_escape", rows) as app:
+            st0, st1, ok = _r51_slow_row2(app, side, "slowmarks51")
+            asked = app.escape(discard=True, expect_dialog=False)
+            app.gone(timeout=60)
+            time.sleep(1)
+            p = app.save()
+            c2 = cuts_of(p, 2)
+            t.check("51b cut then Escape+破棄 while row 2's mark file is read: asked, row 2 has no cut",
+                    (not ok) or (asked and len(c2) == 0),
+                    f"{'asked' if asked else 'NOT asked'}; ({'in the read' if ok else 'NOT in the read: inconclusive'}); "
+                    f"row 2 {fmt(c2)}")
+            with open(side, "w") as f:
+                f.write("1\n")
+            app.open_row(2, "slowmarks51.ts")
+            time.sleep(3)
+            st3 = app.state()
+            app.escape(discard=True, expect_dialog=False)
+            app.gone()
+            t.check("51b ...and the next visit reads the mark file", (st3["keys"] or "").strip() not in ("", "0"),
+                    f"marks {st3['keys']!r}")
+        if os.path.exists(side):
+            os.remove(side)
+        # c) cut, row 3, back to row 2.
+        with App(cfg, "read_cut_phases_51_back", rows) as app:
+            st0, st1, ok = _r51_slow_row2(app, side, "slowmarks51")
+            app.open_row(3, "other51.ts", wait=False)
+            time.sleep(6)
+            app.to_editor()
+            wait_for("the editor on row 3", lambda: (lambda st: st and "other51" in st["title"]
+                                                       and st["frames"] is not None)(app.state()), 60, 0.2)
+            with open(side, "w") as f:
+                f.write("1\n")
+            app.open_row(2, "slowmarks51.ts")
+            time.sleep(3)
+            st3 = app.state()
+            app.ok()
+            app.gone(timeout=60)
+            time.sleep(1)
+            p = app.save()
+            c2 = cuts_of(p, 2)
+            t.check("51c cut in the read, row 3, back to row 2: the cut is up and the mark file is read",
+                    (not ok) or (st3["frames"] == st1["frames"] and (st3["keys"] or "").strip() not in ("", "0")
+                                 and len(c2) == 1),
+                    f"counter then {st1['frames']}, on return {st3['frames']}; marks {st3['keys']!r}; "
+                    f"({'in the read' if ok else 'NOT in the read: inconclusive'}); row 2 {fmt(c2)}")
+    finally:
+        for f in (e, side, o):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+def ok_closing_other_row_51(cfg, t):
+    """(51st pass, mainjs.) `ok_closing_double_press` with ANOTHER row: row 2
+    double-clicked in the list inside the 220 ms after OK on row 1 (made
+    certain the same way). The press is `pressed`: the window stays and comes
+    up on row 2, row 1 keeps the cut OK handed over, and Escape on row 2 asks
+    nothing and drops nothing of row 1."""
+    with App(cfg, "ok_closing_other_row_51", clips(cfg)) as app:
+        app.open_row(1, "a.ts")
+        _walk_done(app)
+        app.cut(100, 150)
+        time.sleep(1)
+        _okc_observe(app)
+        app.s.js("const li = document.querySelector('#cliplist > li:nth-child(2) .nm');"
+                 "setTimeout(() => li.dispatchEvent(new MouseEvent('dblclick', {bubbles: true})), 1500);")
+        app.to_editor()
+        ok_at = app.s.js(_OKC_HOLD, 5)
+        time.sleep(3)
+        up = app.editor() is not None
+        app.to_list()
+        seen = app.s.js("return window.__okc")
+        press = [s for s in seen if s[0] == "open" and s[2]]
+        reached = bool(press) and press[0][1] < ok_at
+        st = None
+        asked = None
+        if up:
+            app.to_editor()
+            wait_for("the editor on row 2", lambda: (lambda s: s and "b.mkv" in s["title"]
+                                                       and s["frames"] is not None)(app.state()), 60, 0.2)
+            st = app.state()
+            asked = app.escape(discard=True, expect_dialog=False)
+            app.gone()
+        p = app.save()
+        c1, c2 = cuts_of(p, 1), cuts_of(p, 2)
+        t.check("51d row 2 pressed inside OK's close delay on row 1: the window stays, on row 2",
+                (up and st is not None and "b.mkv" in st["title"]) or not reached,
+                f"{'up' if up else 'CLOSED'} {st}; press {'before' if reached else 'NOT before (NOT REACHED)'} "
+                f"OK ({seen}, OK at {ok_at})")
+        t.check("51d ... row 1 keeps OK's cut, Escape on row 2 asks nothing and row 2 has none",
+                len(c1) == 1 and len(c2) == 0 and not asked,
+                f"row 1 {fmt(c1)} row 2 {fmt(c2)}; Escape {'asked' if asked else 'did not ask'}")
+
+
+SCENARIOS += [read_cut_phases_51, ok_closing_other_row_51]
+
+
+
+
+
+def _late25_mkv(cfg):
+    """hold.mp4 (`_hold_mp4`) 25 s into a Matroska whose 7.1 32-bit PCM runs
+    from 0: the video's first picture is at 25.000, behind 38 MB of sound."""
+    v = _hold_mp4(cfg)
+    m = os.path.join(os.path.dirname(v), "late25.mkv")
+    if not os.path.exists(m):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "anullsrc=channel_layout=7.1:sample_rate=48000",
+                        "-itsoffset", "25", "-i", v, "-map", "1:v", "-map", "0:a", "-t", "36",
+                        "-c:v", "copy", "-c:a", "pcm_s32le", "-f", "matroska", m + ".part"], check=True)
+        os.replace(m + ".part", m)
+    return m
+
+
+def late_video_head_cut_51(cfg, t):
+    """(51st pass, p2gui; mainjs's side note.) A .mkv whose pictures start
+    25 s after its sound: the first two pictures cut before the walk lands.
+    The status line must not be left at プレビュー失敗 once the walk is in."""
+    m = _late25_mkv(cfg)
+    with App(cfg, "late_video_head_cut_51", [{"path": cfg.a}, {"path": m}]) as app:
+        app.open_row(1, "a.ts")
+        _walk_done(app)
+        app.open_row(2, "late25.mkv", wait=False)
+        app.to_editor()
+        wait_for("row 2's timeline", lambda: (lambda st: "late25" in st["title"]
+                                              and st["frames"] is not None)(app.state()), 60, 0.02)
+        st0 = app.state()
+        app.s.keys("Home")
+        app.s.keys("i")
+        app.s.keys("Right")
+        app.s.keys("o")
+        app.s.keys("Delete")
+        seen = []
+        end = time.time() + 40
+        while time.time() < end:
+            st = app.state()
+            seen.append((st["status"], st["plan"][:30], st["at"], st["frames"]))
+            if "読み込んで" not in st["plan"] and "Reading" not in st["plan"] and st["plan"] and len(seen) > 30:
+                break
+            time.sleep(0.1)
+        time.sleep(3)
+        st2 = app.state()
+        early = [s for s in seen if "読み込んで" in s[1]]
+        print(f"        (before {st0}; {len(early)} looks before the walk; first {seen[:2]}; last {seen[-1]}; "
+              f"after {st2})", flush=True)
+        t.check("51g late-video .mkv: first two pictures cut, the status line is not left failed",
+                "プレビュー失敗" not in st2["status"] and "Preview failed" not in st2["status"],
+                f"status {st2['status']!r}; counter {st0['frames']} -> {st2['frames']}; "
+                f"walk pending at the cut: {bool(early)}")
+        app.escape(discard=True, expect_dialog=None)
+
+
+# Fails until the core opens such a Matroska with a longer probe: every
+# preview of it fails (see rev51 p2gui report); kept for checking that fix.
+EXTRA += [late_video_head_cut_51]
+
+
+
+def _scix_of(app):
+    """The seek indexes the profile holds: name -> (size, mtime_ns)."""
+    out = {}
+    for d, _, fs in os.walk(app.env["XDG_CACHE_HOME"]):
+        for f in fs:
+            if f.endswith(".scix"):
+                st = os.stat(os.path.join(d, f))
+                out[f] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def _lanes_paused(app):
+    """解析を中止 pressed as soon as the list's lanes start, so the editor is
+    the only reader of the recording."""
+    app.to_list()
+    wait_for("the lanes running", lambda: app.s.js(
+        "const b = document.getElementById('stop-batch'); return b && !b.disabled"), 30, 0.05)
+    app.s.click("#stop-batch")
+    wait_for("the lanes paused", lambda: "再開" in (app.s.js(
+        "return document.getElementById('stop-batch').innerText") or ""), 60, 0.2)
+
+
+def _warm_done(app, what, timeout=300):
+    return wait_for(what, lambda: (lambda w: w if "サムネイル" in w and "枚" in w or "準備:" in w else None)(_warm(app)),
+                    timeout, 0.2)
+
+
+def close_during_open_51(cfg, t):
+    """(51st pass, p2gui; the first stage's tauri fix: closing the editor
+    stops `prepare` and lets Thumbs/Proxy/Held go.) A long broadcast
+    recording, the list's lanes paused so the editor is the only reader:
+    (1) the editor closed during its first walk, opened again: the walk is
+    made whole, the pictures pass runs and the counter is the recording's;
+    (2) closed during that pictures pass: the walk's seek index is kept, and
+    opened again the pass runs again from it and finishes; (3) a third open
+    reuses the index and its thumbnails, with the same counter."""
+    long = os.path.expanduser("~/media/terrestrial_nhke.ts")
+    if not os.path.exists(long):
+        t.check("51h close during the first open (material)", False, f"{long} missing")
+        return
+    with App(cfg, "close_during_open_51", [{"path": long}, {"path": cfg.a}]) as app:
+        _lanes_paused(app)
+        # (1) Closed during the walk.
+        app.open_row(1, "terrestrial_nhke", wait=False)
+        app.to_editor()
+        wait_for("the walk under way", lambda: "読み込んで" in (app.state()["plan"] or ""), 60, 0.05)
+        time.sleep(0.5)
+        mid = "読み込んで" in app.state()["plan"]
+        app.escape(expect_dialog=False)
+        app.gone()
+        idx0 = _scix_of(app)
+        time.sleep(1)
+        app.open_row(1, "terrestrial_nhke")
+        _walk_done(app)
+        w1 = _warm_done(app, "the pictures pass after the reopen", 600)
+        n1 = app.state()["frames"]
+        idx1 = _scix_of(app)
+        t.check("51h closed during the first walk, opened again: walked and prepared whole",
+                mid and "枚" in w1 and n1 and len(idx1) == 1,
+                f"{'closed mid-walk' if mid else 'walk had ended (NOT REACHED)'}; indexes after the close {idx0}, "
+                f"after the reopen {idx1}; warm {w1!r}; counter {n1}")
+        # (2) Closed during the pictures pass of a fresh profile's index:
+        # the index is taken back to the walk's by removing it and walking
+        # again with the pictures pass caught mid-way.
+        app.escape(expect_dialog=False)
+        app.gone()
+        d = os.path.dirname(next(os.path.join(dp, f) for dp, _, fs in os.walk(app.env["XDG_CACHE_HOME"])
+                                 for f in fs if f.endswith(".scix")))
+        for f in os.listdir(d):
+            if f.endswith(".scix"):
+                os.remove(os.path.join(d, f))
+        app.open_row(1, "terrestrial_nhke")
+        _walk_done(app)
+        seen = []
+        def in_pass():
+            w = _warm(app)
+            seen.append(w)
+            return "準備中" in w and "%" in w
+        wait_for("the pictures pass", in_pass, 120, 0.05)
+        # Close at once: on an idle VM the pass ends within a second.
+        midp = "準備中" in _warm(app)
+        walked = _scix_of(app)
+        app.escape(expect_dialog=False)
+        app.gone()
+        time.sleep(3)
+        kept = _scix_of(app)
+        app.open_row(1, "terrestrial_nhke")
+        _walk_done(app)
+        w2 = _warm_done(app, "the pictures pass again", 600)
+        n2 = app.state()["frames"]
+        # The walk's index is written with the pictures at the pass's end,
+        # so none is there while it runs; the close writes the walk's.
+        t.check("51h closed during the pictures pass: the walk's index kept, the pass made again on the reopen",
+                midp and not walked and len(kept) == 1 and "作成" in w2 and n2 == n1,
+                f"{'closed mid-pass' if midp else 'pass had ended (NOT REACHED)'}; index at the close {walked}, "
+                f"3 s after {kept}; warm {w2!r}; counter {n2} (first {n1})")
+        app.escape(expect_dialog=False)
+        app.gone()
+        time.sleep(1)
+        app.open_row(1, "terrestrial_nhke")
+        _walk_done(app)
+        w3 = _warm_done(app, "the third open")
+        n3 = app.state()["frames"]
+        t.check("51h ... a third open reuses the index and its thumbnails",
+                "再利用" in w3 and n3 == n1, f"warm {w3!r}; counter {n3} (first {n1})")
+        # (4) Another row opened during the pictures pass: the same, for the
+        # row left.
+        for f in os.listdir(d):
+            if f.endswith(".scix"):
+                os.remove(os.path.join(d, f))
+        app.escape(expect_dialog=False)
+        app.gone()
+        app.open_row(1, "terrestrial_nhke")
+        _walk_done(app)
+        wait_for("the pictures pass", lambda: "準備中" in _warm(app), 120, 0.05)
+        app.open_row(2, "a.ts")
+        _walk_done(app)
+        time.sleep(3)
+        left = {k: v for k, v in _scix_of(app).items() if k.startswith("terrestrial")}
+        t.check("51h ... another row opened during the pass: the row left keeps its walk's index",
+                len(left) == 1, f"{_scix_of(app)}")
+        app.escape(expect_dialog=False)
+        app.gone()
+
+
+SCENARIOS += [close_during_open_51]
+
+
+def close_changed_file_51(cfg, t):
+    """(51st pass, p3gui; p2gui's keep_the_walk.) The walk an editor lets go
+    of before its pictures pass ends is written down -- but never for a
+    recording that changed after it was walked (a recorder's file still
+    being written): kept under the grown file's key it would end where the
+    walk did. A copy of a broadcast recording, the lanes paused: (1) the
+    editor closed during the pictures pass after the copy grew: no index;
+    (2) closed during the walk itself: no index; (3) opened again, the walk
+    reads the grown file and the counter is longer than the first walk's;
+    (4) another row opened during the pass after the copy grew again: no
+    index for the row left."""
+    src = os.path.expanduser("~/media/bsfuji.ts")
+    if not os.path.exists(src):
+        t.check("51p close a changed recording (material)", False, f"{src} missing")
+        return
+    home = os.path.join(cfg.work, "changed51")
+    os.makedirs(home, exist_ok=True)
+    grow = os.path.join(home, "grow51.ts")
+    # 4/5 of the recording, so it can grow by what is left.
+    whole = os.path.getsize(src)
+    part = (whole * 4 // 5) // 188 * 188
+    step = (whole - part) // 2 // 188 * 188
+    with open(src, "rb") as fi, open(grow, "wb") as fo:
+        fo.write(fi.read(part))
+
+    def grow_by(n):
+        with open(src, "rb") as fi, open(grow, "ab") as fo:
+            fi.seek(os.path.getsize(grow))
+            fo.write(fi.read(n))
+
+    try:
+        with App(cfg, "close_changed_file_51", [{"path": grow}, {"path": cfg.a}]) as app:
+            _lanes_paused(app)
+            # (2) first, before anything is kept: closed during the walk.
+            app.open_row(1, "grow51", wait=False)
+            app.to_editor()
+            wait_for("the walk under way", lambda: "読み込んで" in (app.state()["plan"] or ""), 60, 0.02)
+            mid = "読み込んで" in app.state()["plan"]
+            app.escape(expect_dialog=False)
+            app.gone()
+            time.sleep(2)
+            idx_walk = {k: v for k, v in _scix_of(app).items() if k.startswith("grow51")}
+            # (1) The pictures pass caught mid-way, the file grown, closed.
+            app.open_row(1, "grow51")
+            _walk_done(app)
+            n0 = app.state()["frames"]
+            wait_for("the pictures pass", lambda: "準備中" in _warm(app) and "%" in _warm(app), 120, 0.02)
+            midp = "準備中" in _warm(app)
+            grow_by(step)
+            app.escape(expect_dialog=False)
+            app.gone()
+            time.sleep(3)
+            idx_grown = {k: v for k, v in _scix_of(app).items() if k.startswith("grow51")}
+            t.check("51p closed during the walk: no index of the part read",
+                    not idx_walk or not mid, f"{'mid-walk' if mid else 'walk ended (NOT REACHED)'}; {idx_walk}")
+            t.check("51p closed during the pictures pass of a recording that grew: no index kept",
+                    not idx_grown or not midp,
+                    f"{'mid-pass' if midp else 'pass ended (NOT REACHED)'}; {idx_grown}; counter {n0}")
+            # (3) Opened again: the grown file is walked whole.
+            app.open_row(1, "grow51")
+            _walk_done(app)
+            n1 = app.state()["frames"]
+            t.check("51p ... opened again, the walk reads the grown recording",
+                    bool(n0 and n1 and n1 > n0),
+                    f"counter {n0} -> {n1}")
+            # (4) Another row opened during the pass, after a second growth.
+            wait_for("the pictures pass", lambda: "準備中" in _warm(app) and "%" in _warm(app), 120, 0.02)
+            midq = "準備中" in _warm(app)
+            before = {k: v for k, v in _scix_of(app).items() if k.startswith("grow51")}
+            grow_by(step)
+            app.open_row(2, "a.ts")
+            _walk_done(app)
+            time.sleep(3)
+            after = {k: v for k, v in _scix_of(app).items() if k.startswith("grow51")}
+            t.check("51p ... another row opened during the pass of a recording that grew: no index for it",
+                    after == before or not midq,
+                    f"{'mid-pass' if midq else 'pass ended (NOT REACHED)'}; before {before} after {after}")
+            app.escape(expect_dialog=False)
+            app.gone()
+    finally:
+        try:
+            os.remove(grow)
+        except OSError:
+            pass
+
+
+SCENARIOS += [close_changed_file_51]
+
+
+
+
+def wave_version_51(cfg, t):
+    """(51st pass, p2gui; WAVE_VERSION 5 -> 6.) An Opus .mkv whose outline
+    was kept by a 0.8.46 (version 5, here written under that version's
+    name): opened with the waveform on, the outline is read again once
+    under version 6's name and not again on the next open; the silences
+    found before (QUIET_VERSION, unchanged) are still read from their
+    cache, not found again."""
+    home = os.path.join(cfg.work, "wave51")
+    os.makedirs(home, exist_ok=True)
+    m = os.path.join(home, "opus.mkv")
+    if not os.path.exists(m):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=8",
+                        "-f", "lavfi", "-i", "sine=frequency=500:duration=8:sample_rate=48000,"
+                        "volume=enable='between(t,3,5.5)':volume=0",
+                        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "libopus", "-b:a", "96k",
+                        "-f", "matroska", m + ".part"], check=True)
+        os.replace(m + ".part", m)
+    with App(cfg, "wave_version_51", [{"path": m}, {"path": cfg.a}]) as app:
+        flat = os.path.join(app.env["XDG_CACHE_HOME"], "dev.smartcut.app", "flat")
+        def found(ext):
+            out = {}
+            for d, _, fs in os.walk(app.env["XDG_CACHE_HOME"]):
+                for f in fs:
+                    if f.endswith("." + ext):
+                        # By inode and content: a read touches the file (its
+                        # time is the cache's last use), a write replaces it.
+                        q = os.path.join(d, f)
+                        out[f] = (os.stat(q).st_ino, hashlib.md5(open(q, "rb").read()).hexdigest())
+                        flat_dir[0] = d
+            return out
+        flat_dir = [None]
+        app.open_row(1, "opus")
+        _walk_done(app)
+        app.s.js("document.getElementById('wave-show').click()")
+        first = wait_for("the outline kept", lambda: found("wavj"), 60, 0.3)
+        app.s.keys("Control+q")
+        qt = wait_for("the silences kept", lambda: found("qtj"), 120, 0.3)
+        time.sleep(1)
+        quiet_keys = app.state()["keys"]
+        v6 = list(first)[0]
+        v5 = v6.rsplit("-", 1)[0] + "-0000000000000005.wavj"
+        t.check("51w the outline is kept, one file", len(first) == 1, f"kept {list(first)}")
+        app.escape(discard=True, expect_dialog=None)
+        app.gone()
+        # What a 0.8.46 left: the outline under another key (version 5's
+        # name is another hash of the same recording), none under 6's.
+        d = flat_dir[0]
+        os.replace(os.path.join(d, v6), os.path.join(d, v5))
+        old = found("wavj")[v5]
+        time.sleep(1)
+        app.open_row(1, "opus")
+        _walk_done(app)
+        again = wait_for("the outline read again", lambda: (lambda f: f if v6 in f else None)(found("wavj")), 60, 0.3)
+        shown = app.s.js("const c = document.getElementById('wave'); return c ? !c.hidden : null")
+        keys2 = app.state()["keys"]
+        app.escape(discard=True, expect_dialog=None)
+        app.gone()
+        time.sleep(1)
+        app.open_row(1, "opus")
+        _walk_done(app)
+        time.sleep(4)
+        third = found("wavj")
+        keys3 = app.state()["keys"]
+        app.escape(discard=True, expect_dialog=None)
+        app.gone()
+        t.check("51w an outline of version 5 is read again once under 6, not again after",
+                v6 in again and third.get(v6) == again[v6] and third.get(v5) == old,
+                f"after the upgrade {again}; next open {third}; v5 untouched {third.get(v5) == old}; wave shown {shown}")
+        t.check("51w ... the silences found before are still read from their cache, not found again",
+                found("qtj") == qt and keys2 == quiet_keys and keys3 == quiet_keys,
+                f"qtj {qt} -> {found('qtj')}; marks after the detection {quiet_keys!r}, upgrade {keys2!r}, next {keys3!r}")
+
+
+SCENARIOS += [wave_version_51]
+
 
 
 def main():
