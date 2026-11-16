@@ -11366,6 +11366,11 @@ def queue_names_and_beat(cfg, t):
         # And a plain folder with such a name, which is passed over as any
         # folder that is not a disc is (51st, p2gui): not named as a file.
         os.makedirs(os.path.join(drop.encode(), b"\x83\x74\x83\x48"))
+        # And a note so named, which is not a recording: a UTF-8 one is only
+        # "not supported" in the list, so it is not named either (52nd pass,
+        # tauri). Named, the sentence would hold two names joined by 、.
+        with open(os.path.join(drop.encode(), b"\x83\x81\x83\x82.txt"), "wb") as f:
+            f.write(b"")
         r = app.s.js("return window.__TAURI__.core.invoke('resolve_paths', {paths: [arguments[0]]})"
                      ".then((r) => r)", drop)
         r = r if isinstance(r, list) else None
@@ -12065,6 +12070,848 @@ def wave_version_51(cfg, t):
 
 SCENARIOS += [wave_version_51]
 
+
+
+
+# -- 52nd pass, mainjs ------------------------------------------------------
+
+_SLOW52 = (
+    # A command of the editor's answered `ms` late, as a share that stops
+    # answering for a moment would. The bridge's own functions cannot be
+    # replaced; the request it makes for each command (a POST to
+    # ipc://localhost/<command>) is held instead. `window.__held52` counts
+    # the ones still held.
+    "if (!window.__fetch52) { window.__fetch52 = window.fetch; window.__slow52 = {}; window.__held52 = 0;"
+    "  window.fetch = function (u, o) {"
+    "    const m = /^ipc:\\/\\/localhost\\/([^?]+)/.exec(String(u));"
+    "    const ms = m && window.__slow52[decodeURIComponent(m[1])];"
+    "    if (!ms) return window.__fetch52.call(window, u, o);"
+    "    window.__held52 += 1;"
+    "    return new Promise((r) => setTimeout(r, ms))"
+    "      .then(() => window.__fetch52.call(window, u, o))"
+    "      .finally(() => { window.__held52 -= 1; });"
+    "  };"
+    "}"
+    "window.__slow52[arguments[0]] = arguments[1];"
+    "return window.fetch !== window.__fetch52;")
+
+
+def _slow52(app, cmd, ms):
+    if not app.s.js(_SLOW52, cmd, ms):
+        raise Failure("could not hold the editor's commands")
+
+
+def _held52(app):
+    return app.s.js("return window.__held52 || 0")
+
+
+def del_in_settle_52(cfg, t):
+    """(52nd pass, mainjs.) The 51st's `hand`: ✂ on a variable-rate recording
+    asks the stage (`exactEnd`) before it cuts, and `window.event` is gone by
+    then. Made certain here: the last settle of the arrival (`flat_cached`)
+    is answered 25 s late, and the cut is made in that wait, after the walk.
+    For hold.mp4 (variable) and a copy of a.ts (constant), by Del and by
+    範囲外を削除:
+      the cut has an undo step at once; Ctrl+Z / Ctrl+Y walk it; once the
+      settle is over Escape still asks (the cut is somebody's), いいえ keeps
+      the window, and OK hands the cut over."""
+    v = _hold_mp4(cfg)
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    c = os.path.join(d, "settle52.ts")
+    shutil.copyfile(cfg.a, c)
+    try:
+        for name, path in (("hold.mp4", v), ("settle52.ts", c)):
+            for how in ("del", "outside"):
+                rows = [{"path": cfg.a}, {"path": path}]
+                with App(cfg, f"del_in_settle_52_{name.split('.')[0]}_{how}", rows) as app:
+                    app.open_row(1, "a.ts")
+                    _walk_done(app)
+                    time.sleep(1)
+                    _slow52(app, "flat_cached", 25000)
+                    app.open_row(2, name, wait=False)
+                    app.to_editor()
+                    wait_for("row 2's last settle", lambda: name in app.state()["title"]
+                             and _held52(app) > 0, 120, 0.05)
+                    st0 = app.state()
+                    variable = st0["frames"] is None
+                    if variable:
+                        # Its counter is the time; pictures every 1/30 s.
+                        for at, key in (("00:00:00.50", "i"), ("00:00:01.00", "o")):
+                            app.s.keys("j")
+                            wait_for("the jump box", lambda: app.s.js(
+                                "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+                            app.s.keys("Control+a")
+                            app.s.type(at)
+                            app.s.keys("Enter")
+                            want_t = float(at.split(":")[2])
+                            wait_for(f"the playhead on {at}",
+                                     lambda: abs((_counter_time(app) or -1) - want_t) < 0.02, 10)
+                            time.sleep(0.8)
+                            app.s.keys(key)
+                    else:
+                        app.goto(20)
+                        app.s.keys("i")
+                        app.goto(40)
+                        app.s.keys("o")
+                    lit = "return !document.getElementById('undo-cut').disabled"
+                    if how == "del":
+                        app.s.keys("Delete")
+                    else:
+                        app.s.click("#cut-outside")
+                    if variable:
+                        # ✂ asks the stage first; give it its moment.
+                        time.sleep(2.0)
+                    else:
+                        want = st0["frames"] - 21 if how == "del" else 21
+                        wait_for("the cut", lambda: app.state()["frames"] == want, 10)
+                    in_settle = _held52(app) > 0
+                    undo_lit = app.s.js(lit)
+                    wait_for("the settle to end", lambda: _held52(app) == 0, 60, 0.1)
+                    plan_of = lambda: (app.state()["plan"] or "")
+                    wait_for("the plan", lambda: "出力" in plan_of(), 30, 0.2)
+                    time.sleep(0.5)
+                    p1 = plan_of()
+                    undo_after = app.s.js(lit)
+                    undid = redid = False
+                    if undo_after:
+                        app.s.keys("Control+z")
+                        try:
+                            wait_for("undo", lambda: plan_of() != p1 and "出力" in plan_of(), 10, 0.2)
+                            undid = True
+                            app.s.keys("Control+y")
+                            wait_for("redo", lambda: plan_of() == p1, 10, 0.2)
+                            redid = True
+                        except Failure:
+                            pass
+                    asked = app.escape(discard=False, expect_dialog=False)
+                    time.sleep(0.5)
+                    up = app.editor() is not None
+                    if up:
+                        app.to_editor()
+                        app.ok()
+                    app.gone()
+                    time.sleep(1)
+                    p = app.save()
+                    c2 = cuts_of(p, 2)
+                    t.check(f"52a {name} {how} in the arrival's last settle: an undo step, Escape asks, OK keeps it",
+                            (not in_settle) or (undo_lit and undid and redid and asked and up and len(c2) >= 1),
+                            f"{'in the settle' if in_settle else 'NOT in the settle (NOT REACHED)'}; plan {p1!r}; "
+                            f"undo {'lit' if undo_lit else 'DARK'} (after {undo_after}), Ctrl+Z {undid} Ctrl+Y {redid}; "
+                            f"Escape {'asked' if asked else 'DID NOT ASK'}; "
+                            f"window {'stayed' if up else 'CLOSED'}; row 2 {fmt(c2)}")
+    finally:
+        if os.path.exists(c):
+            os.remove(c)
+
+
+def cancel_then_row_52(cfg, t):
+    """(52nd pass, mainjs.) The 51st's `!leaving` in the `editor-open`
+    handler, made certain: row 2 is a first visit whose `.keyframe` read is
+    answered 10 s late (`read_keyframes`), a cut is made in that read,
+    Escape + 破棄, and the window's close (`close_editor`) is answered 4 s
+    late, so that row 3 double-clicked in the list arrives while the visit
+    has been thrown away and the read still holds `reading`. Row 2 must have
+    no cut: the report the arrival sends was sent after `editor-cancel` and
+    put the dropped cut back."""
+    d = _m48_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    e = os.path.join(d, "slowmarks52.ts")
+    side = os.path.join(d, "slowmarks52.keyframe")
+    o = os.path.join(d, "other52.ts")
+    for f in (e, o):
+        shutil.copyfile(cfg.a, f)
+    rows = [{"path": cfg.a}, {"path": e}, {"path": o}]
+    try:
+        for how in ("escape",):
+            with open(side, "w") as f:
+                f.write("1\n")
+            with App(cfg, f"cancel_then_row_52_{how}", rows) as app:
+                app.open_row(1, "a.ts")
+                _walk_done(app)
+                time.sleep(1)
+                _slow52(app, "read_keyframes", 10000)
+                _slow52(app, "close_editor", 4000)
+                app.open_row(2, "slowmarks52", wait=False)
+                app.to_editor()
+                wait_for("row 2's timeline", lambda: (lambda st: "slowmarks52" in st["title"]
+                                                       and st["frames"] is not None)(app.state()), 60, 0.05)
+                wait_for("the read", lambda: _held52(app) > 0, 10, 0.05)
+                st0 = app.state()
+                app.s.keys("i")
+                app.s.keys("o")
+                app.s.keys("Delete")
+                wait_for("the cut", lambda: app.state()["frames"] is not None
+                         and app.state()["frames"] < st0["frames"], 10, 0.05)
+                asked = None
+                if how == "escape":
+                    asked = app.escape(discard=True, expect_dialog=False)
+                else:
+                    app.ok()
+                    # OK waits for the read (`okWaiting`) up to 5 s, then hands over.
+                    time.sleep(5.5)
+                in_read = _held52(app) > 0
+                app.to_list()
+                app.s.double_click("#cliplist > li:nth-child(3) .nm")
+                time.sleep(0.3)
+                app.gone(timeout=30)
+                time.sleep(1)
+                p = app.save()
+                c2, c3 = cuts_of(p, 2), cuts_of(p, 3)
+                # The editor took row 3 up (it was still there to be sent it).
+                took = "openPath " + o in app.read_log()
+                reached = in_read and took
+                if how == "escape":
+                    t.check("52b cut in row 2's read, Escape+破棄, row 3 pressed before the window went: row 2 has no cut",
+                            (not reached) or (asked and len(c2) == 0 and len(c3) == 0),
+                            f"{'asked' if asked else 'NOT asked'}; {'in the read' if in_read else 'NOT in the read (NOT REACHED)'}; "
+                            f"row 3 {'sent to the editor' if took else 'NOT sent to the editor (NOT REACHED)'}; "
+                            f"row 2 {fmt(c2)} row 3 {fmt(c3)}")
+                else:
+                    t.check("52b cut in row 2's read, OK, row 3 pressed: row 2 keeps the cut",
+                            len(c2) == 1 and len(c3) == 0,
+                            f"{'in the read' if in_read else 'read over'}; row 2 {fmt(c2)} row 3 {fmt(c3)}")
+    finally:
+        for f in (e, side, o):
+            if os.path.exists(f):
+                os.remove(f)
+
+
+SCENARIOS += [del_in_settle_52, cancel_then_row_52]
+
+
+# -- 52nd pass, tauri ------------------------------------------------------
+
+def _scix_tracked(app, stem):
+    """The seek indexes named after `stem`: name -> whether it holds a
+    thumbnail track (the header's FLAG_HAS_TRACK, 1 << 3)."""
+    out = {}
+    for d, _, fs in os.walk(app.env["XDG_CACHE_HOME"]):
+        for f in fs:
+            if f.endswith(".scix") and ".part" not in f and f.startswith(stem):
+                with open(os.path.join(d, f), "rb") as fh:
+                    head = fh.read(12)
+                out[f] = len(head) == 12 and head[:4] == b"SCIX" and bool(
+                    int.from_bytes(head[8:12], "little") & (1 << 3))
+    return out
+
+
+def close_during_proxy_52(cfg, t):
+    """(52nd pass, tauri; the 51st's keep_the_walk on the proxy path.) With
+    プロキシ on, a 4-minute recording, the list's lanes paused so the editor
+    is the only reader: (1) closed during the walk: no index of the part
+    read; (2) closed while the proxy is being built: the walk's index is kept,
+    without a thumbnail track; (3) opened again: the proxy is built whole and
+    the index then holds its track, the counter the same as the first open's;
+    (4) closed and opened a third time: the proxy and the index's pictures
+    are reused."""
+    work = os.path.join(cfg.work, "tauri52")
+    os.makedirs(work, exist_ok=True)
+    long = os.path.join(work, "long52.ts")
+    if not os.path.exists(long):
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "testsrc2=size=720x480:rate=30000/1001:duration=240",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=240:sample_rate=48000",
+                        "-c:v", "mpeg2video", "-g", "15", "-bf", "2", "-b:v", "2M",
+                        "-c:a", "mp2", "-b:a", "128k", "-f", "mpegts", long + ".part"], check=True)
+        os.replace(long + ".part", long)
+    app = App(cfg, "close_during_proxy_52", [{"path": long}, {"path": cfg.a}])
+    app.env["SMARTCUT_PROXY"] = "1"
+    try:
+        with app:
+            _lanes_paused(app)
+            # (1) Closed during the walk.
+            app.open_row(1, "long52", wait=False)
+            app.to_editor()
+            mid = False
+            try:
+                wait_for("the walk under way", lambda: "読み込んで" in (app.state()["plan"] or ""), 60, 0.02)
+                mid = "読み込んで" in (app.state()["plan"] or "")
+            except Failure:
+                pass
+            app.escape(expect_dialog=False)
+            app.gone()
+            time.sleep(2)
+            idx_walk = _scix_tracked(app, "long52")
+            t.check("52t closed during the walk (proxy on): no index of the part read",
+                    not idx_walk or not mid, f"{'mid-walk' if mid else 'walk ended (NOT REACHED)'}; {idx_walk}")
+            for f in list(idx_walk):
+                for d, _, fs in os.walk(app.env["XDG_CACHE_HOME"]):
+                    if f in fs:
+                        os.remove(os.path.join(d, f))
+            # (2) Closed during the proxy build.
+            app.open_row(1, "long52")
+            _walk_done(app)
+            n0 = app.state()["frames"]
+            wait_for("the proxy build under way", lambda: "プロキシ準備中" in _warm(app), 120, 0.1)
+            time.sleep(1)
+            midp = "プロキシ準備中" in _warm(app)
+            app.escape(expect_dialog=False)
+            app.gone()
+            time.sleep(3)
+            kept = _scix_tracked(app, "long52")
+            t.check("52t closed during the proxy build: the walk's index kept, without a track",
+                    midp and list(kept.values()) == [False],
+                    f"{'mid-build' if midp else 'build ended (NOT REACHED)'}; {kept}; counter {n0}")
+            # (3) Opened again: proxy built whole, index with its track.
+            app.open_row(1, "long52")
+            _walk_done(app)
+            n1 = app.state()["frames"]
+            w1 = wait_for("long52 built again", lambda: (lambda w: w if "サムネイル" in w and "枚" in w or "準備:" in w else None)(_warm(app)), 600, 0.5)
+            time.sleep(1)
+            again = _scix_tracked(app, "long52")
+            t.check("52t ... opened again, the proxy is built whole and the index holds its track",
+                    "作成" in w1 and "プロキシ" in w1 and list(again.values()) == [True] and n1 == n0,
+                    f"{w1!r}; {again}; counter {n1} (first {n0})")
+            # (4) A third open reuses both.
+            app.escape(expect_dialog=False)
+            app.gone()
+            time.sleep(1)
+            app.open_row(1, "long52")
+            _walk_done(app)
+            w2 = wait_for("long52 a third time", lambda: (lambda w: w if "サムネイル" in w and "枚" in w or "準備:" in w else None)(_warm(app)), 300, 0.3)
+            n2 = app.state()["frames"]
+            t.check("52t ... a third open reuses the proxy, the counter the same",
+                    "前回のものを再利用" in w2 and n2 == n0, f"{w2!r}; counter {n2} (first {n0})")
+            app.escape(expect_dialog=False)
+            app.gone()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        # The VM's disk is tight: the proxies go, the log stays for a failure.
+        pd = _proxy_dir(app)
+        if pd:
+            shutil.rmtree(pd, ignore_errors=True)
+
+
+SCENARIOS += [close_during_proxy_52]
+
+
+def _m52_dir(cfg):
+    return os.path.join(cfg.work, "media52")
+
+
+def _m52_specs():
+    """name -> height (made by `_m52_make_one`)."""
+    return {"short04.mp4": 360, "p120.mp4": 720, "p120vfr.mp4": 720, "qtrle.mov": 360, "png.mov": 360,
+            "long4h.ts": 180}
+
+
+def _m52_make_one(d, name, h):
+    out = os.path.join(d, name)
+    part = out + ".part" + os.path.splitext(name)[1]
+    x264 = ["-c:v", "libx264", "-preset", "veryfast", "-g", "60", "-bf", "3", "-pix_fmt", "yuv420p"]
+    sine = lambda sec, rate=48000: ["-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate={rate}"]
+    aac = ["-c:a", "aac", "-b:a", "128k"]
+    if name == "short04.mp4":
+        # Under a second, all of it inside the first GOP.
+        _m50_ff(sine(0.4) + ["-filter_complex", _num_graph(640, h, "30", 0.4), "-map", "[v]", "-map", "0:a"]
+                + x264 + aac + ["-shortest", part])
+    elif name == "p120.mp4":
+        # A phone's 120 fps slow motion: 1/600 clock, as the cameras write it.
+        _m50_ff(sine(5) + ["-filter_complex", _num_graph(1280, h, "120", 5), "-map", "[v]", "-map", "0:a"]
+                + ["-c:v", "libx264", "-preset", "veryfast", "-g", "120", "-bf", "2", "-pix_fmt", "yuv420p"]
+                + aac + ["-video_track_timescale", "600", "-shortest", part])
+    elif name == "p120vfr.mp4":
+        # The same with a picture dropped now and then, as a phone does when
+        # it cannot keep up: variable.
+        _m50_ff(sine(5) + ["-filter_complex",
+                           _num_graph(1280, h, "120", 5).replace("[v]", "[w]")
+                           + ";[w]select='not(eq(mod(n\\,37)\\,36))'[v]",
+                           "-map", "[v]", "-map", "0:a", "-fps_mode", "vfr"]
+                + ["-c:v", "libx264", "-preset", "veryfast", "-g", "120", "-bf", "2", "-pix_fmt", "yuv420p"]
+                + aac + ["-video_track_timescale", "600", "-shortest", part])
+    elif name == "qtrle.mov":
+        _m50_ff(sine(6) + ["-filter_complex", _num_graph(640, h, "25", 6, "format=rgb24"),
+                           "-map", "[v]", "-map", "0:a", "-c:v", "qtrle", "-c:a", "pcm_s16le", "-shortest", part])
+    elif name == "png.mov":
+        _m50_ff(sine(6) + ["-filter_complex", _num_graph(640, h, "25", 6, "format=rgb24"),
+                           "-map", "[v]", "-map", "0:a", "-c:v", "png", "-c:a", "pcm_s16le", "-shortest", part])
+    elif name == "long4h.ts":
+        # Four hours of a small H.264 .ts (24 ten-minute pieces put end to
+        # end), its clock wrapping (2^33 / 90 kHz) two hours in, as a
+        # broadcast recording's does wherever the station's clock happens to
+        # be.
+        piece = os.path.join(d, "long4h.piece.mp4")
+        _m50_ff(sine(600) + ["-filter_complex", _num_graph(320, h, "30000/1001", 600), "-map", "[v]",
+                             "-map", "0:a", "-c:v", "libx264", "-preset", "veryfast", "-crf", "35", "-g", "60",
+                             "-bf", "3", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "48k", "-ac", "1",
+                             "-shortest", piece])
+        lst = os.path.join(d, "long4h.list")
+        with open(lst, "w") as f:
+            f.write("".join(f"file '{piece}'\n" for _ in range(24)))
+        _m50_ff(["-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", "-f", "mpegts",
+                 "-output_ts_offset", str(2 ** 33 / 90000 - 7200), part])
+        os.remove(lst)
+        os.remove(piece)
+    os.replace(part, out)
+
+
+def _m52_make(cfg, names):
+    d = _m52_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    for name in names:
+        if not os.path.exists(os.path.join(d, name)):
+            _m52_make_one(d, name, _m52_specs()[name])
+    keep = set(_m52_specs())
+    for f in os.listdir(d):
+        if f not in keep:
+            p = os.path.join(d, f)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+    return d
+
+
+def _pts52(path):
+    """Display times of the pictures of `path`, from the first."""
+    raw = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "frame=best_effort_timestamp_time", "-of", "csv=p=0", path],
+                         capture_output=True, text=True).stdout
+    ts = sorted(float(x.strip().strip(",")) for x in raw.splitlines() if x.strip().strip(","))
+    return [t - ts[0] for t in ts]
+
+
+def _vgoto52(app, t):
+    """J to the time `t` (a variable-rate recording's counter is the time)."""
+    app.s.keys("j")
+    wait_for("the jump box", lambda: app.s.js(
+        "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+    app.s.keys("Control+a")
+    h, r = divmod(t + 0.0002, 3600)
+    m, sec = divmod(r, 60)
+    app.s.type(f"{int(h):02d}:{int(m):02d}:{sec:07.4f}")
+    app.s.keys("Enter")
+    # 0.0 is a time too (`or -1` would take it for none).
+    wait_for(f"the playhead on {t:.4f}", lambda: (lambda c: c is not None and abs(c - t) < 0.011)(
+        _counter_time(app)), 10)
+
+
+def ordinary_material_52(cfg, t):
+    """(52nd pass, mainjs.) The editor on ordinary recordings no pass drove:
+    a clip of 0.4 s (12 pictures, all in one GOP), a phone's 120 fps slow
+    motion on a 1/600 clock (constant, and with a picture dropped now and
+    then), RGB .mov (QuickTime Animation, PNG), and a four-hour .ts whose
+    clock wraps two hours in. The counter counts the pictures; J shows the
+    recording's picture at the keys, the ends and (four hours) either side
+    of the wrap; K on neighbouring pictures, two cuts with Ctrl+Z / Ctrl+Y,
+    OK, 出力開始: the output holds exactly the pictures the editor left.
+    The long one is left out unless named (ORD_ONLY=long4h.ts): it takes
+    ten minutes to make and to count."""
+    names = [n for n in _m52_specs() if n != "long4h.ts"]
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in _m52_specs() if n in only.split(",")]
+    d = _m52_make(cfg, names)
+    specs = _m52_specs()
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    with App(cfg, "ordinary_material_52", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            h = specs[name]
+            path = os.path.join(d, name)
+            src = _numbers(path)
+            long = len(src) > 50000
+            keys = [] if long else _keys_of(path)
+            pts = None
+            app.to_list()
+            app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+            try:
+                app.open_row(i, name, wait=False)
+                app.to_editor()
+                wait_for(f"the editor on {name}", lambda: (lambda st: st and name in st["title"] and (
+                    st["frames"] is not None or _counter_time(app) is not None))(app.state()), 120, 0.2)
+                _walk_done(app)
+            except Exception as e:  # noqa: BLE001
+                said = app.state()["status"] if app.editor() else ""
+                t.check(f"52m {name}: opens", False, f"{type(e).__name__}: {e}; status {said!r}")
+                if app.editor():
+                    app.to_editor()
+                    app.escape(discard=True, expect_dialog=False)
+                    app.gone()
+                continue
+            time.sleep(1.5)
+            total = app.state()["frames"]
+            if total is None:
+                # Variable: the counter is the time, and J takes a time.
+                pts = _pts52(path)
+                total = len(pts) if abs(len(pts) - len(src)) <= 1 else None
+                goto = lambda f: _vgoto52(app, pts[f])
+            else:
+                goto = app.goto
+            t.check(f"52m {name}: the counter counts the recording's pictures", total in (len(src), len(src) + 1),
+                    f"counter {total}, pictures {len(src)}")
+            if os.environ.get("SHOT52"):
+                import base64
+                with open(os.path.join(os.environ["SHOT52"], f"{name}.png"), "wb") as f:
+                    f.write(base64.b64decode(app.s._("GET", "/screenshot")))
+            n = len(src)
+            if long:
+                wrap = n // 2
+                probe = [0, 1, n // 7, wrap - 2, wrap - 1, wrap, wrap + 1, wrap + 2, n - 2, n - 1]
+            else:
+                mid = [k for k in keys if 1 <= k < n - 2]
+                probe = sorted({f for k in mid[:2] for f in (k - 1, k, k + 1)} | {0, 1, n // 3, n - 2, n - 1})
+            bad = []
+            for f in probe:
+                if 0 <= f < n:
+                    try:
+                        goto(f)
+                        got = _shown_number(app, h)
+                    except Failure as e:
+                        got = f"{e}; counter {app.s.js('return document.getElementById(\'counter\').innerText')!r}"
+                    if got != src[f]:
+                        bad.append((f, got, src[f]))
+            t.check(f"52m {name}: J shows the recording's picture", not bad,
+                    f"counter {total} src {n} probes {probe} wrong {bad[:6]}")
+            k0 = app.state()["keys"]
+            goto(min(3, n - 2))
+            app.s.keys("k")
+            goto(min(4, n - 1))
+            app.s.keys("k")
+            time.sleep(0.5)
+            k1 = app.state()["keys"]
+            if n < 30:
+                plan = [(2, 4), (7, 9)]
+            elif long:
+                plan = [(wrap - 3, wrap + 3), (n - 400, n - 300)]
+            else:
+                plan = [(int(n * 0.3), int(n * 0.3) + 7), (int(n * 0.6) + 3, int(n * 0.75) + 1)]
+            removed = []
+            off = 0
+            for j, (a, b) in enumerate(plan):
+                if pts is None:
+                    left = app.state()["frames"]
+                    cut_in = lambda: app.state()["frames"] == left - (b - a + 1)
+                    back = lambda: app.state()["frames"] == left
+                else:
+                    # The output's times close up over what went before:
+                    # picture k (k > b of a cut) is then at pts[k] - (pts[b + 1] - pts[a]).
+                    plan0 = app.state()["plan"]
+                    cut_in = lambda: app.state()["plan"] != plan0 and "出力" in (app.state()["plan"] or "")
+                    back = lambda: app.state()["plan"] == plan0
+                    gone_t = sum(pts[y + 1] - pts[x] for x, y, _, _ in removed)
+                    goto = lambda f, g=gone_t: _vgoto52(app, pts[f] - g)
+                goto(a - (off if pts is None else 0))
+                na = _shown_number(app, h)
+                app.s.keys("i")
+                goto(b - (off if pts is None else 0))
+                nb = _shown_number(app, h)
+                app.s.keys("o")
+                app.s.keys("Delete")
+                wait_for(f"{name} cut {a}-{b}", cut_in, 20, 0.2)
+                if pts is not None:
+                    time.sleep(1.0)
+                    plan1 = app.state()["plan"]
+                    cut_in = lambda: app.state()["plan"] == plan1
+                if j == 0:
+                    app.s.keys("Control+z")
+                    wait_for(f"{name} undo", back, 10, 0.2)
+                    app.s.keys("Control+y")
+                    wait_for(f"{name} redo", cut_in, 10, 0.2)
+                removed.append((a, b, na, nb))
+                off += b - a + 1
+            shown[i] = (name, src, removed, k0, k1)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=1800)
+        outs = _ord_outputs(app)
+        for i, (name, src, removed, k0, k1) in shown.items():
+            count = lambda s: int((re.findall(r"\d+", s or "") or ["0"])[0])
+            t.check(f"52m {name}: K on two neighbouring pictures puts down two marks",
+                    count(k1) - count(k0) == 2, f"marks before {k0!r} after {k1!r}")
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log", ".keyframe"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            gone = set()
+            for a, b, _, _ in removed:
+                gone.update(range(a, b + 1))
+            want = [x for k, x in enumerate(src) if k not in gone]
+            marks_ok = all(na == src[a] and nb == src[b] for a, b, na, nb in removed)
+            detail = (f"src {len(src)}, IN/OUT shown {[(na, nb) for _, _, na, nb in removed]} "
+                      f"want {[(src[a], src[b]) for a, b, _, _ in removed]}, cuts {fmt(cuts_of(p, i))}, "
+                      f"outputs {[os.path.basename(f) for f in files]}")
+            if got is not None and got != want:
+                diff = [(k, x, y) for k, (x, y) in enumerate(zip(got, want)) if x != y][:4]
+                detail += f"; got {len(got)} want {len(want)}; first differences {diff}"
+            t.check(f"52m {name}: output = what the editor left", marks_ok and got == want, detail)
+            if len(vids) == 1:
+                info = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                                       "stream=codec_type,codec_name,pix_fmt,channels", "-of", "csv=p=0",
+                                       vids[0]], capture_output=True, text=True).stdout.strip().replace("\n", " | ")
+                print(f"        {os.path.basename(vids[0])}: {info}", flush=True)
+            for f in files:
+                os.remove(f)
+
+
+EXTRA += [ordinary_material_52]
+
+
+def queue_copy_reused_52(cfg, t):
+    """(52nd pass, p2gui; appjs's S2.) Two list windows on one profile, each on
+    a project named p.scproj, so both ask the queue for the copy name `p`.
+    A registers (バッチに登録): the copy queued/p.scproj, A's list in it. That
+    job is taken out of the queue (as the tool's ジョブ削除 does: the row out,
+    the copy deleted). B registers: the name is free again, so B's copy is
+    queued/p.scproj too. A registers again: A must not write over B's copy
+    (before the fix A still held p.scproj as its copy and wrote its list into
+    B's job -- B's job ran A's list, and an unsaved B whose window had closed
+    was gone). The batch tool is kept from starting by a beat that says one
+    is running."""
+    a = App(cfg, "queue_copy_reused_52_a", [{"path": cfg.a}])
+    b = App(cfg, "queue_copy_reused_52_b", [{"path": cfg.c}])
+    for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+        b.env[k] = a.env[k]
+
+    def jobs(app):
+        app.to_list()
+        app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+                 ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: app.s.js("return window.__q"), 10, 0.1)
+        return [j["path"] for j in json.loads(got)["jobs"]]
+
+    def rows_in(path):
+        try:
+            return [os.path.basename(c["path"]) for c in json.load(open(path))["clips"]]
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def enlist(app, n):
+        app.to_list()
+        app.s.js("document.getElementById('enlist-export').click()")
+        return wait_for(f"{n} job(s) in the queue", lambda: (lambda q: q if len(q) == n else None)(jobs(app)),
+                        20, 0.3)
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        first = enlist(a, 1)[0]
+        t.check("52q A's list registered as a copy named p", os.path.basename(first) == "p.scproj"
+                and rows_in(first) == ["a.ts"], f"{first}: {rows_in(first)}")
+        # The job out, its copy deleted: what ジョブ削除 in the tool does.
+        a.s.js("window.__d = null; const inv = window.__TAURI__.core.invoke;"
+               "inv('batch_write', {queue: {jobs: [], after: ''}})"
+               ".then(() => inv('drop_temp_project', {path: arguments[0]}))"
+               ".then((r) => window.__d = 'ok ' + r, (e) => window.__d = 'err ' + e);", first)
+        dropped = wait_for("the job taken out", lambda: a.s.js("return window.__d"), 10, 0.1)
+        with b:
+            got = enlist(b, 1)[0]
+            t.check("52q ... B registers after: the freed name is B's copy, B's list in it",
+                    got == first and rows_in(got) == ["c.ts"], f"{dropped}; {got}: {rows_in(got)}")
+            try:
+                q = enlist(a, 2)
+            except Failure:
+                q = jobs(a)
+            time.sleep(1)
+            mine = [p for p in q if p != got]
+            t.check("52q ... A registers again: B's copy is still B's list, A's goes in under another name",
+                    rows_in(got) == ["c.ts"] and len(mine) == 1 and rows_in(mine[0]) == ["a.ts"],
+                    f"B's {os.path.basename(got)}: {rows_in(got)}; queue {[(os.path.basename(p), rows_in(p)) for p in q]}")
+
+
+SCENARIOS += [queue_copy_reused_52]
+
+
+def raw_mov_grey_52(cfg, t):
+    """(52nd pass, p2gui; appjs's and shared's S3.) Uncompressed pictures in a
+    .mov: whether a container takes them depends on their layout, which the
+    cut asks (carry::pictures_refused) and the output settings screen now
+    asks too. A 4:2:0 raw .mov has no QuickTime layout: .mov is greyed (the
+    cut refuses it). An RGB24 raw .mov has one: .mov stays offered."""
+    d = os.path.join(cfg.work, "media52raw")
+    os.makedirs(d, exist_ok=True)
+    made = {}
+    for name, fmt in (("raw420.mov", "yuv420p"), ("rawrgb.mov", "rgb24")):
+        out = os.path.join(d, name)
+        if not os.path.exists(out):
+            part = out + ".part.mov"
+            _m50_ff(["-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=3",
+                     "-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=48000",
+                     "-pix_fmt", fmt, "-c:v", "rawvideo", "-c:a", "pcm_s16le", "-shortest", part])
+            os.replace(part, out)
+        made[name] = out
+    for name, want in (("raw420.mov", True), ("rawrgb.mov", False)):
+        with App(cfg, f"raw_mov_grey_52_{name[:-4]}", [{"path": made[name]}]) as app:
+            app.to_list()
+            wait_for(f"{name} read", lambda: _walked(app, 1), 120, 0.5)
+            app.s.click('button.tab[data-screen="outset"]')
+            q = "return [...document.getElementById('out-container').options].map((o) => [o.value, o.disabled])"
+            # The answer comes back after the screen is drawn: wait for the
+            # grey the codec alone gives (.mkv takes no raw pictures).
+            wait_for("the containers answered", lambda: dict(app.s.js(q)).get("mkv"), 20, 0.3)
+            time.sleep(1)
+            opts = dict(app.s.js(q))
+            t.check(f"52g {name}: .mov {'greyed' if want else 'offered'}, as the cut "
+                    f"{'refuses' if want else 'writes'} it", opts.get("mov") is want, f"{opts}")
+
+
+SCENARIOS += [raw_mov_grey_52]
+
+
+def queue_copy_edited_52(cfg, t):
+    """(52nd pass, p3gui.) p2gui's fix knows this list's queue copy by the job
+    it added (the job's stamp, `born`, since p4gui; by the body it last wrote
+    there before). The ordinary use must still hold: one list window,
+    registered, then edited and registered again, writes over its own copy
+    (one job, the copy holding the edit) rather than adding a job per edit;
+    registered again unchanged, still one job; two presses in a row after one
+    more edit, still one job holding that edit. The batch tool is kept from
+    starting by a beat that says one is running."""
+    a = App(cfg, "queue_copy_edited_52", [{"path": cfg.a}])
+
+    def jobs():
+        a.to_list()
+        a.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+               ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: a.s.js("return window.__q"), 10, 0.1)
+        return [j["path"] for j in json.loads(got)["jobs"]]
+
+    def container_in(path):
+        try:
+            return (json.load(open(path)).get("settings") or {}).get("container")
+        except (OSError, ValueError):
+            return None
+
+    def press(times=1):
+        a.to_list()
+        a.s.js("for (let i = 0; i < arguments[0]; i++) document.getElementById('enlist-export').click()", times)
+
+    def pick(container):
+        a.s.js("const s = document.getElementById('out-container'); s.value = arguments[0];"
+               "s.dispatchEvent(new Event('input'));", container)
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        press()
+        first = wait_for("one job", lambda: (lambda q: q if len(q) == 1 else None)(jobs()), 20, 0.3)[0]
+        t.check("52e the list registered once", os.path.basename(first) == "p.scproj", first)
+        for step, (container, times) in enumerate((("mkv", 1), ("mkv", 1), ("mp4", 2))):
+            if container != container_in(first):
+                pick(container)
+            time.sleep(0.5)
+            press(times)
+            try:
+                wait_for(f"the copy holding {container}", lambda: container_in(first) == container or None, 20, 0.3)
+            except Failure:
+                pass
+            time.sleep(2)
+            q = jobs()
+            t.check(f"52e ... registered again ({container}, {times} press(es)): its own copy written over, "
+                    f"still one job", q == [first] and container_in(first) == container,
+                    f"queue {[(os.path.basename(p), container_in(p)) for p in q]}")
+
+
+SCENARIOS += [queue_copy_edited_52]
+
+
+class _QueuedJobWindow(App):
+    """A list window started on a queued job, the way the batch tool's
+    プロジェクトを開く starts one (`open_project_window`: the path and
+    --queued), on the profile of a running App."""
+
+    def __init__(self, cfg, name, was, path):
+        super().__init__(cfg, name, [])
+        for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+            self.env[k] = was.env[k]
+        self.project = path
+
+    def __enter__(self):
+        from wd import Driver, Session
+        self.driver = Driver(self.cfg.webdriver, self.env, self.log)
+        try:
+            self.s = Session(self.driver, self.cfg.gui, [self.project, "--queued"])
+            self.main = self.s.handle()
+            wait_for("the job window", lambda: "app wired" in self.read_log(), 300, 0.25)
+            wait_for("the job's rows", lambda: self.rows() > 0, 60)
+        except Exception:
+            self.close()
+            raise
+        return self
+
+
+def queue_copy_overwritten_52(cfg, t):
+    """(52nd pass, p4gui; the maintainer's choice of 2026-11-16.) A list window
+    registers its unsaved list (バッチに登録): one job, the copy
+    queued/p.scproj. The job is opened in a window of its own (as the tool's
+    プロジェクトを開く does), its output container changed and written back
+    with バッチを上書き. The list window then registers again, unchanged: its
+    own copy is written over with the list's version (the list on screen is
+    what goes in), and the queue still holds ONE job. Stage 2's body identity
+    took the job window's write for another window's job and added a second
+    job instead. The batch tool is kept from starting by a beat that says one
+    is running."""
+    a = App(cfg, "queue_copy_overwritten_52", [{"path": cfg.a}])
+
+    def jobs(app):
+        app.to_list()
+        app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+                 ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: app.s.js("return window.__q"), 10, 0.1)
+        return [(j["path"], j.get("born", "")) for j in json.loads(got)["jobs"]]
+
+    def container_in(path):
+        try:
+            return (json.load(open(path)).get("settings") or {}).get("container")
+        except (OSError, ValueError):
+            return None
+
+    def press(app):
+        app.to_list()
+        app.s.js("document.getElementById('enlist-export').click()")
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        press(a)
+        q0 = wait_for("one job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(a)), 20, 0.3)
+        first, born = q0[0]
+        mine = container_in(first)
+        t.check("52o the list registered once, a stamped job", os.path.basename(first) == "p.scproj"
+                and bool(born), f"{q0}; container {mine!r}")
+        theirs = "mp4" if mine == "mkv" else "mkv"
+        with _QueuedJobWindow(cfg, "queue_copy_overwritten_52_job", a, first) as job:
+            job.to_list()
+            label = job.s.js("return document.getElementById('enlist-export').innerText")
+            job.s.js("const s = document.getElementById('out-container'); s.value = arguments[0];"
+                     "s.dispatchEvent(new Event('input'));", theirs)
+            time.sleep(0.5)
+            press(job)
+            try:
+                wait_for(f"the job written back with {theirs}", lambda: container_in(first) == theirs or None, 20, 0.3)
+            except Failure:
+                pass
+            t.check("52o ... the job window's バッチを上書き wrote the job, still one job",
+                    container_in(first) == theirs and jobs(a) == q0,
+                    f"button {label!r}; copy {container_in(first)!r}; queue {jobs(a)}")
+        press(a)
+        try:
+            wait_for(f"the copy back to {mine}", lambda: container_in(first) == mine or None, 20, 0.3)
+        except Failure:
+            pass
+        time.sleep(2)
+        q = jobs(a)
+        t.check("52o ... the list registered again: its own copy written over with the list's version, "
+                "still one job", q == q0 and container_in(first) == mine,
+                f"queue {[(os.path.basename(p), b, container_in(p)) for p, b in q]}; want {mine!r}")
+    shutil.rmtree(os.path.join(cfg.work, "runs", "queue_copy_overwritten_52_job"), ignore_errors=True)
+
+
+SCENARIOS += [queue_copy_overwritten_52]
 
 
 def main():
