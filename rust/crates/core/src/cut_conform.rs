@@ -239,6 +239,14 @@ fn pictures_afresh(
     // join, 182 packets "damaged"). See [`crate::preview::InForce`]; the
     // cut's own re-encode asks the same ([`reencode_segment`]).
     let mut in_force = crate::preview::InForce::single(&params, &src.video);
+    // And the MPEG-4 Part 2 VOL in force: a reel's range inside the second of
+    // two joined Xvid encodes, read by the record's -- the first encode's --
+    // VOL, was conformed from wrong pictures. See
+    // [`crate::preview::VolInForce`]; the cut's own head decoder is given the
+    // same ([`reencode_segment`]).
+    let mut vols = crate::preview::VolInForce::single(&params);
+    // Where a picture whose packet carries no time is shown; see below.
+    let mut untimed = crate::preview::Untimed::new(&src.video);
 
     let mut decoder = crate::video_decoder(params)?;
     // Which masters lay a reel's pictures at their own instants; see below.
@@ -666,6 +674,12 @@ fn pictures_afresh(
         {
             break;
         }
+        // A picture whose packet carries no time is given the one its order
+        // says, as the cut's own re-encode gives it ([`reencode_segment`]):
+        // an H.264 `.mpg` reel conformed to another master lost both of its
+        // pts-less pictures, the one before each held in its place. See
+        // [`crate::preview::Untimed`].
+        untimed.place(&mut packet);
         // A packet the decoder will not take is not a reason to stop; see
         // [`reencode_segment`], where the same is said at more length --
         // and counted on the same terms: a packet of the run-up the seek
@@ -678,6 +692,7 @@ fn pictures_afresh(
         in_force.mend(&mut packet, &mut |at, record| {
             Some(crate::preview::sets_before(src, at, record))
         });
+        vols.mend(&mut packet, src, in_tb);
         if decoder.send_packet(&packet).is_err() {
             let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
             if keyed || at.is_none_or(|t| t >= seg.start - slack) {
@@ -1000,6 +1015,12 @@ struct FarSide<'s> {
     /// The H.264 sets in force where the clip is read, for a key picture
     /// that carries none. See [`crate::preview::InForce`].
     in_force: crate::preview::InForce,
+    /// The MPEG-4 Part 2 VOL in force where the clip is read, for a key
+    /// picture that states none. See [`crate::preview::VolInForce`].
+    vols: crate::preview::VolInForce,
+    /// Where a picture whose packet carries no time is shown. See
+    /// [`crate::preview::Untimed`].
+    untimed: crate::preview::Untimed,
 }
 
 impl<'s> FarSide<'s> {
@@ -1011,6 +1032,7 @@ impl<'s> FarSide<'s> {
         let in_tb = f64::from(stream.time_base());
         let params = stream.parameters();
         let in_force = crate::preview::InForce::single(&params, &src.video);
+        let vols = crate::preview::VolInForce::single(&params);
         let decoder = crate::video_decoder(params)?;
         // Back a little, because the picture wanted at the crossing's first
         // instant is the one standing there, and it may have been coded
@@ -1040,6 +1062,8 @@ impl<'s> FarSide<'s> {
             spent: false,
             drained: false,
             in_force,
+            vols,
+            untimed: crate::preview::Untimed::new(&src.video),
         })
     }
 
@@ -1101,6 +1125,8 @@ impl<'s> FarSide<'s> {
                 continue;
             }
             self.in_force.see(&packet);
+            // As in [`pictures_afresh`].
+            self.untimed.place(&mut packet);
             // A packet the decoder will not take is not a reason to stop
             // the cut; see [`reencode_segment`].
             if !self.run_up.passes(&packet, self.in_tb, self.start_time) {
@@ -1110,6 +1136,7 @@ impl<'s> FarSide<'s> {
             self.in_force.mend(&mut packet, &mut |at, record| {
                 Some(crate::preview::sets_before(src, at, record))
             });
+            self.vols.mend(&mut packet, src, self.in_tb);
             let _ = self.decoder.send_packet(&packet);
         }
     }

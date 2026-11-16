@@ -1268,6 +1268,10 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
                     .unwrap_or(0.0)
             })
             .collect();
+        // A picture whose packet carries no time is where its order puts it,
+        // as the cut and the source's pictures have it: see
+        // [`crate::preview::Untimed`].
+        let mut untimed = crate::preview::Untimed::new(&src.video);
         let mut packets = ictx.read_packets();
         for (stream, packet) in packets.by_ref() {
             if stop.load(Ordering::Relaxed) {
@@ -1292,7 +1296,7 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
                     to_the_end = false;
                     break;
                 }
-                let Some(t) = packet.pts().map(|q| q as f64 * tb - start) else { continue };
+                let Some(t) = untimed.pts_of(&packet).map(|q| q as f64 * tb - start) else { continue };
                 let d = packet.duration();
                 shown.push((t, t + if d > 0 { d as f64 * tb } else { fd }));
             } else if let Some(k) = tracks.iter().position(|&i| i == stream.index()) {
@@ -1446,12 +1450,78 @@ impl Kept {
 /// of a remux whose sets are stated only at its head read the whole 32 MiB
 /// look-back once more -- 600 MB more than 0.8.45 read for an hour's
 /// recording cut in 20 ranges.
+/// The MPEG-4 Part 2 stream record's headers of `src` where they state a
+/// VOL ([`crate::cut::mpeg4_config`]), read once per recording for the
+/// process: by its name, length and time of writing, as the cut keeps what
+/// its key pictures state. Opened once a range before, `--verify` of an
+/// hour's Xvid `.avi` in 10 ranges took 4 % longer.
+fn mpeg4_record(src: &Source) -> Option<Vec<u8>> {
+    type Key = (String, u64, Option<std::time::SystemTime>);
+    static RECORDS: std::sync::Mutex<Vec<(Key, Option<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
+    let meta = std::fs::metadata(&src.input.url).ok();
+    let key: Key = (
+        src.input.url.clone(),
+        meta.as_ref().map_or(0, |m| m.len()),
+        meta.and_then(|m| m.modified().ok()),
+    );
+    if let Some((_, record)) = RECORDS.lock().ok()?.iter().find(|(k, _)| *k == key) {
+        return record.clone();
+    }
+    let record = crate::input::demux(&src.input.url)
+        .ok()
+        .and_then(|ictx| crate::cut::mpeg4_config(&ictx.stream(src.video.stream_index)?.parameters()));
+    if let Ok(mut all) = RECORDS.lock() {
+        all.retain(|(k, _)| k.0 != key.0);
+        if all.len() >= 8 {
+            all.remove(0);
+        }
+        all.push((key, record.clone()));
+    }
+    record
+}
+
 fn opened_by_sets_in_force(src: &Source, from: f64, known: &mut Option<(u64, Vec<Vec<u8>>)>) -> Option<Source> {
     use crate::bitstream::NalFraming;
     // Kept only where this range's own look-back follows from it: a range
     // that leaves early (a key picture with its own sets) forgets it, and the
     // next reads back as far as ever.
     let was = known.take();
+    // In lengths (MP4, Matroska): opened on the key picture the cut's own
+    // look-back stopped at. See [`crate::cut::length_sets_at`].
+    //
+    // **Asked of what the process already knows, by the record the first key
+    // picture's read found.** Opened and probed here once a range, with a
+    // fresh look-back each time, `--verify` of an hour's set-less x264 `.mp4`
+    // in 10 ranges took 10 % longer; the cut has asked the same question of
+    // the same recording, and a file whose first key picture carries no sets
+    // is answered without a read.
+    if src.video.codec == "h264" && matches!(src.video.framing, NalFraming::Length(_)) {
+        let entry = src.points.iter().rev().find(|p| p.time <= from + 1e-6)?;
+        let (_, opens) = crate::cut::length_sets_known(src, entry.time, None)?;
+        let (t0, t1) = (opens, entry.time);
+        let mut lent = src.clone();
+        lent.points.retain(|p| p.time <= t0 + 1e-6 || p.time > t1 + 1e-6);
+        return Some(lent);
+    }
+    // **MPEG-4 Part 2 the same way, by the VOL in force.** Two encodes joined,
+    // each stating its VOL in its first picture only, were read from a range's
+    // entry picture by the record's -- the first encode's -- and the check
+    // called 50 broken pictures right and a right copy "re-encoded, 16 dB".
+    // Opened on the key picture that stated the VOL in force, as the cut's
+    // head decoder is given it. See [`crate::cut::mpeg4_vol_stated_at`].
+    // The record is read once per recording ([`mpeg4_record`]), and what the
+    // key pictures state once per process ([`crate::cut::mpeg4_vol_in_force`]).
+    if src.video.codec == "mpeg4" {
+        let entry = src.points.iter().rev().find(|p| p.time <= from + 1e-6)?;
+        let record = mpeg4_record(src)?;
+        let (t0, t1) = (crate::cut::mpeg4_vol_stated_at(src, entry.time, &record)?, entry.time);
+        if t0 >= t1 - 1e-6 {
+            return None;
+        }
+        let mut lent = src.clone();
+        lent.points.retain(|p| p.time <= t0 + 1e-6 || p.time > t1 + 1e-6);
+        return Some(lent);
+    }
     if src.video.codec != "h264" || src.video.framing != NalFraming::AnnexB || !src.byte_seekable {
         return None;
     }

@@ -115,7 +115,21 @@ pub fn recovery_put(
     let id = &own.as_ref().expect("set above").id;
     let at = body_at(&dir, id);
     let fresh = dir.join(format!("{id}.part"));
-    std::fs::write(&fresh, body.as_bytes()).map_err(|e| e.to_string())?;
+    // On the disc before it is named, as `write_whole` writes a project: the
+    // copy is here for a power cut above all, and renamed while its bytes
+    // were still only in memory, the cut could leave the name over an empty
+    // file -- the work offered back as nothing. A file system with no sync
+    // to give takes the copy all the same.
+    std::fs::File::create(&fresh)
+        .and_then(|mut f| {
+            std::io::Write::write_all(&mut f, body.as_bytes()).and_then(|()| match f.sync_all() {
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput) => {
+                    Ok(())
+                }
+                done => done,
+            })
+        })
+        .map_err(|e| e.to_string())?;
     std::fs::rename(&fresh, &at).map_err(|e| e.to_string())
 }
 

@@ -1277,8 +1277,10 @@ struct Subpictures {
     ink: Option<crate::vobsub::Ink>,
     /// What each stream last put up: when, on the output's own clock, and
     /// how long after that the unit takes itself down -- `None` for a unit
-    /// that never says, which stands until something replaces it.
-    standing: Vec<(i32, f64, Option<f64>)>,
+    /// that never says, which stands until something replaces it -- and
+    /// when it acts on the screen: where its start puts its picture up, or,
+    /// for a unit that only stops, where it stops. See [`Subpictures::take`].
+    standing: Vec<(i32, f64, Option<f64>, f64)>,
     /// Subtitles that could not be drawn into a unit, for the note that says
     /// so. A unit states its own length in two bytes and a picture can be
     /// bigger than that; see [`crate::vobsub::unit`].
@@ -1309,8 +1311,26 @@ impl Subpictures {
         }
         self.side.add(id as u8, at, unit);
         let stops = crate::vobsub::stops_after(unit);
-        self.standing.retain(|(other, _, _)| *other != id);
-        self.standing.push((id, at, stops));
+        // **What is on screen is the unit that acted last, not the one
+        // handed over last.** A unit whose start runs at a delay can go up
+        // after a later one: handed at 5.606 and up at 9.110, with the next
+        // handed at 8.842, up at once and down 0.205 s later. Kept as the
+        // stream's last, the later one had taken itself down by the range's
+        // end at 10.0, nothing was taken down there, and the line up since
+        // 9.110 stood into the next range until 13.605 -- where the
+        // converted subtitle (`pgs`'s Composer) and the preview end it at
+        // 10.0. So a unit replaces the one kept only where it acts no
+        // earlier; with no delays that is every unit, in the order handed.
+        let acts = at + crate::vobsub::acts_after(unit);
+        if self
+            .standing
+            .iter()
+            .any(|&(other, _, _, kept)| other == id && kept > acts)
+        {
+            return;
+        }
+        self.standing.retain(|(other, _, _, _)| *other != id);
+        self.standing.push((id, at, stops, acts));
     }
 
     /// End every display still standing at `at`.
@@ -1323,14 +1343,14 @@ impl Subpictures {
         // is what the set that clears a plane at a range's end writes -- can
         // come back a fraction the other side of it, and ending it again
         // would be a unit saying what the one before it just said.
-        let over = |&(_, shown, stops): &(i32, f64, Option<f64>)| {
+        let over = |&(_, shown, stops, _): &(i32, f64, Option<f64>, f64)| {
             stops.is_some_and(|after| shown + after <= at + crate::vobsub::TICK)
         };
         let standing: Vec<i32> = self
             .standing
             .iter()
             .filter(|s| !over(s))
-            .map(|&(id, _, _)| id)
+            .map(|&(id, _, _, _)| id)
             .collect();
         // **One whose picture would go up only after the end is taken back
         // out.** A unit handed over inside the range whose start delay runs
@@ -2410,7 +2430,7 @@ const HELD_AT_MOST: usize = 256 << 20;
 /// a slice whose escaping does not come back the same, a field that would
 /// grow past sixteen bits -- and `None` means the head goes out exactly as
 /// encoded.
-mod poc_seam {
+pub(crate) mod poc_seam {
     use crate::bitstream::NalFraming;
     use std::collections::HashMap;
 
@@ -2429,6 +2449,10 @@ mod poc_seam {
         separate_colour_planes: bool,
         /// `max_num_ref_frames`.
         refs: i64,
+        /// Where `pic_order_cnt_type` is 2 -- a stream with no B pictures,
+        /// shown in the order it is decoded -- whether its pictures are all
+        /// frames. Read for [`Order`] alone.
+        in_decode_order: Option<bool>,
     }
 
     #[derive(Default)]
@@ -2453,6 +2477,8 @@ mod poc_seam {
         bottom: i64,
         /// `max_num_ref_frames` of the sequence it belongs to.
         refs: i64,
+        /// Whether it is a field picture.
+        field: bool,
     }
 
     enum Unit {
@@ -2569,6 +2595,30 @@ mod poc_seam {
         out
     }
 
+    /// From byte `s` of a packet in start codes: where the NAL starting
+    /// there ends, as [`nals`] ends it, and where the next one starts. Where
+    /// the NAL runs on past `cap` bytes the scan stops there, at `s + cap`,
+    /// with no next.
+    fn next_nal(data: &[u8], s: usize, cap: usize) -> (usize, Option<usize>) {
+        let (mut end, mut next) = (data.len(), None);
+        let mut i = s;
+        while i + 3 <= data.len() {
+            if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+                (end, next) = (i, Some(i + 3));
+                break;
+            }
+            // A byte that is not zero this far in: the NAL ends after it.
+            if data[i] != 0 && i - s >= cap.saturating_sub(1) {
+                return (s + cap, None);
+            }
+            i += 1;
+        }
+        while end > s && data[end - 1] == 0 {
+            end -= 1;
+        }
+        (end.min(s.saturating_add(cap)), next)
+    }
+
     /// Each NAL of a packet as (start, end) byte offsets of its payload.
     fn nals(data: &[u8], framing: NalFraming) -> Option<Vec<(usize, usize)>> {
         let mut out = Vec::new();
@@ -2643,7 +2693,8 @@ mod poc_seam {
             }
         }
         let frame_num_bits = b.ue()? as usize + 4;
-        let (lsb_bits, lsb_width_at) = match b.ue()? {
+        let order_type = b.ue()?;
+        let (lsb_bits, lsb_width_at) = match order_type {
             0 => {
                 let at = b.pos;
                 let bits = b.ue()? as usize + 4;
@@ -2661,6 +2712,7 @@ mod poc_seam {
             frame_mbs_only: true,
             separate_colour_planes,
             refs: 0,
+            in_decode_order: None,
         };
         if lsb_bits.is_some() {
             sps.refs = i64::from(b.ue()?);
@@ -2668,6 +2720,16 @@ mod poc_seam {
             b.ue()?; // pic_width_in_mbs_minus1
             b.ue()?; // pic_height_in_map_units_minus1
             sps.frame_mbs_only = b.u(1)? == 1;
+        } else if order_type == 2 {
+            // The same fields; what they say is left as it was read before
+            // for everything else, and a sequence cut short reads as it did.
+            sps.in_decode_order = (|| {
+                b.ue()?; // max_num_ref_frames
+                b.u(1)?; // gaps_in_frame_num_value_allowed_flag
+                b.ue()?; // pic_width_in_mbs_minus1
+                b.ue()?; // pic_height_in_map_units_minus1
+                Some(b.u(1)? == 1)
+            })();
         }
         Some((id, sps))
     }
@@ -2711,6 +2773,7 @@ mod poc_seam {
             lsb,
             bottom,
             refs: sps.refs,
+            field,
         })
     }
 
@@ -2757,6 +2820,202 @@ mod poc_seam {
     fn stop_bit(rbsp: &[u8]) -> Option<usize> {
         let byte = rbsp.iter().rposition(|&b| b != 0)?;
         Some(byte * 8 + 7 - rbsp[byte].trailing_zeros() as usize)
+    }
+
+    /// **Where a picture whose packet carries no time is shown**, from its
+    /// order field against the last picture read that had a time. See where
+    /// [`super::copy_segment`] reads a packet's time.
+    ///
+    /// Only frames of a sequence that writes the order into each slice
+    /// (`pic_order_cnt_type` 0), or that shows its pictures in the order they
+    /// are decoded (2: no B pictures, so the next picture decoded is the
+    /// next one shown), and only once two pictures with times have said how
+    /// far apart one step of the order is; anything else answers nothing,
+    /// and the picture is passed over as before. An IDR of the first kind,
+    /// which starts its order afresh, is shown one picture after the last of
+    /// those before it.
+    #[derive(Default)]
+    pub(crate) struct Order {
+        sets: Sets,
+        /// The last picture placed: its time, in the stream's ticks, and its
+        /// order as counted here. A picture of a sequence in decode order, or
+        /// an IDR, is placed after the one before it, timed or not.
+        last: Option<(i64, i64)>,
+        /// The last picture read with a time (or an IDR placed without one),
+        /// and its order: what the next ones are counted from.
+        measured: Option<(i64, i64)>,
+        /// Ticks per step of the order, measured between pictures with times.
+        step: Option<f64>,
+        /// The fewest steps of the order seen between two pictures, which is
+        /// one picture's.
+        gap: Option<i64>,
+        /// The latest time placed since the last IDR, where the order is read
+        /// from the slices.
+        shown: Option<i64>,
+    }
+
+    /// How a picture says where it is shown.
+    #[derive(Clone, Copy)]
+    enum Told {
+        /// Its order field, and the field's width.
+        Lsb(i64, usize),
+        /// Right after the picture decoded before it.
+        Next,
+    }
+
+    impl Order {
+        /// The time of a packet in the stream's ticks: its own, or the one
+        /// its order says where it has none and that can be told. Every
+        /// packet read goes through this in file order, timed or not; only
+        /// H.264 in start codes is asked. Shared with [`crate::preview`], so
+        /// the walk, the editor and `--verify` place such a picture where the
+        /// cut does.
+        pub(crate) fn pts_of(&mut self, packet: &ffmpeg_next::Packet) -> Option<i64> {
+            let data = packet.data().unwrap_or(&[]);
+            match packet.pts() {
+                Some(pts) => {
+                    self.timed(data, pts);
+                    Some(pts)
+                }
+                None => self.untimed(data),
+            }
+        }
+
+        /// After a seek: the picture before is no longer the one before. How
+        /// far apart the pictures are, and the sets, still hold.
+        pub(crate) fn restart(&mut self) {
+            self.last = None;
+            self.measured = None;
+            self.shown = None;
+        }
+
+        /// How a packet's first slice says where it is shown, and whether it
+        /// is an IDR; `None` for a field, or where it cannot be read. The
+        /// packet's own sets are learnt first.
+        ///
+        /// Read up to the first slice's header and no further: an access
+        /// unit's sets come before its slices, and every H.264 packet of a
+        /// transport stream comes through here, so a scan of the whole packet
+        /// for start codes made a plain copy of an x264 `.ts` 8 % slower. The
+        /// NALs read are cut where [`nals`] cuts them.
+        fn lsb(&mut self, data: &[u8]) -> Option<(Told, bool)> {
+            let mut at = next_nal(data, 0, usize::MAX).1;
+            while let Some(s) = at {
+                match data.get(s).map(|b| b & 0x1F) {
+                    // The header alone: the order field is in its first bytes.
+                    Some(1 | 5) => {
+                        let rbsp = unescape(&data[s..next_nal(data, s, 64).0]);
+                        return match read_slice(&rbsp, &self.sets) {
+                            Some(s) => (!s.field).then_some((Told::Lsb(s.lsb, s.bits), s.idr)),
+                            None => in_decode_order(&rbsp, &self.sets).map(|idr| (Told::Next, idr)),
+                        };
+                    }
+                    kind => {
+                        let (e, next) = next_nal(data, s, usize::MAX);
+                        let nal = &data[s..e];
+                        match kind {
+                            Some(7) => {
+                                if let Some((id, sps)) = read_sps(&unescape(nal)) {
+                                    self.sets.sps.insert(id, sps);
+                                }
+                            }
+                            Some(8) => {
+                                if let Some((id, pps)) = read_pps(&unescape(nal)) {
+                                    self.sets.pps.insert(id, pps);
+                                }
+                            }
+                            _ => {}
+                        }
+                        at = next;
+                    }
+                }
+            }
+            None
+        }
+
+        /// A picture read with its time `pts`.
+        pub(crate) fn timed(&mut self, data: &[u8], pts: i64) {
+            let Some((told, idr)) = self.lsb(data) else {
+                self.last = None;
+                self.measured = None;
+                return;
+            };
+            // A sequence in decode order is counted on across an IDR: the
+            // pictures before it have all been shown.
+            let afresh = idr && matches!(told, Told::Lsb(..));
+            let order = match (told, self.last) {
+                (Told::Lsb(lsb, bits), Some((_, prev))) if !afresh => {
+                    follows(prev, prev.rem_euclid(1 << bits), lsb, bits)
+                }
+                (Told::Lsb(lsb, _), _) => lsb,
+                (Told::Next, Some((_, prev))) => prev + 1,
+                (Told::Next, None) => 0,
+            };
+            if let Some((then, from)) = self.measured.filter(|_| !afresh) {
+                if order != from {
+                    let step = (pts - then) as f64 / (order - from) as f64;
+                    if step > 0.0 {
+                        self.step = Some(step);
+                        let gap = (order - from).abs();
+                        self.gap = Some(self.gap.map_or(gap, |g| g.min(gap)));
+                    }
+                }
+            }
+            self.shown = Some(if afresh { pts } else { self.shown.map_or(pts, |s| s.max(pts)) });
+            self.last = Some((pts, order));
+            self.measured = Some((pts, order));
+        }
+
+        /// The time of a picture read with none, where it can be told.
+        pub(crate) fn untimed(&mut self, data: &[u8]) -> Option<i64> {
+            let (told, idr) = self.lsb(data)?;
+            let ((_, prev), (then, from), step) = (self.last?, self.measured?, self.step?);
+            let pts = match told {
+                // One picture after the latest shown before it, and counted
+                // from afresh.
+                Told::Lsb(lsb, _) if idr => {
+                    let pts = self.shown? + (self.gap? as f64 * step).round() as i64;
+                    self.shown = Some(pts);
+                    self.last = Some((pts, lsb));
+                    self.measured = Some((pts, lsb));
+                    return Some(pts);
+                }
+                Told::Lsb(lsb, bits) => {
+                    let order = follows(prev, prev.rem_euclid(1 << bits), lsb, bits);
+                    then + ((order - from) as f64 * step).round() as i64
+                }
+                Told::Next => {
+                    let pts = then + ((prev + 1 - from) as f64 * step).round() as i64;
+                    self.last = Some((pts, prev + 1));
+                    pts
+                }
+            };
+            self.shown = self.shown.map(|s| s.max(pts));
+            Some(pts)
+        }
+    }
+
+    /// Whether a slice is the first of a frame of a sequence shown in the
+    /// order it is decoded (see [`Told::Next`]), and an IDR; `None` for a
+    /// field, a slice that is not a picture's first, or any other sequence.
+    fn in_decode_order(rbsp: &[u8], sets: &Sets) -> Option<bool> {
+        let header = *rbsp.first()?;
+        let mut b = Bits { data: rbsp, pos: 8 };
+        if b.ue()? != 0 {
+            return None;
+        }
+        b.ue()?; // slice_type
+        let (sps, _) = *sets.pps.get(&b.ue()?)?;
+        let sps = sets.sps.get(&sps)?;
+        let frames_only = sps.in_decode_order?;
+        if sps.separate_colour_planes {
+            b.u(2)?;
+        }
+        b.u(sps.frame_num_bits)?;
+        if !frames_only && b.u(1)? == 1 {
+            return None;
+        }
+        Some(header & 0x1F == 5)
     }
 
     /// The number a sequence or picture parameter set NAL is filed under.
@@ -3005,6 +3264,44 @@ mod poc_seam {
             out.push(packet);
         }
         Some(out)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// [`super::next_nal`] cuts every NAL where [`super::nals`] does, and
+        /// to the first `cap` bytes exactly as a slice of it would be.
+        #[test]
+        fn next_nal_cuts_where_nals_does() {
+            let mut seed = 52u32;
+            let mut byte = || {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                // Mostly zeros and ones, so that start codes and trailing
+                // zeros come often.
+                match (seed >> 16) % 7 {
+                    0..=3 => 0,
+                    4 => 1,
+                    5 => 3,
+                    _ => (seed >> 8) as u8,
+                }
+            };
+            for len in 0..300 {
+                for _ in 0..20 {
+                    let data: Vec<u8> = (0..len).map(|_| byte()).collect();
+                    let whole = super::nals(&data, super::NalFraming::AnnexB).unwrap();
+                    let mut at = super::next_nal(&data, 0, usize::MAX).1;
+                    let mut stepped = Vec::new();
+                    while let Some(s) = at {
+                        let (e, next) = super::next_nal(&data, s, usize::MAX);
+                        for cap in [1, 2, 5, 64] {
+                            assert_eq!(super::next_nal(&data, s, cap).0, e.min(s + cap), "{data:?} {s} {cap}");
+                        }
+                        stepped.push((s, e));
+                        at = next;
+                    }
+                    assert_eq!(stepped, whole, "{data:?}");
+                }
+            }
+        }
     }
 }
 
@@ -4520,7 +4817,10 @@ fn convert_subpicture(
     let (track, sets) = {
         let c = &mut writer.converted[which];
         let Some(drawn) = c.reader.read(unit)? else {
-            let (track, sets) = (c.track, c.composer.stop(c.screen, at));
+            // Where the unit acts, which for one that only stops can be some
+            // way after its time: see `pgs::write::Composer::stop`.
+            let after = crate::vobsub::acts_after(unit);
+            let (track, sets) = (c.track, c.composer.stop(c.screen, at, after));
             for held in &sets {
                 writer.push_graphics(track, held, 0.0, mended)?;
             }
@@ -4667,13 +4967,19 @@ fn read_subpictures_before(src: &Source, until: f64, through: f64) -> Result<Sub
 type Unit = (i32, f64, Vec<u8>);
 
 /// Each stream's last unit in front of `until`, with the one before it put
-/// in front of it -- taking itself down where the last goes up -- where the
-/// last's start delay runs past `until`. See [`read_subpictures_before`].
+/// in front of it -- taking itself down where the last acts -- where the
+/// last's start delay, or for a unit that only stops its stop's, runs past
+/// `until`. See [`read_subpictures_before`].
 fn carried_up(last: Vec<Unit>, mut before: Vec<Unit>, until: f64) -> Vec<Unit> {
     let mut up = Vec::with_capacity(last.len() + before.len());
     for unit in last {
         let (id, t) = (unit.0, unit.1);
-        let pending = crate::vobsub::starts_after(&unit.2).filter(|d| *d > 0.0 && t + d > until);
+        // Where it acts (`vobsub::acts_after`): its start, or, for a unit
+        // that only stops, its stop -- which at a delay of its own still to
+        // run leaves the line before it up at the opening, as the preview
+        // (`subs`) and the `.idx`/`.sub` show it. Carried alone, it stopped
+        // nothing and that line was missing until then.
+        let pending = Some(crate::vobsub::acts_after(&unit.2)).filter(|d| *d > 0.0 && t + d > until);
         if let (Some(d), Some(k)) = (pending, before.iter().position(|(other, _, _)| *other == id)) {
             let (_, shown, prev) = before.remove(k);
             up.push((id, shown, crate::vobsub::stopped_after(&prev, t + d - shown)));
@@ -4722,6 +5028,81 @@ mod carried_up_tests {
         // Another stream's unit before is not this one's.
         let other = (0x21, 10.0, unit(0, None));
         assert_eq!(super::carried_up(vec![late.clone()], vec![other], 20.0), vec![late]);
+    }
+
+    /// A last unit that only stops, at a delay still to run at the
+    /// opening, leaves the line before it up until then: carried in front.
+    #[test]
+    fn the_line_before_a_delayed_stop_is_carried_until_it_stops() {
+        use crate::vobsub::{stops_after, TICK};
+        let tick = |s: f64| (s / TICK).round() as u16;
+        let prev = (0x20, 10.0, unit(0, None));
+        // No start: a stop alone, handed at 19.5 and acting at 20.5.
+        let mut stop = vec![0, 0, 0, 4];
+        stop.extend_from_slice(&tick(1.0).to_be_bytes());
+        stop.extend_from_slice(&[0, 4, 0x02, 0xFF]);
+        let n = stop.len() as u16;
+        stop[0..2].copy_from_slice(&n.to_be_bytes());
+        let last = (0x20, 19.5, stop);
+        let up = super::carried_up(vec![last.clone()], vec![prev.clone()], 20.0);
+        assert_eq!(up.len(), 2);
+        assert_eq!(up[0].1, 10.0);
+        let down = stops_after(&up[0].2).expect("stops");
+        assert!((10.0 + down - 20.5).abs() <= TICK);
+        assert_eq!(up[1], last);
+        // Its stop already run: the last alone, as before.
+        assert_eq!(super::carried_up(vec![last.clone()], vec![prev], 20.6), vec![last]);
+    }
+}
+
+#[cfg(test)]
+mod subpictures_tests {
+    /// A unit put up `start` ticks and taken down `stop` ticks after it is
+    /// handed over (`None`: never).
+    fn unit(start: u16, stop: Option<u16>) -> Vec<u8> {
+        let mut u = vec![0, 0, 0, 4];
+        let s = start.to_be_bytes();
+        match stop {
+            Some(stop) => {
+                let p = stop.to_be_bytes();
+                u.extend_from_slice(&[s[0], s[1], 0, 10, 0x01, 0xFF, p[0], p[1], 0, 10, 0x02, 0xFF]);
+            }
+            None => u.extend_from_slice(&[s[0], s[1], 0, 4, 0x01, 0xFF]),
+        }
+        let n = u.len() as u16;
+        u[0..2].copy_from_slice(&n.to_be_bytes());
+        u
+    }
+
+    fn subs() -> super::Subpictures {
+        super::Subpictures {
+            side: crate::vobsub::Sidecar::new(720, 480, crate::vobsub::Palette::grey()),
+            ink: None,
+            standing: Vec::new(),
+            refused: 0,
+            dropped: Vec::new(),
+        }
+    }
+
+    /// The line on screen at a range's end is the one that went up last,
+    /// which a start delay can make an earlier-handed one: it is taken down.
+    #[test]
+    fn the_unit_up_last_is_the_one_taken_down() {
+        let tick = |s: f64| (s / crate::vobsub::TICK).round() as u16;
+        let mut subs = subs();
+        // Handed at 10.0, up at 11.0 for good; handed at 10.5, up at once
+        // and down at 10.7.
+        subs.take(0x20, 10.0, &unit(tick(1.0), None));
+        subs.take(0x20, 10.5, &unit(0, Some(tick(0.2))));
+        subs.end_range(12.0);
+        assert_eq!(subs.side.counts(), vec![(0x20, 3)], "the take-down written");
+        // Without delays the last handed is the one up, as before: down by
+        // itself before the end, nothing more to write.
+        let mut subs = self::subs();
+        subs.take(0x20, 10.0, &unit(0, None));
+        subs.take(0x20, 10.5, &unit(0, Some(tick(0.2))));
+        subs.end_range(12.0);
+        assert_eq!(subs.side.counts(), vec![(0x20, 2)]);
     }
 }
 
@@ -4955,6 +5336,16 @@ fn copy_segment(
     } else {
         None
     };
+    // **Nor the record's, where another VOL is in force.** Two encodes put
+    // one after the other in a file, each stating its VOL in its first
+    // picture only (Xvid's habit), keep the first one's as the record; a copy
+    // opening inside the second -- `--keep 8-10` of a progressive encode
+    // joined to an interlaced one -- went out behind the first one's VOL and
+    // decoded none of its 50 pictures right. Asked only where the copy's
+    // first picture states no VOL of its own; see [`mpeg4_vol_in_force`].
+    let mut vol_record = (src.video.codec == "mpeg4")
+        .then(|| mpeg4_config(&ictx.stream(ist_index).unwrap().parameters()))
+        .flatten();
     // The H.264 parameter sets in force, owed in front of a copied key
     // picture that does not carry them, where the pictures go out in start
     // codes as they came in: the record's, until the pictures read here
@@ -4981,25 +5372,7 @@ fn copy_segment(
     let mut stated: Option<Vec<Vec<u8>>> = (restating
         && writer.octx.format().flags().contains(ff::format::Flags::GLOBAL_HEADER))
     .then(|| {
-        if let Some(stated) = writer.h264_sets.as_mut().and_then(|h| h.stated.take()) {
-            return stated;
-        }
-        writer.octx.stream(0).map_or_else(Vec::new, |s| {
-            let params = s.parameters();
-            // An `avcC` (an MP4 master), else a record in start codes.
-            let extradata = unsafe {
-                let p = params.as_ptr();
-                if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
-                    Vec::new()
-                } else {
-                    std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
-                }
-            };
-            match parameter_sets("h264", &extradata) {
-                sets if sets.is_empty() => record_sets_of(&params),
-                sets => sets,
-            }
-        })
+        writer.h264_sets.as_mut().and_then(|h| h.stated.take()).unwrap_or_else(|| header_sets(writer))
     });
     // Whether the sets in force are known: restated by a picture read here,
     // or looked back for at the first key picture.
@@ -5007,8 +5380,54 @@ fn copy_segment(
     // Where they were last restated, or looked back for.
     let mut known_from: Option<u64> = None;
     let mut learnt_to: Option<u64> = None;
-    let mut record_sets: Option<Vec<Vec<u8>>> =
-        restating.then(|| record_sets_of(&ictx.stream(ist_index).unwrap().parameters()));
+    // **A reel out of a transport stream, into a file that keeps lengths,
+    // has its sets in force put in front of a key that carries none, too.**
+    // Its record is in start codes, which the reframing does not read, so
+    // nothing went in front of its keys: a key without sets of its own was
+    // decoded by whatever the output stated last -- the master's `avcC`. A
+    // range inside the second of two encodes spliced into a `.ts`, joined
+    // onto an `.mp4` master (`ce.ts --keep 16-20 --join c.mp4 --master 2`),
+    // had 14 of its 48 copied pictures wrong in `.mp4` and `.mkv`; and an
+    // open-GOP x264 `.ts` remux joined the same way lost 13 pictures at its
+    // second range's head seam, which [`poc_seam::carry_on`] could not
+    // renumber without the sets in the key. Every key is restated, as the
+    // reframing restates an MP4 reel's own: the output is `avc3`, and a key
+    // that carries its sets -- every broadcast's, every IDR of an x264
+    // `.ts` -- goes out as it always did.
+    let reframed_from_start_codes = src.video.codec == "h264"
+        && src.video.framing == NalFraming::AnnexB
+        && reframe.is_some_and(|r| r.from == NalFraming::AnnexB)
+        && ctx.unframe.is_none();
+    let mut record_sets: Option<Vec<Vec<u8>>> = (restating || reframed_from_start_codes)
+        .then(|| record_sets_of(&ictx.stream(ist_index).unwrap().parameters()));
+
+    // See where a packet's time is read below.
+    let mut order = (src.video.codec == "h264" && src.video.framing == NalFraming::AnnexB)
+        .then(poc_seam::Order::default);
+    // **Pictures out of an MP4 or Matroska file get the sets in force put in
+    // front of their keys, not the record's.** The reframing puts the
+    // record's sets in front of every key, in lengths or in start codes, and
+    // a recording that restates other ones in band -- two encodes spliced
+    // into a transport stream and remuxed into an `.mp4` (`ffmpeg -i
+    // spliced.ts -c copy x.mp4`) -- had every key after the second encode's
+    // IDR decoded by the first encode's: a whole-file cut of such an open-GOP
+    // x264 splice to `.mkv`, `.mp4` or `.ts` decoded 302 of its 500
+    // pictures. What a key restates is put in front of the keys after it;
+    // where nothing is restated -- every ordinary MP4 -- the record's go out
+    // as they always did.
+    let (mut length_sets, length_from) = match (reframe, ctx.unframe) {
+        _ if src.video.codec != "h264" => (None, None),
+        (Some(r), _) => match r.from {
+            NalFraming::Length(n) => (Some(r.sets.clone()), Some(n)),
+            NalFraming::AnnexB => (None, None),
+        },
+        (None, Some(u)) => (Some(u.sets.clone()), Some(u.nal_length)),
+        (None, None) => (None, None),
+    };
+    // Whether the read has met a restatement or a key picture yet: the first
+    // key before either looks back for the sets in force. See
+    // [`length_sets_at`].
+    let mut length_settled = false;
 
     let mut started = false;
     let mut overshot = false;
@@ -5138,7 +5557,59 @@ fn copy_segment(
             }
             learnt_to = read_at;
         }
-        let Some(pts) = packet.pts() else { continue };
+        // What this picture goes out with: what was in force before it. See
+        // `length_sets`.
+        let mut sets_before: Option<Vec<Vec<u8>>> = None;
+        if let (Some(sets), Some(n)) = (length_sets.as_mut(), length_from) {
+            let data = packet.data().unwrap_or(&[]);
+            let nals = crate::bitstream::nal_payloads(data, NalFraming::Length(n));
+            let carries = nals.iter().any(|nal| matches!(nal.first().map(|b| b & 0x1F), Some(7 | 8)));
+            // **The first key picture read, carrying none, is decoded by the
+            // sets in force where it is**, which the read can have landed past
+            // the restatement of: a range more than the seek margin after the
+            // second encode's IDR, in such a splice remuxed into `.mp4` or
+            // `.mkv`, went out with the first encode's sets in front of its
+            // keys. See [`length_sets_at`].
+            if !carries && !length_settled && packet.is_key() {
+                if let Some(t) = packet.pts().map(|p| p as f64 * in_tb - src.start_time) {
+                    if let Some((found, _)) = length_sets_known(src, t, Some(sets)) {
+                        *sets = found;
+                    }
+                }
+            }
+            length_settled |= carries || packet.is_key();
+            if carries {
+                sets_before = Some(sets.clone());
+                for nal in nals {
+                    if matches!(nal.first().map(|b| b & 0x1F), Some(7 | 8)) {
+                        put_set(sets, nal);
+                    }
+                }
+                // Sequence sets first: a picture set is read against one.
+                sets.sort_by_key(|s| s.first().is_none_or(|b| b & 0x1F != 7));
+            }
+        }
+        let in_force = sets_before.as_deref().or(length_sets.as_deref());
+        // **A picture whose packet carries no time is placed by its order.**
+        // A program stream puts a time on a PES, not on each picture in it,
+        // and an H.264 `.mpg` (`ffmpeg -f mpeg`, a surveillance recorder's
+        // export) holds two pictures in about one PES of eleven: the second
+        // came with neither pts nor dts, was passed over here, and the
+        // pictures that referred to it decoded broken -- a whole-file cut kept
+        // 98 of 100 pictures, 7 of them wrong. Every picture that has a time
+        // is placed by it as before.
+        let pts = match (packet.pts(), order.as_mut()) {
+            (Some(pts), Some(order)) => {
+                order.timed(packet.data().unwrap_or(&[]), pts);
+                pts
+            }
+            (Some(pts), None) => pts,
+            (None, Some(order)) => match order.untimed(packet.data().unwrap_or(&[])) {
+                Some(pts) => pts,
+                None => continue,
+            },
+            (None, None) => continue,
+        };
         let t = pts as f64 * in_tb - src.start_time;
         // A converted subtitle whose stop the pictures have passed comes down
         // here, not when the next one arrives. See [`Writer::converted_due`].
@@ -5256,6 +5727,21 @@ fn copy_segment(
                 known_from = Some(at);
             }
         }
+        // In start codes still, before the reframing below. See
+        // `reframed_from_start_codes`.
+        let packet = match record_sets.as_deref() {
+            Some(sets) if reframed_from_start_codes && packet.is_key() && !second_field => {
+                match with_record_sets(packet.data().unwrap_or(&[]), sets) {
+                    Some(data) => {
+                        let mut out = ff::Packet::copy(&data);
+                        out.set_flags(packet.flags());
+                        out
+                    }
+                    None => packet,
+                }
+            }
+            _ => packet,
+        };
         let packet = match (reframe, ctx.unframe) {
             (Some(r), _) if packet.is_key() || r.from != NalFraming::Length(r.nal_length) => {
                 let data = packet.data().unwrap_or(&[]);
@@ -5270,7 +5756,8 @@ fn copy_segment(
                     }
                 };
                 let mut out = if packet.is_key() {
-                    ff::Packet::copy(&prepend_parameter_sets(&body, &r.sets, r.nal_length)?)
+                    let sets = in_force.unwrap_or(&r.sets);
+                    ff::Packet::copy(&prepend_parameter_sets(&body, sets, r.nal_length)?)
                 } else {
                     ff::Packet::copy(&body)
                 };
@@ -5282,10 +5769,29 @@ fn copy_segment(
             (_, Some(u)) => {
                 let annexb = length_to_annexb(packet.data().unwrap_or(&[]), u.nal_length);
                 let data = if packet.is_key() {
-                    prepend_parameter_sets_annexb(&annexb, &u.sets)
+                    prepend_parameter_sets_annexb(&annexb, in_force.unwrap_or(&u.sets))
                 } else {
                     annexb
                 };
+                // **What these keys state is what the output last stated.**
+                // An MP4 reel's sets go in front of each of its keys, under
+                // the numbers the master's own use, and a copy of a `.ts`
+                // after it into `.mkv`/`.mp4` compares its sets in force with
+                // [`H264Sets::stated`]: left at the header's, a key of the
+                // master's that matched the header went out bare and was
+                // decoded by the reel's sets.
+                if packet.is_key()
+                    && src.video.codec == "h264"
+                    && writer.octx.format().flags().contains(ff::format::Flags::GLOBAL_HEADER)
+                {
+                    let mut st = writer
+                        .h264_sets
+                        .as_mut()
+                        .and_then(|h| h.stated.take())
+                        .unwrap_or_else(|| header_sets(writer));
+                    learn_sets(&mut st, &data);
+                    writer.h264_sets.get_or_insert_with(Default::default).stated = Some(st);
+                }
                 let mut out = ff::Packet::copy(&data);
                 if packet.is_key() {
                     out.set_flags(ff::packet::Flags::KEY);
@@ -5412,6 +5918,14 @@ fn copy_segment(
             }
             _ => packet,
         };
+        // Once, at the copy's first picture: see `vol_record`.
+        if let Some(record) = vol_record.take() {
+            if !mpeg4_has_vol(packet.data().unwrap_or(&[])) {
+                if let Some(in_force) = mpeg4_vol_in_force(src, t, &record) {
+                    config_owed = Some(in_force);
+                }
+            }
+        }
         let packet = match config_owed.take() {
             Some(config) if !mpeg4_has_vol(packet.data().unwrap_or(&[])) => {
                 let mut data = config;
@@ -5919,6 +6433,27 @@ fn put_set(sets: &mut Vec<Vec<u8>>, nal: &[u8]) {
     }
 }
 
+/// The H.264 parameter sets an MP4 or Matroska output's header states: its
+/// video stream's `avcC` (an MP4 master's), else its record in start codes.
+/// See [`H264Sets::stated`].
+fn header_sets(writer: &Writer) -> Vec<Vec<u8>> {
+    writer.octx.stream(0).map_or_else(Vec::new, |s| {
+        let params = s.parameters();
+        let extradata = unsafe {
+            let p = params.as_ptr();
+            if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                Vec::new()
+            } else {
+                std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+            }
+        };
+        match parameter_sets("h264", &extradata) {
+            sets if sets.is_empty() => record_sets_of(&params),
+            sets => sets,
+        }
+    })
+}
+
 /// The H.264 parameter sets a stream's record holds.
 pub(crate) fn record_sets_of(params: &ff::codec::Parameters) -> Vec<Vec<u8>> {
     let record = unsafe {
@@ -6032,6 +6567,226 @@ pub(crate) fn sets_in_force(src: &Source, at: u64, floor: u64, known: &[Vec<u8>]
         put_set(&mut sets, s);
     }
     sets
+}
+
+/// What [`length_sets_at`] has learnt of one recording: whether its first
+/// key picture carries parameter sets in band, and the sets each key picture
+/// it read carries (by its time in microseconds; `None` where the key
+/// picture could not be read).
+///
+/// Kept by the file's name, length and time of writing, as [`crate::preview`]
+/// keeps what it found in force: a file written again at the same name in
+/// one process (the GUI's) is read again, not answered for by the old one's
+/// key pictures.
+#[derive(Default)]
+pub(crate) struct LengthKeys {
+    url: String,
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+    restates: Option<bool>,
+    carried: std::collections::HashMap<i64, Option<Vec<Vec<u8>>>>,
+    /// The stream record's (`avcC`'s) sets, taken from the open that read
+    /// the first key picture, for a caller that has no record of its own at
+    /// hand (see [`length_sets_known`]).
+    record: Option<Vec<Vec<u8>>>,
+}
+
+/// The name, length and time of writing [`LengthKeys`] are kept by.
+fn length_keys_of(src: &Source) -> (String, u64, Option<std::time::SystemTime>) {
+    let meta = std::fs::metadata(&src.path).ok();
+    (
+        src.input.url.clone(),
+        meta.as_ref().map_or(0, |m| m.len()),
+        meta.and_then(|m| m.modified().ok()),
+    )
+}
+
+/// What [`length_sets_at`] has read of the last few recordings, for the
+/// whole process: every cut, every check and every preview of a recording
+/// asks its first key picture once, not once a range.
+static LENGTH_KEYS: std::sync::Mutex<Vec<LengthKeys>> = std::sync::Mutex::new(Vec::new());
+
+/// [`length_sets_at`] with what this process already knows of the recording
+/// ([`LENGTH_KEYS`]). `record` is the stream record's sets; `None` takes
+/// them from the open that read the first key picture -- `--verify`, which
+/// otherwise opened and probed the recording once a range only to read it.
+pub(crate) fn length_sets_known(
+    src: &Source,
+    time: f64,
+    record: Option<&[Vec<u8>]>,
+) -> Option<(Vec<Vec<u8>>, f64)> {
+    if src.video.codec != "h264" || !matches!(src.video.framing, NalFraming::Length(_)) || src.points.is_empty() {
+        return None;
+    }
+    let (url, length, modified) = length_keys_of(src);
+    // Taken out while the file is read, so that a read of another file is not
+    // held up behind it; a read of the same one meanwhile starts afresh.
+    let mut memo = LENGTH_KEYS
+        .lock()
+        .ok()
+        .and_then(|mut all| {
+            let i = all
+                .iter()
+                .position(|m| m.url == url && m.length == length && m.modified == modified)?;
+            Some(all.remove(i))
+        })
+        .unwrap_or_default();
+    let found = length_sets_at(src, &mut memo, time, record);
+    if let Ok(mut all) = LENGTH_KEYS.lock() {
+        all.retain(|m| m.url != memo.url);
+        if all.len() >= 8 {
+            all.remove(0);
+        }
+        all.push(memo);
+    }
+    found
+}
+
+/// The H.264 parameter sets in force at the key picture shown at `time` of
+/// a recording in lengths (MP4, Matroska) whose key picture there carries
+/// none, where they are not `record` (its `avcC`'s): `record` with what the
+/// nearest key pictures before it restate, read back key picture by key
+/// picture until a sequence and a picture set are found, and the time of the
+/// key picture the look-back stopped at. `None` where nothing before it
+/// restates other sets.
+///
+/// **What a copy's own read meets is not enough, and a file in lengths cannot
+/// be read back by bytes.** Two encodes spliced into a transport stream and
+/// remuxed (`ffmpeg -i spliced.ts -c copy x.mp4`) restate the second one's
+/// sets in front of its IDR only. A range opening further past that IDR than
+/// the seek margin reaches met nothing but the `avcC`'s -- the first
+/// encode's -- and its copy and its re-encoded head were decoded by them.
+///
+/// Only a recording whose first key picture carries sets in band can restate
+/// others, so that is asked once (memoised in `memo`), and every other one --
+/// every encoder's own MP4 or Matroska file, which keeps its sets in the
+/// record alone -- reads one packet more and no further. A phone's file that
+/// restates its sets at every key picture never asks: its copy's first key
+/// picture carries its own. Each key picture is read once per recording.
+///
+/// `record` `None`: the record the open that read the first key picture
+/// found. Asked through [`length_sets_known`], which keeps `memo` for the
+/// process.
+pub(crate) fn length_sets_at(
+    src: &Source,
+    memo: &mut LengthKeys,
+    time: f64,
+    record: Option<&[Vec<u8>]>,
+) -> Option<(Vec<Vec<u8>>, f64)> {
+    let NalFraming::Length(n) = src.video.framing else {
+        return None;
+    };
+    if src.video.codec != "h264" || src.points.is_empty() {
+        return None;
+    }
+    let (url, length, modified) = length_keys_of(src);
+    if memo.url != url || memo.length != length || memo.modified != modified {
+        *memo = LengthKeys {
+            url,
+            length,
+            modified,
+            ..Default::default()
+        };
+    }
+    let fd = src.video.frame_duration();
+    let kind = |nal: &[u8]| nal.first().map(|b| b & 0x1F);
+    // Opened once the first key picture has to be read, and only then.
+    let mut opened: Option<Option<(crate::input::Demux, usize)>> = None;
+    let mut carried = |i: usize, memo: &mut LengthKeys| -> Option<Vec<Vec<u8>>> {
+        // By the key picture's time, not its place in the list: the memo
+        // outlives one Source, and another index of the same file (the
+        // container's, then a walk's) can list other key pictures.
+        let stamp = (src.points[i].time * 1e6).round() as i64;
+        if let Some(c) = memo.carried.get(&stamp) {
+            return c.clone();
+        }
+        let (ictx, index) = opened.get_or_insert_with(|| open_input(&src.input.url).ok()).as_mut()?;
+        if memo.record.is_none() {
+            memo.record = ictx.stream(src.video.stream_index).map(|stream| {
+                let params = stream.parameters();
+                let extradata = unsafe {
+                    let p = params.as_ptr();
+                    if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                        Vec::new()
+                    } else {
+                        std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+                    }
+                };
+                parameter_sets("h264", &extradata)
+            });
+        }
+        let at = src.points[i].time;
+        let sets = (|| {
+            let tb = f64::from(ictx.stream(*index)?.time_base());
+            // A quarter of a picture past it, and back to the key picture
+            // at or before: a table of decode times finds it all the same.
+            let ts = ((at + fd / 4.0 + src.start_time) / tb).round() as i64;
+            let placed = unsafe {
+                ff::ffi::av_seek_frame(ictx.as_mut_ptr(), *index as i32, ts, ff::ffi::AVSEEK_FLAG_BACKWARD) >= 0
+            };
+            if !placed {
+                return None;
+            }
+            let (_, key) = ictx.read_packets().take(4096).find(|(s, _)| s.index() == *index)?;
+            let t = key.pts()? as f64 * tb - src.start_time;
+            if !key.is_key() || (t - at).abs() >= fd / 2.0 {
+                return None;
+            }
+            Some(
+                crate::bitstream::nal_payloads(key.data().unwrap_or(&[]), NalFraming::Length(n))
+                    .into_iter()
+                    .filter(|nal| matches!(kind(nal), Some(7 | 8)))
+                    .map(<[u8]>::to_vec)
+                    .collect::<Vec<_>>(),
+            )
+        })();
+        memo.carried.insert(stamp, sets.clone());
+        sets
+    };
+    let restates = match memo.restates {
+        Some(r) => r,
+        None => {
+            let r = carried(0, memo).is_some_and(|s| !s.is_empty());
+            memo.restates = Some(r);
+            r
+        }
+    };
+    if !restates {
+        return None;
+    }
+    // The key pictures in front of this one, its own place in the list left
+    // out where it is on it.
+    let mut before = src.points.partition_point(|p| p.time < time + fd / 2.0);
+    if before > 0 && (src.points[before - 1].time - time).abs() < fd / 2.0 {
+        before -= 1;
+    }
+    let mut found: Vec<Vec<u8>> = Vec::new();
+    let mut from = None;
+    for i in (0..before).rev() {
+        let Some(sets) = carried(i, memo) else { break };
+        for s in sets {
+            if !found.iter().any(|f| kind(f) == kind(&s) && poc_seam::set_id(f) == poc_seam::set_id(&s)) {
+                found.push(s);
+            }
+        }
+        let has = |k: u8| found.iter().any(|f| kind(f) == Some(k));
+        if has(7) && has(8) {
+            from = Some(src.points[i].time);
+            break;
+        }
+    }
+    let from = from?;
+    let record = match record {
+        Some(r) => r.to_vec(),
+        None => memo.record.clone()?,
+    };
+    let mut sets = record.clone();
+    for s in &found {
+        put_set(&mut sets, s);
+    }
+    // Sequence sets first: a picture set is read against one.
+    sets.sort_by_key(|s| kind(s) != Some(7));
+    (sets != record).then_some((sets, from))
 }
 
 #[cfg(test)]
@@ -6677,7 +7432,7 @@ fn encoders_for(id: ff::codec::Id, format: i32) -> &'static [&'static str] {
 /// with MPEG quantisation at 43 dB. Restated in front of the copy's first
 /// picture, as the H.264 sets are (see [`Reframe`]), the copy is read by its
 /// own again.
-fn mpeg4_config(params: &ff::codec::Parameters) -> Option<Vec<u8>> {
+pub(crate) fn mpeg4_config(params: &ff::codec::Parameters) -> Option<Vec<u8>> {
     let record = unsafe {
         let p = params.as_ptr();
         if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
@@ -6759,7 +7514,7 @@ fn xvid_mpeg_quant_record(record: &[u8], tag: u32) -> bool {
 
 /// Whether an MPEG-4 Part 2 packet states a video object layer before its
 /// first picture.
-fn mpeg4_has_vol(data: &[u8]) -> bool {
+pub(crate) fn mpeg4_has_vol(data: &[u8]) -> bool {
     let mut i = 0;
     while i + 4 <= data.len() {
         if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
@@ -6776,11 +7531,263 @@ fn mpeg4_has_vol(data: &[u8]) -> bool {
     false
 }
 
+/// The headers in front of an MPEG-4 Part 2 packet's first picture, up to
+/// its group of VOPs or the picture itself, where they state a VOL: what
+/// [`mpeg4_config`] is for a record, said in band.
+fn mpeg4_header_of(data: &[u8]) -> Option<&[u8]> {
+    let mut vol = false;
+    let mut i = 0;
+    while i + 4 <= data.len() {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            match data[i + 3] {
+                0x20..=0x2F => vol = true,
+                0xB3 | 0xB6 => return vol.then(|| &data[..i]),
+                _ => {}
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    vol.then_some(data)
+}
+
+/// The VOL unit of MPEG-4 Part 2 headers, from its start code to the next,
+/// without the zero bytes that may stand in front of that one: what two
+/// headers are compared by, the encoder's user data and the rest aside.
+fn mpeg4_vol_unit(data: &[u8]) -> Option<&[u8]> {
+    let at = (0..data.len().saturating_sub(3)).find(|&i| {
+        data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && (0x20..=0x2F).contains(&data[i + 3])
+    })?;
+    let body = &data[at + 4..];
+    let mut end = body.windows(3).position(|w| w == [0, 0, 1]).map_or(data.len(), |e| at + 4 + e);
+    while end > at + 4 && data[end - 1] == 0 {
+        end -= 1;
+    }
+    Some(&data[at..end])
+}
+
+/// What the key pictures of a recording read so far say of its VOLs. See
+/// [`mpeg4_vol_in_force`].
+struct VolsMet {
+    url: String,
+    /// The file's length and time of writing, so that a file written again
+    /// is read again.
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+    /// The record's VOL unit.
+    record: Vec<u8>,
+    /// How far the recording has been read, in seconds.
+    to: f64,
+    /// Where a key picture states a VOL other than the one before it: its
+    /// time and the headers it states.
+    changes: Vec<(f64, Vec<u8>)>,
+}
+
+/// One [`VolsMet`] per recording, the few most recent.
+static VOLS_MET: std::sync::Mutex<Vec<VolsMet>> = std::sync::Mutex::new(Vec::new());
+
+/// The length and time of writing a [`VolsMet`] is kept by.
+fn vols_met_of(src: &Source) -> (u64, Option<std::time::SystemTime>) {
+    let meta = std::fs::metadata(&src.input.url).ok();
+    (meta.as_ref().map_or(0, |m| m.len()), meta.and_then(|m| m.modified().ok()))
+}
+
+/// The MPEG-4 Part 2 headers in force at `at` seconds into a recording whose
+/// picture there states none, where their VOL is not the record's; `None`
+/// where it is (every recording of one encode), or nothing can be read.
+///
+/// **A VOL stated in band configures every picture after it, and the record
+/// holds only the first.** Two encodes put one after the other in an `.avi`
+/// or `.mkv`, each stating its VOL in its first picture only -- Xvid's habit
+/// -- keep the first encode's as their record, and a copy or a re-encoded
+/// head opening inside the second was read by it: a progressive encode
+/// joined to an interlaced one, `--keep 8-10`, 50 pictures copied and none
+/// decoded right; `--keep 8.5-10`, the head re-encoded from 24 broken
+/// pictures. Neither container can be read back from a byte, so the key
+/// key pictures are read by time, demuxed only (see [`read_vols`]), once
+/// for each recording, and remembered for every later range. A recording
+/// whose first copied picture states its own VOL -- libavcodec's and
+/// libxvid's habit, a VOL at every key -- never asks.
+pub(crate) fn mpeg4_vol_in_force(src: &Source, at: f64, record: &[u8]) -> Option<Vec<u8>> {
+    let own = mpeg4_vol_unit(record)?.to_vec();
+    let (length, modified) = vols_met_of(src);
+    let mut all = VOLS_MET.lock().unwrap_or_else(|e| e.into_inner());
+    let k = match all.iter().position(|m| {
+        m.url == src.input.url && m.length == length && m.modified == modified && m.record == own
+    }) {
+        Some(k) => k,
+        None => {
+            if all.len() >= 8 {
+                all.remove(0);
+            }
+            all.push(VolsMet {
+                url: src.input.url.clone(),
+                length,
+                modified,
+                record: own.clone(),
+                to: f64::NEG_INFINITY,
+                changes: Vec::new(),
+            });
+            all.len() - 1
+        }
+    };
+    let met = &mut all[k];
+    let reach = at + src.video.frame_duration() / 2.0;
+    if met.to < reach {
+        met.to = read_vols(src, reach, met);
+    }
+    let (_, header) = met.changes.iter().rev().find(|(t, _)| *t < reach)?;
+    (mpeg4_vol_unit(header)? != own.as_slice()).then(|| header.clone())
+}
+
+/// Where the headers [`mpeg4_vol_in_force`] finds in force at `at` were
+/// stated: the time of the key picture that stated them, for a reader that
+/// decodes from there rather than putting them in front of its own first key
+/// picture (`--verify`'s source side). `None` wherever that finds none.
+/// `record` is the stream record's headers ([`mpeg4_config`]), which the
+/// caller keeps for the recording rather than opening it once a range.
+pub(crate) fn mpeg4_vol_stated_at(src: &Source, at: f64, record: &[u8]) -> Option<f64> {
+    mpeg4_vol_in_force(src, at, record)?;
+    let own = mpeg4_vol_unit(record)?;
+    let (length, modified) = vols_met_of(src);
+    let all = VOLS_MET.lock().unwrap_or_else(|e| e.into_inner());
+    let met = all.iter().find(|m| {
+        m.url == src.input.url && m.length == length && m.modified == modified && m.record == own
+    })?;
+    let reach = at + src.video.frame_duration() / 2.0;
+    met.changes.iter().rev().find(|(t, _)| *t < reach).map(|(t, _)| *t)
+}
+
+/// Read the key pictures of `src` from where `met` stopped up to `to`
+/// seconds, or further, for the VOLs they state; how far they were read.
+/// See [`mpeg4_vol_in_force`].
+///
+/// **One key picture at a time, where the container lists them.** An Xvid
+/// `.avi` states its VOL in its first picture only, so every range of one
+/// asks; read through, the way to the last range was every byte of the
+/// file -- 1.5 to 2.3 s more on a 20-range cut of an hour that took 12 s.
+/// Its index, and an `.mkv`'s cues, say where each key picture is, and
+/// read by them only those are read. All of them, to the end, at once:
+/// opening the file is what a range's look then costs, about 80 ms for an
+/// hour's index, and three looks a range had made it 2 s again. Where
+/// nothing is listed, or the keys come closer than half a second apart, the
+/// read goes through, to the end as well, asking the demuxer to pass over
+/// the pictures between the keys (Matroska does; an `.avi` with no index
+/// reads every byte).
+fn read_vols(src: &Source, to: f64, met: &mut VolsMet) -> f64 {
+    let Ok((mut ictx, ist_index)) = open_input(&src.input.url) else {
+        return to;
+    };
+    crate::input::keep_only(&mut ictx, &[ist_index]);
+    let from = met.to;
+    let in_tb = f64::from(ictx.stream(ist_index).unwrap().time_base());
+    let start = src.start_time;
+    let mut current = met
+        .changes
+        .last()
+        .and_then(|(_, h)| mpeg4_vol_unit(h).map(<[u8]>::to_vec))
+        .unwrap_or_else(|| met.record.clone());
+    let mut note = |t: f64, data: &[u8]| {
+        let Some(header) = mpeg4_header_of(data) else { return };
+        let Some(unit) = mpeg4_vol_unit(header) else { return };
+        if unit != current.as_slice() {
+            current = unit.to_vec();
+            met.changes.push((t, header.to_vec()));
+        }
+    };
+    let keys: Vec<i64> = unsafe {
+        let st = *(*ictx.as_mut_ptr()).streams.add(ist_index);
+        // Matroska reads its cues only when first asked to seek, and lists
+        // the one picture it has read until then.
+        if ff::ffi::avformat_index_get_entries_count(st) < 2 {
+            ff::ffi::av_seek_frame(ictx.as_mut_ptr(), ist_index as i32, 0, ff::ffi::AVSEEK_FLAG_BACKWARD);
+        }
+        (0..ff::ffi::avformat_index_get_entries_count(st))
+            .filter_map(|i| {
+                let e = ff::ffi::avformat_index_get_entry(st, i);
+                (!e.is_null() && (*e).flags() & ff::ffi::AVINDEX_KEYFRAME != 0).then(|| (*e).timestamp)
+            })
+            .filter(|&ts| ts as f64 * in_tb - start > from)
+            .collect()
+    };
+    let last = keys.last().map_or(from, |&ts| ts as f64 * in_tb - start);
+    if !keys.is_empty() && keys.len() as f64 <= (last - from.max(0.0)) / 0.5 {
+        for ts in keys {
+            let placed = unsafe {
+                ff::ffi::av_seek_frame(ictx.as_mut_ptr(), ist_index as i32, ts, ff::ffi::AVSEEK_FLAG_BACKWARD)
+                    >= 0
+            };
+            if !placed {
+                return to;
+            }
+            for (stream, packet) in ictx.read_packets() {
+                if stream.index() != ist_index {
+                    continue;
+                }
+                let t = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - start);
+                if let Some(t) = t.filter(|&t| packet.is_key() && t > from) {
+                    note(t, packet.data().unwrap_or(&[]));
+                }
+                break;
+            }
+        }
+        return f64::INFINITY;
+    }
+    // The pictures between the keys are not looked at, and a demuxer that
+    // can is told not to hand them over.
+    unsafe {
+        let st = *(*ictx.as_mut_ptr()).streams.add(ist_index);
+        (*st).discard = ff::Discard::NonKey.into();
+    }
+    if from.is_finite() {
+        let ts = ((from + start) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
+        if ictx.seek(ts, ..ts + 1).is_err() {
+            return to;
+        }
+    }
+    for (stream, packet) in ictx.read_packets() {
+        if stream.index() != ist_index || !packet.is_key() {
+            continue;
+        }
+        let Some(t) = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - start) else {
+            continue;
+        };
+        if t > from {
+            note(t, packet.data().unwrap_or(&[]));
+        }
+    }
+    f64::INFINITY
+}
+
+/// `params` with `config` for its record: the parameters an MPEG-4 Part 2
+/// encoder is opened by where another VOL than the record's is in force.
+/// See [`mpeg4_vol_in_force`].
+fn with_mpeg4_config(params: &ff::codec::Parameters, config: &[u8]) -> ff::codec::Parameters {
+    let mut own = params.clone();
+    unsafe {
+        let p = own.as_mut_ptr();
+        ff::ffi::av_freep(std::ptr::addr_of_mut!((*p).extradata).cast());
+        (*p).extradata_size = 0;
+        let buf =
+            ff::ffi::av_mallocz(config.len() + ff::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize) as *mut u8;
+        if !buf.is_null() {
+            std::ptr::copy_nonoverlapping(config.as_ptr(), buf, config.len());
+            (*p).extradata = buf;
+            (*p).extradata_size = config.len() as i32;
+        }
+    }
+    own
+}
+
 /// What the first video object layer of an MPEG-4 Part 2 record says about
 /// how its pictures are coded, as far as a seam encoder can be told it.
 /// See [`mpeg4_vol`].
 struct Mpeg4Vol {
     interlaced: bool,
+    /// Whether the VOL says its pictures come in the order they are shown
+    /// (no B-VOPs), where it says at all.
+    low_delay: Option<bool>,
     /// MPEG quantisation (`quant_type`), with the matrices the VOL loads.
     /// A matrix not loaded is MPEG-4's default, which the encoder also
     /// writes when given none.
@@ -6831,9 +7838,11 @@ fn mpeg4_vol(record: &[u8]) -> Option<Mpeg4Vol> {
     if bits(4)? == 15 {
         bits(16)?; // extended PAR
     }
+    let mut low_delay = None;
     if bits(1)? == 1 {
         // vol_control_parameters: chroma format, low delay, and the VBV
-        bits(3)?;
+        bits(2)?;
+        low_delay = Some(bits(1)? == 1);
         if bits(1)? == 1 {
             bits(79)?;
         }
@@ -6902,7 +7911,7 @@ fn mpeg4_vol(record: &[u8]) -> Option<Mpeg4Vol> {
     } else {
         (None, None)
     };
-    Some(Mpeg4Vol { interlaced, mpeg_quant, intra, inter })
+    Some(Mpeg4Vol { interlaced, low_delay, mpeg_quant, intra, inter })
 }
 
 /// Zigzag scan position to raster position, as MPEG-4 loads its matrices.
@@ -6940,12 +7949,35 @@ mod mpeg4_vol_tests {
         let il = hex("000001b001000001b58913000001000000012000c48d8800cd14043c1c43000001b24c61766336312e31392e313031");
         let vol = mpeg4_vol(&il).unwrap();
         assert!(vol.interlaced && !vol.mpeg_quant && vol.intra.is_none());
+        // Simple profile, no B-VOPs: the VOL says so.
+        assert_eq!(vol.low_delay, Some(true));
+        assert_eq!(mpeg4_vol(&cm).unwrap().low_delay, Some(false));
         // Xvid with quarter-pel (a VOL of version 2)
         let xv = hex("000001b0f5000001b509000001000000012008ca78080d8800ce18a021e0a1c1000001b25876694430303639");
         let vol = mpeg4_vol(&xv).unwrap();
         assert!(!vol.interlaced && !vol.mpeg_quant);
         assert!(mpeg4_vol(&xv[..20]).is_none());
         assert!(mpeg4_vol(&[]).is_none());
+    }
+
+    #[test]
+    fn reads_the_headers_a_picture_states() {
+        use super::{mpeg4_header_of, mpeg4_vol_unit};
+        let il = hex("000001b001000001b58913000001000000012000c48d8800cd14043c1c43000001b24c61766336312e31392e313031");
+        // A key picture with its headers, a group of VOPs and the VOP.
+        let mut key = il.clone();
+        key.extend_from_slice(&hex("000001b3000010000001b610"));
+        assert_eq!(mpeg4_header_of(&key), Some(&il[..]));
+        // A picture without a VOL states none, whatever comes first.
+        assert_eq!(mpeg4_header_of(&hex("000001b3000010000001b610")), None);
+        assert_eq!(mpeg4_header_of(&hex("000001b610")), None);
+        // The VOL alone, without the user data after it or zero stuffing.
+        let unit = mpeg4_vol_unit(&il).unwrap();
+        assert_eq!(unit, &hex("0000012000c48d8800cd14043c1c43")[..]);
+        let mut stuffed = il[..31].to_vec();
+        stuffed.extend_from_slice(&hex("0000000001b2"));
+        assert_eq!(mpeg4_vol_unit(&stuffed), Some(unit));
+        assert_eq!(mpeg4_vol_unit(&hex("000001b001")), None);
     }
 
     #[test]
@@ -7150,10 +8182,27 @@ fn open_encoder_as(
         // agree are still told, because there the recording's own answer is
         // better than a fresh one. rav1e works nothing out -- it writes 31
         // -- and is told in its own spelling below.
-        if !matches!(params.id(), ff::codec::Id::AV1 | ff::codec::Id::VP9) {
+        //
+        // Nor an MPEG-1/2 level without its profile: libavcodec's encoder
+        // refuses a level it is told with no profile beside it, and a damaged
+        // sequence extension leaves the profile unread while the level is
+        // read -- a plain cut of such a recording ended "cannot open
+        // encoder". Left to itself it works both out.
+        let profile_unread = matches!(params.id(), ff::codec::Id::MPEG1VIDEO | ff::codec::Id::MPEG2VIDEO)
+            && (*p).profile < 0;
+        if !matches!(params.id(), ff::codec::Id::AV1 | ff::codec::Id::VP9) && !profile_unread {
             (*e).level = (*p).level;
         }
         (*e).max_b_frames = v.has_b_frames.max(0);
+        // **No B-VOPs where the VOL in force says there are none.** A
+        // stream's reordering is the record's, and the record is the first
+        // encode's: a head re-encoded inside a P-only encode joined after
+        // one with B-VOPs was written with them, and its last picture, held
+        // back for reordering, was dropped by the decoder when the copy's
+        // low-delay VOL came -- every such head one picture short.
+        if mpeg4_vol.as_ref().is_some_and(|vol| vol.low_delay == Some(true)) {
+            (*e).max_b_frames = 0;
+        }
         // Fewer reference frames than x264's own three (its preset's), and
         // only where the copy after the seam is to be decoded on from it.
         // See [`refs_before`].
@@ -8186,7 +9235,18 @@ fn reencode_segment(
     // may lean on parameter sets stated before them. See below, where the
     // first one is fed.
     let opens_by_record = src.video.codec == "h264" && src.video.framing == NalFraming::AnnexB;
+    // Where a picture whose packet carries no time is shown, as the copy
+    // reads it: see where a packet's time is read in [`copy_segment`].
+    let mut order = opens_by_record.then(poc_seam::Order::default);
     let mut run_up = RunUp::new(seg.seek_from);
+    // The MPEG-4 Part 2 record, until the decoder's first key picture has
+    // said which VOL is in force. See below, where that one is fed.
+    let vol_record = (src.video.codec == "mpeg4").then(|| mpeg4_config(&params)).flatten();
+    // From then on, where the pictures fed state a VOL: from when, and the
+    // headers where they are not the record's. The encoder is opened for the
+    // one in force at the first picture it is given; see `place!`.
+    let mut vol_fed: Vec<(f64, Option<Vec<u8>>)> = Vec::new();
+    let mut vol_placed = false;
     // **The decoder is shown one stretch of a joined clip and no more.**
     //
     // A seam is where the recorder stopped and started again, and the
@@ -8264,6 +9324,15 @@ fn reencode_segment(
             $f.set_kind(ff::picture::Type::None);
             if !as_frames {
                 mark_interlacing(&mut $f, &src.video);
+            }
+            // The VOL in force where the first picture given to the encoder
+            // is, where it is not the record's (see [`mpeg4_vol_in_force`]):
+            // the encoder is opened again for it, before anything has gone in.
+            if !std::mem::replace(&mut vol_placed, true) {
+                let config = vol_fed.iter().rev().find(|(at, _)| *at <= t + tol).and_then(|(_, c)| c.as_ref());
+                if let Some(config) = config {
+                    encoder = open_pictures(&with_mpeg4_config(&params, config))?;
+                }
             }
             if !std::mem::replace(&mut reshaped, true) {
                 let decoded = unsafe { (*$f.as_ptr()).format };
@@ -8496,9 +9565,65 @@ fn reencode_segment(
                 }
             }
         }
+        // **A picture whose packet carries no time is given the one its
+        // order says**, as the copy places it ([`copy_segment`]). An H.264
+        // `.mpg` puts a time on a PES, not on each picture in it, and the
+        // decoder hands such a picture back with none: it was passed over
+        // in `feed!` -- a range re-encoded across one wrote 16 of its 17
+        // head pictures. Every packet with a time goes in as it was.
+        let mut packet = packet;
+        if let Some(order) = order.as_mut() {
+            match packet.pts() {
+                Some(pts) => order.timed(packet.data().unwrap_or(&[]), pts),
+                None => {
+                    if let Some(pts) = order.untimed(packet.data().unwrap_or(&[])) {
+                        packet.set_pts(Some(pts));
+                    }
+                }
+            }
+        }
         if !run_up.passes(&packet, in_tb, src.start_time) {
             continue;
         }
+        // The decoder's first MPEG-4 Part 2 key picture, where it states no
+        // VOL, gets the one in force there -- or a head re-encoded inside the
+        // second of two encodes joined was decoded by the first one's VOL,
+        // the record. Every key picture's VOL is noted for the encoder (see
+        // `vol_fed`). See [`mpeg4_vol_in_force`].
+        let key_at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
+        let first_key = !keyed && packet.is_key();
+        let packet = match vol_record.as_deref() {
+            Some(record) if packet.is_key() && (first_key || !vol_fed.is_empty()) => {
+                let data = packet.data().unwrap_or(&[]);
+                let stated = mpeg4_header_of(data);
+                let in_force = match stated {
+                    Some(stated) => Some(
+                        (mpeg4_vol_unit(stated) != mpeg4_vol_unit(record)).then(|| stated.to_vec()),
+                    ),
+                    None if first_key => Some(key_at.and_then(|t| mpeg4_vol_in_force(src, t, record))),
+                    None => None,
+                };
+                match (in_force, key_at) {
+                    (Some(config), Some(t)) => {
+                        vol_fed.push((t, config.clone()));
+                        match config.filter(|_| stated.is_none()) {
+                            Some(mut data) => {
+                                data.extend_from_slice(packet.data().unwrap_or(&[]));
+                                let mut out = ff::Packet::copy(&data);
+                                unsafe {
+                                    use ff::codec::packet::{Mut, Ref};
+                                    ff::ffi::av_packet_copy_props(out.as_mut_ptr(), packet.as_ptr());
+                                }
+                                out
+                            }
+                            None => packet,
+                        }
+                    }
+                    _ => packet,
+                }
+            }
+            _ => packet,
+        };
         // The decoder's first key picture, where it carries no parameter
         // sets, gets the ones in force there, as a copy's does: see
         // [`sets_in_force`]. Read by the record's alone, the head of a range
@@ -8522,6 +9647,40 @@ fn reencode_segment(
                 }
                 Some(out)
             })
+        } else if !keyed && packet.is_key() && src.video.codec == "h264" {
+            // In lengths, the same: the decoder is opened by the `avcC`, and
+            // the head of a range in a splice remuxed into `.mp4`/`.mkv` was
+            // decoded by the first encode's sets. See [`length_sets_at`].
+            match src.video.framing {
+                NalFraming::Length(n) => packet.pts().and_then(|pts| {
+                    let data = packet.data().unwrap_or(&[]);
+                    if crate::bitstream::nal_payloads(data, NalFraming::Length(n))
+                        .iter()
+                        .any(|nal| nal.first().is_some_and(|b| matches!(b & 0x1F, 7 | 8)))
+                    {
+                        return None;
+                    }
+                    let extradata = unsafe {
+                        let p = params.as_ptr();
+                        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                            &[][..]
+                        } else {
+                            std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+                        }
+                    };
+                    let record = parameter_sets("h264", extradata);
+                    let t = pts as f64 * in_tb - src.start_time;
+                    let (sets, _) = length_sets_known(src, t, Some(&record))?;
+                    let data = prepend_parameter_sets(data, &sets, n).ok()?;
+                    let mut out = ff::Packet::copy(&data);
+                    unsafe {
+                        use ff::codec::packet::{Mut, Ref};
+                        ff::ffi::av_packet_copy_props(out.as_mut_ptr(), packet.as_ptr());
+                    }
+                    Some(out)
+                }),
+                NalFraming::AnnexB => None,
+            }
         } else {
             None
         };
@@ -9301,10 +10460,20 @@ pub(crate) fn plan_audio(
     // 64 bit floats, so a big-endian one kept as it was went into a `.wav`
     // that cannot hold it and was refused (and a `.aiff` of a little-endian
     // one). Those go the way they went before, by `carriage`.
+    //
+    // And 32 bit integers, which `pcm_bits` calls 24 and `carriage` took to
+    // 24 bit LPCM: a `.wav` of them lost their bottom eight bits where an
+    // `.aiff`, `.mka` or `.mkv` of the same track kept all 32.
     let floats = pcm_file.is_some()
         && opts.audio_codec == AudioCodec::Lpcm
         && opts.audio_bits.is_none()
-        && matches!(source_id, ff::codec::Id::PCM_F32LE | ff::codec::Id::PCM_F32BE);
+        && matches!(
+            source_id,
+            ff::codec::Id::PCM_F32LE
+                | ff::codec::Id::PCM_F32BE
+                | ff::codec::Id::PCM_S32LE
+                | ff::codec::Id::PCM_S32BE
+        );
     let target = if floats {
         source_id
     } else {
@@ -9756,6 +10925,7 @@ fn graft_tables(
     captions: &[crate::CaptionInfo],
     graphics: &[crate::GraphicsInfo],
     converted: &[crate::SubpictureInfo],
+    unwritten: &[i32],
     data: &[u16],
     video_pid: i32,
     pids: &Pids,
@@ -9942,8 +11112,21 @@ fn graft_tables(
     // name the same way -- and here there is no recording's own entry to
     // fall back on, since the stream is this program's own. See
     // [`Subtitles`].
+    //
+    // Except one the kept ranges hold no subtitle of (`unwritten`, by the
+    // disc's number): nothing is on its PID, and declared all the same it
+    // was an empty subtitle track. Its place still counts for the streams
+    // after it, which the muxer numbered with it there.
+    let first_converted = streams.len();
     for (nth, c) in converted.iter().enumerate() {
-        let (pid, was) = placed(streams.len(), pids.graphics(graphics.len() + nth, c.id), c.id);
+        let (pid, was) = placed(
+            first_converted + nth,
+            pids.graphics(graphics.len() + nth, c.id),
+            c.id,
+        );
+        if unwritten.contains(&c.id) {
+            continue;
+        }
         streams.push(crate::si::GraftStream {
             pid,
             was,
@@ -10077,7 +11260,12 @@ fn graft_tables(
 /// entry point map counts by stay where they were. A map that does not fit,
 /// or is not a whole section in one packet, is left as it was. Returns how
 /// many packets were rewritten.
-fn name_converted(output: &str, named: &[(u16, [u8; 3])]) -> Result<usize> {
+///
+/// And the entries on `unwritten` taken out, in the same place: a converted
+/// stream the kept ranges hold no subtitle of has nothing on its PID, and
+/// declared all the same it was an empty subtitle track every player and the
+/// disc's clip index listed. The shorter section is padded where it was.
+fn name_converted(output: &str, named: &[(u16, [u8; 3])], unwritten: &[u16]) -> Result<usize> {
     use std::io::{Read, Seek, SeekFrom, Write};
     const FRAME: usize = 192;
     const PACKET: usize = 188;
@@ -10115,6 +11303,11 @@ fn name_converted(output: &str, named: &[(u16, [u8; 3])]) -> Result<usize> {
             let pid = (u16::from(sec[n + 1] & 0x1F) << 8) | u16::from(sec[n + 2]);
             let len = (usize::from(sec[n + 3] & 0x0F) << 8) | usize::from(sec[n + 4]);
             let loop_bytes = sec.get(n + 5..n + 5 + len)?;
+            if unwritten.contains(&pid) {
+                added = true;
+                n += 5 + len;
+                continue;
+            }
             let mut descriptors = loop_bytes.to_vec();
             if let Some((_, three)) = named.iter().find(|(on, _)| *on == pid) {
                 if crate::si::descriptor(loop_bytes, 0x0A).is_none() {
@@ -10252,7 +11445,7 @@ mod name_converted_tests {
         std::fs::write(&path, &file).unwrap();
         let p = path.to_str().unwrap();
         let named = [(0x1200, *b"jpn"), (0x1201, *b"jpn")];
-        assert_eq!(name_converted(p, &named).unwrap(), 2);
+        assert_eq!(name_converted(p, &named, &[]).unwrap(), 2);
         let out = std::fs::read(&path).unwrap();
         assert_eq!(out.len(), file.len());
         assert_eq!(out[..192], file[..192]);
@@ -10271,7 +11464,20 @@ mod name_converted_tests {
             assert!(sec[whole..183].iter().all(|&b| b == 0xFF));
         }
         // Nothing to add the second time.
-        assert_eq!(name_converted(p, &named).unwrap(), 0);
+        assert_eq!(name_converted(p, &named, &[]).unwrap(), 0);
+        // A stream with nothing on it taken out, the rest as it was.
+        assert_eq!(name_converted(p, &[], &[0x1201]).unwrap(), 2);
+        let out = std::fs::read(&path).unwrap();
+        assert_eq!(out.len(), file.len());
+        for at in [192usize, 576] {
+            let sec = &out[at + 9..at + 192];
+            let whole = 3 + ((usize::from(sec[1] & 0x0F) << 8) | usize::from(sec[2]));
+            assert_eq!(whole, pmt.len() + 6 - 11);
+            assert_eq!(crc(&sec[..whole]), 0);
+            assert_eq!(sec[17..28], [0x90, 0xF2, 0x00, 0xF0, 6, 0x0A, 4, b'j', b'p', b'n', 0]);
+            assert!(sec[whole..].iter().all(|&b| b == 0xFF));
+        }
+        assert_eq!(name_converted(p, &[], &[0x1201]).unwrap(), 0, "nothing left to take out");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -12406,8 +13612,11 @@ fn cut_into(
             } else if codec == "pcm_s8" {
                 "Into a .mkv, .mp4 or .mov, --audio-bits 24 writes it as 24 bit PCM, which \
                  each of them holds"
+            } else if codec == "pcm_f64be" {
+                "--audio-codec lpcm --audio-bits 24 writes it as 24 bit PCM, which a .mkv holds"
             } else if codec == "rawvideo" {
-                "A .mov or an .avi holds uncompressed pictures"
+                "An .avi holds uncompressed pictures of most layouts, and a .mov those \
+                 QuickTime has a layout for"
             } else if codec == "qtrle" {
                 "A .mov holds QuickTime Animation"
             } else {
@@ -14593,18 +15802,37 @@ fn cut_into(
 
     // What the conversion came to, where one was asked for. Where it went is
     // said by the note above for a `.sup` and by the stream itself for a cut.
+    //
+    // **None at all is said as none, and a stream with none is not declared.**
+    // Every unit withdrawn or none inside the ranges, the run said "0
+    // subtitle(s) ... were written into the cut" and the map (and so a disc's
+    // clip index) still listed the stream, with nothing on it. Its number,
+    // the disc's, goes on `unwritten` for the map below to leave it out; a
+    // `.sup` with nothing in it is said by the note that writes them.
+    let mut unwritten: Vec<i32> = Vec::new();
     for c in &writer.converted {
-        let into = if writer.graphics[c.track].aside.is_some() {
+        let track = &writer.graphics[c.track];
+        let name = crate::track_name(true, pids.graphics(c.track.saturating_sub(graphics.len()), c.id), 0);
+        if c.composer.put_ups() == 0 && track.written == 0 && track.mended == 0 {
+            if track.aside.is_none() {
+                crate::say!(
+                    "note: the kept ranges hold none of the subtitles on {name}. Nothing was \
+                     written into the cut for them."
+                );
+                unwritten.push(c.id);
+            }
+            continue;
+        }
+        let into = if track.aside.is_some() {
             "written beside the cut"
         } else {
             "written into the cut"
         };
         crate::say!(
             "note: {} subtitle(s) the disc draws were {into} as the kind a transport \
-             stream carries, on {}. The pixels and the colours are the disc's; what \
+             stream carries, on {name}. The pixels and the colours are the disc's; what \
              changed is how they are spelled.",
             c.composer.put_ups(),
-            crate::track_name(true, pids.graphics(c.track.saturating_sub(graphics.len()), c.id), 0),
         );
     }
 
@@ -14859,6 +16087,7 @@ fn cut_into(
             &captions,
             &graphics,
             &converted_streams,
+            &unwritten,
             // Only where the broadcast's own tables are going in: the map
             // that names the carousel is written by the same pass that
             // carries it, and a file with the packets and no entry for them
@@ -14944,8 +16173,18 @@ fn cut_into(
                     .then_some((pid as u16, b))
             })
             .collect();
-        if !named.is_empty() {
-            if let Err(e) = name_converted(output, &named) {
+        // And a converted stream with nothing on it taken out of the map,
+        // as the graft does for a `.ts`.
+        let left_out: Vec<u16> = converted_streams
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| unwritten.contains(&c.id))
+            .map(|(n, c)| pids.graphics(graphics.len() + n, c.id))
+            .filter(|pid| STREAM_PIDS.contains(pid))
+            .map(|pid| pid as u16)
+            .collect();
+        if !named.is_empty() || !left_out.is_empty() {
+            if let Err(e) = name_converted(output, &named, &left_out) {
                 crate::say!("note: the subtitles' languages could not be named in {output}: {e:#}");
             }
         }

@@ -687,12 +687,14 @@ impl Reader {
                     if !decoder.decode(&packet, &mut sub).unwrap_or(false) {
                         // A DVD's unit with nothing to show is one that takes
                         // the last down (see `convert_subpicture` in
-                        // `cut.rs`). A Blu-ray's graphics decode nothing for
-                        // every segment but the last of a set, so there it
-                        // is only a packet read.
+                        // `cut.rs`) where it acts: a stop can run at a delay
+                        // of its own, and the cut takes the line down there.
+                        // A Blu-ray's graphics decode nothing for every
+                        // segment but the last of a set, so there it is only
+                        // a packet read.
                         if kind == Kind::Subpicture {
                             events.push(Event {
-                                at,
+                                at: at + vobsub::acts_after(data),
                                 until: None,
                                 said: Said::Clear,
                             });

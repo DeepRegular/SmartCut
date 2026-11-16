@@ -6236,6 +6236,10 @@ function writableContainers() {
     ),
     // What the sound will be written as, which is what the cut is sent.
     asked: audioCodecOut() || "",
+    // Uncompressed pictures, which a container takes or not by their layout
+    // rather than by the codec's name: the engine reads it off the file, as
+    // the cut does. Nothing to open for any other recording.
+    raw: once(list.filter((c, i) => lower(facts[i].codec) === "rawvideo").map((c) => c.path)),
   };
   const key = JSON.stringify(ask);
   if (containerCan.has(key)) return containerCan.get(key);
@@ -10588,6 +10592,15 @@ let projectPath = "";
 /// started, and this one is nobody's copy.
 let tempProject = "";
 
+/// The stamp the job this list put in the queue under `tempProject` was added
+/// with: the copy is known by its job, not by its name or what it holds. See
+/// `projectForQueue` and `newBorn`.
+let tempBorn = "";
+
+/// A stamp for a job about to be added to the queue, unlike any other job's:
+/// see `BatchJob::born` in lib.rs.
+const newBorn = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
 /// The queued job this window was opened on, or "" for a window that is
 /// nobody's job. Settled once at startup; see `queued_job`.
 ///
@@ -11718,6 +11731,8 @@ async function saveQueue() {
           // the next poll that every project had gone back to its first
           // version. See `batch_touch`.
           edited: j.edited || 0,
+          // Nor this one: set once, as the job is added. See `BatchJob::born`.
+          born: j.born || "",
           // 待機 for a job called off in this run: calling one off is about
           // the run rather than about the job, and the queue reopened
           // tomorrow is a queue of work still to do.
@@ -11794,6 +11809,9 @@ async function refreshQueue() {
         state: ["done", "error", "running"].includes(j.state) ? j.state : "waiting",
         note: typeof j.note === "string" ? j.note : "",
         edited: j.edited || 0,
+        // Which job this is, for `projectForQueue`: the path alone can be a
+        // later job's after this one has left. See `BatchJob::born`.
+        born: typeof j.born === "string" ? j.born : "",
         began: was.began,
         spent: was.spent,
         done: was.done,
@@ -12225,7 +12243,7 @@ function showBatchMenu(on) {
 /// but a path would be a row nobody could tell from the one under it. Read
 /// again when the job runs, so a project edited in between is written out as
 /// it now stands.
-async function addBatchJob(path, label = stemOf(path)) {
+async function addBatchJob(path, label = stemOf(path), born = newBorn()) {
   if (batchJobs.some((j) => j.path === path)) {
     sayHere(t("batch.already", { name: label }));
     return false;
@@ -12243,7 +12261,7 @@ async function addBatchJob(path, label = stemOf(path)) {
   // above has to survive a job being added below them.
   try {
     await invoke("batch_append", {
-      jobs: [{ path, label, state: "waiting", note: t("batch.clips", { n: clipsIn }) }],
+      jobs: [{ path, label, state: "waiting", note: t("batch.clips", { n: clipsIn }), born }],
     });
   } catch (e) {
     sayHere(t("batch.queueFailed", { e: String(e) }));
@@ -12437,6 +12455,28 @@ async function projectForQueue() {
   // is what there is to have been saved, and the `*` comes off for it.
   if (projectPath && dirty() && !(await writeProject(projectPath))) return "";
   const stem = projectPath ? stemOf(projectPath) : autoProjectStem();
+  // The copy is this list's only while the queue still holds it. A job taken
+  // out of the queue -- by hand, or by 出力済みのジョブを削除 -- deletes its
+  // file, and the name is then free for the next one asked for: another list
+  // window's, or a project added with ジョブ追加, of the same name. Written
+  // over by this list, that job ran this list instead, and an unsaved list
+  // that went into the queue under it (and whose window was then closed) was
+  // gone.
+  //
+  // Nor is a name the queue holds proof of it: the name freed, and taken
+  // again by the other window before this press, is in the queue as that
+  // window's job. So the copy is this list's only while the queue still holds
+  // the job this list added under it -- known by the stamp it was added with,
+  // which nothing but adding a job gives. Not by what the file holds: a window
+  // opened on the job with プロジェクトを開く and written back with
+  // バッチを上書き leaves the same job, and this list registered again writes
+  // over it as it always did (the list on screen is the one that goes in).
+  if (tempProject) {
+    await refreshQueue();
+    if (!tempBorn || !batchJobs.some((j) => j.path === tempProject && j.born === tempBorn)) {
+      tempProject = "";
+    }
+  }
   let path = tempProject;
   if (!path) {
     try {
@@ -12448,7 +12488,12 @@ async function projectForQueue() {
   }
   // What the copy holds, in the tick it is captured: see `writeProject`.
   const sent = shapeOf();
-  if (!(await putProject(path, true, true))) return "";
+  if (!(await putProject(path, true, true))) {
+    // A name just taken (`queue_temp_path` makes the file to take it) goes
+    // back: an empty project in the queue's folder is nobody's.
+    if (path !== tempProject) await dropQueuedCopies([{ path }]);
+    return "";
+  }
   // Written over a copy the queue may already hold: the tool keeps what its
   // card shows about a project until it hears the file has changed, and a
   // list registered again after more editing went on showing the recordings
@@ -12459,6 +12504,9 @@ async function projectForQueue() {
   }
   // Kept, so that a list registered twice is written to the one file and
   // refused as the duplicate it is, rather than piling up copies of itself.
+  // A name just taken is a job still to be added, under a stamp of its own:
+  // see `enlistList`.
+  if (path !== tempProject) tempBorn = newBorn();
   tempProject = path;
   // An untitled list has no file of its own to have been written, and the
   // copy is what it now has instead. Where there was a project, `writeProject`
@@ -12514,7 +12562,8 @@ async function enlistList() {
   const path = await projectForQueue();
   if (!path) return;
   await refreshQueue();
-  if (!(await addBatchJob(path, label))) return;
+  // Under the stamp the copy will be known by on the next press.
+  if (!(await addBatchJob(path, label, tempBorn))) return;
   sayHere(t("batch.added", { name: label }));
   try {
     await invoke("open_batch_tool");

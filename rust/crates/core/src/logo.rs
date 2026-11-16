@@ -315,6 +315,9 @@ fn walk_keyframes<T: Send + 'static>(
     // past the IDR the second of two spliced encodes restated its sets on was
     // decoded by the first one's: see [`crate::preview::InForce`].
     let mut in_force = crate::preview::InForce::pool(&params, &src.video);
+    // And the MPEG-4 Part 2 VOL in force, for an entry picture inside the
+    // second of two joined Xvid encodes: see [`crate::preview::VolInForce`].
+    let mut vols = crate::preview::VolInForce::pool(&params);
     let mut pool = crate::entrypool::Pool::new(
         params,
         &src.video,
@@ -364,6 +367,7 @@ fn walk_keyframes<T: Send + 'static>(
                 landed = crate::preview::Landed::at(src, entry);
             }
             in_force.restart();
+            vols.restart();
         }
         // A seek leaves whatever was half sent behind it.
         pending.clear();
@@ -382,6 +386,7 @@ fn walk_keyframes<T: Send + 'static>(
                 in_force.mend(&mut packet, &mut |at, record| {
                     Some(crate::preview::sets_before(src, at, record))
                 });
+                vols.mend(&mut packet, src, src.video.time_base);
             }
             match step {
                 crate::Step::Skip => continue,

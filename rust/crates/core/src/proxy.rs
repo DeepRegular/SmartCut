@@ -1032,11 +1032,22 @@ fn open_sink(
         // across of an HD recording (`SMARTCUT_PROXY_WIDTH=960`), or of one
         // stating a matrix against its size, was shown through the other
         // matrix in every still taken off it.
-        matrix: crate::conform::read_matrix(
-            unsafe { crate::raw_enum(std::ptr::addr_of!((*picture.as_ptr()).colorspace)) },
-            picture.width(),
-            picture.height(),
-        ),
+        //
+        // **Not where the recording is RGB or a palette** (a QuickTime
+        // Animation, a PNG `.mov`): the scaler makes the proxy's YUV out of
+        // those with BT.601's numbers, and the proxy said what the
+        // recording's size reads -- BT.709 at 1280 across -- or nothing, read
+        // the same by the proxy's size: every still and every picture played
+        // off it was in other colours, red 255,25,0, a green a sixth darker.
+        matrix: if rgb_or_palette(picture.format()) {
+            Some(ff::ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32)
+        } else {
+            crate::conform::read_matrix(
+                unsafe { crate::raw_enum(std::ptr::addr_of!((*picture.as_ptr()).colorspace)) },
+                picture.width(),
+                picture.height(),
+            )
+        },
     };
     let mut chosen: Option<(ff::encoder::video::Encoder, String)> = None;
     let mut tried: Vec<String> = Vec::new();
@@ -1096,6 +1107,16 @@ fn open_sink(
         width,
         height,
     })
+}
+
+/// Whether pictures of this format are RGB or a palette, which libswscale
+/// turns into YUV through BT.601 whatever it is told about them.
+fn rgb_or_palette(format: ff::format::Pixel) -> bool {
+    let d = unsafe { ff::ffi::av_pix_fmt_desc_get(format.into()) };
+    !d.is_null()
+        && unsafe { (*d).flags }
+            & (ff::ffi::AV_PIX_FMT_FLAG_RGB | ff::ffi::AV_PIX_FMT_FLAG_PAL) as u64
+            != 0
 }
 
 /// What every candidate encoder is set up with, so that the one that is

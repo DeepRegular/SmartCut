@@ -5223,7 +5223,11 @@ async function prepare() {
     } else {
       made.push(tr("warm.noIndex"));
     }
-    made.push(tr("warm.thumbs", { n: tk.thumbs, gap: tk.interval.toFixed(2) }));
+    // No gap to state between fewer than two: a clip of one GOP read
+    // "1 thumbnail every 0.00s".
+    made.push(tk.thumbs < 2
+      ? tr("warm.thumbsFew", { n: tk.thumbs })
+      : tr("warm.thumbs", { n: tk.thumbs, gap: tk.interval.toFixed(2) }));
     made.push(tr("warm.scenes", { n: tk.scenes.length }));
     showWarm(made.join(" / "));
     draw();

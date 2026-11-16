@@ -84,7 +84,12 @@ pub fn track_starts(sheet: &[u8]) -> Vec<f64> {
             starts.push(at);
         }
     }
-    for line in sheet.split(|&b| b == b'\n' || b == b'\r') {
+    // A nought ends a line too: the padding a sheet copied off a disc is
+    // filled out with comes straight after its last line, and where that
+    // line had no line end of its own its time ran on into the noughts and
+    // was no time (a sheet's last track lost). Nothing else in a sheet is
+    // a nought, in any encoding it is read in here.
+    for line in sheet.split(|&b| b == b'\n' || b == b'\r' || b == 0) {
         let line = String::from_utf8_lossy(line);
         let mut words = line.split_whitespace();
         let Some(word) = words.next() else { continue };
@@ -199,6 +204,19 @@ mod tests {
             let mut sector = unit.to_vec();
             sector.resize(unit.len() * 3, 0);
             assert_eq!(track_starts(&sector), want);
+        }
+        // ...and any of them padded straight after a last line that has no
+        // line end of its own: its time is still read.
+        let bare = text.trim_end();
+        let mut le_bare = vec![0xFF, 0xFE];
+        let mut be_bare: Vec<u8> = Vec::new();
+        for u in bare.encode_utf16() {
+            le_bare.extend_from_slice(&u.to_le_bytes());
+            be_bare.extend_from_slice(&u.to_be_bytes());
+        }
+        for mut sheet in [bare.as_bytes().to_vec(), le_bare, be_bare] {
+            sheet.resize(sheet.len() * 2, 0);
+            assert_eq!(track_starts(&sheet), want);
         }
         le.push(0x41);
         assert_eq!(track_starts(&le), want);

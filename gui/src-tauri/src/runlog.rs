@@ -62,12 +62,18 @@ pub fn run_log_open(app: tauri::AppHandle, stamp: String, head: Vec<String>) -> 
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
         .collect();
     let stem = if stem.is_empty() { "run".to_string() } else { format!("run-{stem}") };
+    // Taken by making it, not by finding it free: two list windows (or a
+    // list window and the batch tool) starting a run in the same second were
+    // both given the one name, and their lines went into one file between
+    // each other's.
     let mut at = dir.join(format!("{stem}.log"));
     for n in 2..1000 {
-        if !at.exists() {
-            break;
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&at) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                at = dir.join(format!("{stem}-{n}.log"));
+            }
+            _ => break,
         }
-        at = dir.join(format!("{stem}-{n}.log"));
     }
     smartcut_core::log::open(&at).map_err(|e| format!("{}: {e}", at.display()))?;
     // Once the new one is there, so that it is one of the hundred rather than

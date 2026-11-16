@@ -126,7 +126,12 @@ const PS_AUDIO: &[&str] = &["mp1", "mp2", "mp3", "ac3", "dts", "pcm_s16be"];
 /// "Invalid argument". QuickTime Animation is written, and loses the sample
 /// depth its decoder needs: "Unsupported colorspace: 0 bits/sample" on every
 /// picture, the same as `ffmpeg -c copy` makes of it.
-const MKV_REFUSES: &[&str] = &["pcm_s8", "rawvideo", "qtrle"];
+///
+/// And big-endian 64 bit floats, a QuickTime file's `fl64`: Matroska holds
+/// floats little-endian only, and the 32 bit kind is turned round on the way
+/// in (see where the cut plans its sound), but nothing here writes 64 bit
+/// floats afresh, so the copy stopped at the header with "Invalid argument".
+const MKV_REFUSES: &[&str] = &["pcm_s8", "rawvideo", "qtrle", "pcm_f64be"];
 
 /// What a QuickTime file refuses. It takes the MP4 family's pictures except
 /// the three WebM carries, and its sound stops at the lossless ones: "vp9
@@ -279,6 +284,21 @@ pub fn pictures_refused(family: &str, id: ff::codec::Id, format: i32, tag: u32) 
     }
 }
 
+/// [`pictures_refused`] asked of a recording the asker knows only by its
+/// path: the output settings screen, which greys a container the cut would
+/// refuse. The recording's main pictures, as the open picks them (libav's
+/// best video stream), with the layout and fourcc libav read for them --
+/// what the cut asks about. `None` where the file cannot be opened: nothing
+/// to refuse on here, and the cut will say what is wrong.
+pub fn pictures_refused_at(path: &str, family: &str) -> Option<&'static str> {
+    let ictx = crate::input::open_local(path).ok()?;
+    let st = ictx.streams().best(ff::media::Type::Video)?;
+    let par = st.parameters();
+    // SAFETY: the parameters belong to the stream of the open context.
+    let (format, tag) = unsafe { ((*par.as_ptr()).format, (*par.as_ptr()).codec_tag) };
+    pictures_refused(family, par.id(), format, tag)
+}
+
 /// Whether libav knows this codec as one of sound.
 fn is_sound(codec: &str) -> bool {
     let Ok(name) = std::ffi::CString::new(codec) else { return false };
@@ -371,6 +391,8 @@ mod tests {
         // and Matroska's.
         assert!(!holds("mp4", "pcm_s8") && !holds("mkv", "pcm_s8") && holds("mov", "pcm_s8"));
         assert!(!holds("mp4", "pcm_u8") && holds("mkv", "pcm_u8"));
+        // Matroska's floats are little-endian; the 32 bit kind is turned round.
+        assert!(!holds("mkv", "pcm_f64be") && holds("mkv", "pcm_f64le") && holds("mov", "pcm_f64be"));
         assert!(holds("", "vp8"));
     }
 

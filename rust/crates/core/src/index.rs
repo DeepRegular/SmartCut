@@ -245,6 +245,7 @@ pub fn walk(
     // Whether the leading reference pictures of each entry point are needed
     // by what follows them; see [`crate::leadrefs`].
     let mut judge = crate::leadrefs::Judge::new(&codec, framing);
+    let mut untimed = crate::preview::Untimed::new(video);
     let mut reading = ictx.read_packets();
     for (s, p) in reading.by_ref() {
         seen += 1;
@@ -296,7 +297,11 @@ pub fn walk(
         if let Some(d) = p.data() {
             judge.feed(packets.len(), p.is_key() && at.is_some(), at, d);
         }
-        let Some(pts) = p.pts() else { continue };
+        // A picture whose packet carries no time is counted where its order
+        // puts it, as the cut copies it there: see
+        // [`crate::preview::Untimed`]. Left out, an H.264 `.mpg` was a
+        // picture short in every eleven and read as one whose pictures vary.
+        let Some(pts) = untimed.pts_of(&p) else { continue };
         let reference = p
             .data()
             .map(|d| bitstream::is_reference(d, &codec, framing, vc1))

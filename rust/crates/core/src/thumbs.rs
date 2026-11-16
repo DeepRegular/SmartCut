@@ -687,6 +687,9 @@ pub fn build_with_sound(
     // past the IDR a splice's second encode restated its sets on decoded it
     // by the first encode's: see [`crate::preview::InForce`].
     let mut in_force = crate::preview::InForce::pool(&params, &src.video);
+    in_force.opens_at_head();
+    // And the MPEG-4 Part 2 VOL in force: see [`crate::preview::VolInForce`].
+    let mut vols = crate::preview::VolInForce::pool(&params);
     let mut told = -1.0;
     let mut shared = std::time::Instant::now();
 
@@ -785,6 +788,7 @@ pub fn build_with_sound(
             in_force.mend(&mut packet, &mut |at, record| {
                 Some(crate::preview::sets_before(src, at, record))
             });
+            vols.mend(&mut packet, src, src.video.time_base);
         }
         match step {
             crate::Step::Skip => continue,
@@ -1016,14 +1020,23 @@ fn decode_on(
         Some(stream) => crate::preview::InForce::single(&stream.parameters(), &src.video),
         None => crate::preview::InForce::off(),
     };
+    // And the MPEG-4 Part 2 VOL in force: see [`crate::preview::VolInForce`].
+    let mut vols = match ictx.stream(idx) {
+        Some(stream) => crate::preview::VolInForce::single(&stream.parameters()),
+        None => crate::preview::VolInForce::off(),
+    };
     // Whether the decoder holds anything a drain would hand back.
     let mut fed = false;
+    // A picture whose packet carries no time, given the one the cut gives
+    // it: see [`crate::preview::Untimed`].
+    let mut untimed = crate::preview::Untimed::new(&src.video);
     for (stream, mut packet) in ictx.read_packets() {
         if stream.index() != idx {
             continue;
         }
         // See [`crate::preview::Landed`].
         crate::preview::Landed::mend(&mut landed, &mut packet, src);
+        untimed.place(&mut packet);
         in_force.see(&packet);
         let was = stretches.clone();
         if stretches.reach(packet.position()) && fed {
@@ -1041,6 +1054,7 @@ fn decode_on(
             decoder.flush();
         }
         in_force.mend(&mut packet, &mut |at, record| Some(crate::preview::sets_before(src, at, record)));
+        vols.mend(&mut packet, src, src.video.time_base);
         if decoder.send_packet(&packet).is_err() {
             continue;
         }

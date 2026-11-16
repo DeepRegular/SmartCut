@@ -215,6 +215,19 @@ pub fn starts_after(spu: &[u8]) -> Option<f64> {
         .map(|at| u16be(spu, at) as f64 * TICK)
 }
 
+/// When this unit acts on the screen, in seconds after the moment it is
+/// handed over: where its start puts its picture up, or, for a unit with no
+/// start -- one that only takes the last picture down -- where its stop
+/// does that. Nought where it says neither.
+///
+/// What is on screen at an instant is what the unit that acted last put
+/// there, which with delays is not always the unit handed over last; and a
+/// unit with nothing to show replaces the last picture where it acts, which
+/// for a stop of its own can be some way after its time.
+pub fn acts_after(spu: &[u8]) -> f64 {
+    starts_after(spu).or_else(|| stops_after(spu)).unwrap_or(0.0)
+}
+
 /// The same unit, put up no later than `after` seconds from the moment it
 /// is handed over -- the start's own delay brought forward, the other half
 /// of [`stopped_after`].
@@ -1802,6 +1815,24 @@ mod tests {
         assert_eq!(now.from, 0.0);
         // Never later than it was.
         assert_eq!(started_after(&late, 5.0), late);
+    }
+
+    /// A unit acts where its start puts it up; one that only stops, where
+    /// its stop does.
+    #[test]
+    fn a_unit_acts_at_its_start_or_else_its_stop() {
+        crate::init().expect("libav");
+        let mut ink = Ink::default();
+        let plain = unit(&picture(32, 16), &mut ink).expect("a unit");
+        assert_eq!(acts_after(&plain), 0.0);
+        let dcsqt = u16be(&plain, 2) as usize;
+        let mut late = plain.clone();
+        late[dcsqt..dcsqt + 2].copy_from_slice(&176u16.to_be_bytes());
+        assert!((acts_after(&late) - 176.0 * TICK).abs() < 1e-9);
+        let mut stop = take_down();
+        assert_eq!(acts_after(&stop), 0.0);
+        stop[4..6].copy_from_slice(&88u16.to_be_bytes());
+        assert!((acts_after(&stop) - 88.0 * TICK).abs() < 1e-9);
     }
 
     /// A picture that draws nothing is not a unit. What clears a screen is

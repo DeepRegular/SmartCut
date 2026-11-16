@@ -870,6 +870,12 @@ fn files_at(input: &str) -> Result<(Vec<Found>, Option<String>), String> {
     files_in(&path)
 }
 
+/// What the list takes as a recording, by extension: app.js's `VIDEO_EXT`,
+/// kept the same by hand. Asked only of a name that is not UTF-8, which never
+/// reaches the list to be asked there.
+const LISTED_EXTENSIONS: &[&str] =
+    &["ts", "m2ts", "mts", "m2t", "mp4", "mkv", "mov", "m4v", "vob", "mpg", "mpeg", "m2p", "webm"];
+
 /// Everything in a directory, in name order -- which for recordings named by
 /// date is the order they were made, and in any case an order, which
 /// `read_dir` is not.
@@ -915,7 +921,17 @@ fn files_in(path: &std::path::Path) -> Result<(Vec<Found>, Option<String>), Stri
             {
                 continue;
             }
-            unnamed.push(name.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
+            // Nor a file the list would not have taken under any name -- a
+            // Shift_JIS .txt or .jpg beside the recordings -- which a UTF-8
+            // name gets "not supported" for, not a request to rename it.
+            let recording = name.is_dir()
+                || name
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| LISTED_EXTENSIONS.contains(&x.to_ascii_lowercase().as_str()));
+            if recording {
+                unnamed.push(name.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
+            }
             continue;
         }
         if smartcut_core::disc::looks_like_disc(&name) {
@@ -2186,13 +2202,23 @@ fn remember_index(
     // index, written last, took away the thumbnail track the editor had just
     // kept: the next open made its pictures again. Same key, same file, same
     // points; only the track differs.
+    //
+    // The question and the write as one step, against every other write of
+    // this process: asked first and written a moment later, a trackless
+    // index asked just before the pictures' own landed -- the walk an editor
+    // closed at the end of its pictures pass keeps (see [`keep_the_walk`]),
+    // or the lane's -- went in after them, and the next open made them again.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let one = locked(&ONE_AT_A_TIME);
     if index.track.is_none() && seek_index::has_track(&file) {
+        drop(one);
         return index_info(app, src, false);
     }
     if let Err(e) = index.save(&file) {
         eprintln!("index: cannot write {}: {e}", file.display());
         return None;
     }
+    drop(one);
     // An index is a thousandth of what a proxy costs -- the pictures are 192
     // pixels wide and there is no video at all, so half an hour of broadcast
     // comes to around forty megabytes -- which is why the count is large where
@@ -6192,16 +6218,38 @@ async fn audio_limits(
 /// will be in the file, and asking about it would grey a container out over
 /// a codec the cut is not going to write.
 ///
-/// Answered on this thread. It is a few string comparisons and the screen is
-/// waiting on it to draw.
+/// `raw` names the recordings whose pictures are uncompressed, whose codec's
+/// name does not answer it: which layouts a container has room for is the
+/// layout's own question, asked of the file as the cut asks it (see
+/// [`smartcut_core::carry::pictures_refused`]). Greyed by the codec alone, a
+/// 4:2:0 or grey `.avi` was offered `.mov` and refused once the run began.
+///
+/// Answered on this thread where there is nothing to open -- a few string
+/// comparisons, and the screen is waiting on it to draw -- and off it where
+/// there is.
 #[tauri::command]
-fn containers_holding(
+async fn containers_holding(
     want: Vec<String>,
     video: Vec<String>,
     audio: Vec<String>,
     asked: Option<String>,
+    raw: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
+    let raw = raw.unwrap_or_default();
+    if raw.is_empty() {
+        return Ok(containers_holding_now(want, &video, &audio, asked.as_deref(), &[]));
+    }
+    off_thread(move || Ok(containers_holding_now(want, &video, &audio, asked.as_deref(), &raw))).await
+}
+
+fn containers_holding_now(
+    want: Vec<String>,
+    video: &[String],
+    audio: &[String],
+    asked: Option<&str>,
+    raw: &[String],
 ) -> Vec<String> {
-    use smartcut_core::carry::{family, holds};
+    use smartcut_core::carry::{family, holds, pictures_refused_at};
     want.into_iter()
         .filter(|name| {
             let into = family(&format!("x.{name}"));
@@ -6209,12 +6257,13 @@ fn containers_holding(
             // going: a transport stream declares Blu-ray's own and
             // everything else takes the plain samples. See `carriage` in
             // `smartcut_core::cut`.
-            let sound: Vec<String> = match asked.as_deref().unwrap_or("") {
-                "" | "source" => audio.clone(),
+            let sound: Vec<String> = match asked.unwrap_or("") {
+                "" | "source" => audio.to_vec(),
                 "lpcm" => vec![if into == "ts" { "pcm_bluray" } else { "pcm_s16be" }.to_string()],
                 named => vec![named.to_string()],
             };
             video.iter().chain(sound.iter()).all(|c| holds(into, c))
+                && raw.iter().all(|path| pictures_refused_at(path, into).is_none())
         })
         .collect()
 }
@@ -8488,7 +8537,18 @@ fn write_whole(path: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
         // On the disc before it is named: renamed while its bytes were still
         // only in memory, a power cut could leave the name over an empty
         // file, the project emptied after all.
-        .and_then(|mut f| std::io::Write::write_all(&mut f, body).and_then(|()| f.sync_all()));
+        //
+        // Except where the file system has no such thing to offer: a sync it
+        // says it cannot do is not a write that failed, and the save went
+        // through before 0.8.47 asked for one.
+        .and_then(|mut f| {
+            std::io::Write::write_all(&mut f, body).and_then(|()| match f.sync_all() {
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput) => {
+                    Ok(())
+                }
+                done => done,
+            })
+        });
     if let Err(e) = made {
         if e.kind() != std::io::ErrorKind::AlreadyExists {
             let _ = std::fs::remove_file(&temp);
@@ -8741,6 +8801,16 @@ struct BatchJob {
     /// that edited the file tells the tool that what it kept is stale. See
     /// [`batch_touch`].
     edited: u64,
+    /// A stamp the list window gives the job as it adds it, unlike any other
+    /// job's, or "" for a job added before there was one.
+    ///
+    /// Which job a row is, where its path cannot say: a copy the queue made
+    /// for a list (`queued/p.scproj`) is deleted with its job, and the name is
+    /// then free for the next list of that name. The window that added the
+    /// first job knows its copy by this, and so writes over it again only
+    /// while it is still that job -- edited in another window or not. Set by
+    /// [`batch_append`] alone; [`batch_write`] keeps the file's.
+    born: String,
     /// Whatever a later version wrote on the job that this one does not know,
     /// carried through to the next write; see [`BatchQueue::rest`].
     #[serde(flatten)]
@@ -8969,6 +9039,7 @@ fn batch_write(
         let mut queue = queue;
         let now = read_queue(&dir)?;
         carry_rest(&mut queue, &now);
+        keep_born(&mut queue, &now);
         if let Some(known) = known {
             for theirs in &now.jobs {
                 match queue.jobs.iter_mut().find(|j| j.path == theirs.path) {
@@ -9003,6 +9074,20 @@ fn carry_rest(queue: &mut BatchQueue, now: &BatchQueue) {
     for theirs in &now.jobs {
         if let Some(mine) = queue.jobs.iter_mut().find(|j| j.path == theirs.path) {
             carry(&mut mine.rest, &theirs.rest);
+        }
+    }
+}
+
+/// Put back each job's stamp as the file has it: a write never sets one, and
+/// a window that sent none (or one off a row it read before) does not take
+/// it away. See [`BatchJob::born`].
+fn keep_born(queue: &mut BatchQueue, now: &BatchQueue) {
+    for theirs in &now.jobs {
+        if theirs.born.is_empty() {
+            continue;
+        }
+        if let Some(mine) = queue.jobs.iter_mut().find(|j| j.path == theirs.path) {
+            mine.born = theirs.born.clone();
         }
     }
 }
@@ -9066,15 +9151,19 @@ fn with_queue_lock<T>(
         .open(dir.join("batch.lock"))
         .map_err(|e| e.to_string())?;
     let mut held = false;
-    for _ in 0..200 {
+    // By the clock, not by a count of naps: on a loaded machine two hundred
+    // naps of 25 ms came to more than seven seconds.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
         match lock.try_lock() {
             Ok(()) => {
                 held = true;
                 break;
             }
-            Err(std::fs::TryLockError::WouldBlock) => {
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
+            Err(std::fs::TryLockError::WouldBlock) => break,
             Err(std::fs::TryLockError::Error(e)) => return Err(e.to_string()),
         }
     }
@@ -9182,11 +9271,24 @@ fn now_secs() -> u64 {
 // Off the main thread: the beat is now synced to the disc before it is named.
 #[tauri::command(async)]
 fn batch_beat(app: tauri::AppHandle) {
+    // Under [`BEAT_GONE`], and not once [`batch_gone`] has run: off the main
+    // thread, a beat still being synced as the tool left was named after
+    // its name had come off the door, and for half a minute the list was
+    // told a tool was running that was not -- バッチに登録 started none.
+    let gone = locked(&BEAT_GONE);
+    if *gone {
+        return;
+    }
     if let Ok(dir) = batch_dir(&app) {
         let beat = format!("{} {}", std::process::id(), now_secs());
         let _ = write_whole(&dir.join("batch.beat"), beat.as_bytes());
     }
+    drop(gone);
 }
+
+/// Set by [`batch_gone`], with the lock held, and asked by [`batch_beat`]
+/// under it.
+static BEAT_GONE: Mutex<bool> = Mutex::new(false);
 
 /// The tool saying it has gone. Called as its process leaves.
 ///
@@ -9201,6 +9303,8 @@ fn batch_beat(app: tauri::AppHandle) {
 /// [`BATCH_BEAT`] lets a second one start, and the first one leaving must not
 /// then clear the second one's name off the door.
 fn batch_gone(app: &tauri::AppHandle) {
+    let mut gone = locked(&BEAT_GONE);
+    *gone = true;
     let Ok(dir) = batch_dir(app) else { return };
     let beat = dir.join("batch.beat");
     if beating(&beat).is_some_and(|(whose, _)| whose == Some(std::process::id())) {
@@ -10355,6 +10459,30 @@ mod tests {
         assert_eq!(back["jobs"].as_array().unwrap().len(), 2);
     }
 
+    /// A job's stamp is the file's, whatever a write sends: an older queue's
+    /// jobs read with none, and a write that sends none or another one leaves
+    /// the file's in place. The stamp is a field of its own, not a later
+    /// version's unknown one.
+    #[test]
+    fn batch_job_keeps_the_stamp_it_was_added_with() {
+        let on_file: BatchQueue = serde_json::from_str(
+            r#"{"jobs":[{"path":"a.scproj","label":"A","state":"waiting","note":"","edited":0,"born":"x1"},
+                        {"path":"b.scproj","label":"B","state":"waiting","note":"","edited":0}]}"#,
+        )
+        .unwrap();
+        assert_eq!(on_file.jobs[0].born, "x1");
+        assert!(on_file.jobs[0].rest.is_empty());
+        assert_eq!(on_file.jobs[1].born, "");
+        let mut mine: BatchQueue = serde_json::from_str(
+            r#"{"jobs":[{"path":"a.scproj","label":"A","state":"done","note":"","edited":0,"born":"old"},
+                        {"path":"b.scproj","label":"B","state":"done","note":"","edited":0,"born":"y"}]}"#,
+        )
+        .unwrap();
+        keep_born(&mut mine, &on_file);
+        assert_eq!(mine.jobs[0].born, "x1");
+        assert_eq!(mine.jobs[1].born, "y");
+    }
+
     /// A Blu-ray's sound, as the demuxer hands it over: the lossless track
     /// and the AC-3 it is wrapped around arrive as two streams on one PID.
     /// Switching that track off has to switch off both halves of it, or the
@@ -10545,6 +10673,9 @@ mod tests {
         // 録画.ts in Shift_JIS.
         let sjis = std::ffi::OsStr::from_bytes(b"\x98\x5e\x89\xe6.ts");
         std::fs::write(root.join(sjis), b"").unwrap();
+        // A note beside it so named is not a recording, and is not said
+        // either (a UTF-8 one is only "not supported" up there).
+        std::fs::write(root.join(std::ffi::OsStr::from_bytes(b"\x83\x81\x83\x82.txt")), b"").unwrap();
         // A plain folder so named is passed over, as every folder that is not
         // a disc is, and not said.
         std::fs::create_dir(root.join(std::ffi::OsStr::from_bytes(b"\x83\x74\x83\x48"))).unwrap();

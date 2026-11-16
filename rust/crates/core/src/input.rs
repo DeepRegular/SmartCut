@@ -514,7 +514,7 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
     }
     // And the fifth for pictures that begin after the analysis has ended;
     // see [`pictures_undescribed`].
-    if pictures_undescribed(&ictx) && !late_open_failed(url, None) {
+    if pictures_undescribed(&ictx) && !reordered(&ictx) && !late_open_failed(url, None) {
         let cut = READS_CUT.with(|c| c.get());
         if let Ok(again) = open_with(url, genpts, all_maps, Some(LATE_PROBE), Some(LATE_PICTURES)) {
             if !pictures_undescribed(&again) {
@@ -568,6 +568,20 @@ const LATE_PICTURES: &str = "120000000";
 
 /// The bytes [`LATE_PICTURES`] may read.
 const LATE_PROBE: &str = "100000000";
+
+/// Whether the open learned how deep the main video's pictures are
+/// reordered (`has_b_frames`), which it learns only from pictures it read:
+/// pictures the analysis reached, so not the late ones of
+/// [`pictures_undescribed`]. A VC-1 stream on a pressed Blu-ray can come back
+/// with no pixel format at any length of analysis (`has_b_frames` 1), and
+/// each process read its hundred megabytes for nothing on the first open.
+fn reordered(ictx: &ff::format::context::Input) -> bool {
+    let Some(st) = ictx.streams().best(ff::media::Type::Video) else {
+        return false;
+    };
+    // SAFETY: the stream and its parameters belong to the open context.
+    unsafe { (*st.parameters().as_ptr()).video_delay > 0 }
+}
 
 /// Whether the open ended before it saw a picture: the main video stream has
 /// a decoder but no pixel format.

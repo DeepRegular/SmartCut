@@ -662,6 +662,15 @@ struct Reader<'s> {
     /// spliced encodes restated its sets on was decoded by the first one's.
     /// See [`crate::preview::InForce`].
     in_force: crate::preview::InForce,
+    /// The MPEG-4 Part 2 VOL in force where the clip is read, for a key
+    /// picture that states none: a clip opened inside the second of two
+    /// joined Xvid encodes was decoded by the first one's VOL (14-21 dB off).
+    /// See [`crate::preview::VolInForce`].
+    vols: crate::preview::VolInForce,
+    /// Where a picture whose packet carries no time is shown, as the cut
+    /// shows it: an H.264 `.mpg` clip lost its pts-less pictures here, the
+    /// one before each held in its place. See [`crate::preview::Untimed`].
+    untimed: crate::preview::Untimed,
 }
 
 impl<'s> Reader<'s> {
@@ -726,6 +735,7 @@ impl<'s> Reader<'s> {
         let in_tb = f64::from(stream.time_base());
         let params = stream.parameters();
         let in_force = crate::preview::InForce::single(&params, &src.video);
+        let vols = crate::preview::VolInForce::single(&params);
         let decoder = crate::video_decoder(params)?;
         let landed = seek(&mut ictx);
         crate::input::keep_only(&mut ictx, &[ist]);
@@ -751,6 +761,8 @@ impl<'s> Reader<'s> {
             fed: false,
             queued: Default::default(),
             in_force,
+            vols,
+            untimed: crate::preview::Untimed::new(&src.video),
         })
     }
 
@@ -863,6 +875,7 @@ impl<'s> Reader<'s> {
                 continue;
             }
             crate::preview::Landed::mend(&mut self.landed, &mut packet, self.src);
+            self.untimed.place(&mut packet);
             self.in_force.see(&packet);
             let was = self.stretches.clone();
             if self.stretches.reach(packet.position()) && std::mem::take(&mut self.fed) {
@@ -884,6 +897,7 @@ impl<'s> Reader<'s> {
             self.in_force.mend(&mut packet, &mut |at, record| {
                 Some(crate::preview::sets_before(src, at, record))
             });
+            self.vols.mend(&mut packet, src, self.in_tb);
             // A packet the decoder will not take is not a reason to stop.
             if self.decoder.send_packet(&packet).is_ok() {
                 self.fed = true;

@@ -1247,6 +1247,13 @@ fn run() -> Result<()> {
     if fit.is_some() && sound_only {
         bail!("--fit shrinks the pictures, and --sound-only writes none");
     }
+    // A proxy is read by its own marks (`proxy::open`) and its index is
+    // never written: given anyway, an index of another recording handed
+    // `--scenes` that recording's thumbnails, and a stale one was said to be
+    // "made again" when nothing was.
+    if as_proxy && seek_index.is_some() {
+        bail!("--as-proxy reads a proxy by its own marks and keeps no --seek-index: leave --seek-index out");
+    }
     // Each of these answers its question and ends the run, in this order, so
     // anything after the first -- a second of them, or a cut -- was never
     // done, and the run still ended well. `--proxy` and `--preview` also
@@ -1535,6 +1542,9 @@ fn run() -> Result<()> {
     // And what was under its name before, so that a log refused once the
     // recording is open goes as one refused above does.
     let mut log_was = LogWas::Made;
+    // And the folders this run made to put it in, which go with it as they
+    // go with a log refused before anything was read.
+    let mut log_dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Some(at) = written_to(log_to)? {
         let log = std::path::Path::new(&at);
         // Opened to be added to, so named as the recording it wrote the run
@@ -1762,6 +1772,7 @@ fn run() -> Result<()> {
         } else {
             LogWas::Made
         };
+        log_dirs = made;
         smartcut_core::log::write_only(&format!(
             "# smartcut {} -- {}",
             smartcut_core::VERSION,
@@ -2018,7 +2029,7 @@ fn run() -> Result<()> {
             .as_deref()
             .is_some_and(|l| one_place(&l.to_string_lossy(), &at.to_string_lossy()));
         if clash {
-            log_refused(log_file.as_deref(), log_was);
+            log_refused(log_file.as_deref(), log_was, &log_dirs);
         }
         clash
     };
@@ -3208,12 +3219,13 @@ fn run() -> Result<()> {
         let o = out.to_ascii_lowercase();
         [".ts", ".m2ts", ".mts", ".m2t"].iter().any(|e| o.ends_with(e))
     };
-    // Float samples asked as LPCM of a file of sound alone, with no width
-    // named, keep their floats (`plan_audio` in the engine).
+    // Float and 32 bit integer samples asked as LPCM of a file of sound
+    // alone, with no width named, keep their own width (`plan_audio` in the
+    // engine).
     let floats = sound_only
         && audio_codec == smartcut_core::AudioCodec::Lpcm
         && audio_bits.is_none()
-        && matches!(main_codec, "pcm_f32le" | "pcm_f32be");
+        && matches!(main_codec, "pcm_f32le" | "pcm_f32be" | "pcm_s32le" | "pcm_s32be");
     let target = if floats {
         main_codec.to_string()
     } else {
@@ -3607,7 +3619,7 @@ fn run() -> Result<()> {
     if let Some(log) = log_file.as_deref() {
         let subs = std::iter::once(&src).chain(&joined_src).any(|s| subtitled_beside(s, &out));
         if let Some(side) = beside_the_cut(&out, log, audio_es, subs) {
-            log_refused(Some(log), log_was);
+            log_refused(Some(log), log_was, &log_dirs);
             bail!("--log {} is {side}: name another file for the log", log.display());
         }
     }
@@ -4731,7 +4743,7 @@ enum LogWas {
 /// already. Only taken away, a file that was there kept the lines the run
 /// had added to it: `--log x.proxy.marks` beside a proxy built before was
 /// refused, and the marks had the run's head on the end of them.
-fn log_refused(log: Option<&std::path::Path>, was: LogWas) {
+fn log_refused(log: Option<&std::path::Path>, was: LogWas, made: &[std::path::PathBuf]) {
     smartcut_core::log::close();
     let Some(log) = log else { return };
     match was {
@@ -4748,6 +4760,11 @@ fn log_refused(log: Option<&std::path::Path>, was: LogWas) {
                 let _ = f.set_len(len);
             }
         }
+    }
+    // The folders made for it as well (the deepest first; only empty ones
+    // go): `--proxy -o new/p.mp4 --log new/p.marks` left `new` behind.
+    for d in made {
+        let _ = std::fs::remove_dir(d);
     }
 }
 

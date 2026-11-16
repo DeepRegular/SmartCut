@@ -84,11 +84,16 @@ pub fn shape_of(format: ff::format::Pixel) -> Result<Shape> {
     // first asked for a plane that is not there.
     let three = d.comp[0].plane != d.comp[1].plane && d.comp[1].plane != d.comp[2].plane;
     let low = d.comp[0].shift == 0;
+    // Samples that are numbers to add, not floating point: `gbrpf32` (an
+    // OpenEXR decode) is planar RGB too, and was mixed two bytes at a time
+    // as if its samples were sixteen-bit integers.
+    let float = d.flags & ff::ffi::AV_PIX_FMT_FLAG_FLOAT as u64 != 0;
     // Planar RGB is blended as it is, three planes of the same size.
-    if !planar || big_endian || d.nb_components < 3 || !three || !low {
+    if !planar || big_endian || float || d.nb_components < 3 || !three || !low {
         bail!(
             "a transition cannot be made in {format:?} pictures: it is made in planar YUV or \
-             RGB, or in packed RGB of 8 or 16 bits a sample. Such a recording can still be \
+             RGB of whole-number samples (not floating point), or in packed RGB of 8 or 16 \
+             bits a sample. Such a recording can still be \
              joined, with no transition between the clips"
         );
     }
@@ -130,6 +135,7 @@ fn working(format: ff::format::Pixel) -> Option<ff::format::Pixel> {
         || flag(ff::ffi::AV_PIX_FMT_FLAG_PAL as u32)
         || flag(ff::ffi::AV_PIX_FMT_FLAG_BITSTREAM as u32)
         || flag(ff::ffi::AV_PIX_FMT_FLAG_HWACCEL as u32)
+        || flag(ff::ffi::AV_PIX_FMT_FLAG_FLOAT as u32)
         || d.nb_components < 3
     {
         return None;
@@ -1173,8 +1179,12 @@ mod tests {
     #[test]
     fn packed_rgb_that_would_not_come_back_is_refused() {
         use ff::format::Pixel as P;
-        for format in [P::RGB565LE, P::RGB555BE, P::X2RGB10LE, P::PAL8] {
+        for format in [P::RGB565LE, P::RGB555BE, P::X2RGB10LE, P::PAL8, P::RGBAF16LE, P::RGBF32LE] {
             assert!(working(format).is_none(), "{format:?}");
+        }
+        // Nor floating point in planes, whose samples are no integers.
+        for format in [P::GBRPF32LE, P::GBRAPF32LE] {
+            assert!(shape_of(format).is_err(), "{format:?}");
         }
         assert_eq!(working(P::RGB48BE), Some(P::GBRP16LE));
         assert_eq!(working(P::BGRZ), Some(P::GBRP));

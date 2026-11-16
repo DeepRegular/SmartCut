@@ -393,6 +393,8 @@ fn entry_packets(
     let mut entries = crate::EntryPictures::new(&src.video);
     // Each entry picture may go to any decoder of the pool: see [`InForce`].
     let mut in_force = InForce::pool(&params, &src.video);
+    // And the MPEG-4 Part 2 VOL in force: see [`VolInForce`].
+    let mut vols = VolInForce::pool(&params);
     let mut out: Vec<(f64, Vec<ff::Packet>)> = Vec::new();
     let mut first = None;
     let mut pending: Vec<ff::Packet> = Vec::new();
@@ -416,6 +418,7 @@ fn entry_packets(
             continue;
         }
         in_force.mend(&mut packet, &mut |at, record| Some(sets_before(src, at, record)));
+        vols.mend(&mut packet, src, src.video.time_base);
         // The second field of a pair often carries no timestamp of its own,
         // so the picture is timed by the first packet of it that has one --
         // and a packet without one is still half a picture and stays with its
@@ -983,6 +986,17 @@ struct Glancer {
     /// ask them of -- opened only once one is needed.
     in_force: InForce,
     lent: Option<Option<Source>>,
+    /// Pictures whose packets carry no time; see [`Untimed`].
+    untimed: Untimed,
+    /// The MPEG-4 Part 2 VOL in force where a glance lands; see
+    /// [`VolInForce`].
+    vols: VolInForce,
+}
+
+/// The recording a [`Glancer`] reads as a [`Source`], opened only once one
+/// is asked of.
+fn lend<'a>(lent: &'a mut Option<Option<Source>>, spec: &str) -> Option<&'a Source> {
+    lent.get_or_insert_with(|| crate::outline(spec).ok().map(|o| o.into_source())).as_ref()
 }
 
 impl Glancer {
@@ -1028,7 +1042,7 @@ impl Glancer {
         // them, and because frame threading holds the first pictures back
         // until its pipeline fills -- and the first picture after a seek is
         // the whole of what this wants. See [`crate::video_decoder_with`].
-        let mut in_force = {
+        let in_force = {
             let extradata = unsafe {
                 let p = params.as_ptr();
                 if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
@@ -1037,12 +1051,17 @@ impl Glancer {
                     std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
                 }
             };
-            let on = params.id() == ff::codec::Id::H264
+            let on = params.id() == ff::codec::Id::H264;
+            let annex_b = on
                 && crate::bitstream::framing_from_extradata("h264", extradata)
                     == crate::bitstream::NalFraming::AnnexB;
-            InForce::of(&params, on)
+            (InForce::of(&params, on), annex_b)
         };
+        let (mut in_force, annex_b) = in_force;
         in_force.given = Some(in_force.record.clone());
+        in_force.ask = false;
+        let untimed = Untimed::with(annex_b);
+        let vols = VolInForce::single(&params);
         let decoder = crate::video_decoder_with(params, 1)?;
         // Only the pictures, which is all this reads -- and this one seeks
         // again and again, so the stream the seek is aimed by has to be one
@@ -1060,6 +1079,8 @@ impl Glancer {
             used: false,
             in_force,
             lent: None,
+            untimed,
+            vols,
         })
     }
 
@@ -1096,13 +1117,11 @@ impl Glancer {
             used,
             in_force,
             lent,
+            untimed,
+            vols,
         } = self;
         let (idx, time_base, sar, start) = (*idx, *time_base, *sar, *start);
         let again = std::mem::replace(used, true);
-        let mut base = |at: u64, record: &[Vec<u8>]| {
-            let src = lent.get_or_insert_with(|| crate::outline(spec.as_str()).ok().map(|o| o.into_source()));
-            src.as_ref().map(|src| sets_before(src, at, record))
-        };
 
         // A recording whose length the container will not say is read from the
         // beginning: there is no fraction to take of nothing.
@@ -1127,6 +1146,8 @@ impl Glancer {
             let _ = ictx.seek(0, ..0);
         }
         in_force.restart();
+        untimed.restart();
+        vols.restart();
 
         let mut frame = ff::frame::Video::empty();
         // The picture to answer with, which is the first I picture (or key
@@ -1158,6 +1179,7 @@ impl Glancer {
             if s.index() != idx {
                 continue;
             }
+            untimed.place(&mut packet);
             in_force.see(&packet);
             if until.is_some_and(|until| {
                 packet.dts().is_some_and(|dts| dts as f64 * time_base - start > until)
@@ -1179,7 +1201,14 @@ impl Glancer {
             if left <= 0 {
                 break;
             }
-            in_force.mend(&mut packet, &mut base);
+            in_force.mend(&mut packet, &mut |at, record| lend(lent, spec).map(|src| sets_before(src, at, record)));
+            if vols.asks(&packet) {
+                if let Some(src) = lend(lent, spec) {
+                    vols.put(&mut packet, src, time_base);
+                }
+            } else {
+                vols.note(&packet);
+            }
             if decoder.send_packet(&packet).is_err() {
                 continue;
             }
@@ -1254,14 +1283,12 @@ impl Glancer {
             used,
             in_force,
             lent,
+            untimed,
+            vols,
             ..
         } = self;
         let (idx, time_base, sar, start) = (*idx, *time_base, *sar, *start);
         *used = true;
-        let mut base = |at: u64, record: &[Vec<u8>]| {
-            let src = lent.get_or_insert_with(|| crate::outline(spec.as_str()).ok().map(|o| o.into_source()));
-            src.as_ref().map(|src| sets_before(src, at, record))
-        };
 
         decoder.flush();
         let want = start + from.max(0.0);
@@ -1276,6 +1303,8 @@ impl Glancer {
         };
         let _ = ictx.seek(ts, ..ts);
         in_force.restart();
+        untimed.restart();
+        vols.restart();
 
         let mut out: Vec<Shot> = Vec::new();
         // Which of the caller's cells the last answer went into.
@@ -1334,6 +1363,7 @@ impl Glancer {
             if s.index() != idx {
                 continue;
             }
+            untimed.place(&mut packet);
             in_force.see(&packet);
             // Counted before the wait for a key packet as well as after it:
             // a container that flags none never ends that wait, and the
@@ -1347,7 +1377,14 @@ impl Glancer {
             if !started {
                 continue;
             }
-            in_force.mend(&mut packet, &mut base);
+            in_force.mend(&mut packet, &mut |at, record| lend(lent, spec).map(|src| sets_before(src, at, record)));
+            if vols.asks(&packet) {
+                if let Some(src) = lend(lent, spec) {
+                    vols.put(&mut packet, src, time_base);
+                }
+            } else {
+                vols.note(&packet);
+            }
             if decoder.send_packet(&packet).is_err() {
                 continue;
             }
@@ -2158,6 +2195,8 @@ fn walk(
     // caller ([`crate::verify`]) opens such a read on the IDR that restated
     // them instead.
     let mut in_force = if sets { InForce::single(&params, &src.video) } else { InForce::off() };
+    // And the MPEG-4 Part 2 VOL in force: see [`VolInForce`].
+    let mut vols = if sets { VolInForce::single(&params) } else { VolInForce::off() };
     let mut decoder = match cores {
         Cores::One => crate::video_context(params)?.decoder().video()?,
         Cores::All => crate::video_decoder(params)?,
@@ -2228,12 +2267,16 @@ fn walk(
     let stops = |k: usize| src.joins.get(k).map(|j| j.ends.min(j.time));
     let outside =
         |t: f64, since: Option<f64>, stop: Option<f64>| off_stretch(t, since, stop, quarter, tol);
+    // A picture whose packet carries no time is given the one its order
+    // says, as the cut gives it: see [`Untimed`].
+    let mut untimed = Untimed::new(&src.video);
     let mut packets = ictx.read_packets();
     'outer: for (stream, mut packet) in packets.by_ref() {
         if stream.index() != idx {
             continue;
         }
         Landed::mend(&mut landed, &mut packet, src);
+        untimed.place(&mut packet);
         in_force.see(&packet);
         if packet.position() >= 0 {
             read_at = Some(packet.position() as u64);
@@ -2291,6 +2334,7 @@ fn walk(
             continue;
         }
         in_force.mend(&mut packet, &mut |at, record| Some(sets_before(src, at, record)));
+        vols.mend(&mut packet, src, in_tb);
         if decoder.send_packet(&packet).is_err() {
             entries.broke();
             continue;
@@ -2618,6 +2662,204 @@ pub(crate) fn steady_decoder(params: ff::codec::Parameters) -> Result<ff::decode
     Ok(ctx.decoder().video()?)
 }
 
+/// **Where an H.264 picture whose packet carries no time is shown**, as the
+/// cut places it: its order field read by the cut's own rule
+/// (`poc_seam::Order` in [`crate::cut`]), so that the two cannot disagree.
+///
+/// A program stream puts a time on a PES, not on each picture in it, and an
+/// H.264 `.mpg` (`ffmpeg -f mpeg`, a recorder's export) holds pictures that
+/// come with neither pts nor dts -- about one in eleven with B pictures, more
+/// without them. The cut places them ([`crate::cut`]); every reader here
+/// passed them over -- the walk left them out of the index, which then said
+/// "the pictures vary" of a constant 25p recording, the editor could not
+/// stand on them and played the picture before each twice as long, and
+/// `--verify` compared every picture after one with the wrong one and failed
+/// a correct cut ("75 written, 73 expected").
+///
+/// Anything the rule cannot place -- a field, a header it cannot read -- is
+/// passed over as before; a transport stream's second field, the usual
+/// packet with no time, is a field. Off for anything but H.264 in start
+/// codes.
+pub(crate) struct Untimed(Option<crate::cut::poc_seam::Order>);
+
+impl Untimed {
+    pub(crate) fn new(video: &crate::VideoInfo) -> Self {
+        Self::with(video.codec == "h264" && video.framing == crate::bitstream::NalFraming::AnnexB)
+    }
+
+    /// On where `on` says the pictures are H.264 in start codes.
+    fn with(on: bool) -> Self {
+        Untimed(on.then(Default::default))
+    }
+
+    /// After a seek: the picture before is no longer the one before.
+    pub(crate) fn restart(&mut self) {
+        if let Some(order) = self.0.as_mut() {
+            order.restart();
+        }
+    }
+
+    /// The time of a packet, in the stream's ticks: its own, or the one its
+    /// order says where it has none and that can be told. Every packet read
+    /// goes through this in file order, timed or not.
+    pub(crate) fn pts_of(&mut self, packet: &ff::Packet) -> Option<i64> {
+        match self.0.as_mut() {
+            Some(order) => order.pts_of(packet),
+            None => packet.pts(),
+        }
+    }
+
+    /// As [`Self::pts_of`], giving a packet with no time the one its order
+    /// says, for a decoder to hand back with the picture.
+    pub(crate) fn place(&mut self, packet: &mut ff::Packet) {
+        if self.0.is_none() {
+            return;
+        }
+        let had = packet.pts().is_some();
+        let pts = self.pts_of(packet);
+        if !had && pts.is_some() {
+            packet.set_pts(pts);
+        }
+    }
+}
+
+/// **A decoder opened inside an MPEG-4 Part 2 recording is given the VOL in
+/// force there, as the cut gives its copy.** Two Xvid encodes joined into
+/// one `.avi` or `.mkv`, each stating its VOL in its first picture only,
+/// keep the first one's as their record, and a decoder opened inside the
+/// second was built from it: a still, a glimpse, a strip cell and the scene
+/// list's pictures there decoded as the first encode's (a progressive
+/// encode joined to an interlaced one: every picture of the second wrong).
+/// The headers in force come from [`crate::cut::mpeg4_vol_in_force`], read
+/// once per recording; a key picture that states its own VOL -- libavcodec's
+/// and libxvid's habit -- asks nothing, and a recording of one encode gets
+/// nothing put in.
+pub(crate) struct VolInForce {
+    /// The record's headers, where they state a VOL; `None`: off.
+    record: Option<Vec<u8>>,
+    /// Every key picture may go to another decoder (a pool), rather than
+    /// only the first one after the decoder was made or wound back.
+    pool: bool,
+    /// The one decoder has had its first key picture since it was made or
+    /// wound back.
+    fed: bool,
+    /// A VOL other than the record's has been met in band or put in: a
+    /// decoder may hold it, so where the record is in force it is put in.
+    differs: bool,
+}
+
+impl VolInForce {
+    /// For one decoder, fed in file order from where it was made or wound
+    /// back ([`Self::restart`]).
+    pub(crate) fn single(params: &ff::codec::Parameters) -> Self {
+        Self::of(params, false)
+    }
+
+    /// For the decoders of a pool, any of which may be handed any key.
+    pub(crate) fn pool(params: &ff::codec::Parameters) -> Self {
+        Self::of(params, true)
+    }
+
+    fn of(params: &ff::codec::Parameters, pool: bool) -> Self {
+        let record = (params.id() == ff::codec::Id::MPEG4)
+            .then(|| unsafe {
+                let p = params.as_ptr();
+                if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                    None
+                } else {
+                    Some(std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec())
+                }
+            })
+            .flatten()
+            .filter(|r| crate::cut::mpeg4_has_vol(r));
+        VolInForce {
+            record,
+            pool,
+            fed: false,
+            differs: false,
+        }
+    }
+
+    /// Reading and changing nothing.
+    pub(crate) fn off() -> Self {
+        VolInForce {
+            record: None,
+            pool: false,
+            fed: false,
+            differs: false,
+        }
+    }
+
+    /// After a seek: the next key picture is the first again. What the
+    /// decoder holds stays (a flush keeps the VOL).
+    pub(crate) fn restart(&mut self) {
+        self.fed = false;
+    }
+
+    /// Whether [`Self::mend`] would look `packet`'s time up, which is where
+    /// it needs the recording: a key picture stating no VOL, its decoder's
+    /// first or one of a pool's. Every other packet is only noted.
+    fn asks(&self, packet: &ff::Packet) -> bool {
+        self.record.is_some()
+            && packet.is_key()
+            && (self.pool || !self.fed)
+            && !crate::cut::mpeg4_has_vol(packet.data().unwrap_or(&[]))
+    }
+
+    /// A packet about to be decoded, `tb` its stream's time base: a key
+    /// picture that states no VOL, the first of its decoder's, gets the
+    /// headers in force at its time in front of it.
+    pub(crate) fn mend(&mut self, packet: &mut ff::Packet, src: &Source, tb: f64) {
+        if self.asks(packet) {
+            self.put(packet, src, tb);
+        } else {
+            self.note(packet);
+        }
+    }
+
+    /// A packet [`Self::asks`] nothing for: one stating a VOL is what its
+    /// decoder now holds.
+    fn note(&mut self, packet: &ff::Packet) {
+        let Some(record) = self.record.as_deref() else { return };
+        let data = packet.data().unwrap_or(&[]);
+        if crate::cut::mpeg4_has_vol(data) {
+            // Told apart by its bytes only: a VOL stated again as the record
+            // states it is the record's.
+            if !data.starts_with(record) {
+                self.differs = true;
+            }
+            self.fed = true;
+        }
+    }
+
+    /// A key picture [`Self::asks`] for: the headers in force at its time,
+    /// or the record's where another may be held, put in front of it.
+    fn put(&mut self, packet: &mut ff::Packet, src: &Source, tb: f64) {
+        let Some(record) = self.record.as_deref() else { return };
+        let data = packet.data().unwrap_or(&[]);
+        self.fed = true;
+        let Some(t) = packet.pts().or(packet.dts()).map(|p| p as f64 * tb - src.start_time) else {
+            return;
+        };
+        let header = match crate::cut::mpeg4_vol_in_force(src, t, record) {
+            Some(h) => {
+                self.differs = true;
+                h
+            }
+            None if self.differs => record.to_vec(),
+            None => return,
+        };
+        let mut out = ff::Packet::copy(&[header.as_slice(), data].concat());
+        out.set_stream(packet.stream());
+        out.set_pts(packet.pts());
+        out.set_dts(packet.dts());
+        out.set_duration(packet.duration());
+        out.set_position(packet.position());
+        out.set_flags(packet.flags());
+        *packet = out;
+    }
+}
+
 /// H.264 parameter sets as one recording's packets carry them.
 type Sets = Vec<Vec<u8>>;
 
@@ -2642,8 +2884,45 @@ pub(crate) type AskSets<'a> = dyn FnMut(u64, &[Vec<u8>]) -> Option<(FileKey, Set
 /// whose later key pictures carry none but whose sets never change (a
 /// remux that states them at its head) is read back once and given nothing
 /// (the decoder already holds those). See [`sets_before`] for the cost.
+///
+/// **An MP4 or Matroska file's too, learnt as the cut learns them.** The
+/// same splice remuxed into an `.mp4` (`ffmpeg -i spliced.ts -c copy`)
+/// keeps the second encode's sets in band, in lengths, in front of its IDR,
+/// and its record (`avcC`) holds the first encode's: the scene list of such a
+/// file came out different on every run, with whichever decoder of the pool
+/// had met that IDR. What the packets read restate, in file order, is put
+/// in front of the key pictures after them, as `copy_segment`'s
+/// `length_sets` does in the cut, and what is in force where a read opens is
+/// read back key picture by key picture as the cut reads it for a copy
+/// ([`sets_before`], [`crate::cut::length_sets_at`]). A file whose sets in
+/// band are its record's -- every phone -- has nothing put in, and one that
+/// states none in band reads one key picture more, once.
 pub(crate) struct InForce {
     on: bool,
+    /// How the packets frame their NAL units: start codes, or lengths of
+    /// this many bytes (an `avcC` record).
+    framing: crate::bitstream::NalFraming,
+    /// Whether what is in force where the read opens is known and not just
+    /// the record taken for want of anything better: the read opens at the
+    /// head ([`Self::opens_at_head`]), or it was read back or found by an earlier
+    /// read ([`known_at`]). Only then is what a length-framed read finds
+    /// remembered for the next, or put in front of a key picture before the
+    /// read has met a restatement of its own.
+    sure: bool,
+    /// The head is where the read opens.
+    head: bool,
+    /// Whether the packets read since `first` restated a set not in the
+    /// record.
+    met: bool,
+    /// The key pictures a read from the head passed before anything in it
+    /// was not the record's, where the record was in force: noted once
+    /// something is, so that a later read opening on one knows.
+    before: Vec<u64>,
+    /// Whether what is in force may be asked of a length-framed file
+    /// whatever has been met: false for a [`Glancer`], whose asking opens the
+    /// recording again, until a read anywhere has met a set in band that is
+    /// not a record's.
+    ask: bool,
     record: Sets,
     /// The byte of the first packet seen since the read began (or the last
     /// [`Self::restart`]).
@@ -2673,13 +2952,19 @@ impl InForce {
     /// For the decoders of a [`crate::entrypool::Pool`], each built from
     /// `params`: every set-less key picture that needs them carries them.
     pub(crate) fn pool(params: &ff::codec::Parameters, video: &crate::VideoInfo) -> Self {
-        Self::of(params, video.codec == "h264" && video.framing == crate::bitstream::NalFraming::AnnexB)
+        Self::of(params, video.codec == "h264")
     }
 
     /// Reading and changing nothing.
     pub(crate) fn off() -> Self {
         InForce {
             on: false,
+            framing: crate::bitstream::NalFraming::AnnexB,
+            sure: false,
+            head: false,
+            met: false,
+            before: Vec::new(),
+            ask: true,
             record: Vec::new(),
             first: None,
             learnt: Vec::new(),
@@ -2694,9 +2979,28 @@ impl InForce {
         if !on {
             return Self::off();
         }
+        let extradata = unsafe {
+            let p = params.as_ptr();
+            if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+            }
+        };
+        let framing = crate::bitstream::framing_from_extradata("h264", extradata);
+        let record = match framing {
+            crate::bitstream::NalFraming::AnnexB => crate::cut::record_sets_of(params),
+            crate::bitstream::NalFraming::Length(_) => crate::bitstream::parameter_sets("h264", extradata),
+        };
         InForce {
             on,
-            record: crate::cut::record_sets_of(params),
+            framing,
+            sure: false,
+            head: false,
+            met: false,
+            before: Vec::new(),
+            ask: true,
+            record,
             first: None,
             learnt: Vec::new(),
             base: None,
@@ -2712,6 +3016,16 @@ impl InForce {
         self.first = None;
         self.learnt.clear();
         self.base = None;
+        self.sure = false;
+        self.head = false;
+        self.met = false;
+        self.before.clear();
+    }
+
+    /// The read opens at the head of the recording, where the record's sets
+    /// are the ones in force.
+    pub(crate) fn opens_at_head(&mut self) {
+        self.head = true;
     }
 
     /// Every packet of the pictures read, in file order, whether it is
@@ -2723,9 +3037,13 @@ impl InForce {
         if self.first.is_none() {
             self.first = u64::try_from(packet.position()).ok();
         }
-        for nal in restated(packet.data().unwrap_or(&[])) {
+        for nal in restated(packet.data().unwrap_or(&[]), self.framing) {
             if !self.record.iter().any(|r| r.as_slice() == nal) {
                 self.diverged = true;
+                self.met = true;
+                if matches!(self.framing, crate::bitstream::NalFraming::Length(_)) {
+                    LENGTH_DIVERGED.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
             }
             put_set(&mut self.learnt, nal);
         }
@@ -2740,7 +3058,7 @@ impl InForce {
         if !self.on {
             return;
         }
-        let sets = restated(packet.data().unwrap_or(&[]));
+        let sets = restated(packet.data().unwrap_or(&[]), self.framing);
         if !sets.is_empty() {
             if let Some(given) = self.given.as_mut() {
                 for nal in sets {
@@ -2752,6 +3070,20 @@ impl InForce {
         if !packet.is_key() {
             return;
         }
+        let length = matches!(self.framing, crate::bitstream::NalFraming::Length(_));
+        // A read of an MP4 or Matroska file from its head that has met nothing
+        // but the record's sets: the record is in force and the decoders hold
+        // it. Nor does a glance ask, until something anywhere has restated
+        // other sets (a glance of an ordinary `.mp4` opens nothing more).
+        if length
+            && !self.diverged
+            && (self.head || (!self.ask && !LENGTH_DIVERGED.load(std::sync::atomic::Ordering::Relaxed)))
+        {
+            if self.head && self.before.len() < 1 << 14 {
+                self.before.extend(u64::try_from(packet.position()).ok());
+            }
+            return;
+        }
         let at = u64::try_from(packet.position()).ok();
         if self.base.is_none() {
             let first = self.first.or(at).unwrap_or(0);
@@ -2759,6 +3091,8 @@ impl InForce {
                 Some((file, sets)) => (Some(file), sets),
                 None => (None, self.record.clone()),
             };
+            // See `sure`: the head, or a byte an earlier read answered for.
+            self.sure = self.head || file.as_ref().is_some_and(|f| known_at(f, first));
             self.file = file;
             self.base = Some(sets);
         }
@@ -2769,8 +3103,23 @@ impl InForce {
         if !same(&now, &self.record) {
             self.diverged = true;
         }
-        if let (Some(at), Some(file)) = (at, self.file.as_ref()) {
-            remember(file, at, &now);
+        // A length-framed read whose opening was not known and that has met
+        // nothing of its own knows no more than the record: what it would
+        // note here is a guess, and the next read would take it for found.
+        if !length || ((self.sure || self.met) && self.diverged) {
+            if let (Some(at), Some(file)) = (at, self.file.as_ref()) {
+                if self.head {
+                    for b in std::mem::take(&mut self.before) {
+                        remember(file, b, &self.record);
+                    }
+                }
+                remember(file, at, &now);
+            }
+        }
+        // Nor is a guess put in front of a key: the decoder keeps what it
+        // holds, as it did before any of this was asked.
+        if length && !self.sure && !self.met {
+            return;
         }
         let needed = match &self.given {
             Some(given) => !same(&now, given),
@@ -2779,7 +3128,12 @@ impl InForce {
         if !needed {
             return;
         }
-        let Some(data) = crate::cut::with_record_sets(packet.data().unwrap_or(&[]), &now) else {
+        let data = packet.data().unwrap_or(&[]);
+        let data = match self.framing {
+            crate::bitstream::NalFraming::AnnexB => crate::cut::with_record_sets(data, &now),
+            crate::bitstream::NalFraming::Length(n) => with_sets_in_lengths(data, &now, n),
+        };
+        let Some(data) = data else {
             return;
         };
         let mut out = ff::Packet::copy(&data);
@@ -2804,7 +3158,16 @@ impl InForce {
 /// its pictures, and this is asked of every packet a read goes past -- the
 /// thumbnail pass reads the whole recording -- so the slices, which are
 /// nearly all of its bytes, are not searched for start codes.
-fn restated(data: &[u8]) -> Vec<&[u8]> {
+///
+/// In lengths, every NAL unit the packet holds, as `copy_segment`'s
+/// `length_sets` reads them ([`crate::bitstream::nal_payloads`]): a length
+/// steps over a slice without reading it.
+fn restated(data: &[u8], framing: crate::bitstream::NalFraming) -> Vec<&[u8]> {
+    if let crate::bitstream::NalFraming::Length(_) = framing {
+        let mut nals = crate::bitstream::nal_payloads(data, framing);
+        nals.retain(|nal| matches!(nal.first().map(|b| b & 0x1F), Some(7 | 8)));
+        return nals;
+    }
     let mut out = Vec::new();
     // Where each start code's NAL begins, until the first slice.
     let mut i = 0;
@@ -2836,6 +3199,52 @@ fn restated(data: &[u8]) -> Vec<&[u8]> {
     }
     out
 }
+
+/// A length-framed H.264 key picture with `sets` put in front of its slices,
+/// after its access unit delimiter, each in a length of `n` bytes: what
+/// [`crate::cut::with_record_sets`] does in start codes, and `None` where it
+/// says `None` (the packet carries sets of its own, or its first slice names
+/// a picture set `sets` does not hold) or a set is too long for `n` bytes.
+fn with_sets_in_lengths(data: &[u8], sets: &[Vec<u8>], n: usize) -> Option<Vec<u8>> {
+    let kind = |nal: &[u8]| nal.first().map(|b| b & 0x1F);
+    let nals = crate::bitstream::nal_payloads(data, crate::bitstream::NalFraming::Length(n));
+    if nals.iter().any(|nal| matches!(kind(nal), Some(7 | 8))) {
+        return None;
+    }
+    let slice = nals.iter().find(|nal| matches!(kind(nal), Some(1 | 5)))?;
+    // first_mb_in_slice, slice_type, then the picture set's number.
+    let mut b = crate::bitstream::Bits::new(slice);
+    b.skip(8)?;
+    b.ue()?;
+    b.ue()?;
+    let pps = b.ue()?;
+    if !sets.iter().any(|s| set_key(s) == (Some(8), Some(pps))) {
+        return None;
+    }
+    // After the delimiter, where the access unit opens with one.
+    let at = match nals.first() {
+        Some(aud) if kind(aud) == Some(9) => aud.as_ptr() as usize - data.as_ptr() as usize + aud.len(),
+        _ => 0,
+    };
+    if n == 0 || n > 8 || sets.iter().any(|s| n < 8 && s.len() >> (8 * n) != 0) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(data.len() + sets.iter().map(|s| s.len() + n).sum::<usize>());
+    out.extend_from_slice(&data[..at]);
+    // Sequence sets first: a picture set is read against its sequence set.
+    let sequence = sets.iter().filter(|s| kind(s) == Some(7));
+    for s in sequence.chain(sets.iter().filter(|s| kind(s) == Some(8))) {
+        out.extend_from_slice(&(s.len() as u64).to_be_bytes()[8 - n..]);
+        out.extend_from_slice(s);
+    }
+    out.extend_from_slice(&data[at..]);
+    Some(out)
+}
+
+/// Whether a read of any MP4 or Matroska H.264 file in this process has met
+/// a set in band that is not its record's. Until one has, [`InForce`] asks
+/// nothing for such files.
+static LENGTH_DIVERGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The kind and number an SPS or PPS is filed under, as a decoder files it.
 fn set_key(nal: &[u8]) -> (Option<u8>, Option<u32>) {
@@ -2907,6 +3316,9 @@ pub(crate) fn sets_before(src: &Source, at: u64, record: &[Vec<u8>]) -> (FileKey
             .find(|(k, _, _)| *k == key)
             .and_then(|(_, _, by)| by.range(..=at).next_back().map(|(p, s)| (*p, s.clone())))
     });
+    if let crate::bitstream::NalFraming::Length(_) = src.video.framing {
+        return (key.clone(), length_sets_before(src, &key, at, near, record));
+    }
     let sets = match near {
         Some((p, s)) if p == at => return (key, s),
         Some((p, s)) => crate::cut::sets_in_force(src, at, p, &s),
@@ -2914,6 +3326,35 @@ pub(crate) fn sets_before(src: &Source, at: u64, record: &[Vec<u8>]) -> (FileKey
     };
     remember(&key, at, &sets);
     (key, sets)
+}
+
+/// [`sets_before`] for an MP4 or Matroska file, which cannot be read back by
+/// bytes: what is in force at the key picture at byte `at` is read back key
+/// picture by key picture, as the cut reads it for a copy
+/// ([`crate::cut::length_sets_at`]), each key picture once per recording.
+/// Where `at` is no key picture of `src`'s index, what an earlier read found
+/// nearest before it (`near`), else the record -- a guess, not noted (see
+/// [`known_at`]).
+fn length_sets_before(
+    src: &Source,
+    key: &FileKey,
+    at: u64,
+    near: Option<(u64, Sets)>,
+    record: &[Vec<u8>],
+) -> Sets {
+    if let Some((p, s)) = &near {
+        if *p == at {
+            return s.clone();
+        }
+    }
+    let Some(point) = src.points.iter().find(|p| u64::try_from(p.pos).ok() == Some(at)) else {
+        return near.map_or_else(|| record.to_vec(), |(_, s)| s);
+    };
+    // What the process has read of the file's key pictures, kept by its name,
+    // length and time of writing (see [`crate::cut::length_sets_known`]).
+    let sets = crate::cut::length_sets_known(src, point.time, Some(record)).map_or_else(|| record.to_vec(), |(s, _)| s);
+    remember(key, at, &sets);
+    sets
 }
 
 /// Note what is in force in front of byte `at` of the file `key` names.
@@ -2935,6 +3376,18 @@ fn remember(key: &FileKey, at: u64, sets: &Sets) {
         by.clear();
     }
     by.insert(at, sets.clone());
+}
+
+/// Whether an earlier read noted what is in force at byte `at` of the file
+/// `key` names: a read in file order notes every key picture it passes once
+/// anything has diverged, so a read that opens on one of those knows. One
+/// noted further back may have a restatement between it and `at` that no
+/// read here can see.
+fn known_at(key: &FileKey, at: u64) -> bool {
+    SETS_KNOWN
+        .lock()
+        .ok()
+        .is_some_and(|known| known.iter().any(|(k, _, by)| k == key && by.contains_key(&at)))
 }
 
 /// Whether anything found in force in the file `key` names is not its
@@ -2973,12 +3426,12 @@ mod tests {
             &pps2,
         ]
         .concat();
-        assert_eq!(restated(&au), vec![&sps0[..], &pps0[..]]);
+        assert_eq!(restated(&au, crate::bitstream::NalFraming::AnnexB), vec![&sps0[..], &pps0[..]]);
         let all = crate::bitstream::nal_payloads(&au, crate::bitstream::NalFraming::AnnexB);
         assert_eq!(all[1], &sps0[..]);
         assert_eq!(all[2], &pps0[..]);
-        assert!(restated(&[0, 0, 1, 0x65, 0x88, 0, 0, 1, 0x67, 1]).is_empty());
-        assert_eq!(restated(&[0, 0, 1, 0x68, 0xeb]), vec![&[0x68u8, 0xeb][..]]);
+        assert!(restated(&[0, 0, 1, 0x65, 0x88, 0, 0, 1, 0x67, 1], crate::bitstream::NalFraming::AnnexB).is_empty());
+        assert_eq!(restated(&[0, 0, 1, 0x68, 0xeb], crate::bitstream::NalFraming::AnnexB), vec![&[0x68u8, 0xeb][..]]);
         // Filed by kind and number: PPS 2 beside PPS 0, a new PPS 0 in its place.
         let mut sets = vec![sps0.clone(), pps0.clone()];
         put_set(&mut sets, &pps2);
@@ -2987,6 +3440,35 @@ mod tests {
         put_set(&mut sets, &pps0b);
         assert_eq!(sets, vec![sps0.clone(), pps0b.clone(), pps2.clone()]);
         assert!(same(&sets, &vec![pps2, sps0, pps0b]));
+    }
+
+    #[test]
+    fn sets_in_lengths_are_read_and_put_after_the_delimiter() {
+        use crate::bitstream::NalFraming;
+        let sps0: Vec<u8> = vec![0x67, 0x64, 0x00, 0x1e, 0xac, 0xd9];
+        let pps0: Vec<u8> = vec![0x68, 0xeb, 0xe3, 0xcb];
+        let pps2: Vec<u8> = vec![0x68, 0x6b, 0xe3, 0xcb];
+        let len = |n: &[u8]| [&(n.len() as u32).to_be_bytes()[..], n].concat();
+        let aud = [0x09u8, 0x10];
+        let slice = [0x65u8, 0x88, 0x80];
+        // A key with its own sets: read, and left as it is.
+        let own = [len(&aud), len(&sps0), len(&pps0), len(&slice)].concat();
+        assert_eq!(restated(&own, NalFraming::Length(4)), vec![&sps0[..], &pps0[..]]);
+        assert_eq!(with_sets_in_lengths(&own, &[sps0.clone(), pps0.clone()], 4), None);
+        // A key without: the sets go in after the delimiter, SPS first.
+        let bare = [len(&aud), len(&slice)].concat();
+        assert!(restated(&bare, NalFraming::Length(4)).is_empty());
+        let put = with_sets_in_lengths(&bare, &[pps0.clone(), sps0.clone()], 4).unwrap();
+        assert_eq!(put, own);
+        // Without a delimiter, in front.
+        let put = with_sets_in_lengths(&len(&slice), &[sps0.clone(), pps0.clone()], 4).unwrap();
+        assert_eq!(put, [len(&sps0), len(&pps0), len(&slice)].concat());
+        // The slice names PPS 0, which these sets do not hold.
+        assert_eq!(with_sets_in_lengths(&bare, &[sps0.clone(), pps2], 4), None);
+        // Two-byte lengths.
+        let len2 = |n: &[u8]| [&(n.len() as u16).to_be_bytes()[..], n].concat();
+        let put = with_sets_in_lengths(&len2(&slice), &[sps0.clone(), pps0.clone()], 2).unwrap();
+        assert_eq!(put, [len2(&sps0), len2(&pps0), len2(&slice)].concat());
     }
 
     #[test]
