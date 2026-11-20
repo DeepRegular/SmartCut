@@ -287,7 +287,7 @@ only while a single row is picked.
 | | |
 |---|---|
 | `Write it again` | Puts a job that has been written — or failed, or been called off — back in the queue as one that is waiting, in the place it already holds; every picked row it applies to goes back at once. Without it the only way to write a job twice is to take it out and add it again |
-| `Open the project` | Opens that job in a list window of its own, to be worked on. On that window's Export screen `Add to batch` reads **`Overwrite the job`**, and pressing it puts what you have done back into the job in the queue; `Ctrl+S` does the same |
+| `Open the project` | Opens that job in a list window of its own, to be worked on. On that window's Export screen `Add to batch` reads **`Overwrite the job`**, and pressing it puts what you have done back into the job in the queue; `Ctrl+S` does the same. Once that job has been taken out of the queue, the window is an untitled list of its own: the button reads `Add to batch` again and `Ctrl+S` asks for a name, so another list that has since been queued under the same name is never written over |
 | `Open the output folder` | Shows where it writes, in whatever your desktop uses to show folders |
 | `Remove job` | Takes the picked jobs out of the queue for good, and the queue's copy of each goes with the row. The project it was copied from is left alone |
 
