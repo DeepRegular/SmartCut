@@ -1294,13 +1294,18 @@ impl Reencoder {
             self.silence((lo - self.next) as usize);
         }
         self.next = self.next.max(hi);
-        let src = conform(
-            &mut self.resampler,
-            &mut self.remixed,
-            frame,
-            self.layout,
-            PLANAR_F32,
-        )?;
+        // A damaged frame decoded as some other number of channels than the
+        // track has, in no order swresample can rematrix -- 53 of them, at a
+        // broadcast's join into a commercial -- is silence for its length,
+        // rather than the EINVAL that ended the cut. See `decode_on`.
+        let src = match conform(&mut self.resampler, &mut self.remixed, frame, self.layout, PLANAR_F32) {
+            Ok(src) => src,
+            Err(_) if frame.channels() != audio.channels => {
+                self.silence((hi - lo) as usize);
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
         let rerated = src.rate() > 0 && src.rate() != self.sample_rate;
         let src = if rerated {
             rerate(&mut self.rerate, &mut self.rerated, src, self.sample_rate)?
@@ -2452,16 +2457,34 @@ fn decode_on(
             // Read before `conform` is asked for the track's shape, which
             // is the whole of what makes a disagreeing frame findable.
             let shape = (frame.channels(), frame.rate());
-            let floats = conform(&mut resampler, &mut floated, &frame, want, PLANAR_F32)?;
-            let n = floats.samples();
-            let mut pcm: Pcm = vec![Vec::with_capacity(n); channels];
-            take_samples(floats, channels, &mut pcm, (0, n));
-            let wide = int32_pcm(params.id())
-                .then(|| {
-                    let mut ints: Ints = vec![Vec::with_capacity(n); channels];
-                    (frame.samples() == n && take_ints(&frame, &mut ints, (0, n), &pcm, 0)).then_some(ints)
-                })
-                .flatten();
+            // A damaged frame the decoder read as some other number of
+            // channels -- a broadcast's AAC at the join into a commercial,
+            // decoded as 53 channels with no order -- cannot be brought to
+            // the track's: swresample has nothing to rematrix it by and
+            // answers EINVAL, which ended the whole cut with "Invalid
+            // argument". It is silence here, as the reencoder leaves it a
+            // hole: its own shape is kept, so the runs read it as the
+            // disagreeing frame it is.
+            let (pcm, wide) = match conform(&mut resampler, &mut floated, &frame, want, PLANAR_F32) {
+                Ok(floats) => {
+                    let n = floats.samples();
+                    let mut pcm: Pcm = vec![Vec::with_capacity(n); channels];
+                    take_samples(floats, channels, &mut pcm, (0, n));
+                    let wide = int32_pcm(params.id())
+                        .then(|| {
+                            let mut ints: Ints = vec![Vec::with_capacity(n); channels];
+                            (frame.samples() == n && take_ints(&frame, &mut ints, (0, n), &pcm, 0))
+                                .then_some(ints)
+                        })
+                        .flatten();
+                    (pcm, wide)
+                }
+                Err(_) if frame.channels() as usize != channels => {
+                    resampler = None;
+                    (vec![vec![0.0; frame.samples()]; channels], None)
+                }
+                Err(e) => return Err(e),
+            };
             held += pcm.first().map_or(0, Vec::len) as i64;
             frames.push(Decoded {
                 pts,
