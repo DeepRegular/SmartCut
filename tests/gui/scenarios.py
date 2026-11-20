@@ -11371,6 +11371,11 @@ def queue_names_and_beat(cfg, t):
         # tauri). Named, the sentence would hold two names joined by 、.
         with open(os.path.join(drop.encode(), b"\x83\x81\x83\x82.txt"), "wb") as f:
             f.write(b"")
+        # But a disc image so named is: the list takes an .iso by what it
+        # holds, not by its extension (53rd pass, tauri; 0.8.48 passed it over
+        # without a word). The sentence then holds two names joined by 、.
+        with open(os.path.join(drop.encode(), b"\x83\x66\x83\x42.ISO"), "wb") as f:
+            f.write(b"")
         r = app.s.js("return window.__TAURI__.core.invoke('resolve_paths', {paths: [arguments[0]]})"
                      ".then((r) => r)", drop)
         r = r if isinstance(r, list) else None
@@ -11378,7 +11383,7 @@ def queue_names_and_beat(cfg, t):
         err = r[0].get("error") if r else None
         t.check("51q a folder with a non-UTF-8 name: the rest listed, the name said",
                 files == [os.path.join(drop, "ok.ts")] and bool(err) and "UTF-8" in err
-                and "、" not in err and ".ts（" in err, f"{files}; {err!r}")
+                and err.count("、") == 1 and ".ISO、" in err and ".ts（" in err, f"{files}; {err!r}")
 
 
 SCENARIOS = [
@@ -12912,6 +12917,863 @@ def queue_copy_overwritten_52(cfg, t):
 
 
 SCENARIOS += [queue_copy_overwritten_52]
+
+
+def queue_job_window_retaken_53(cfg, t):
+    """(53rd pass, appjs.) The 52nd's rule -- a list writes over its OWN queue
+    copy, never another window's -- for the window the tool's
+    プロジェクトを開く opens on a job (`queuedJob`), whose 保存 and
+    バッチを上書き write the job's file by its path. A registers: the job
+    queued/p.scproj. The job is opened in a window of its own (J). The job is
+    taken out of the queue (the row out, the copy deleted, as ジョブ削除
+    does) while J is still open. B registers: the freed name is B's copy,
+    queued/p.scproj again. J presses 保存, then バッチを上書き: neither may
+    write J's list into B's job (before the fix both did -- B's job ran J's
+    list, and an unsaved B whose window had closed was gone). J's list goes
+    into the queue as a job of its own instead. The batch tool is kept from
+    starting by a beat that says one is running."""
+    a = App(cfg, "queue_job_window_retaken_53_a", [{"path": cfg.a}])
+    b = App(cfg, "queue_job_window_retaken_53_b", [{"path": cfg.c}])
+    for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+        b.env[k] = a.env[k]
+
+    def jobs(app):
+        app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+                 ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: app.s.js("return window.__q"), 10, 0.1)
+        return [j["path"] for j in json.loads(got)["jobs"]]
+
+    def rows_in(path):
+        try:
+            return [os.path.basename(c["path"]) for c in json.load(open(path))["clips"]]
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def enlist(app, n):
+        app.to_list()
+        app.s.js("document.getElementById('enlist-export').click()")
+        return wait_for(f"{n} job(s) in the queue", lambda: (lambda q: q if len(q) == n else None)(jobs(app)),
+                        20, 0.3)
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        first = enlist(a, 1)[0]
+        t.check("53j A's list registered as a copy named p", os.path.basename(first) == "p.scproj"
+                and rows_in(first) == ["a.ts"], f"{first}: {rows_in(first)}")
+        with _QueuedJobWindow(cfg, "queue_job_window_retaken_53_job", a, first) as job:
+            job.to_list()
+            label = job.s.js("return document.getElementById('enlist-export').innerText")
+            # The job out, its copy deleted, while its window is open.
+            a.s.js("window.__d = null; const inv = window.__TAURI__.core.invoke;"
+                   "inv('batch_write', {queue: {jobs: [], after: ''}})"
+                   ".then(() => inv('drop_temp_project', {path: arguments[0]}))"
+                   ".then((r) => window.__d = 'ok ' + r, (e) => window.__d = 'err ' + e);", first)
+            dropped = wait_for("the job taken out", lambda: a.s.js("return window.__d"), 10, 0.1)
+            with b:
+                got = enlist(b, 1)[0]
+                t.check("53j ... B registers after: the freed name is B's copy, B's list in it",
+                        got == first and rows_in(got) == ["c.ts"], f"{dropped}; {got}: {rows_in(got)}")
+            # B's window is closed: its list is now only the copy.
+            job.s.js("document.getElementById('menu-save').click()")
+            time.sleep(3)
+            t.check("53j ... the job window's 保存 leaves B's copy alone",
+                    rows_in(got) == ["c.ts"], f"button {label!r}; B's copy: {rows_in(got)}")
+            job.to_list()
+            job.s.js("document.getElementById('enlist-export').click()")
+            try:
+                q = wait_for("2 jobs in the queue", lambda: (lambda q: q if len(q) == 2 else None)(jobs(job)),
+                             20, 0.3)
+            except Failure:
+                q = jobs(job)
+            time.sleep(1)
+            mine = [p for p in q if p != got]
+            t.check("53j ... the job window's バッチを上書き leaves B's copy alone, its list goes in as a job of its own",
+                    rows_in(got) == ["c.ts"] and len(mine) == 1 and rows_in(mine[0]) == ["a.ts"],
+                    f"B's {os.path.basename(got)}: {rows_in(got)}; queue "
+                    f"{[(os.path.basename(p), rows_in(p)) for p in q]}")
+    shutil.rmtree(os.path.join(cfg.work, "runs", "queue_job_window_retaken_53_job"), ignore_errors=True)
+
+
+SCENARIOS += [queue_job_window_retaken_53]
+
+
+def queue_add_refused_53(cfg, t):
+    """(53rd pass, appjs.) バッチに登録 whose copy is made but whose job is
+    refused (the queue's lock held past five seconds by another process): the
+    copy goes back, rather than staying in the queue's folder as nobody's --
+    since the 52nd the next press takes another name, so it stayed for good.
+    The next press then registers the list under the name, one job, no
+    second copy. The batch tool is kept from starting by a beat that says one
+    is running."""
+    a = App(cfg, "queue_add_refused_53", [{"path": cfg.a}])
+
+    def jobs():
+        a.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+               ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: a.s.js("return window.__q"), 10, 0.1)
+        return [j["path"] for j in json.loads(got)["jobs"]]
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        folder = os.path.join(os.path.dirname(beat), "queued")
+        copies = lambda: sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+        _slow52(a, "batch_append", 2000)
+        a.s.js("document.getElementById('enlist-export').click()")
+        wait_for("the copy made", lambda: copies() or None, 20, 0.05)
+        fd = open(os.path.join(os.path.dirname(beat), "batch.lock"), "a+")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        time.sleep(9)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
+        time.sleep(1)
+        t.check("53r a job refused: its copy goes back, the queue empty",
+                copies() == [] and jobs() == [], f"copies {copies()}; queue {jobs()}")
+        _slow52(a, "batch_append", 0)
+        a.s.js("document.getElementById('enlist-export').click()")
+        try:
+            wait_for("one job", lambda: len(jobs()) == 1 or None, 20, 0.3)
+        except Failure:
+            pass
+        time.sleep(1)
+        t.check("53r ... pressed again: one job, one copy, under the name",
+                [os.path.basename(p) for p in jobs()] == ["p.scproj"] and copies() == ["p.scproj"],
+                f"copies {copies()}; queue {jobs()}")
+
+
+SCENARIOS += [queue_add_refused_53]
+
+
+def queue_job_window_unstamped_53(cfg, t):
+    """(53rd pass, p2gui.) The window プロジェクトを開く opens on a job a
+    0.8.47 queue holds -- a job with no `born` stamp. While the job is still
+    in the queue its 保存 and バッチを上書き write the job's file as they did
+    in 0.8.48 (no save dialog, no second job). Taken out of the queue and the
+    name taken again by another list (B, stamped), the window's 保存 leaves
+    B's copy alone. The batch tool is kept from starting by a beat that says
+    one is running."""
+    a = App(cfg, "queue_job_window_unstamped_53_a", [{"path": cfg.a}])
+    b = App(cfg, "queue_job_window_unstamped_53_b", [{"path": cfg.c}])
+    for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+        b.env[k] = a.env[k]
+
+    def jobs(app):
+        app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+                 ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: app.s.js("return window.__q"), 10, 0.1)
+        return [(j["path"], j.get("born", "")) for j in json.loads(got)["jobs"]]
+
+    def doc(path):
+        try:
+            d = json.load(open(path))
+            return ([os.path.basename(c["path"]) for c in d["clips"]], (d.get("settings") or {}).get("container"))
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def pick(app, container):
+        app.to_list()
+        app.s.js("const s = document.getElementById('out-container'); s.value = arguments[0];"
+                 "s.dispatchEvent(new Event('input'));", container)
+        time.sleep(0.5)
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        a.s.js("document.getElementById('enlist-export').click()")
+        q0 = wait_for("one job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(a)), 20, 0.3)
+        first = q0[0][0]
+        # As 0.8.47 wrote it: no stamp on the job.
+        qpath = os.path.join(os.path.dirname(beat), "batch.json")
+        body = json.load(open(qpath))
+        for j in body["jobs"]:
+            j.pop("born", None)
+        with open(qpath + ".t", "w") as f:
+            json.dump(body, f)
+        os.replace(qpath + ".t", qpath)
+        q1 = jobs(a)
+        t.check("53u a job with no stamp in the queue", q1 == [(first, "")] and doc(first)[0] == ["a.ts"],
+                f"{q1}; {doc(first)}")
+        mine = doc(first)[1]
+        theirs = "mp4" if mine == "mkv" else "mkv"
+        with _QueuedJobWindow(cfg, "queue_job_window_unstamped_53_job", a, first) as job:
+            pick(job, theirs)
+            job.s.js("document.getElementById('menu-save').click()")
+            try:
+                wait_for(f"the job saved as {theirs}", lambda: (doc(first) or [0, 0])[1] == theirs or None, 15, 0.3)
+            except Failure:
+                pass
+            t.check("53u ... the job window's 保存 writes the job's file, no dialog",
+                    doc(first) == (["a.ts"], theirs) and jobs(a) == q1, f"{doc(first)}; queue {jobs(a)}")
+            pick(job, mine)
+            job.to_list()
+            label = job.s.js("return document.getElementById('enlist-export').innerText")
+            job.s.js("document.getElementById('enlist-export').click()")
+            try:
+                wait_for(f"the job written back as {mine}", lambda: (doc(first) or [0, 0])[1] == mine or None,
+                         15, 0.3)
+            except Failure:
+                pass
+            time.sleep(1)
+            t.check("53u ... its バッチを上書き writes the job, still one job",
+                    doc(first) == (["a.ts"], mine) and jobs(a) == q1,
+                    f"button {label!r}; {doc(first)}; queue {jobs(a)}")
+            # The job out, its copy deleted; B takes the name.
+            a.s.js("window.__d = null; const inv = window.__TAURI__.core.invoke;"
+                   "inv('batch_write', {queue: {jobs: [], after: ''}})"
+                   ".then(() => inv('drop_temp_project', {path: arguments[0]}))"
+                   ".then((r) => window.__d = 'ok ' + r, (e) => window.__d = 'err ' + e);", first)
+            wait_for("the job taken out", lambda: a.s.js("return window.__d"), 10, 0.1)
+            with b:
+                b.to_list()
+                b.s.js("document.getElementById('enlist-export').click()")
+                got = wait_for("B's job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(b)), 20, 0.3)
+            bdoc = doc(first)
+            pick(job, theirs)
+            job.s.js("document.getElementById('menu-save').click()")
+            time.sleep(3)
+            t.check("53u ... taken again by B: the job window's 保存 leaves B's copy alone",
+                    got[0][0] == first and bool(got[0][1]) and bdoc is not None and bdoc[0] == ["c.ts"]
+                    and doc(first) == bdoc, f"B {got}; B's copy {bdoc} -> {doc(first)}")
+    shutil.rmtree(os.path.join(cfg.work, "runs", "queue_job_window_unstamped_53_job"), ignore_errors=True)
+
+
+SCENARIOS += [queue_job_window_unstamped_53]
+
+
+
+# --- 53rd pass, mainjs ------------------------------------------------------
+
+H53 = 360
+# A CLI of 0.8.47 (before pts-less PS pictures were counted), for the old-index visit.
+BASE = os.path.expanduser(os.environ.get("M53_BASE", "~/rev52base/smartcut"))
+
+
+def _m53_dir(cfg):
+    return os.path.join(cfg.work, "m53mainjs")
+
+
+def _strip_vol(src, dst):
+    d = open(src, "rb").read()
+    n = len(d)
+    st = []
+    j = 0
+    while True:
+        j = d.find(b"\x00\x00\x01", j)
+        if j < 0:
+            break
+        st.append(j)
+        j += 3
+    st.append(n)
+    out = bytearray(d[:st[0]])
+    vop = False
+    for k in range(len(st) - 1):
+        a, b = st[k], st[k + 1]
+        c = d[a + 3]
+        if c == 0xB6:
+            vop = True
+        if vop and (c in (0xB0, 0xB1, 0xB5) or c <= 0x2F):
+            continue
+        out += d[a:b]
+    open(dst, "wb").write(out)
+
+
+def _m53_make_one(d, name):
+    out = os.path.join(d, name)
+    part = out + ".part" + os.path.splitext(name)[1]
+    g = lambda sec, tail="format=yuv420p": _num_graph(640, H53, "25", sec, tail)
+    sine = lambda sec: ["-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate=48000"]
+    if name == "cam53.mpg":
+        # ffmpeg -f mpeg H.264 with B pictures (as ~/rev52w/cut2/src/cam264.mpg).
+        _m50_ff(sine(8) + ["-filter_complex", g(8), "-map", "[v]", "-map", "0:a", "-c:v", "libx264",
+                           "-preset", "veryfast", "-g", "25", "-b:v", "300k", "-pix_fmt", "yuv420p", "-c:a", "mp2",
+                           "-shortest", "-f", "mpeg", part])
+    elif name == "nob53.mpg":
+        # No B pictures (POC type 2), small pictures sharing a pack (as nob.mpg).
+        _m50_ff(sine(8) + ["-filter_complex", g(8), "-map", "[v]", "-map", "0:a", "-c:v", "libx264",
+                           "-preset", "veryfast", "-bf", "0", "-b:v", "250k", "-g", "50", "-pix_fmt", "yuv420p",
+                           "-c:a", "mp2", "-shortest", "-f", "mpeg", part])
+    elif name == "rs53.mp4":
+        # Two open-GOP encodes with other sets, spliced as .ts and remuxed (as p4far's rs.mp4):
+        # the second encode's sets restated in band.
+        tss = []
+        for k, (a, b, extra) in enumerate(((0, 200, "open-gop=1:keyint=50"),
+                                          (200, 400, "open-gop=1:keyint=50:cabac=0:ref=2"))):
+            ts = os.path.join(d, f"rs53.{k}.ts")
+            _m50_ff(sine(16) + ["-filter_complex",
+                                g(16, f"format=yuv420p,trim=start_frame={a}:end_frame={b},setpts=PTS-STARTPTS")
+                                + f";[0:a]atrim=start={a / 25}:end={b / 25},asetpts=PTS-STARTPTS[s]",
+                                "-map", "[v]", "-map", "[s]", "-c:v", "libx264", "-preset", "veryfast",
+                                "-x264-params", extra, "-pix_fmt", "yuv420p", "-c:a", "aac", "-f", "mpegts", ts])
+            tss.append(ts)
+        lst = os.path.join(d, "rs53.list")
+        with open(lst, "w") as f:
+            f.write("".join(f"file '{x}'\n" for x in tss))
+        ts = os.path.join(d, "rs53.all.ts")
+        _m50_ff(["-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", ts])
+        _m50_ff(["-i", ts, "-c", "copy", part])
+        for x in tss + [lst, ts]:
+            os.remove(x)
+    elif name in ("j53.avi", "j53.mkv"):
+        # Two MPEG-4 Part 2 encodes whose VOLs differ, the VOL only in the first picture (as p4vol's j.*).
+        m4 = []
+        for k, (a, b, extra) in enumerate(((0, 150, []), (150, 300, ["-flags", "+ildct+ilme"]))):
+            raw = os.path.join(d, f"j53.{k}.m4v")
+            _m50_ff(["-filter_complex",
+                     g(12, f"format=yuv420p,trim=start_frame={a}:end_frame={b},setpts=PTS-STARTPTS"),
+                     "-map", "[v]", "-c:v", "mpeg4", "-q:v", "3", "-g", "25", "-bf", "0"] + extra
+                    + ["-f", "m4v", raw])
+            _strip_vol(raw, raw + ".s")
+            os.remove(raw)
+            m4.append(raw + ".s")
+        cat = os.path.join(d, "j53.m4v")
+        with open(cat, "wb") as f:
+            for x in m4:
+                f.write(open(x, "rb").read())
+                os.remove(x)
+        tag = ["-vtag", "XVID"] if name.endswith(".avi") else []
+        _m50_ff(["-fflags", "+genpts", "-r", "25", "-i", cat, "-c", "copy"] + tag + [part])
+        os.remove(cat)
+    os.replace(part, out)
+
+
+M53 = ["cam53.mpg", "nob53.mpg", "rs53.mp4", "j53.mkv", "j53.avi"]
+
+
+def _m53_make(cfg, names):
+    d = _m53_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    for name in names:
+        if not os.path.exists(os.path.join(d, name)):
+            _m53_make_one(d, name)
+    return d
+
+
+
+def _index_files(app):
+    import glob
+    out = {}
+    for d in glob.glob(os.path.join(app.dir, "xdg", "cache", "*", "index")):
+        for f in os.listdir(d):
+            if f.endswith(".scix"):
+                out[f] = os.path.join(d, f)
+    return out
+
+
+def _vmark53(app, t, key, h):
+    _vgoto52(app, t)
+    n = _shown_number(app, h)
+    app.s.keys(key)
+    return n
+
+
+def _frames_visit(t, app, tag, name, path, src, h, still, plan_cuts):
+    """Frame-counted checks; returns (want, joins) of the cuts made when plan_cuts."""
+    keys = [k for k in _keys_of(path) if 3 <= k < len(src) - 3]
+    total = app.state()["frames"]
+    t.check(f"53m {tag} {name}: the counter counts the recording's pictures", total == len(src),
+            f"counter {total}, pictures {len(src)}")
+    bad = []
+    for k in keys[:3] + keys[-2:]:
+        for f in (k - 1, k, k + 1):
+            n = _shown_at(app, f, h)
+            if n != src[f]:
+                bad.append((f, n, src[f]))
+    for f in [0, 1, len(src) // 3, len(src) - 2, len(src) - 1] + list(range(keys[1] + 2, keys[1] + 13)):
+        n = _shown_at(app, f, h)
+        if n != src[f]:
+            bad.append((f, n, src[f]))
+    t.check(f"53m {tag} {name}: J shows the recording's picture", not bad,
+            f"counter {total} src {len(src)} keys {keys[:8]} wrong {bad[:8]}")
+    # Steps across a GOP head and through the pictures after it, each way.
+    k = keys[1]
+    app.goto(k - 2)
+    steps = [_shown_number(app, h)]
+    for _ in range(10):
+        app.s.keys("Right")
+        time.sleep(0.5)
+        steps.append(_shown_number(app, h))
+    want = src[k - 2:k + 9]
+    app.goto(k + 8)
+    back = [_shown_number(app, h)]
+    for _ in range(10):
+        app.s.keys("Left")
+        time.sleep(0.5)
+        back.append(_shown_number(app, h))
+    t.check(f"53m {tag} {name}: → / ← from {k - 2} to {k + 8}", steps == want and back == want[::-1],
+            f"→ {steps} ← {back} want {want}")
+    _frame_strip(app)
+    app.goto(keys[2])
+    time.sleep(3)
+    cells = _strip_numbers(app, h)
+    run = [c for c in cells if c is not None]
+    at = src[keys[2]]
+    t.check(f"53m {tag} {name}: frame strip at key {keys[2]}: one picture a cell",
+            len(run) >= 3 and at in run and all(b - a == 1 for a, b in zip(run, run[1:])),
+            f"cells {cells} (shown {at})")
+    n_still = _still_number(app, still, h)
+    t.check(f"53m {tag} {name}: still at key {keys[2]}", n_still == at, f"still {n_still} picture {at}")
+    mid = keys[1] + 5
+    app.goto(mid)
+    n_still = _still_number(app, still, h)
+    t.check(f"53m {tag} {name}: still inside a GOP ({mid})", n_still == src[mid], f"still {n_still} picture {src[mid]}")
+    if not plan_cuts:
+        return None
+    ka, kb, kc = keys[1], keys[2], keys[0]
+    na = _ord_mark(app, ka + 3, "i", h)
+    nb = _ord_mark(app, kb - 1, "o", h)
+    app.s.keys("Delete")
+    wait_for(f"{name} cut", lambda: app.state()["frames"] == total - (kb - 1 - ka - 3 + 1), 10)
+    left = app.state()["frames"]
+    gone1 = kb - 1 - ka - 3 + 1
+    c0, c1 = kc - 4, kc + 2
+    nc = _ord_mark(app, c0, "i", h)
+    nd = _ord_mark(app, c1, "o", h)
+    app.s.keys("Delete")
+    wait_for(f"{name} cut 2", lambda: app.state()["frames"] == left - 7, 10)
+    app.s.keys("Control+z")
+    wait_for("取消", lambda: app.state()["frames"] == left, 10)
+    app.s.keys("Control+y")
+    wait_for("やり直し", lambda: app.state()["frames"] == left - 7, 10)
+    t.check(f"53m {tag} {name}: IN/OUT show the recording's pictures",
+            (na, nb, nc, nd) == (src[ka + 3], src[kb - 1], src[kc - 4], src[kc + 2]),
+            f"shown {na}..{nb}, {nc}..{nd}; want {src[ka + 3]}..{src[kb - 1]}, {src[kc - 4]}..{src[kc + 2]}")
+    gone = set(range(na, nb + 1)) | set(range(nc, nd + 1)) if None not in (na, nb, nc, nd) else None
+    want = [n for n in src if gone is not None and n not in gone]
+    joins = []
+    for j in (ka + 3 - 7, c0):
+        a = _shown_at(app, j - 1, h)
+        b = _shown_at(app, j, h)
+        s = _still_number(app, still, h)
+        joins.append((j, a, b, s))
+    return want, joins
+
+
+def _variable_visit(t, app, tag, name, path, src, h, still):
+    """The counter is the time: J by each picture's time; whatever the editor
+    shows at IN and OUT must be what the cut takes."""
+    # Pictures with no pts: ffprobe gives N/A. The material is 25p throughout.
+    pts = [i / 25 for i in range(len(src))]
+    keys = [k for k in _keys_of(path) if 3 <= k < len(src) - 3]
+    shown = []
+    for f in [keys[1] - 1, keys[1], keys[1] + 1, keys[1] + 2, keys[1] + 3, keys[2] - 1, keys[2], len(src) - 1]:
+        try:
+            _vgoto52(app, pts[f])
+            shown.append((f, _shown_number(app, h), src[f]))
+        except Failure as e:
+            shown.append((f, f"{e}", src[f]))
+    t.check(f"53m {tag} {name}: (variable) J to a picture's time shows it",
+            all(a == b for _, a, b in shown), f"(picture, shown, want) {shown}")
+    _vgoto52(app, pts[keys[1] - 2])
+    steps = [_shown_number(app, h)]
+    for _ in range(10):
+        app.s.keys("Right")
+        time.sleep(0.5)
+        steps.append(_shown_number(app, h))
+    t.check(f"53m {tag} {name}: (variable) → steps one picture at a time", steps == src[keys[1] - 2:keys[1] + 9],
+            f"→ {steps} want {src[keys[1] - 2:keys[1] + 9]}")
+    # Cuts by what is on screen.
+    plan0 = app.state()["plan"]
+    a, b = keys[1] + 3, keys[2] + 2
+    na = _vmark53(app, pts[a], "i", h)
+    nb = _vmark53(app, pts[b], "o", h)
+    stl = _still_number(app, still, h)
+    app.s.keys("Delete")
+    wait_for(f"{name} cut", lambda: app.state()["plan"] != plan0, 20, 0.2)
+    time.sleep(1.0)
+    t.check(f"53m {tag} {name}: (variable) still = shown", stl == nb, f"still {stl} shown {nb}")
+    gone = set(range(na, nb + 1)) if None not in (na, nb) else None
+    return [n for n in src if gone is not None and n not in gone], [(a, b, na, nb)]
+
+
+def ps_sets_vol_53(cfg, t):
+    """(53rd pass, mainjs.) The 52nd's engine changes under the editor: H.264
+    .mpg with pictures that have no pts (cam53: B pictures; nob53: no B, a
+    pts-less IDR), an .mp4 restating other sets midway (rs53), MPEG-4 Part 2
+    whose VOL changes midway (.mkv and .avi). Visited fresh, from the index the
+    fresh run saved (another process), and from an index made by 0.8.47. J,
+    → / ←, the frame strip, stills, IN / OUT, Del, Ctrl+Z/Y: what is shown is
+    the recording's picture and what the cut takes."""
+    names = M53
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    modes = os.environ.get("M53_MODES", "fresh,tree,base").split(",")
+    if not os.path.exists(BASE):
+        modes = [m for m in modes if m != "base"]
+    d = _m53_make(cfg, names)
+    saved = os.path.join(cfg.work, "m53mainjs.idx")
+    os.makedirs(saved, exist_ok=True)
+    for mode in modes:
+        rows = [{"path": os.path.join(d, n)} for n in names]
+        app = App(cfg, f"ps_sets_vol_53_{mode}", rows)
+        if mode != "fresh":
+            for n in names:
+                fn = os.path.join(saved, n + ".name")
+                if not os.path.exists(fn):
+                    continue
+                sub, base = open(fn).read().split("\n")[:2]
+                to = os.path.join(app.dir, "xdg", "cache", sub, "index")
+                os.makedirs(to, exist_ok=True)
+                if mode == "tree":
+                    shutil.copyfile(os.path.join(saved, n + ".tree.scix"), os.path.join(to, base))
+                else:
+                    tmp = os.path.join(saved, n + ".base.scix")
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                    subprocess.run(["timeout", "300", BASE, os.path.join(d, n), "--seek-index", tmp, "--analyze"],
+                                   capture_output=True)
+                    shutil.copyfile(tmp, os.path.join(to, base))
+        still = os.path.join(app.dir, "still.png")
+        with app:
+            shown = {}
+            variable_of = {}
+            for i, name in enumerate(names, 1):
+                path = os.path.join(d, name)
+                src = _numbers(path)
+                before = _index_files(app)
+                app.to_list()
+                app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+                if mode == "fresh" and i == 1:
+                    # Esc + 破棄 drops the visit's cut; the cuts below are made on a later visit.
+                    app.open_row(i, name)
+                    _walk_done(app)
+                    app.goto(10)
+                    app.s.keys("i")
+                    app.goto(20)
+                    app.s.keys("o")
+                    app.s.keys("Delete")
+                    wait_for("the dropped cut", lambda: app.state()["frames"] == len(src) - 11, 10)
+                    app.escape(discard=True)
+                    app.gone()
+                    time.sleep(0.5)
+                    app.to_list()
+                app.s.double_click(f"#cliplist > li:nth-child({i}) .nm")
+                app.to_editor()
+                wait_for(f"the editor on {name}", lambda: (lambda st: st and name in st["title"] and (
+                    st["frames"] is not None or _counter_time(app) is not None))(app.state()), 120, 0.2)
+                _walk_done(app)
+                time.sleep(1.5)
+                if mode == "fresh":
+                    stem = os.path.splitext(name)[0]
+                    new = {k: v for k, v in _index_files(app).items() if k.startswith(stem + "-")
+                           or k.startswith(name + "-")}
+                    if len(new) == 1:
+                        (base, full), = new.items()
+                        sub = os.path.basename(os.path.dirname(os.path.dirname(full)))
+                        with open(os.path.join(saved, name + ".name"), "w") as f:
+                            f.write(f"{sub}\n{base}\n")
+                        shutil.copyfile(full, os.path.join(saved, name + ".tree.scix"))
+                    else:
+                        print(f"        {name}: index files {list(_index_files(app))}", flush=True)
+                variable = app.state()["frames"] is None
+                variable_of[i] = variable
+                print(f"        {mode} {name}: {'variable' if variable else 'frames'}; {app.state()['plan']!r}",
+                      flush=True)
+                if variable:
+                    r = _variable_visit(t, app, mode, name, path, src, H53, still)
+                else:
+                    r = _frames_visit(t, app, mode, name, path, src, H53, still, True)
+                shown[i] = (name, src) + r
+                app.ok()
+                app.gone()
+                time.sleep(0.5)
+            p = app.save()
+            app.export(timeout=900)
+            outs = _ord_outputs(app)
+            for i, (name, src, want, joins) in shown.items():
+                files = outs.get(i, [])
+                vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log", ".keyframe"))]
+                got = _numbers(vids[0]) if len(vids) == 1 else None
+                detail = f"src {len(src)}, cuts {fmt(cuts_of(p, i))}, outputs {[os.path.basename(f) for f in files]}"
+                if got is not None and got != want:
+                    diff = [(k, a, b) for k, (a, b) in enumerate(zip(got, want)) if a != b][:4]
+                    detail += f"; got {len(got)} want {len(want)}; first differences {diff}"
+                t.check(f"53m {mode} {name}: output = what the editor left", got == want and bool(want), detail)
+                if not variable_of.get(i):
+                    jb = [(j, x, y, z, got[j - 1] if got and j - 1 < len(got) else None,
+                           got[j] if got and j < len(got) else None) for j, x, y, z in joins]
+                    t.check(f"53m {mode} {name}: either side of each join (and its still) = the output there",
+                            got is not None and all(x == ga and y == gb and z == gb for j, x, y, z, ga, gb in jb),
+                            f"(join, shown before, shown after, still, output before, output after) {jb}")
+                for f in files:
+                    os.remove(f)
+
+
+EXTRA.append(ps_sets_vol_53)
+
+
+
+def nob_in_shown_53(cfg, t):
+    """(53rd pass, mainjs.) nob53.mpg: H.264 with no B pictures (order type 2)
+    in an MPEG-PS whose key picture at 4.0 s has no pts. Just after it the
+    stage is asked for a picture whose packet has no time before two timed
+    ones have said how far apart a picture is: what the editor shows there
+    must be the picture the cut takes. J to 102 and 105, IN on 105 as shown,
+    OUT on 110, Del, ← from 106 back to 100, OK, 出力開始: the picture shown
+    at IN must be gone from the output, the one before it kept."""
+    name = "nob53.mpg"
+    d = _m53_make(cfg, [name])
+    path = os.path.join(d, name)
+    src = _numbers(path)
+    with App(cfg, "nob_in_shown_53", [{"path": path}]) as app:
+        app.open_row(1, name)
+        _walk_done(app)
+        time.sleep(2)
+        seen = {f: _shown_at(app, f, H53) for f in (101, 102, 103, 104, 105, 106)}
+        t.check("53n J 101..106 shows the recording's pictures", all(seen[f] == src[f] for f in seen),
+                f"(J, shown) {seen}")
+        app.goto(106)
+        back = [_shown_number(app, H53)]
+        for _ in range(6):
+            app.s.keys("Left")
+            time.sleep(0.6)
+            back.append((app.state()["at"], _shown_number(app, H53)))
+        t.check("53n ← from 106 to 100", [b if isinstance(b, int) else b[1] for b in back] == src[100:107][::-1],
+                f"(counter, shown) {back}; want {src[100:107][::-1]}")
+        app.goto(105)
+        n_in = _shown_number(app, H53)
+        at_in = app.state()["at"]
+        app.s.keys("i")
+        app.goto(110)
+        n_out = _shown_number(app, H53)
+        app.s.keys("o")
+        app.s.keys("Delete")
+        wait_for("the cut", lambda: app.state()["frames"] is not None and app.state()["frames"] < len(src), 10)
+        left = app.state()["frames"]
+        app.ok()
+        app.gone()
+        p = app.save()
+        app.export(timeout=600)
+        files = _ord_outputs(app).get(1, [])
+        vids = [f for f in files if f.endswith((".ts", ".mpg", ".m2ts"))]
+        got = _numbers(vids[0]) if len(vids) == 1 else None
+        t.check("53n the picture shown at IN and at OUT is gone, the ones beside them kept",
+                got is not None and n_in not in got and n_out not in got and (n_in - 1) in got and (n_out + 1) in got,
+                f"IN at counter {at_in} showed {n_in}, OUT showed {n_out}; counter after {left}; cuts {fmt(cuts_of(p, 1))}; "
+                f"output {len(got) if got else None} pictures, around the cut "
+                f"{[x for x in (got or []) if 99 <= x <= 112]}")
+        for f in files:
+            os.remove(f)
+
+
+EXTRA.append(nob_in_shown_53)
+
+
+# --- 53rd pass, second stage (p2editor): the end ✂ puts after OUT ------------
+H53E = 360
+M53E = ["e5994.mkv", "e5994ms.mp4", "e2997gap.ts"]
+
+
+def _m53e_make(cfg, names):
+    d = os.path.join(cfg.work, "m53editor")
+    os.makedirs(d, exist_ok=True)
+    sec = 24
+    sine = ["-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate=48000"]
+    x264 = lambda g, bf: ["-c:v", "libx264", "-preset", "veryfast", "-g", str(g), "-bf", str(bf),
+                          "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-shortest"]
+    for name in names:
+        out = os.path.join(d, name)
+        if os.path.exists(out):
+            continue
+        part = out + ".part" + os.path.splitext(name)[1]
+        if name == "e5994.mkv":
+            # A millisecond clock at 59.94: its pictures 16 and 17 ms apart.
+            args = ["-filter_complex", _num_graph(640, H53E, "60000/1001", sec), "-map", "[v]", "-map", "0:a"] \
+                + x264(120, 3) + ["-f", "matroska"]
+        elif name == "e5994ms.mp4":
+            args = ["-filter_complex", _num_graph(640, H53E, "60000/1001", sec), "-map", "[v]", "-map", "0:a"] \
+                + x264(120, 3) + ["-video_track_timescale", "1000", "-f", "mp4"]
+        elif name == "e25gap.mp4":
+            # 25p on 90 kHz whose pictures after 200 are 3 ms early: one gap of 37 ms.
+            args = ["-filter_complex", _num_graph(640, H53E, "25", sec), "-map", "[v]", "-map", "0:a"] \
+                + x264(50, 0) + ["-video_track_timescale", "90000", "-f", "mp4"]
+            shift = (200, 0.003, ["-video_track_timescale", "90000", "-f", "mp4"])
+        else:
+            # H.264 29.97 in a transport stream, pictures after 300 2.8 ms early.
+            args = ["-filter_complex", _num_graph(640, H53E, "30000/1001", sec), "-map", "[v]", "-map", "0:a"] \
+                + x264(30, 0) + ["-f", "mpegts"]
+            shift = (300, 0.0028, ["-f", "mpegts"])
+        _m50_ff(sine + args + [part])
+        if name in ("e25gap.mp4", "e2997gap.ts"):
+            # Moved on a remux, where the filter counts in the container's ticks.
+            n, by, fmt_ = shift
+            moved = part + ".moved" + os.path.splitext(name)[1]
+            _m50_ff(["-i", part, "-map", "0", "-c", "copy", "-bsf:v",
+                     f"setts=ts=if(gte(N\\,{n})\\,TS-{by}/TB\\,TS)"] + fmt_ + [moved])
+            os.replace(moved, part)
+        os.replace(part, out)
+    return d
+
+
+def many_cuts_end_53(cfg, t):
+    """(53rd pass, p2editor.) The end ✂ puts after OUT (main.js rateStep) on
+    recordings that keep to their rate but whose shortest gap is under the
+    average frame: a millisecond clock (59.94 .mkv and an .mp4 counting in
+    1000ths) and a fine clock with one short gap (a 29.97 H.264 .ts; the same
+    in a 25p .mp4 reads as variable, which rateStep is not asked about).
+    Sixteen cuts of five pictures by J / I / O / Del, then J to twelve places
+    past the last join: the picture shown must be the one the counter names
+    (the recording less what the editor showed as cut); then OK, 出力開始,
+    and the output must hold exactly that."""
+    names = M53E
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    d = _m53e_make(cfg, names)
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    with App(cfg, "many_cuts_end_53", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            src = _numbers(os.path.join(d, name))
+            app.to_list()
+            app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(1)
+            total = app.state()["frames"]
+            removed = []
+            took = []
+            cur = list(src)
+            joins_bad = []
+            step = total // 18
+            for k in range(16):
+                left = app.state()["frames"]
+                a = step * (k + 1) - 5 * k + 3
+                na = _ord_mark(app, a, "i", H53E)
+                nb = _ord_mark(app, a + 4, "o", H53E)
+                time.sleep(0.3)
+                app.s.keys("Delete")
+                wait_for(f"{name} cut {k}", lambda: app.state()["frames"] < left, 10)
+                time.sleep(0.3)
+                took.append(left - app.state()["frames"])
+                removed.append((na, nb))
+                if na in cur and nb in cur:
+                    del cur[cur.index(na):cur.index(nb) + 1]
+                at_join = (_shown_at(app, a - 1, H53E), _shown_at(app, a, H53E))
+                if at_join != (cur[a - 1], cur[a]):
+                    joins_bad.append((k, a, (na, nb), at_join, (cur[a - 1], cur[a])))
+            gone = set()
+            for na, nb in removed:
+                if na in src and nb in src:
+                    gone.update(src[src.index(na):src.index(nb) + 1])
+            want = [n for n in src if n not in gone]
+            last = step * 16 - 5 * 15 + 3
+            probes = [f for f in [last + j for j in (0, 1, 2, 5, 9, 17, 33, 50, 80, 120)] + [5, step * 8 - 30]
+                      if f < len(want) - 2]
+            t.check(f"53e {name}: either side of each join after its cut is what the editor left",
+                    not joins_bad, f"(cut, J, shown IN/OUT, shown at J-1/J, want) {joins_bad[:4]}; took {took}")
+            seen = [(f, _shown_at(app, f, H53E), want[f] if f < len(want) else None) for f in probes]
+            t.check(f"53e {name}: J shows the picture the counter names after 16 cuts",
+                    all(s == w for _, s, w in seen),
+                    f"(J, shown, want) {[x for x in seen if x[1] != x[2]] or seen[:3]}; counter {app.state()['frames']} "
+                    f"want {len(want)}; marks {removed[-3:]}; pictures each cut took {took}")
+            shown[i] = (name, want, removed)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=900)
+        outs = _ord_outputs(app)
+        for i, (name, want, removed) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            diff = [(k, a, b) for k, (a, b) in enumerate(zip(got or [], want)) if a != b][:4]
+            print(f"        cuts of {name}: {fmt(cuts_of(p, i))}", flush=True)
+            t.check(f"53e {name}: output = what the editor left", got == want,
+                    f"got {len(got) if got else None} want {len(want)}; first differences {diff}")
+            for f in files:
+                os.remove(f)
+
+
+EXTRA.append(many_cuts_end_53)
+
+
+# --- 53rd pass, third stage (p3gui): what 32-bit PCM to .wav is said to cost --
+def _l53_make(cfg):
+    d = os.path.join(cfg.work, "l53pcm")
+    os.makedirs(d, exist_ok=True)
+    made = {}
+    for name, codec, fmt_ in (("s32.mkv", "pcm_s32le", "matroska"), ("f32.mov", "pcm_f32be", "mov"),
+                              ("s24.mkv", "pcm_s24le", "matroska")):
+        out = os.path.join(d, name)
+        if not os.path.exists(out):
+            part = out + ".part" + os.path.splitext(name)[1]
+            _m50_ff(["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=6",
+                     "-f", "lavfi", "-i", "sine=frequency=440:duration=6:sample_rate=48000",
+                     "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-g", "25", "-pix_fmt", "yuv420p",
+                     "-c:a", codec, "-shortest", "-f", fmt_, part])
+            os.replace(part, out)
+        made[name] = out
+    return made
+
+
+def lpcm32_wav_rate_53(cfg, t):
+    """(53rd pass, p3gui.) 音声のみ, すべて再エンコード, リニア PCM: the
+    figure the output screen gives for a track of 32-bit samples, integer
+    (.mkv) and float (.mov), must be what the .wav written holds (plan_audio
+    keeps them at 32 bits there; app.js lpcmBitRate kept32), and a 24-bit
+    track's stays 24."""
+    made = _l53_make(cfg)
+    names = ["s32.mkv", "f32.mov", "s24.mkv"]
+    rows = [{"path": made[n]} for n in names]
+    with App(cfg, "lpcm32_wav_rate_53", rows,
+             {"container": "sound", "audio": "reencode", "audioCodec": "lpcm"}) as app:
+        app.to_list()
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("the rows on the output screen", lambda: app.s.js(
+            "return document.querySelectorAll('#out-list > li').length") == len(names), 60)
+        time.sleep(1.0)
+        shown = []
+        for k in range(len(names)):
+            shown.append(wait_for(f"row {k + 1}'s format", lambda k=k: app.s.js(
+                "const s = document.getElementById('outset-clip');"
+                f"s.selectedIndex = {k}; s.dispatchEvent(new Event('change'));"
+                "const x = document.getElementById('outset-format').innerText;"
+                "return /kbps/.test(x) ? x : null"), 30))
+        told = app.s.js("const s = document.getElementById('out-audio-bitrate');"
+                        "return s.options[s.selectedIndex] ? s.options[s.selectedIndex].text : ''")
+        files = app.export(600)
+        wavs = [f for f in files if f.endswith(".wav")]
+        for k, name in enumerate(names):
+            stem = os.path.splitext(name)[0]
+            wav = [f for f in wavs if os.path.basename(f).endswith(f"_{stem}.wav")]
+            m = re.findall(r"([\d.]+) kbps", shown[k] or "")
+            said = float(m[-1]) if m else None
+            got = None
+            if len(wav) == 1:
+                out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                                      "stream=codec_name,bits_per_sample,channels,sample_rate",
+                                      "-of", "csv=p=0", wav[0]], capture_output=True, text=True).stdout.strip()
+                f = out.split("\n")[0].split(",")
+                try:
+                    got = (f[0], int(f[1]) * int(f[2]) * int(f[3]) / 1000)
+                except (ValueError, IndexError):
+                    got = (out, None)
+            t.check(f"l53 {name}: the figure shown is what the .wav holds",
+                    said is not None and got is not None and got[1] is not None and abs(said - got[1]) < 1,
+                    f"shown {said} kbps ({(shown[k] or '')[-120:]!r}); written {got}; control says {told!r}")
+        for f in files:
+            shutil.rmtree(f) if os.path.isdir(f) else os.remove(f)
+
+
+EXTRA.append(lpcm32_wav_rate_53)
 
 
 def main():
