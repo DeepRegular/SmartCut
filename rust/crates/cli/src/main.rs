@@ -716,7 +716,14 @@ fn run() -> Result<()> {
             }
             "--join" => {
                 i += 1;
-                joined.push(args.get(i).context("--join needs a recording")?.clone());
+                let v = args.get(i).context("--join needs a recording")?;
+                // An empty name -- a script's variable that came out empty --
+                // was planned past and then failed with "cannot open : No
+                // such file or directory", and `--analyze` let it through.
+                if v.is_empty() {
+                    bail!("--join needs a recording");
+                }
+                joined.push(v.clone());
             }
             "--master" => {
                 i += 1;
@@ -1783,6 +1790,14 @@ fn run() -> Result<()> {
                 .join(" ")
         ));
     }
+    // A still for a crossing, asked of joins that have none: it is laid
+    // over nothing, and the run said nothing of it.
+    if crossing_image.is_some() && matches!(crossing, smartcut_core::transition::Crossing::None) {
+        smartcut_core::say!(
+            "note: --transition-image is laid over a crossing, and without --transition there is \
+             none: it is ignored"
+        );
+    }
     // A disc holds several recordings and is opened by naming one of them.
     // Without a name it is a question rather than a job: say what is on it.
     // The chapter points the disc's index carried, on the clip's own clock.
@@ -2354,7 +2369,7 @@ fn run() -> Result<()> {
         }
         for w in [0.5, 1.0, 2.0] {
             let t = smartcut_core::thumbs::cut_near(&src, at, w, 0.08)?;
-            tell!("  ±{w:.1}s の窓: {}  ({:+.3}s)", fmt_hms(t), t - at);
+            tell!("  ±{w:.1}s window: {}  ({:+.3}s)", fmt_hms(t), t - at);
         }
         return Ok(());
     }
@@ -2633,7 +2648,7 @@ fn run() -> Result<()> {
         if the_log(std::path::Path::new(&path)) {
             bail!("--log names {path}, which --preview writes: name another file for the log");
         }
-        std::fs::write(&path, &shot.jpeg)?;
+        std::fs::write(&path, &shot.jpeg).with_context(|| format!("cannot write {path}"))?;
         // The time reported back is the picture actually decoded, not the one
         // asked for: a transport stream seek can land late, and saying so is
         // what makes the miss testable.

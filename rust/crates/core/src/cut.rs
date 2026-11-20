@@ -2830,16 +2830,17 @@ pub(crate) mod poc_seam {
     /// (`pic_order_cnt_type` 0), or that shows its pictures in the order they
     /// are decoded (2: no B pictures, so the next picture decoded is the
     /// next one shown), and only once two pictures with times have said how
-    /// far apart one step of the order is; anything else answers nothing,
+    /// far apart one step of the order is (or, for the second kind, the
+    /// stream's rate has: [`Order::paced`]); anything else answers nothing,
     /// and the picture is passed over as before. An IDR of the first kind,
     /// which starts its order afresh, is shown one picture after the last of
     /// those before it.
     #[derive(Default)]
     pub(crate) struct Order {
         sets: Sets,
-        /// The last picture placed: its time, in the stream's ticks, and its
-        /// order as counted here. A picture of a sequence in decode order, or
-        /// an IDR, is placed after the one before it, timed or not.
+        /// The last picture read: its time, in the stream's ticks, and its
+        /// order as counted here, **whether it could be placed or not** -- the
+        /// next picture's order is counted from it. (Its time is never read.)
         last: Option<(i64, i64)>,
         /// The last picture read with a time (or an IDR placed without one),
         /// and its order: what the next ones are counted from.
@@ -2852,6 +2853,10 @@ pub(crate) mod poc_seam {
         /// The latest time placed since the last IDR, where the order is read
         /// from the slices.
         shown: Option<i64>,
+        /// Ticks per picture by the stream's own rate: the step of a sequence
+        /// in decode order (one picture per step) until two pictures with
+        /// times have measured it. See [`Self::paced`].
+        pace: Option<f64>,
     }
 
     /// How a picture says where it is shown.
@@ -2863,6 +2868,160 @@ pub(crate) mod poc_seam {
         Next,
     }
 
+    /// **Two pictures that begin in one PES are handed over by libav with one
+    /// time between them, and it is the second's.** The pictures' packets
+    /// are held one behind the read so that each can be told whether the
+    /// next has its very time and place (pts and byte); where it has, the
+    /// first is placed by its order ([`Order::doubted`]) instead. Taken at
+    /// their word, an x264 baseline `.mpg` (`ffmpeg -f mpeg`) had two
+    /// pictures on one slot: a whole-file copy wrote 149 of its 150, and 59
+    /// after the one lost decoded wrong; and a still asked on the first of
+    /// such a pair in a B-pyramid `.mpg` was the second. Every reader that
+    /// places pictures by [`Order`] reads through this; nothing else in the
+    /// read moves (the other streams' packets keep their places between the
+    /// pictures), and a recording whose packets never share a time and a
+    /// byte -- every transport stream measured -- is read as before.
+    pub(crate) struct Pairs<T> {
+        /// The pictures' stream; `None` where every item is a picture's.
+        video: Option<usize>,
+        queue: std::collections::VecDeque<T>,
+        /// The read is over: what is held goes as it is.
+        ending: bool,
+    }
+
+    /// How many packets of the other streams a picture is held behind
+    /// before it goes without its next one. A PES's second picture is handed
+    /// over with the next picture's packet, a few of the sound's after it.
+    const HOLD_MOST: usize = 1024;
+
+    /// What [`Pairs`] holds: a packet, with or without its stream.
+    pub(crate) trait HoldsPacket {
+        fn packet(&self) -> &ffmpeg_next::Packet;
+    }
+
+    impl HoldsPacket for ffmpeg_next::Packet {
+        fn packet(&self) -> &ffmpeg_next::Packet {
+            self
+        }
+    }
+
+    impl HoldsPacket for (ffmpeg_next::format::stream::Stream<'_>, ffmpeg_next::Packet) {
+        fn packet(&self) -> &ffmpeg_next::Packet {
+            &self.1
+        }
+    }
+
+    /// Whether `next`, the picture read after `held`, has its time and byte.
+    fn one_time(held: &ffmpeg_next::Packet, next: &ffmpeg_next::Packet) -> bool {
+        held.pts().is_some()
+            && held.pts() == next.pts()
+            && held.position() >= 0
+            && held.position() == next.position()
+    }
+
+    impl<T: HoldsPacket> Pairs<T> {
+        /// For the pictures of stream `video`, or (`None`) where only
+        /// pictures are put in.
+        pub(crate) fn new(video: Option<usize>) -> Self {
+            Pairs { video, queue: Default::default(), ending: false }
+        }
+
+        fn is_video(&self, packet: &ffmpeg_next::Packet) -> bool {
+            self.video.is_none_or(|v| packet.stream() == v)
+        }
+
+        /// The next packet read, in file order.
+        pub(crate) fn push(&mut self, item: T) {
+            self.queue.push_back(item);
+        }
+
+        /// The read is over: the last picture has no next one to be told by.
+        pub(crate) fn end(&mut self) {
+            self.ending = true;
+        }
+
+        /// What can go now, in the order it was read, and whether its time is
+        /// the next picture's; `None` until the picture in front has its next
+        /// one behind it (or the read is over).
+        pub(crate) fn pop(&mut self) -> Option<(T, bool)> {
+            let front = self.queue.front()?.packet();
+            let doubted = if self.is_video(front) {
+                match self.queue.iter().skip(1).map(HoldsPacket::packet).find(|p| self.is_video(p)) {
+                    Some(next) => one_time(front, next),
+                    // Nor where the pictures have stopped and the sound goes
+                    // on: held for the next one, the read of a recording whose
+                    // sound runs past its last picture went to the end of the
+                    // file before the sound was handed on.
+                    None if self.ending || self.queue.len() > HOLD_MOST => false,
+                    None => return None,
+                }
+            } else {
+                false
+            };
+            let item = self.queue.pop_front()?;
+            if self.queue.is_empty() {
+                self.ending = false;
+            }
+            Some((item, doubted))
+        }
+
+        /// After a seek: what was held is from before it.
+        pub(crate) fn restart(&mut self) {
+            self.queue.clear();
+            self.ending = false;
+        }
+    }
+
+    /// A read through [`Pairs`]: each packet as it came, and whether its
+    /// time is the next picture's. Straight through where `on` is false.
+    pub(crate) struct Paired<'a, I> {
+        inner: I,
+        on: bool,
+        /// The read below has ended: it is not asked again (a read that was
+        /// stopped would carry on).
+        done: bool,
+        pairs: Pairs<(ffmpeg_next::format::stream::Stream<'a>, ffmpeg_next::Packet)>,
+    }
+
+    impl<'a, I> Paired<'a, I>
+    where
+        I: Iterator<Item = (ffmpeg_next::format::stream::Stream<'a>, ffmpeg_next::Packet)>,
+    {
+        /// Over `inner`, for the pictures of stream `video`.
+        pub(crate) fn new(inner: I, video: usize, on: bool) -> Self {
+            Paired { inner, on, done: false, pairs: Pairs::new(Some(video)) }
+        }
+
+        /// The next packet, its stream, and whether its time is in doubt.
+        pub(crate) fn read(
+            &mut self,
+        ) -> Option<(ffmpeg_next::format::stream::Stream<'a>, ffmpeg_next::Packet, bool)> {
+            if !self.on {
+                return self.inner.next().map(|(s, p)| (s, p, false));
+            }
+            loop {
+                if let Some(((s, p), doubted)) = self.pairs.pop() {
+                    return Some((s, p, doubted));
+                }
+                if self.done {
+                    return None;
+                }
+                match self.inner.next() {
+                    Some(item) => self.pairs.push(item),
+                    None => {
+                        self.done = true;
+                        self.pairs.end();
+                    }
+                }
+            }
+        }
+
+        /// The read below.
+        pub(crate) fn inner(&self) -> &I {
+            &self.inner
+        }
+    }
+
     impl Order {
         /// The time of a packet in the stream's ticks: its own, or the one
         /// its order says where it has none and that can be told. Every
@@ -2870,14 +3029,64 @@ pub(crate) mod poc_seam {
         /// H.264 in start codes is asked. Shared with [`crate::preview`], so
         /// the walk, the editor and `--verify` place such a picture where the
         /// cut does.
-        pub(crate) fn pts_of(&mut self, packet: &ffmpeg_next::Packet) -> Option<i64> {
+        /// `doubted`: its time is the next picture's ([`Pairs`]).
+        pub(crate) fn pts_of(&mut self, packet: &ffmpeg_next::Packet, doubted: bool) -> Option<i64> {
             let data = packet.data().unwrap_or(&[]);
             match packet.pts() {
+                Some(pts) if doubted => Some(self.doubted(data, pts)),
                 Some(pts) => {
                     self.timed(data, pts);
                     Some(pts)
                 }
                 None => self.untimed(data),
+            }
+        }
+
+        /// Knowing `sets` (a stream record's NALs, start codes off) before any
+        /// packet restates them. **A read that starts from a seek meets only
+        /// the sets restated after it**, and a stream that states them at its
+        /// head alone -- an open-GOP x264 `.mp4` remuxed to `.mpg` (`-c copy
+        /// -bsf:v h264_mp4toannexb -f mpeg`), whose I pictures past the first
+        /// carry none -- left every picture of the read unreadable here: the
+        /// key picture with no time that the walk (which reads from the head)
+        /// had placed at 10.01 s was passed over, and `--keep 8-12` failed with
+        /// "the entry point ... was passed without being met".
+        pub(crate) fn knowing(sets: &[Vec<u8>]) -> Self {
+            let mut order = Self::default();
+            order.learn(sets);
+            order
+        }
+
+        /// Told the stream's rate, `ticks` per picture. **A read that starts
+        /// from a seek meets its first picture with no time before two with
+        /// times have measured a step**: in a sequence in decode order (no B
+        /// pictures) that one is placed a picture after the one before it by
+        /// this, where it was passed over -- the picture after a key picture
+        /// with no time, in an `ffmpeg -f mpeg` of a B-less x264 encode, could
+        /// not be stood on in the editor, and a still asked there was the
+        /// picture after it. Only that kind; and only until two times say.
+        pub(crate) fn paced(mut self, ticks: f64) -> Self {
+            self.pace = (ticks.is_finite() && ticks > 0.0).then_some(ticks);
+            self
+        }
+
+        /// `sets` (NALs, start codes off) taken in, each in place of
+        /// the set of its kind and number: what a look-back found in force.
+        pub(crate) fn learn(&mut self, sets: &[Vec<u8>]) {
+            for nal in sets {
+                match nal.first().map(|b| b & 0x1F) {
+                    Some(7) => {
+                        if let Some((id, sps)) = read_sps(&unescape(nal)) {
+                            self.sets.sps.insert(id, sps);
+                        }
+                    }
+                    Some(8) => {
+                        if let Some((id, pps)) = read_pps(&unescape(nal)) {
+                            self.sets.pps.insert(id, pps);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -2967,31 +3176,69 @@ pub(crate) mod poc_seam {
         }
 
         /// The time of a picture read with none, where it can be told.
+        ///
+        /// **Its order is counted, and kept as the last, whether or not it
+        /// can be placed**, as [`Self::timed`] counts a picture's: counted
+        /// from the last picture with a time instead, a run of more than half
+        /// the order field's range with no times (a second of black, which
+        /// packs some twenty pictures into PES packets with none) wrapped the
+        /// wrong way -- five pictures placed 32 pictures early on ones already
+        /// shown, the IDR after them five early, 65 of 70 written and the
+        /// references lost -- and a picture passed over in a sequence in
+        /// decode order had the next one counted a step too early, every
+        /// picture after it one off.
         pub(crate) fn untimed(&mut self, data: &[u8]) -> Option<i64> {
             let (told, idr) = self.lsb(data)?;
-            let ((_, prev), (then, from), step) = (self.last?, self.measured?, self.step?);
-            let pts = match told {
-                // One picture after the latest shown before it, and counted
-                // from afresh.
-                Told::Lsb(lsb, _) if idr => {
-                    let pts = self.shown? + (self.gap? as f64 * step).round() as i64;
-                    self.shown = Some(pts);
-                    self.last = Some((pts, lsb));
-                    self.measured = Some((pts, lsb));
-                    return Some(pts);
+            // As in `timed`: an IDR of the first kind starts afresh.
+            let afresh = idr && matches!(told, Told::Lsb(..));
+            let order = match (told, self.last) {
+                (Told::Lsb(lsb, bits), Some((_, prev))) if !afresh => {
+                    follows(prev, prev.rem_euclid(1 << bits), lsb, bits)
                 }
-                Told::Lsb(lsb, bits) => {
-                    let order = follows(prev, prev.rem_euclid(1 << bits), lsb, bits);
-                    then + ((order - from) as f64 * step).round() as i64
-                }
-                Told::Next => {
-                    let pts = then + ((prev + 1 - from) as f64 * step).round() as i64;
-                    self.last = Some((pts, prev + 1));
-                    pts
-                }
+                (Told::Lsb(lsb, _), _) => lsb,
+                (Told::Next, Some((_, prev))) => prev + 1,
+                (Told::Next, None) => 0,
             };
-            self.shown = self.shown.map(|s| s.max(pts));
-            Some(pts)
+            // Counted from the last picture with a time (`measured` is never
+            // set without `last`).
+            let pts = (|| {
+                let (then, from) = self.measured?;
+                let step = match told {
+                    // One picture after the latest shown before it.
+                    Told::Lsb(..) if afresh => {
+                        return Some(self.shown? + (self.gap? as f64 * self.step?).round() as i64);
+                    }
+                    Told::Lsb(..) => self.step?,
+                    Told::Next => self.step.or(self.pace)?,
+                };
+                Some(then + ((order - from) as f64 * step).round() as i64)
+            })();
+            self.last = Some((pts.unwrap_or(0), order));
+            match pts {
+                Some(pts) if afresh => {
+                    self.shown = Some(pts);
+                    self.measured = Some((pts, order));
+                }
+                Some(pts) => self.shown = self.shown.map(|s| s.max(pts)),
+                // Counted afresh, the time before is no anchor for what follows.
+                None if afresh => self.measured = None,
+                None => {}
+            }
+            pts
+        }
+
+        /// The time of a picture read with `pts`, which is the next
+        /// picture's ([`Pairs`]): where its order says, as if it had come with
+        /// none -- and `pts`, read as it always was, where that cannot be
+        /// told (a field, a header it cannot read, no step yet after a seek).
+        pub(crate) fn doubted(&mut self, data: &[u8], pts: i64) -> i64 {
+            let kept = (self.last, self.measured, self.shown);
+            if let Some(placed) = self.untimed(data) {
+                return placed;
+            }
+            (self.last, self.measured, self.shown) = kept;
+            self.timed(data, pts);
+            pts
         }
     }
 
@@ -4882,9 +5129,12 @@ const PAST_UNTIL: f64 = 2.0;
 /// already on screen when it opens can be written again at its first frame.
 ///
 /// The same shape as [`read_graphics_before`] and the same reason for
-/// existing. What comes back is the last unit each stream sent before the
-/// range, with the time it was shown at, and whether it had already taken
-/// itself down by the time the range begins is decided by the caller.
+/// existing. What comes back is, for each stream, the unit on screen at the
+/// range's opening -- the one that acted last, which with no delays is the
+/// last one sent -- and those sent before the range that act only after it
+/// opens (see [`carried_up`]), each with the time it was handed over at; whether the
+/// one on screen had already taken itself down by the time the range begins
+/// is decided by the caller.
 ///
 /// And, where `through` is past `until`, every unit shown from `until` up to
 /// `through`: a reel a dissolve or a wipe opens shows from `until` and its
@@ -4923,9 +5173,10 @@ fn read_subpictures_before(src: &Source, until: f64, through: f64) -> Result<Sub
         }
     }
     let through = through.max(until);
-    let mut last: Vec<(i32, f64, Vec<u8>)> = Vec::new();
-    // The unit before each stream's last, for a last one still to go up.
-    let mut before: Vec<(i32, f64, Vec<u8>)> = Vec::new();
+    // Every unit handed over in front of `until`, in the order read: which
+    // of them is on screen there is decided by when each acts, not by which
+    // came last. See [`carried_up`].
+    let mut handed: Vec<(i32, f64, Vec<u8>)> = Vec::new();
     let mut sent: Vec<(i32, f64, Vec<u8>)> = Vec::new();
     for (stream, packet) in ictx.read_packets() {
         if stream.parameters().id() != ff::codec::Id::DVD_SUBTITLE {
@@ -4947,44 +5198,68 @@ fn read_subpictures_before(src: &Source, until: f64, through: f64) -> Result<Sub
         if t >= until {
             sent.push(unit);
         } else {
-            if let Some(k) = last.iter().position(|(other, _, _)| *other == id) {
-                before.retain(|(other, _, _)| *other != id);
-                before.push(last.remove(k));
-            }
-            last.push(unit);
+            handed.push(unit);
         }
     }
-    // **What is on screen at the opening may be the unit before the last.**
-    // A last unit whose start delay runs past `until` has not put its line
-    // up yet, and the one before it stands until it does: carried alone,
-    // the line up at the opening was missing for as long as the delay had
-    // left to run. Carried in front of it, taking itself down where the
-    // last one goes up.
-    Ok(SubpicturesBefore { up: carried_up(last, before, until), sent })
+    Ok(SubpicturesBefore { up: carried_up(handed, until), sent })
 }
 
 /// A DVD subtitle unit read off a recording: its stream, time and bytes.
 type Unit = (i32, f64, Vec<u8>);
 
-/// Each stream's last unit in front of `until`, with the one before it put
-/// in front of it -- taking itself down where the last acts -- where the
-/// last's start delay, or for a unit that only stops its stop's, runs past
-/// `until`. See [`read_subpictures_before`].
-fn carried_up(last: Vec<Unit>, mut before: Vec<Unit>, until: f64) -> Vec<Unit> {
-    let mut up = Vec::with_capacity(last.len() + before.len());
-    for unit in last {
-        let (id, t) = (unit.0, unit.1);
-        // Where it acts (`vobsub::acts_after`): its start, or, for a unit
-        // that only stops, its stop -- which at a delay of its own still to
-        // run leaves the line before it up at the opening, as the preview
-        // (`subs`) and the `.idx`/`.sub` show it. Carried alone, it stopped
-        // nothing and that line was missing until then.
-        let pending = Some(crate::vobsub::acts_after(&unit.2)).filter(|d| *d > 0.0 && t + d > until);
-        if let (Some(d), Some(k)) = (pending, before.iter().position(|(other, _, _)| *other == id)) {
-            let (_, shown, prev) = before.remove(k);
-            up.push((id, shown, crate::vobsub::stopped_after(&prev, t + d - shown)));
+/// What each stream has on screen at `until`, out of the units it handed
+/// over in front of it (`handed`, in the order read), and what it has still
+/// to do there. See [`read_subpictures_before`].
+///
+/// **On screen is the unit that acted last, not the one handed over last**
+/// -- the rule [`Subpictures::take`] and the preview (`subs`) go by. Where
+/// each acts is `vobsub::acts_after`: its start, or, for a unit that only
+/// stops, its stop; of two acting at once, the one handed over later. A unit
+/// whose start runs at a delay can go up after a later one: handed at
+/// 130.246 and up at 133.250 until 135.241, with the next handed at 133.015,
+/// up at once and down at 133.163. Kept as the last, that one was down by a
+/// range opening at 134 and nothing was carried, while the preview showed
+/// the earlier one there until 135.241.
+///
+/// And the units handed over in front of `until` that act only after it --
+/// a start or a stop at a delay still to run -- are carried behind it, in
+/// the order handed, the one on screen taking itself down where the first
+/// of them acts. Carried alone, a last unit still to act left the line up
+/// at the opening missing for as long as its delay had left to run.
+///
+/// With no delays -- every pressed disc -- this is each stream's last unit
+/// alone, the streams in the order of their last units, as it always was.
+fn carried_up(handed: Vec<Unit>, until: f64) -> Vec<Unit> {
+    let acts = |unit: &Unit| unit.1 + crate::vobsub::acts_after(&unit.2);
+    // The streams in the order their last units were handed over.
+    let mut ids: Vec<i32> = Vec::new();
+    for (id, _, _) in &handed {
+        ids.retain(|other| other != id);
+        ids.push(*id);
+    }
+    let mut up = Vec::with_capacity(ids.len());
+    for id in ids {
+        let mut shown: Option<&Unit> = None;
+        let mut pending: Vec<&Unit> = Vec::new();
+        for unit in handed.iter().filter(|u| u.0 == id) {
+            let at = acts(unit);
+            // Counted as the preview counts it: acted where `at <= t` there,
+            // and only a delay can put `at` past `until` (`t < until`).
+            if at > until {
+                pending.push(unit);
+            } else if shown.is_none_or(|s| at >= acts(s)) {
+                shown = Some(unit);
+            }
         }
-        up.push(unit);
+        if let Some(unit) = shown {
+            let first = pending.iter().map(|u| acts(u)).fold(f64::INFINITY, f64::min);
+            if first.is_finite() {
+                up.push((id, unit.1, crate::vobsub::stopped_after(&unit.2, first - unit.1)));
+            } else {
+                up.push(unit.clone());
+            }
+        }
+        up.extend(pending.into_iter().cloned());
     }
     up
 }
@@ -5015,7 +5290,7 @@ mod carried_up_tests {
         // Up at 10.0 for good; the next handed at 19.5, up at 20.5.
         let prev = (0x20, 10.0, unit(0, None));
         let late = (0x20, 19.5, unit(tick(1.0), Some(tick(3.0))));
-        let up = super::carried_up(vec![late.clone()], vec![prev.clone()], 20.0);
+        let up = super::carried_up(vec![prev.clone(), late.clone()], 20.0);
         assert_eq!(up.len(), 2);
         assert_eq!(up[0].1, 10.0);
         let stop = stops_after(&up[0].2).expect("stops");
@@ -5023,11 +5298,14 @@ mod carried_up_tests {
         assert_eq!(up[1], late);
         assert!(starts_after(&up[1].2).is_some());
         // Already up at the opening: the last alone, as before.
-        let up = super::carried_up(vec![late.clone()], vec![prev.clone()], 20.6);
+        let up = super::carried_up(vec![prev.clone(), late.clone()], 20.6);
         assert_eq!(up, vec![late.clone()]);
-        // Another stream's unit before is not this one's.
+        // Another stream's unit before is not this one's: carried as it is.
         let other = (0x21, 10.0, unit(0, None));
-        assert_eq!(super::carried_up(vec![late.clone()], vec![other], 20.0), vec![late]);
+        assert_eq!(
+            super::carried_up(vec![other.clone(), late.clone()], 20.0),
+            vec![other, late]
+        );
     }
 
     /// A last unit that only stops, at a delay still to run at the
@@ -5044,14 +5322,48 @@ mod carried_up_tests {
         let n = stop.len() as u16;
         stop[0..2].copy_from_slice(&n.to_be_bytes());
         let last = (0x20, 19.5, stop);
-        let up = super::carried_up(vec![last.clone()], vec![prev.clone()], 20.0);
+        let up = super::carried_up(vec![prev.clone(), last.clone()], 20.0);
         assert_eq!(up.len(), 2);
         assert_eq!(up[0].1, 10.0);
         let down = stops_after(&up[0].2).expect("stops");
         assert!((10.0 + down - 20.5).abs() <= TICK);
         assert_eq!(up[1], last);
         // Its stop already run: the last alone, as before.
-        assert_eq!(super::carried_up(vec![last.clone()], vec![prev], 20.6), vec![last]);
+        assert_eq!(super::carried_up(vec![prev, last.clone()], 20.6), vec![last]);
+    }
+
+    /// What is on screen is the unit that acted last: one handed earlier
+    /// whose start runs at a delay goes up after a later one that is up at
+    /// once and soon down, and is the one carried.
+    #[test]
+    fn the_unit_that_acted_last_is_carried_not_the_last_handed() {
+        use crate::vobsub::{stops_after, TICK};
+        let tick = |s: f64| (s / TICK).round() as u16;
+        // Handed at 130.246, up at 133.250 until 135.241; handed at
+        // 133.015, up at once, down at 133.163.
+        let k = (0x20, 130.246, unit(tick(3.0), Some(tick(5.0))));
+        let u = (0x20, 133.015, unit(0, Some(tick(0.15))));
+        assert_eq!(super::carried_up(vec![k.clone(), u.clone()], 134.0), vec![k.clone()]);
+        // Before it goes up, the line up at once is on screen, taken down
+        // where the delayed one goes up, which comes behind it.
+        let up = super::carried_up(vec![k.clone(), u.clone()], 133.1);
+        assert_eq!(up.len(), 2);
+        assert_eq!(up[0].1, 133.015);
+        assert!((133.015 + stops_after(&up[0].2).expect("stops") - 133.163).abs() <= TICK);
+        assert_eq!(up[1], k);
+        // Two still to act: the line up is taken down where the first of
+        // them acts, and both come behind it in the order handed.
+        let p = (0x20, 10.0, unit(0, None));
+        let a = (0x20, 19.0, unit(tick(3.0), None)); // up at 22.0
+        let b = (0x20, 19.5, unit(tick(1.0), None)); // up at 20.5
+        let up = super::carried_up(vec![p.clone(), a.clone(), b.clone()], 20.0);
+        assert_eq!(up.len(), 3);
+        assert!((10.0 + stops_after(&up[0].2).expect("stops") - 20.5).abs() <= TICK);
+        assert_eq!(&up[1..], &[a, b]);
+        // No delays: each stream's last alone, in the order of the lasts.
+        let x = (0x21, 11.0, unit(0, None));
+        let y = (0x20, 12.0, unit(0, None));
+        assert_eq!(super::carried_up(vec![p, x.clone(), y.clone()], 20.0), vec![x, y]);
     }
 }
 
@@ -5402,8 +5714,12 @@ fn copy_segment(
         .then(|| record_sets_of(&ictx.stream(ist_index).unwrap().parameters()));
 
     // See where a packet's time is read below.
-    let mut order = (src.video.codec == "h264" && src.video.framing == NalFraming::AnnexB)
-        .then(poc_seam::Order::default);
+    // Knowing the record's sets and the rate: see [`poc_seam::Order::knowing`]
+    // and [`poc_seam::Order::paced`].
+    let mut order = (src.video.codec == "h264" && src.video.framing == NalFraming::AnnexB).then(|| {
+        poc_seam::Order::knowing(&record_sets_of(&ictx.stream(ist_index).unwrap().parameters()))
+            .paced(src.video.frame_duration() / in_tb)
+    });
     // **Pictures out of an MP4 or Matroska file get the sets in force put in
     // front of their keys, not the record's.** The reframing puts the
     // record's sets in front of every key, in lengths or in start codes, and
@@ -5451,8 +5767,9 @@ fn copy_segment(
 
     // See [`crate::input::LateFrames`].
     let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
-    let mut packets = ictx.read_packets();
-    for (stream, packet) in packets.by_ref() {
+    // One picture behind the read: see [`poc_seam::Pairs`].
+    let mut packets = poc_seam::Paired::new(ictx.read_packets(), ist_index, order.is_some());
+    while let Some((stream, packet, doubted)) = packets.read() {
         let index = stream.index();
         // Where the pictures have got to, in bytes into the clip. Not every
         // packet says -- the second field of a pair does not -- so the last
@@ -5598,7 +5915,9 @@ fn copy_segment(
         // pictures that referred to it decoded broken -- a whole-file cut kept
         // 98 of 100 pictures, 7 of them wrong. Every picture that has a time
         // is placed by it as before.
+        // So is one whose time is the next picture's: see [`poc_seam::Pairs`].
         let pts = match (packet.pts(), order.as_mut()) {
+            (Some(pts), Some(order)) if doubted => order.doubted(packet.data().unwrap_or(&[]), pts),
             (Some(pts), Some(order)) => {
                 order.timed(packet.data().unwrap_or(&[]), pts);
                 pts
@@ -5725,6 +6044,10 @@ fn copy_segment(
             if let (Some(sets), Ok(at)) = (record_sets.as_mut(), u64::try_from(packet.position())) {
                 *sets = sets_at_key(src, writer, at, sets);
                 known_from = Some(at);
+                // And the pictures after it are placed by them.
+                if let Some(order) = order.as_mut() {
+                    order.learn(sets);
+                }
             }
         }
         // In start codes still, before the reframing below. See
@@ -5957,7 +6280,7 @@ fn copy_segment(
             audio_done[k] = take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
         }
     }
-    packets.finished()?;
+    packets.inner().finished()?;
     if !started {
         // **Two things look the same here and only one of them is a seek.**
         // Either the read landed past the entry point, which a larger margin
@@ -9236,8 +9559,13 @@ fn reencode_segment(
     // first one is fed.
     let opens_by_record = src.video.codec == "h264" && src.video.framing == NalFraming::AnnexB;
     // Where a picture whose packet carries no time is shown, as the copy
-    // reads it: see where a packet's time is read in [`copy_segment`].
-    let mut order = opens_by_record.then(poc_seam::Order::default);
+    // reads it, knowing the record's sets and the rate as the copy does: see
+    // where a packet's time is read in [`copy_segment`]. Knowing none, every
+    // picture with no time decoded in a re-encoded stretch of an H.264 `.mpg`
+    // that states its sets at its head alone was dropped (17 of 20 kept).
+    let mut order = opens_by_record.then(|| {
+        poc_seam::Order::knowing(&record_sets_of(&params)).paced(src.video.frame_duration() / in_tb)
+    });
     let mut run_up = RunUp::new(seg.seek_from);
     // The MPEG-4 Part 2 record, until the decoder's first key picture has
     // said which VOL is in force. See below, where that one is fed.
@@ -9247,6 +9575,9 @@ fn reencode_segment(
     // one in force at the first picture it is given; see `place!`.
     let mut vol_fed: Vec<(f64, Option<Vec<u8>>)> = Vec::new();
     let mut vol_placed = false;
+    // The record with that VOL in place of its own, where the encoder was
+    // opened for one: what a later reopen for the decoded layout starts from.
+    let mut vol_params: Option<ff::codec::Parameters> = None;
     // **The decoder is shown one stretch of a joined clip and no more.**
     //
     // A seam is where the recorder stopped and started again, and the
@@ -9331,7 +9662,9 @@ fn reencode_segment(
             if !std::mem::replace(&mut vol_placed, true) {
                 let config = vol_fed.iter().rev().find(|(at, _)| *at <= t + tol).and_then(|(_, c)| c.as_ref());
                 if let Some(config) = config {
-                    encoder = open_pictures(&with_mpeg4_config(&params, config))?;
+                    let own = with_mpeg4_config(&params, config);
+                    encoder = open_pictures(&own)?;
+                    vol_params = Some(own);
                 }
             }
             if !std::mem::replace(&mut reshaped, true) {
@@ -9340,7 +9673,9 @@ fn reencode_segment(
                     && decoded >= 0
                     && decoded != unsafe { (*params.as_ptr()).format }
                 {
-                    let mut own = params.clone();
+                    // From the VOL in force where it was opened for one
+                    // just above, which a reopen from the record undid.
+                    let mut own = vol_params.clone().unwrap_or_else(|| params.clone());
                     unsafe {
                         let p = own.as_mut_ptr();
                         (*p).format = decoded;
@@ -9439,8 +9774,9 @@ fn reencode_segment(
 
     // See [`crate::input::LateFrames`].
     let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
-    let mut packets = ictx.read_packets();
-    for (stream, packet) in packets.by_ref() {
+    // One picture behind the read: see [`poc_seam::Pairs`].
+    let mut packets = poc_seam::Paired::new(ictx.read_packets(), ist_index, order.is_some());
+    while let Some((stream, packet, doubted)) = packets.read() {
         let index = stream.index();
         // Where the pictures have got to, in bytes into the clip. Not every
         // packet says -- the second field of a pair does not -- so the last
@@ -9574,6 +9910,13 @@ fn reencode_segment(
         let mut packet = packet;
         if let Some(order) = order.as_mut() {
             match packet.pts() {
+                // One whose time is the next picture's: see [`poc_seam::Pairs`].
+                Some(pts) if doubted => {
+                    let placed = order.doubted(packet.data().unwrap_or(&[]), pts);
+                    if placed != pts {
+                        packet.set_pts(Some(placed));
+                    }
+                }
                 Some(pts) => order.timed(packet.data().unwrap_or(&[]), pts),
                 None => {
                     if let Some(pts) = order.untimed(packet.data().unwrap_or(&[])) {
@@ -9702,7 +10045,7 @@ fn reencode_segment(
             audio_done[k] = take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
         }
     }
-    packets.finished()?;
+    packets.inner().finished()?;
     if !drained {
         decoder.send_eof()?;
         feed!();
@@ -10590,7 +10933,18 @@ pub(crate) fn plan_audio(
         // at is part of that one answer rather than a second one.
         (!lossless && !asked_for && bits != source_bits).then_some((source_bits, bits))
     } else {
-        if let Some(b) = opts.audio_bits.filter(|_| !lossless) {
+        // Sixty-four bit floats are samples too, which `uncompressed` does
+        // not list, and with no codec named they are copied as they are:
+        // told they were a description, the note sent a QuickTime `fl64`
+        // track's owner to --audio-bitrate.
+        let wide_floats = matches!(target, ff::codec::Id::PCM_F64LE | ff::codec::Id::PCM_F64BE);
+        if let Some(b) = opts.audio_bits.filter(|_| !lossless && wide_floats) {
+            crate::say!(
+                "note: {b} bit samples were asked for{named} and {target:?} is carried as the \
+                 recording's own 64 bit floats. --audio-codec lpcm --audio-bits {b} writes it \
+                 at {b} bits."
+            );
+        } else if let Some(b) = opts.audio_bits.filter(|_| !lossless) {
             crate::say!(
                 "note: {b} bit samples were asked for{named} and {target:?} does not carry \
                  samples but a description of them, so there is nowhere in it to put a width. \
@@ -13593,6 +13947,14 @@ fn cut_into(
             let how = if family == "ts" {
                 "would be written as private data of no stated kind, which is a stream every \
                  player carries and none can read"
+            } else if family == "avi" && codec.starts_with("pcm_") && codec.ends_with("be") {
+                // A DVD's or a Blu-ray's LPCM is written as big-endian PCM
+                // outside a transport stream (see `carriage`), and that is
+                // the name that reaches here, whatever the recording called it.
+                "has no WAVE format tag for big-endian PCM, which is what linear PCM from a \
+                 disc, or asked for with --audio-codec lpcm, is written as here"
+            } else if family == "avi" {
+                "has no WAVE format tag for it, which is how an AVI names its sound"
             } else {
                 "has no box for it"
             };
@@ -13609,6 +13971,9 @@ fn cut_into(
                 "--audio-codec ac3 writes it as AC-3, which a program stream holds"
             } else if family == "ts" && codec.starts_with("pcm_") {
                 "--audio-codec lpcm writes it as Blu-ray LPCM, which a transport stream holds"
+            } else if family == "avi" && what == "sound" {
+                "--audio-codec ac3 or --audio-codec aac writes it as AC-3 or AAC, which an AVI \
+                 holds; a .mkv holds it as it is"
             } else if codec == "pcm_s8" {
                 "Into a .mkv, .mp4 or .mov, --audio-bits 24 writes it as 24 bit PCM, which \
                  each of them holds"
@@ -16834,6 +17199,124 @@ mod tests {
         // (1 bit), frame_num (4), idr_pic_id 0 (1 bit, IDR only).
         let from = if idr { 1 + 7 + 1 + 4 + 1 } else { 1 + 5 + 1 + 4 };
         bits[from..from + 6].iter().fold(0, |a, &b| (a << 1) | u32::from(b))
+    }
+
+    /// A run of pictures with no time longer than half the order field's
+    /// range is counted picture by picture, not from the last one with a
+    /// time: each is placed where it is shown, and the IDR after the run one
+    /// picture after the last of them.
+    #[test]
+    fn a_long_run_with_no_times_is_counted_on() {
+        // Four bits of order, two steps a picture: 8 pictures wrap it.
+        let frame = 1800;
+        let mut order = poc_seam::Order::default();
+        order.timed(&[sets_with(4), picture_with(4, true, true, 0, 0)].concat(), 0);
+        order.timed(&picture_with(4, false, true, 1, 2), frame);
+        for k in 2..14u32 {
+            let placed = order.untimed(&picture_with(4, false, true, k % 16, (2 * k) % 16));
+            assert_eq!(placed, Some(i64::from(k) * frame), "picture {k}");
+        }
+        assert_eq!(order.untimed(&picture_with(4, true, true, 0, 0)), Some(14 * frame));
+        assert_eq!(order.untimed(&picture_with(4, false, true, 1, 2)), Some(15 * frame));
+    }
+
+    /// Without B pictures (`pic_order_cnt_type` 2), after a read that starts
+    /// on an IDR with no time: a picture passed over for want of a step is
+    /// still counted, so the ones after it are not one off; told the rate,
+    /// it is placed itself. And the sets come from the record.
+    #[test]
+    fn a_picture_in_decode_order_passed_over_still_counts() {
+        let sets = [&[0, 0, 0, 1][..], &{
+            let sps = Nal::new(0x67).u(8, 66).u(16, 40).ue(0).ue(0).ue(2).ue(1).u(1, 0);
+            sps.ue(119).ue(67).u(1, 1).u(1, 1).u(1, 0).u(1, 0).done()
+        }, &[0, 0, 0, 1], &Nal::new(0x68).ue(0).ue(0).done()]
+            .concat();
+        let record: Vec<Vec<u8>> =
+            crate::bitstream::nal_payloads(&sets, NalFraming::AnnexB).into_iter().map(<[u8]>::to_vec).collect();
+        let pic = |n: u32| picture_with(0, n == 100, true, n % 16, 0);
+        let frame = 3600i64;
+        let at = |n: u32| i64::from(n) * frame;
+        for paced in [false, true] {
+            let order = poc_seam::Order::knowing(&record);
+            let mut order = if paced { order.paced(frame as f64) } else { order };
+            // The read starts on the IDR, which has no time: nothing to count
+            // it from.
+            assert_eq!(order.untimed(&pic(100)), None);
+            order.timed(&pic(101), at(101));
+            assert_eq!(order.untimed(&pic(102)), paced.then(|| at(102)));
+            order.timed(&pic(103), at(103));
+            assert_eq!(order.untimed(&pic(104)), Some(at(104)), "paced {paced}");
+            order.timed(&pic(105), at(105));
+            assert_eq!(order.untimed(&pic(106)), Some(at(106)), "paced {paced}");
+        }
+        // Knowing no sets, nothing is told.
+        let mut blind = poc_seam::Order::default();
+        assert_eq!(blind.untimed(&pic(100)), None);
+        blind.timed(&pic(101), at(101));
+        blind.timed(&pic(102), at(102));
+        assert_eq!(blind.untimed(&pic(103)), None);
+    }
+
+    /// Two pictures handed over with one time and byte: the first is told
+    /// in doubt and placed by its order, the second keeps its time; the
+    /// other streams' packets keep their places between them, and the last
+    /// picture goes once the read is over. Where the order cannot be told,
+    /// the time it came with stands.
+    #[test]
+    fn two_pictures_with_one_time_are_told_apart() {
+        let frame = 3600;
+        let packet = |stream: usize, data: &[u8], pts: Option<i64>, pos: isize| {
+            let mut p = ff::Packet::copy(data);
+            p.set_stream(stream);
+            p.set_pts(pts);
+            p.set_position(pos);
+            p
+        };
+        let read = vec![
+            packet(0, &[sets_with(6), picture(true, true, 0, 0)].concat(), Some(0), 100),
+            packet(0, &picture(false, true, 1, 2), Some(frame), 200),
+            packet(1, &[1], Some(5), 250),
+            // Pictures 2 and 3 begin in one PES: both have picture 3's time.
+            packet(0, &picture(false, true, 2, 4), Some(3 * frame), 300),
+            packet(1, &[2], Some(6), 310),
+            packet(0, &picture(false, true, 3, 6), Some(3 * frame), 300),
+            packet(0, &picture(false, true, 4, 8), Some(4 * frame), 400),
+        ];
+        let mut pairs = poc_seam::Pairs::new(Some(0));
+        let mut out = Vec::new();
+        let mut order = poc_seam::Order::default();
+        let mut take = |p: ff::Packet, doubted: bool, out: &mut Vec<(usize, Option<i64>, bool)>| {
+            let pts = if p.stream() == 0 { order.pts_of(&p, doubted) } else { p.pts() };
+            out.push((p.stream(), pts, doubted));
+        };
+        for p in read {
+            pairs.push(p);
+            while let Some((p, doubted)) = pairs.pop() {
+                take(p, doubted, &mut out);
+            }
+        }
+        // The last picture waits for the end of the read.
+        assert_eq!(out.len(), 6);
+        pairs.end();
+        while let Some((p, doubted)) = pairs.pop() {
+            take(p, doubted, &mut out);
+        }
+        let f = Some(frame);
+        assert_eq!(
+            out,
+            vec![
+                (0, Some(0), false),
+                (0, f, false),
+                (1, Some(5), false),
+                (0, Some(2 * frame), true),
+                (1, Some(6), false),
+                (0, Some(3 * frame), false),
+                (0, Some(4 * frame), false),
+            ]
+        );
+        // Knowing no sets, the order says nothing: the time it came with.
+        let mut blind = poc_seam::Order::default();
+        assert_eq!(blind.doubted(&picture(false, true, 2, 4), 3 * frame), 3 * frame);
     }
 
     /// The reference frames a copy keeps are read off its restated header

@@ -1078,8 +1078,10 @@ struct Stream {
     id: u8,
     language: Option<String>,
     at: Vec<(f64, u64)>,
-    /// For each of `at`, when its picture goes up where its start runs at
-    /// a delay of its own; `None` for at once. See [`Sidecar::withdraw_late`].
+    /// For each of `at`, when it acts where that runs at a delay of its
+    /// own -- its picture goes up, or for a unit that only stops, the last
+    /// comes down ([`acts_after`]); `None` for at once. See
+    /// [`Sidecar::withdraw_late`].
     up: Vec<Option<f64>>,
 }
 
@@ -1156,7 +1158,9 @@ impl Sidecar {
         self.write_unit(id, at, spu);
         if let Some(s) = self.streams.iter_mut().find(|s| s.id == id) {
             s.at.push((at.max(0.0), filepos));
-            s.up.push(starts_after(spu).filter(|&d| d > 0.0).map(|d| at + d));
+            // Where it acts ([`acts_after`]): its start, or for a unit with
+            // none -- one that only takes the last picture down -- its stop.
+            s.up.push(Some(acts_after(spu)).filter(|&d| d > 0.0).map(|d| at + d));
         }
     }
 
@@ -1169,6 +1173,13 @@ impl Sidecar {
     /// take-down came after the next range's first unit and the index was
     /// out of order. See `cut::Subpictures::end_range`. Every unit starts on
     /// a sector of its own, so what follows one moves back by whole sectors.
+    ///
+    /// **And a unit that only stops, where its stop runs to `end` or
+    /// later.** It takes nothing down inside the range -- the unit that
+    /// ends the range does that, at `end` -- and left in, its own stop ran
+    /// on into the next range and took down the line that opens it there,
+    /// where the converted subtitle (`pgs`'s Composer, whose take-down at a
+    /// range's end forgets the stop) keeps it up.
     pub fn withdraw_late(&mut self, end: f64) -> usize {
         let mut gone: Vec<u64> = Vec::new();
         for s in &mut self.streams {
@@ -1541,6 +1552,31 @@ mod tests {
         assert_eq!(side.index(), plain.index());
         assert_eq!(side.sub, plain.sub);
         assert_eq!(side.counts(), vec![(0x20, 2), (0x21, 2)]);
+    }
+
+    /// A unit that only stops, its stop running to the range's end or past
+    /// it, is taken back out; one whose stop comes inside the range, and the
+    /// take-down that acts at once, stay.
+    #[test]
+    fn a_stop_running_past_the_end_is_withdrawn() {
+        let stop_in = |ticks: u16| {
+            let mut stop = take_down();
+            stop[4..6].copy_from_slice(&ticks.to_be_bytes());
+            stop
+        };
+        let mut side = Sidecar::new(720, 480, Palette::grey());
+        side.add(0x20, 1.0, &standing(64));
+        side.add(0x20, 2.0, &stop_in(88)); // acts 3.0
+        side.add(0x20, 2.5, &stop_in(176)); // acts 4.5
+        assert_eq!(side.withdraw_late(4.0), 1);
+        side.add(0x20, 4.0, &take_down());
+        assert_eq!(side.withdraw_late(4.0), 0, "the take-down acts at once");
+        let mut plain = Sidecar::new(720, 480, Palette::grey());
+        plain.add(0x20, 1.0, &standing(64));
+        plain.add(0x20, 2.0, &stop_in(88));
+        plain.add(0x20, 4.0, &take_down());
+        assert_eq!(side.index(), plain.index());
+        assert_eq!(side.sub, plain.sub);
     }
 
     /// The streams are named in the order they were declared, whatever order

@@ -161,7 +161,7 @@ pub fn family(output: &str) -> &'static str {
         "webm" => "webm",
         "mpg" | "mpeg" | "vob" => "ps",
         // Not offered by the window; a name the command line can be given.
-        // Asked about only by [`pictures_refused`].
+        // Asked about by [`pictures_refused`], and [`holds`] for its sound.
         "avi" => "avi",
         _ => "",
     }
@@ -197,6 +197,11 @@ pub fn holds(family: &str, codec: &str) -> bool {
         "mov" => !MOV_REFUSES.contains(&codec),
         "webm" => WEBM.contains(&codec),
         "mkv" => !MKV_REFUSES.contains(&codec),
+        // The pictures by their fourcc (see [`pictures_refused`]), the sound
+        // by its WAVE format tag, which an AVI names it by and has none for
+        // ALAC, Opus or big-endian PCM: the muxer turned each away at the
+        // header with a bare "Operation not permitted".
+        "avi" => !is_sound(codec) || riff_sound(codec),
         // An unknown name is not this module's to refuse.
         _ => true,
     }
@@ -299,6 +304,21 @@ pub fn pictures_refused_at(path: &str, family: &str) -> Option<&'static str> {
     pictures_refused(family, par.id(), format, tag)
 }
 
+/// Whether an AVI has a WAVE format tag for this sound codec.
+fn riff_sound(codec: &str) -> bool {
+    let Ok(name) = std::ffi::CString::new(codec) else { return false };
+    // SAFETY: lookups in libavcodec's and libavformat's static tables, the
+    // second ended by the null pointer the call expects.
+    unsafe {
+        let d = ff::ffi::avcodec_descriptor_get_by_name(name.as_ptr());
+        if d.is_null() {
+            return false;
+        }
+        let tables = [ff::ffi::avformat_get_riff_audio_tags(), std::ptr::null()];
+        ff::ffi::av_codec_get_tag(tables.as_ptr(), (*d).id) != 0
+    }
+}
+
 /// Whether libav knows this codec as one of sound.
 fn is_sound(codec: &str) -> bool {
     let Ok(name) = std::ffi::CString::new(codec) else { return false };
@@ -394,6 +414,14 @@ mod tests {
         // Matroska's floats are little-endian; the 32 bit kind is turned round.
         assert!(!holds("mkv", "pcm_f64be") && holds("mkv", "pcm_f64le") && holds("mov", "pcm_f64be"));
         assert!(holds("", "vp8"));
+        // An AVI's sound by its WAVE tag.
+        for codec in ["aac", "ac3", "eac3", "dts", "mp2", "mp3", "flac", "pcm_s16le", "pcm_s24le", "pcm_f32le", "pcm_f64le"] {
+            assert!(holds("avi", codec), "{codec}");
+        }
+        for codec in ["alac", "opus", "pcm_s16be", "pcm_s24be", "pcm_f32be"] {
+            assert!(!holds("avi", codec), "{codec}");
+        }
+        assert!(holds("avi", "h264") && holds("avi", "prores"));
     }
 
     #[test]

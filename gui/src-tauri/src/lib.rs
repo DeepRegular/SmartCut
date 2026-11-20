@@ -373,6 +373,12 @@ struct SourceInfo {
     /// two such gaps -- and end the selection on the point itself, which is
     /// where the cutter copies up to. See [`smartcut_core::VideoInfo::closest`].
     closest: f64,
+    /// The video stream's clock tick, in seconds: a thousandth on Matroska,
+    /// WebM and an MP4 counting in 1000ths. Where it is coarse against a
+    /// frame the cutter takes a bound within two ticks of a picture as that
+    /// picture (plan.rs `on_the_pictures`), and the window has to read its
+    /// joins the same way. See `coarseTick` in `main.js`.
+    time_base: f64,
     has_audio: bool,
     /// Channels in the recording's audio, so the output settings can say
     /// whether there is anything to downmix. 0 when there is no audio.
@@ -924,7 +930,10 @@ fn files_in(path: &std::path::Path) -> Result<(Vec<Found>, Option<String>), Stri
             // Nor a file the list would not have taken under any name -- a
             // Shift_JIS .txt or .jpg beside the recordings -- which a UTF-8
             // name gets "not supported" for, not a request to rename it.
+            // A disc image is one too, as a folder shaped like a disc is
+            // above: the list takes it by what it holds, not by `VIDEO_EXT`.
             let recording = name.is_dir()
+                || smartcut_core::disc::looks_like_disc(&name)
                 || name
                     .extension()
                     .and_then(|x| x.to_str())
@@ -1143,6 +1152,7 @@ async fn open_outline(path: String) -> Result<SourceInfo, String> {
             variable: false,
             least_gap: o.video.frame_duration(),
             closest: 0.0,
+            time_base: tick_of(o.video.time_base),
             has_audio: o.audio.is_some(),
             audio_channels: o.audio.as_ref().map_or(0, |a| a.channels),
             audio_sample_rate: o.audio.as_ref().map_or(0, |a| a.sample_rate),
@@ -1389,6 +1399,12 @@ fn scan_cached_reporting(
     Ok((src.map_err(|e| e.to_string())?, held, weighed))
 }
 
+/// A stream's tick for [`SourceInfo::time_base`]: 0 where it is not a
+/// number a window could read a slack off.
+fn tick_of(time_base: f64) -> f64 {
+    if time_base.is_finite() && time_base > 0.0 { time_base } else { 0.0 }
+}
+
 fn info_of(src: &Source) -> SourceInfo {
     SourceInfo {
         path: src.path.clone(),
@@ -1402,6 +1418,7 @@ fn info_of(src: &Source) -> SourceInfo {
         variable: src.video.variable_rate,
         least_gap: src.video.least_gap(),
         closest: if src.video.closest.is_finite() { src.video.closest.max(0.0) } else { 0.0 },
+        time_base: tick_of(src.video.time_base),
         has_audio: src.audio.is_some(),
         audio_channels: src.audio.as_ref().map_or(0, |a| a.channels),
         audio_sample_rate: src.audio.as_ref().map_or(0, |a| a.sample_rate),
@@ -8541,14 +8558,7 @@ fn write_whole(path: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
         // Except where the file system has no such thing to offer: a sync it
         // says it cannot do is not a write that failed, and the save went
         // through before 0.8.47 asked for one.
-        .and_then(|mut f| {
-            std::io::Write::write_all(&mut f, body).and_then(|()| match f.sync_all() {
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput) => {
-                    Ok(())
-                }
-                done => done,
-            })
-        });
+        .and_then(|mut f| std::io::Write::write_all(&mut f, body).and_then(|()| synced(&f)));
     if let Err(e) = made {
         if e.kind() != std::io::ErrorKind::AlreadyExists {
             let _ = std::fs::remove_file(&temp);
@@ -8578,6 +8588,21 @@ fn write_whole(path: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
                 return Err(e);
             }
         }
+    }
+}
+
+/// `sync_all`, where the file system has one to give.
+///
+/// A sync it says it cannot do is not a write that failed: Linux answers
+/// `EINVAL` or `EOPNOTSUPP` for one, and Windows "Incorrect function" or "not
+/// supported" -- a RAM disk, some network and cloud drives -- which std leaves
+/// uncategorised, so a project could not be saved there at all.
+pub(crate) fn synced(f: &std::fs::File) -> std::io::Result<()> {
+    match f.sync_all() {
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput) => Ok(()),
+        // ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED.
+        Err(e) if cfg!(windows) && matches!(e.raw_os_error(), Some(1 | 50)) => Ok(()),
+        done => done,
     }
 }
 
@@ -8883,7 +8908,12 @@ fn queue_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 /// a name the list window merely believed to be free would be a registration
 /// that wrote over the project it was handed last night. The extension comes
 /// from up there with the rest of what a project is.
-fn free_in(dir: &std::path::Path, stem: &str, ext: &str) -> Result<String, String> {
+///
+/// Nor a name a job in the queue still holds whose file is gone (deleted by
+/// hand, or never written): given out, the new copy was that job's file, and
+/// the job ran a stranger's list. `held` is the queue's paths, read under the
+/// same lock; see [`queued_paths`].
+fn free_in(dir: &std::path::Path, stem: &str, ext: &str, held: &[std::path::PathBuf]) -> Result<String, String> {
     for n in 1..1000 {
         let name = if n == 1 {
             format!("{stem}.{ext}")
@@ -8891,6 +8921,9 @@ fn free_in(dir: &std::path::Path, stem: &str, ext: &str) -> Result<String, Strin
             format!("{stem}-{n}.{ext}")
         };
         let at = dir.join(name);
+        if held.contains(&at) {
+            continue;
+        }
         // Taken by making it, not by finding it free: two list windows asking
         // in the same instant were both told the same name, and the second
         // project written there replaced the first one's. An empty file is
@@ -8908,6 +8941,16 @@ fn free_in(dir: &std::path::Path, stem: &str, ext: &str) -> Result<String, Strin
     ))
 }
 
+/// The paths the queue's jobs name, for [`free_in`]. Read as it stands and
+/// never put aside: a queue that does not read this instant holds nothing
+/// here, and the add that follows says why.
+fn queued_paths(batch: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_to_string(batch.join("batch.json"))
+        .ok()
+        .and_then(|body| serde_json::from_str::<BatchQueue>(&body).ok())
+        .map_or_else(Vec::new, |q| q.jobs.into_iter().map(|j| std::path::PathBuf::from(j.path)).collect())
+}
+
 /// Where to write a list that is going into the queue. The name is the list
 /// window's; the folder is this side's.
 // Off the main thread: the queue's lock can be waited on for seconds, and
@@ -8915,7 +8958,8 @@ fn free_in(dir: &std::path::Path, stem: &str, ext: &str) -> Result<String, Strin
 #[tauri::command(async)]
 fn queue_temp_path(app: tauri::AppHandle, stem: String, ext: String) -> Result<String, String> {
     let dir = queue_dir(&app)?;
-    with_queue_lock(&batch_dir(&app)?, || free_in(&dir, &stem, &ext))
+    let batch = batch_dir(&app)?;
+    with_queue_lock(&batch, || free_in(&dir, &stem, &ext, &queued_paths(&batch)))
 }
 
 /// Take a copy of a project that is already on disc, for ジョブ追加.
@@ -8957,7 +9001,8 @@ fn queue_copy_now(app: &tauri::AppHandle, path: &str) -> Result<String, String> 
         ));
     }
     let dir = queue_dir(app)?;
-    let at = with_queue_lock(&batch_dir(app)?, || free_in(&dir, &stem, &ext))?;
+    let batch = batch_dir(app)?;
+    let at = with_queue_lock(&batch, || free_in(&dir, &stem, &ext, &queued_paths(&batch)))?;
     std::fs::copy(from, &at).map_err(|e| {
         // The name taken for it goes back: an empty project in the queue's
         // folder is nobody's.
@@ -10645,7 +10690,7 @@ mod tests {
         let hands: Vec<_> = (0..8)
             .map(|_| {
                 let root = root.clone();
-                std::thread::spawn(move || free_in(&root, "list", "scproj").unwrap())
+                std::thread::spawn(move || free_in(&root, "list", "scproj", &[]).unwrap())
             })
             .collect();
         let mut got: Vec<String> = hands.into_iter().map(|h| h.join().unwrap()).collect();
@@ -10656,6 +10701,30 @@ mod tests {
         // And write_whole replaces the empty file it was given whole.
         write_whole(std::path::Path::new(&got[0]), b"{}").unwrap();
         assert_eq!(std::fs::read(&got[0]).unwrap(), b"{}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A name a job in the queue still holds is not given out again, though
+    /// its file is gone: the next one free is.
+    #[test]
+    fn a_name_a_job_holds_is_not_given() {
+        let mut root = std::env::temp_dir();
+        root.push(format!("smartcut-free-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let held = root.join("p.scproj").to_string_lossy().into_owned();
+        let queue = BatchQueue {
+            jobs: vec![BatchJob { path: held.clone(), ..Default::default() }],
+            ..Default::default()
+        };
+        put_queue(&root, &queue).unwrap();
+        let got = free_in(&root, "p", "scproj", &queued_paths(&root)).unwrap();
+        assert!(got.ends_with("p-2.scproj"));
+        assert!(!std::path::Path::new(&held).exists());
+        // And with no queue at all, the first name is the one given.
+        std::fs::remove_file(root.join("batch.json")).unwrap();
+        let got = free_in(&root, "q", "scproj", &queued_paths(&root)).unwrap();
+        assert!(got.ends_with("q.scproj"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -10679,6 +10748,9 @@ mod tests {
         // A plain folder so named is passed over, as every folder that is not
         // a disc is, and not said.
         std::fs::create_dir(root.join(std::ffi::OsStr::from_bytes(b"\x83\x74\x83\x48"))).unwrap();
+        // A disc image so named is said, as a disc folder so named is: the
+        // list would have taken it, though not by its extension.
+        std::fs::write(root.join(std::ffi::OsStr::from_bytes(b"\x83\x66\x83\x42.ISO")), b"").unwrap();
         // And one shaped like a DVD that holds no title, which a UTF-8 name
         // passes over too.
         let husk = root.join(std::ffi::OsStr::from_bytes(b"\x83\x66\x83\x42")).join("VIDEO_TS");
@@ -10687,7 +10759,7 @@ mod tests {
         let (files, said) = files_in(&root).unwrap();
         assert_eq!(files.len(), 1);
         assert!(matches!(&files[0], Found::File { path } if path.ends_with("a.ts")));
-        assert!(said.is_some_and(|s| s.contains("UTF-8") && !s.contains('、')));
+        assert!(said.is_some_and(|s| s.contains("UTF-8") && s.matches('、').count() == 1 && s.contains(".ISO")));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

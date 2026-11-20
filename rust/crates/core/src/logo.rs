@@ -318,6 +318,12 @@ fn walk_keyframes<T: Send + 'static>(
     // And the MPEG-4 Part 2 VOL in force, for an entry picture inside the
     // second of two joined Xvid encodes: see [`crate::preview::VolInForce`].
     let mut vols = crate::preview::VolInForce::pool(&params);
+    // And an H.264 `.mpg`'s entry picture whose packet carries no time --
+    // a key picture of black, small enough to share another's PES -- given
+    // the time the cut and the walk give it rather than passed over: see
+    // [`crate::preview::Untimed`]. Knowing the record's sets, as stretches
+    // seek: an x264 `.mp4` remuxed to `.mpg` states them at its head alone.
+    let mut untimed = crate::preview::Untimed::knowing(&src.video, &params);
     let mut pool = crate::entrypool::Pool::new(
         params,
         &src.video,
@@ -368,6 +374,7 @@ fn walk_keyframes<T: Send + 'static>(
             }
             in_force.restart();
             vols.restart();
+            untimed.restart();
         }
         // A seek leaves whatever was half sent behind it.
         pending.clear();
@@ -375,11 +382,13 @@ fn walk_keyframes<T: Send + 'static>(
         let mut took = 0usize;
         // One picture's packets: the key packet, and the one behind it where
         // the material is field coded and the picture is two.
-        for (stream, mut packet) in ictx.read_packets() {
+        let mut reading = untimed.paired(ictx.read_packets(), idx);
+        while let Some((stream, mut packet, doubted)) = reading.read() {
             if stream.index() != idx {
                 continue;
             }
             crate::preview::Landed::mend(&mut landed, &mut packet, src);
+            untimed.place(&mut packet, doubted);
             in_force.see(&packet);
             let step = entries.step(&packet);
             if step != crate::Step::Skip {

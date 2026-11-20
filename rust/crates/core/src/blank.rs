@@ -438,7 +438,11 @@ struct Walk {
 
 impl Walk {
     fn take(&mut self, frame: &ff::frame::Video, src: &Source, opts: &BlankOptions) -> Result<()> {
-        let Some(pts) = frame.pts() else { return Ok(()) };
+        // The decoder's best guess where the picture has no time of its own:
+        // an `.avi` with B pictures times its packets by decode order alone,
+        // and two in three of an Xvid one's pictures came out with none --
+        // a second of black was found as six pictures and started 0.4 s late.
+        let Some(pts) = frame.pts().or_else(|| frame.timestamp()) else { return Ok(()) };
         let t = pts as f64 * src.video.time_base - src.start_time;
         // Out of order, which a recording off air manages at a discontinuity.
         // Taken as it stands it would put a run's two ends the wrong way
@@ -510,11 +514,19 @@ pub fn find_runs_with(
     };
     let mut frame = ff::frame::Video::empty();
     let mut told = -1.0;
+    // An H.264 `.mpg` holds pictures whose packets carry no time, and a
+    // picture with none was passed over here: a second of black in one
+    // `ffmpeg -f mpeg` made with B pictures was not found at all, where the
+    // walk, the editor and the cut place them. Placed by the same rule. See
+    // [`crate::preview::Untimed`].
+    let mut untimed = crate::preview::Untimed::new(&src.video);
 
-    for (stream, packet) in ictx.read_packets() {
+    let mut reading = untimed.paired(ictx.read_packets(), idx);
+    while let Some((stream, mut packet, doubted)) = reading.read() {
         if stream.index() != idx {
             continue;
         }
+        untimed.place(&mut packet, doubted);
         if decoder.send_packet(&packet).is_err() {
             continue;
         }

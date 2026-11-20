@@ -317,9 +317,20 @@ const outFrames = () => Math.round(outDur * (src ? src.fps : 30));
 /// what came before. Getting this wrong leaves the first cut picture on
 /// screen and in the strip, still being counted as if it survived.
 function srcToOut(s) {
+  // A picture stored up to two ticks of a coarse clock before a range's
+  // start is that range's first picture: the cutter reads the bound so
+  // (plan.rs `on_the_pictures`), and ✂ ends a cut a frame past OUT's stored
+  // time, which on a millisecond clock is up to 0.7 ms past the picture
+  // after it. Called cut away, that picture made the stage ask a frame
+  // earlier and show a removed one at the join (about a third of the cuts
+  // on a 59.94 .mkv). Only before a start, where the time was in a cut.
+  const slack = 2 * coarseTick();
   for (let i = 0; i < keeps.length; i++) {
     const k = keeps[i];
-    if (s < k.a - 1e-9) continue;
+    if (s < k.a - 1e-9) {
+      if (slack > 0 && s >= k.a - slack && (i === 0 || s >= keeps[i - 1].b - 1e-9)) return k.at;
+      continue;
+    }
     // The end of the recording is the one place `b` is inclusive: there is
     // no picture after it to belong to. A segment that ends because a cut
     // ended it is exclusive like any other -- its `b` is the first picture
@@ -5771,7 +5782,7 @@ function pictureAfter(at) {
 /// seconds-long GOPs.
 const PICTURE_END = 0.004;
 function onePicture(o) {
-  if (!src || !src.variable) return frame();
+  if (!src || !src.variable) return rateStep();
   const gap = src.least_gap > 0 ? Math.min(src.least_gap, frame()) : frame();
   const at = o === undefined ? null : outToSrc(o);
   const toPoint = at === null ? null : pointNext(o, at, pictureFloor());
@@ -5779,6 +5790,51 @@ function onePicture(o) {
   if (gap < frame() * 0.99) return gap * 0.75;
   const onPoint = at !== null && src.points.some((p) => Math.abs(p - at) < 1e-3);
   return Math.min(frame(), onPoint ? frame() / 2 + PICTURE_END : PICTURE_END);
+}
+
+/// One picture of a recording that keeps to a rate: a frame of its average,
+/// or the gap its pictures were measured to come at (`closest`) where the
+/// average is longer than that by more than half the cutter's slack on a fine
+/// clock (a thousandth of a frame, plan.rs `on_the_pictures`). Two encodes
+/// spliced with a gap and remuxed into an MP4 keep 25 a second but average
+/// 24.967: a frame of that past OUT's picture was 0.05 ms past the picture
+/// after it, and ✂ took that one too while the editor showed it kept (one
+/// picture lost at every cut). A millisecond clock's 33/34 ms steps are
+/// within the cutter's two ticks either way. Not under pulldown.
+///
+/// **Nor where the gap measured is under the average by 0.8 % or more.** The
+/// step is taken at every cut, and what it falls short of the picture after
+/// OUT the next range opens early by: the editor's timeline lengthens by that
+/// at each join, and the frame grid J, the counter and IN / OUT stand on
+/// drifts off the pictures. A millisecond clock's 16 ms between two pictures
+/// at 59.94 is 4 % short of the frame: after 13 cuts of a 59.94 .mkv, J to
+/// the first picture after the last join showed the picture before the cut,
+/// and the counter said one picture more than the output had. The same with
+/// one gap of 37 ms in a 25p .mp4 (a picture stamped 3 ms early): 7.5 % at
+/// every cut. A millisecond clock rounds 1 % or more off a frame at every rate
+/// from 15 to 120 a second; where the average is over the pictures' gap
+/// because of a gap elsewhere (the splice above: 0.13 %), it is by that gap
+/// spread over the whole recording.
+///
+/// Nor on a coarse clock (`coarseTick`), where the gap measured is the
+/// rounding of the ticks and not the pictures', and the cutter's two ticks
+/// already take a bound a frame of the average past OUT's picture as the
+/// picture after it.
+function rateStep() {
+  const f = frame();
+  const c = src ? src.closest : 0;
+  return !src || src.pulldown || coarseTick() > 0 || !(c > f * 0.992 && c < f * (1 - 5e-4)) ? f : c;
+}
+
+/// The video clock's tick where it is coarse against a frame, as the cutter
+/// judges it (plan.rs `coarse_tick`): capped at a twelfth of a frame, and 0
+/// on a fine clock (a hundredth of a frame or finer: a transport stream's,
+/// a disc's, a 90 kHz MP4's) and on a recording whose pictures vary.
+function coarseTick() {
+  if (!src || src.variable || !(src.time_base > 0)) return 0;
+  const f = frame();
+  const tick = Math.min(src.time_base, f / 12);
+  return tick > f * 0.01 ? tick : 0;
 }
 
 /// No two pictures of a variable recording come closer than this, as far as

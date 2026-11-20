@@ -121,14 +121,7 @@ pub fn recovery_put(
     // file -- the work offered back as nothing. A file system with no sync
     // to give takes the copy all the same.
     std::fs::File::create(&fresh)
-        .and_then(|mut f| {
-            std::io::Write::write_all(&mut f, body.as_bytes()).and_then(|()| match f.sync_all() {
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput) => {
-                    Ok(())
-                }
-                done => done,
-            })
-        })
+        .and_then(|mut f| std::io::Write::write_all(&mut f, body.as_bytes()).and_then(|()| crate::synced(&f)))
         .map_err(|e| e.to_string())?;
     std::fs::rename(&fresh, &at).map_err(|e| e.to_string())
 }

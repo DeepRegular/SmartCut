@@ -246,8 +246,8 @@ pub fn walk(
     // by what follows them; see [`crate::leadrefs`].
     let mut judge = crate::leadrefs::Judge::new(&codec, framing);
     let mut untimed = crate::preview::Untimed::new(video);
-    let mut reading = ictx.read_packets();
-    for (s, p) in reading.by_ref() {
+    let mut reading = untimed.paired(ictx.read_packets(), stream_index);
+    while let Some((s, p, doubted)) = reading.read() {
         seen += 1;
         if seen.is_multiple_of(256) {
             // Asked on the same count as the progress, but not behind it: a
@@ -268,11 +268,29 @@ pub fn walk(
             continue;
         }
         video_bytes += p.size() as u64;
+        // A picture whose packet carries no time is counted where its order
+        // puts it, as the cut copies it there: see
+        // [`crate::preview::Untimed`]. Left out, an H.264 `.mpg` was a
+        // picture short in every eleven and read as one whose pictures vary.
+        // Asked of every packet in file order, here, so that `entry` is given
+        // that time too.
+        let placed = untimed.pts_of(&p, doubted);
         // Before the timestamp is asked for, not after: the second field of a
         // pair often carries none, and a packet with no timestamp is nothing
-        // to the index but is still half of a picture to a decoder.
+        // to the index but is still half of a picture to a decoder. **One
+        // with no time that its order places is handed on with that time**,
+        // as the two-pass thumbnail read ([`crate::thumbs`]) places it: handed
+        // on with none, the one-pass read's decoder gave the key picture of an
+        // H.264 `.mpg` back with none, and it had no thumbnail and no scene.
         if entries.step(&p) != crate::Step::Skip {
-            entry(&p)?;
+            match placed.filter(|&t| p.pts() != Some(t)) {
+                Some(pts) => {
+                    let mut timed = p.clone();
+                    timed.set_pts(Some(pts));
+                    entry(&timed)?;
+                }
+                None => entry(&p)?,
+            }
         }
         // Before the timestamp too, so that a second field carrying none
         // still closes the pair it belongs to.
@@ -293,15 +311,13 @@ pub fn walk(
         // Every packet, a second field with no time of its own as well: the
         // judge follows the pictures a decoder holds, and a field is one.
         // An entry point is one only where it has a time, as below.
-        let at = p.pts().map(|pts| pts as f64 * time_base - start_time);
+        // (By the time its order gives it, where its own is the next one's.)
+        let at = p.pts().and(placed).map(|pts| pts as f64 * time_base - start_time);
         if let Some(d) = p.data() {
             judge.feed(packets.len(), p.is_key() && at.is_some(), at, d);
         }
-        // A picture whose packet carries no time is counted where its order
-        // puts it, as the cut copies it there: see
-        // [`crate::preview::Untimed`]. Left out, an H.264 `.mpg` was a
-        // picture short in every eleven and read as one whose pictures vary.
-        let Some(pts) = untimed.pts_of(&p) else { continue };
+        // Placed above.
+        let Some(pts) = placed else { continue };
         let reference = p
             .data()
             .map(|d| bitstream::is_reference(d, &codec, framing, vc1))
@@ -318,7 +334,14 @@ pub fn walk(
         }
         let view = PacketView {
             pts: pts as f64 * time_base - start_time,
-            dts: p.dts().unwrap_or(pts) as f64 * time_base - start_time,
+            // A picture placed by its order, as one that came with no time:
+            // the next picture's time it came with is no decode time of its.
+            dts: match p.pts() {
+                Some(own) if own == pts => p.dts().unwrap_or(pts),
+                _ => pts,
+            } as f64
+                * time_base
+                - start_time,
             key: p.is_key(),
             reference,
             pos: p.position() as i64,
@@ -329,7 +352,7 @@ pub fn walk(
         }
         packets.push(view);
     }
-    let whole = reading.finished().is_ok();
+    let whole = reading.inner().finished().is_ok();
     drop(reading);
     for (id, free) in judge.finish(whole) {
         if let Some(p) = packets.get_mut(id).filter(|p| p.key) {
@@ -341,9 +364,32 @@ pub fn walk(
     // frames in `shown`: the second field of the last pair is shown half a
     // frame after the pair begins, and taken for a picture of its own it
     // put the end half a frame past the last one.
+    //
+    // **Not a picture shown far after both of its neighbours in decode
+    // order**, which only damage does: one picture of a broadcast `.ts` whose
+    // PES time was hit, at 4503 s in a 90 s recording, made it 4501 s long,
+    // and every rate taken over that length 50 times too low (`--fit` priced
+    // the cut as fitting as it was). A picture after a long hold has the one
+    // after it close, the last has none after it, and at a clock that jumps
+    // the pictures on its far side are close to each other.
+    //
+    // **And not one decoded in its place**, its decode time between its
+    // neighbours': the last picture of an encode with B pictures is decoded
+    // before the B pictures shown ahead of it, and after a still longer than
+    // [`STRAY`] -- a screen recording ending on one -- it was taken for
+    // damage: the recording read 3.96 s long for 124, and a cut of it lost
+    // the still and its last picture. The damage measured hits the decode
+    // time as well (-11552 s there).
+    let stray: Vec<f64> = packets
+        .windows(3)
+        .filter(|w| w[1].pts - w[0].pts.max(w[2].pts) > STRAY)
+        .filter(|w| !(w[0].dts <= w[1].dts && w[1].dts <= w[2].dts))
+        .map(|w| w[1].pts)
+        .collect();
     let end = shown
         .iter()
         .copied()
+        .filter(|t| !stray.contains(t))
         .fold(f64::NEG_INFINITY, f64::max)
         .into_finite()
         .map(|t| t + video.frame_duration());
@@ -379,6 +425,11 @@ pub fn walk(
         whole,
     })
 }
+
+/// How far, in seconds, a picture has to be shown after both of its
+/// neighbours in decode order before its time is taken for damage rather
+/// than the recording's end. See [`walk`].
+const STRAY: f64 = 60.0;
 
 /// The shortest gap between two of `shown`, which is in the order the
 /// pictures are shown. Two pictures at one time are one gap of nothing, not

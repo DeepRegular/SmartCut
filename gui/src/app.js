@@ -5915,7 +5915,16 @@ function audioOf(clip) {
 function lpcmBitRate(clip, container, sound = audioOf(clip)) {
   if (!sound) return 0;
   const channels = audioChannelsOut(clip, sound) || sound.channels || 0;
-  const bits = audioBitsOut() || sound.bits || 0;
+  // Except 32-bit samples, float or integer, written to a file of sound
+  // alone with no width asked for: `plan_audio` keeps them at 32 there
+  // (its `floats`), where `pcm_bits` -- and so `sound.bits` -- says 24.
+  const kept32 =
+    soundOnly() &&
+    !isTsContainer(container) &&
+    audioCodecOut() === "lpcm" &&
+    !audioBitsOut() &&
+    /^pcm_[sf]32[lb]e$/.test(sound.codec || "");
+  const bits = audioBitsOut() || (kept32 ? 32 : sound.bits || 0);
   const rate = writableRate(audioRateOut() || sound.sample_rate || 0, container);
   if (!channels || !bits || !rate) return 0;
   const paid = isTsContainer(container) ? channels + (channels % 2) : channels;
@@ -10609,6 +10618,10 @@ const newBorn = () => `${Date.now().toString(36)}-${Math.random().toString(36).s
 /// writes this file rather than making the queue a copy of its own.
 let queuedJob = "";
 
+/// The stamp that job had in the queue as this window opened on it, or null
+/// where the queue could not be read then. See `holdingQueuedJob`.
+let queuedBorn = null;
+
 /// Whether the output settings are this list's answer, or merely what the
 /// program happens to be holding.
 ///
@@ -11197,7 +11210,11 @@ async function saveProject(rename = false) {
     sayNote("project.nothingToSave");
     return false;
   }
-  if (!rename && projectPath) return writeProject(projectPath);
+  // Over the job this window was opened on only while it is still that job:
+  // see `holdingQueuedJob`. Let go of, the list is asked a name for below.
+  if (!rename && projectPath && (projectPath !== queuedJob || (await holdingQueuedJob()))) {
+    return writeProject(projectPath);
+  }
   const picked = await dialog.save({
     defaultPath: projectPath || defaultProjectPath(),
     filters: [{ name: t("dialog.project"), extensions: [PROJECT_EXT] }],
@@ -12553,7 +12570,9 @@ async function enlistList() {
   }
   // The same button, in a window that was opened out of the queue: what it
   // has open is a job, and the thing to do with an edited job is put it back.
-  if (queuedJob) {
+  // While it is still that job: let go of, the list goes in as a job of its
+  // own, as any other list does. See `holdingQueuedJob`.
+  if (queuedJob && (await holdingQueuedJob())) {
     await overwriteQueuedJob();
     return;
   }
@@ -12562,8 +12581,24 @@ async function enlistList() {
   const path = await projectForQueue();
   if (!path) return;
   await refreshQueue();
+  // A copy made by this press, not one the queue already holds: see below.
+  const fresh = !batchJobs.some((j) => j.path === path);
   // Under the stamp the copy will be known by on the next press.
-  if (!(await addBatchJob(path, label, tempBorn))) return;
+  if (!(await addBatchJob(path, label, tempBorn))) {
+    // A copy no job was added for is nobody's: the next press takes another
+    // name (see `projectForQueue`), and this one was left in the queue's
+    // folder for good. And an untitled list is not saved by it, whatever
+    // `projectForQueue` took the `*` off for.
+    if (fresh) {
+      await dropQueuedCopies([{ path }]);
+      tempProject = "";
+      if (!projectPath) {
+        savedShape = "";
+        retitleMain();
+      }
+    }
+    return;
+  }
   sayHere(t("batch.added", { name: label }));
   try {
     await invoke("open_batch_tool");
@@ -12594,6 +12629,44 @@ async function overwriteQueuedJob() {
     retitleMain();
   }
   sayHere(t("batch.overwritten", { name: stemOf(queuedJob) }));
+}
+
+/// Whether the job this window was opened on is still in the queue as that
+/// job, asked before its file is written over (保存, バッチを上書き).
+///
+/// The file is the queue's copy, and a job taken out of the queue takes it
+/// with it: the name is then free for the next list registered under it, by
+/// another window or with ジョブ追加. Written over by path, that job ran this
+/// list instead, and an unsaved list whose window had closed was gone -- the
+/// 52nd's two-list case, through the window opened on a job. So the job is
+/// known by the stamp it had as this window opened (see `BatchJob::born`).
+///
+/// One no longer in the queue, or in it under another stamp, is let go of:
+/// the window is an untitled list from here on, with its `*` up (the file it
+/// came from is not its own any more), and its button is バッチに登録 again.
+/// A queue that cannot be read this instant is taken as still holding it,
+/// as before there was a question.
+async function holdingQueuedJob() {
+  if (!queuedJob) return false;
+  if (!invoke) return true;
+  let queue;
+  try {
+    queue = await invoke("batch_read");
+  } catch {
+    return true;
+  }
+  const jobs = queue && Array.isArray(queue.jobs) ? queue.jobs : [];
+  const job = jobs.find((j) => j && j.path === queuedJob);
+  const born = job && typeof job.born === "string" ? job.born : "";
+  if (job && (queuedBorn === null || born === queuedBorn)) return true;
+  if (projectPath === queuedJob) {
+    projectPath = "";
+    savedShape = "";
+  }
+  queuedJob = "";
+  paintEnlistButton();
+  retitleMain();
+  return false;
 }
 
 /// Say that a queued project has been written over, where it was this
@@ -13462,6 +13535,10 @@ async function settleRole() {
   }
   if (!isTool()) {
     await refreshQueue();
+    if (queuedJob) {
+      const job = batchJobs.find((j) => j.path === queuedJob);
+      queuedBorn = job ? job.born : null;
+    }
     return;
   }
   // No tabs at all. The tool has two screens and never a choice between

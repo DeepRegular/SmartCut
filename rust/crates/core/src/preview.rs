@@ -400,11 +400,18 @@ fn entry_packets(
     let mut pending: Vec<ff::Packet> = Vec::new();
     let mut at: Option<f64> = None;
     let mut stretches = Stretches::new(src);
-    for (stream, mut packet) in ictx.read_packets() {
+    // An entry picture whose packet carries no time -- an IDR of an H.264
+    // `.mpg` that the index lists, timed as the cut times it -- is given
+    // that time, as [`walk`] gives it: passed over, the film strip's cell on
+    // it stayed empty. See [`Untimed`].
+    let mut untimed = Untimed::knowing(&src.video, &params);
+    let mut reading = untimed.paired(ictx.read_packets(), idx);
+    while let Some((stream, mut packet, doubted)) = reading.read() {
         if stream.index() != idx {
             continue;
         }
         Landed::mend(&mut landed, &mut packet, src);
+        untimed.place(&mut packet, doubted);
         in_force.see(&packet);
         // A half held from the stretch before has no partner after the seam:
         // dropped, as [`walk`] drops it there. See `thumbs::build_with_sound`.
@@ -1060,7 +1067,9 @@ impl Glancer {
         let (mut in_force, annex_b) = in_force;
         in_force.given = Some(in_force.record.clone());
         in_force.ask = false;
-        let untimed = Untimed::with(annex_b);
+        let rate = stream.avg_frame_rate();
+        let rate = if rate.numerator() > 0 && rate.denominator() > 0 { rate } else { stream.rate() };
+        let untimed = Untimed::with(annex_b, Some(&params), f64::from(rate.invert()) / time_base);
         let vols = VolInForce::single(&params);
         let decoder = crate::video_decoder_with(params, 1)?;
         // Only the pictures, which is all this reads -- and this one seeks
@@ -1175,11 +1184,12 @@ impl Glancer {
                 .pts()
                 .map_or(0.0, |pts| pts as f64 * time_base - start)
         };
-        for (s, mut packet) in ictx.read_packets() {
+        let mut reading = untimed.paired(ictx.read_packets(), idx);
+        while let Some((s, mut packet, doubted)) = reading.read() {
             if s.index() != idx {
                 continue;
             }
-            untimed.place(&mut packet);
+            untimed.place(&mut packet, doubted);
             in_force.see(&packet);
             if until.is_some_and(|until| {
                 packet.dts().is_some_and(|dts| dts as f64 * time_base - start > until)
@@ -1359,11 +1369,12 @@ impl Glancer {
         // and they are the end of the recording: a stretch reaching the end
         // of a recording that has B pictures had its last cells empty.
         let mut done = false;
-        'read: for (s, mut packet) in ictx.read_packets() {
+        let mut reading = untimed.paired(ictx.read_packets(), idx);
+        'read: while let Some((s, mut packet, doubted)) = reading.read() {
             if s.index() != idx {
                 continue;
             }
-            untimed.place(&mut packet);
+            untimed.place(&mut packet, doubted);
             in_force.see(&packet);
             // Counted before the wait for a key packet as well as after it:
             // a container that flags none never ends that wait, and the
@@ -2197,6 +2208,8 @@ fn walk(
     let mut in_force = if sets { InForce::single(&params, &src.video) } else { InForce::off() };
     // And the MPEG-4 Part 2 VOL in force: see [`VolInForce`].
     let mut vols = if sets { VolInForce::single(&params) } else { VolInForce::off() };
+    // Before the record goes to the decoder; used below.
+    let mut untimed = Untimed::knowing(&src.video, &params);
     let mut decoder = match cores {
         Cores::One => crate::video_context(params)?.decoder().video()?,
         Cores::All => crate::video_decoder(params)?,
@@ -2268,15 +2281,14 @@ fn walk(
     let outside =
         |t: f64, since: Option<f64>, stop: Option<f64>| off_stretch(t, since, stop, quarter, tol);
     // A picture whose packet carries no time is given the one its order
-    // says, as the cut gives it: see [`Untimed`].
-    let mut untimed = Untimed::new(&src.video);
-    let mut packets = ictx.read_packets();
-    'outer: for (stream, mut packet) in packets.by_ref() {
+    // says, as the cut gives it: see [`Untimed`] (made above, from the record).
+    let mut packets = untimed.paired(ictx.read_packets(), idx);
+    'outer: while let Some((stream, mut packet, doubted)) = packets.read() {
         if stream.index() != idx {
             continue;
         }
         Landed::mend(&mut landed, &mut packet, src);
-        untimed.place(&mut packet);
+        untimed.place(&mut packet, doubted);
         in_force.see(&packet);
         if packet.position() >= 0 {
             read_at = Some(packet.position() as u64);
@@ -2381,7 +2393,7 @@ fn walk(
     // (`whole`): the pictures it was counting stopped there, not at the end
     // of what was asked. The others show what they could, as the detections
     // do.
-    let unread = packets.finished().err();
+    let unread = packets.inner().finished().err();
     drop(packets);
     if whole && !stopped {
         if let Some(e) = unread {
@@ -2680,16 +2692,53 @@ pub(crate) fn steady_decoder(params: ff::codec::Parameters) -> Result<ff::decode
 /// passed over as before; a transport stream's second field, the usual
 /// packet with no time, is a field. Off for anything but H.264 in start
 /// codes.
-pub(crate) struct Untimed(Option<crate::cut::poc_seam::Order>);
+///
+/// **Read through [`Self::paired`] (or [`Self::hold`])**, which says of each
+/// picture whether libav gave it the next one's time: see
+/// [`crate::cut::poc_seam::Pairs`].
+pub(crate) struct Untimed(
+    Option<crate::cut::poc_seam::Order>,
+    crate::cut::poc_seam::Pairs<ff::Packet>,
+);
 
 impl Untimed {
+    /// For the video stream `video` describes, knowing no sets but those the
+    /// packets restate: for a read from the head. A read that seeks takes
+    /// [`Self::knowing`].
     pub(crate) fn new(video: &crate::VideoInfo) -> Self {
-        Self::with(video.codec == "h264" && video.framing == crate::bitstream::NalFraming::AnnexB)
+        Self::with(Self::wanted(video), None, Self::pace_of(video))
     }
 
-    /// On where `on` says the pictures are H.264 in start codes.
-    fn with(on: bool) -> Self {
-        Untimed(on.then(Default::default))
+    /// For the video stream `video` describes, whose record is `params`.
+    /// **Knowing the record's sets, and the rate, as the cut's copy does**
+    /// ([`crate::cut::poc_seam::Order::knowing`] and `paced`): a read that
+    /// starts from a seek meets only the sets restated after it, and an x264
+    /// `.mp4` remuxed to `.mpg` states them at its head alone -- no picture
+    /// with no time could be placed after a seek there, so a still or the
+    /// editor's picture landed on the one before or after it.
+    pub(crate) fn knowing(video: &crate::VideoInfo, params: &ff::codec::Parameters) -> Self {
+        Self::with(Self::wanted(video), Some(params), Self::pace_of(video))
+    }
+
+    fn wanted(video: &crate::VideoInfo) -> bool {
+        video.codec == "h264" && video.framing == crate::bitstream::NalFraming::AnnexB
+    }
+
+    /// Ticks per picture by the stream's rate.
+    fn pace_of(video: &crate::VideoInfo) -> f64 {
+        video.frame_duration() / video.time_base
+    }
+
+    /// On where `on` says the pictures are H.264 in start codes, knowing the
+    /// sets of `record` where there is one, and `pace` ticks per picture.
+    fn with(on: bool, record: Option<&ff::codec::Parameters>, pace: f64) -> Self {
+        Untimed(
+            on.then(|| {
+                let sets = record.map(crate::cut::record_sets_of).unwrap_or_default();
+                crate::cut::poc_seam::Order::knowing(&sets).paced(pace)
+            }),
+            crate::cut::poc_seam::Pairs::new(None),
+        )
     }
 
     /// After a seek: the picture before is no longer the one before.
@@ -2697,27 +2746,56 @@ impl Untimed {
         if let Some(order) = self.0.as_mut() {
             order.restart();
         }
+        self.1.restart();
+    }
+
+    /// The read `inner`, whose pictures are stream `video`, telling of each
+    /// packet whether its time is the next picture's, for [`Self::place`] and
+    /// [`Self::pts_of`]. Straight through where this is off.
+    pub(crate) fn paired<'a, I>(&self, inner: I, video: usize) -> crate::cut::poc_seam::Paired<'a, I>
+    where
+        I: Iterator<Item = (ff::format::stream::Stream<'a>, ff::Packet)>,
+    {
+        crate::cut::poc_seam::Paired::new(inner, video, self.0.is_some())
+    }
+
+    /// For a reader that reads one picture's packet at a time: `packet` held,
+    /// and the one before it handed back (with whether its time is
+    /// `packet`'s), where there is one. See [`Self::release`].
+    pub(crate) fn hold(&mut self, packet: ff::Packet) -> Option<(ff::Packet, bool)> {
+        if self.0.is_none() {
+            return Some((packet, false));
+        }
+        self.1.push(packet);
+        self.1.pop()
+    }
+
+    /// The read is over: the packet [`Self::hold`] holds, if any.
+    pub(crate) fn release(&mut self) -> Option<(ff::Packet, bool)> {
+        self.1.end();
+        self.1.pop()
     }
 
     /// The time of a packet, in the stream's ticks: its own, or the one its
     /// order says where it has none and that can be told. Every packet read
-    /// goes through this in file order, timed or not.
-    pub(crate) fn pts_of(&mut self, packet: &ff::Packet) -> Option<i64> {
+    /// goes through this in file order, timed or not. `doubted`: its time
+    /// is the next picture's, as [`Self::paired`] says.
+    pub(crate) fn pts_of(&mut self, packet: &ff::Packet, doubted: bool) -> Option<i64> {
         match self.0.as_mut() {
-            Some(order) => order.pts_of(packet),
+            Some(order) => order.pts_of(packet, doubted),
             None => packet.pts(),
         }
     }
 
-    /// As [`Self::pts_of`], giving a packet with no time the one its order
-    /// says, for a decoder to hand back with the picture.
-    pub(crate) fn place(&mut self, packet: &mut ff::Packet) {
+    /// As [`Self::pts_of`], giving a packet the time its order says where it
+    /// has none, or has the next picture's, for a decoder to hand back with
+    /// the picture.
+    pub(crate) fn place(&mut self, packet: &mut ff::Packet, doubted: bool) {
         if self.0.is_none() {
             return;
         }
-        let had = packet.pts().is_some();
-        let pts = self.pts_of(packet);
-        if !had && pts.is_some() {
+        let pts = self.pts_of(packet, doubted);
+        if pts.is_some() && pts != packet.pts() {
             packet.set_pts(pts);
         }
     }

@@ -246,7 +246,9 @@ fn pictures_afresh(
     // same ([`reencode_segment`]).
     let mut vols = crate::preview::VolInForce::single(&params);
     // Where a picture whose packet carries no time is shown; see below.
-    let mut untimed = crate::preview::Untimed::new(&src.video);
+    // Knowing the record's sets, as the read opens at a seek: see
+    // [`crate::preview::Untimed::knowing`].
+    let mut untimed = crate::preview::Untimed::knowing(&src.video, &params);
 
     let mut decoder = crate::video_decoder(params)?;
     // Which masters lay a reel's pictures at their own instants; see below.
@@ -591,8 +593,8 @@ fn pictures_afresh(
 
     // See [`crate::input::LateFrames`], as in the cut's own segments.
     let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
-    let mut packets = ictx.read_packets();
-    for (stream, mut packet) in packets.by_ref() {
+    let mut packets = untimed.paired(ictx.read_packets(), ist_index);
+    while let Some((stream, mut packet, doubted)) = packets.read() {
         let index = stream.index();
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
@@ -679,7 +681,7 @@ fn pictures_afresh(
         // an H.264 `.mpg` reel conformed to another master lost both of its
         // pts-less pictures, the one before each held in its place. See
         // [`crate::preview::Untimed`].
-        untimed.place(&mut packet);
+        untimed.place(&mut packet, doubted);
         // A packet the decoder will not take is not a reason to stop; see
         // [`reencode_segment`], where the same is said at more length --
         // and counted on the same terms: a packet of the run-up the seek
@@ -708,7 +710,7 @@ fn pictures_afresh(
             audio_done[k] = take_audio(&ctx.audio[k], src, seg, first_segment, packet, writer)?;
         }
     }
-    packets.finished()?;
+    packets.inner().finished()?;
     if !past_end {
         decoder.send_eof()?;
         // The last pictures the decoder was holding. Nothing reads
@@ -1033,6 +1035,9 @@ impl<'s> FarSide<'s> {
         let params = stream.parameters();
         let in_force = crate::preview::InForce::single(&params, &src.video);
         let vols = crate::preview::VolInForce::single(&params);
+        // Knowing the record's sets, as the read opens at a seek: see
+        // [`crate::preview::Untimed::knowing`].
+        let untimed = crate::preview::Untimed::knowing(&src.video, &params);
         let decoder = crate::video_decoder(params)?;
         // Back a little, because the picture wanted at the crossing's first
         // instant is the one standing there, and it may have been coded
@@ -1063,7 +1068,7 @@ impl<'s> FarSide<'s> {
             drained: false,
             in_force,
             vols,
-            untimed: crate::preview::Untimed::new(&src.video),
+            untimed,
         })
     }
 
@@ -1107,7 +1112,17 @@ impl<'s> FarSide<'s> {
                 let read = packets.next().map(|(stream, packet)| (stream.index(), packet));
                 (read, packets.finished())
             };
-            let Some((index, mut packet)) = read else {
+            // One picture behind the read, so that it can be told whether the
+            // next has its time: see [`crate::preview::Untimed::hold`].
+            let held = match read {
+                Some((index, _)) if index != self.ist => continue,
+                Some((_, packet)) => match self.untimed.hold(packet) {
+                    Some(held) => Some(held),
+                    None => continue,
+                },
+                None => self.untimed.release(),
+            };
+            let Some((mut packet, doubted)) = held else {
                 // A read that failed is not the end of the clip: taken for
                 // one, the crossing froze on the last picture it had and the
                 // cut said it had succeeded. See [`crate::input::Packets`].
@@ -1121,12 +1136,9 @@ impl<'s> FarSide<'s> {
                 }
                 return Ok(None);
             };
-            if index != self.ist {
-                continue;
-            }
             self.in_force.see(&packet);
             // As in [`pictures_afresh`].
-            self.untimed.place(&mut packet);
+            self.untimed.place(&mut packet, doubted);
             // A packet the decoder will not take is not a reason to stop
             // the cut; see [`reencode_segment`].
             if !self.run_up.passes(&packet, self.in_tb, self.start_time) {

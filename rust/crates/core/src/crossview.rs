@@ -736,6 +736,9 @@ impl<'s> Reader<'s> {
         let params = stream.parameters();
         let in_force = crate::preview::InForce::single(&params, &src.video);
         let vols = crate::preview::VolInForce::single(&params);
+        // Knowing the record's sets, as the read opens at a seek: see
+        // [`crate::preview::Untimed::knowing`].
+        let untimed = crate::preview::Untimed::knowing(&src.video, &params);
         let decoder = crate::video_decoder(params)?;
         let landed = seek(&mut ictx);
         crate::input::keep_only(&mut ictx, &[ist]);
@@ -762,7 +765,7 @@ impl<'s> Reader<'s> {
             queued: Default::default(),
             in_force,
             vols,
-            untimed: crate::preview::Untimed::new(&src.video),
+            untimed,
         })
     }
 
@@ -863,7 +866,18 @@ impl<'s> Reader<'s> {
             // the end of a clip. Marking the reader spent here, as this used
             // to, left those unread and the preview stopped short of the
             // clip's end. `FarSide` in the cutter keeps the two apart too.
-            let Some((stream, mut packet)) = self.ictx.read_packets().next() else {
+            //
+            // One picture behind the read, so that it can be told whether the
+            // next has its time: see [`crate::preview::Untimed::hold`].
+            let held = match self.ictx.read_packets().next() {
+                Some((stream, _)) if stream.index() != self.ist => continue,
+                Some((_, packet)) => match self.untimed.hold(packet) {
+                    Some(held) => Some(held),
+                    None => continue,
+                },
+                None => self.untimed.release(),
+            };
+            let Some((mut packet, doubted)) = held else {
                 if !self.drained {
                     self.drained = true;
                     self.decoder.send_eof()?;
@@ -871,11 +885,8 @@ impl<'s> Reader<'s> {
                 }
                 return Ok(None);
             };
-            if stream.index() != self.ist {
-                continue;
-            }
             crate::preview::Landed::mend(&mut self.landed, &mut packet, self.src);
-            self.untimed.place(&mut packet);
+            self.untimed.place(&mut packet, doubted);
             self.in_force.see(&packet);
             let was = self.stretches.clone();
             if self.stretches.reach(packet.position()) && std::mem::take(&mut self.fed) {

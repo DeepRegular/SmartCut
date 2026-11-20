@@ -964,8 +964,11 @@ pub mod write {
         /// Where a DVD's unit that only stops, with a delay of its own, takes
         /// down whatever is up by then: a picture put up before it is taken
         /// down there, as the preview (`subs`) has it. See
-        /// [`Composer::stop`].
-        stop_at: Option<f64>,
+        /// [`Composer::stop`]. In the order they come, each still to come:
+        /// two such units can be running at once, and a picture put up
+        /// between the first one's stop and the second's comes down at the
+        /// second's.
+        stop_at: Vec<f64>,
     }
 
     /// See [`Composer::late`]: the picture, owned, and when it goes up and
@@ -1069,12 +1072,10 @@ pub mod write {
             let mut out = self.take_down_before(screen, at);
             self.number = self.number.wrapping_add(1);
             out.extend(drawn_as(screen, self.number, at, picture, forced));
-            let until = match self.stop_at {
-                Some(stop) if at < stop => Some(until.map_or(stop, |u| u.min(stop))),
-                _ => {
-                    self.stop_at = None;
-                    until
-                }
+            self.stop_at.retain(|&stop| at < stop);
+            let until = match self.stop_at.first() {
+                Some(&stop) => Some(until.map_or(stop, |u| u.min(stop))),
+                None => until,
             };
             self.standing = Some(((picture.x, picture.y, picture.width, picture.height), until));
             self.up_at = at;
@@ -1094,7 +1095,7 @@ pub mod write {
         pub fn take_down(&mut self, screen: (u16, u16), at: f64) -> Vec<Held> {
             let mut out = self.release(screen, |up| up < at);
             self.late.clear();
-            self.stop_at = None;
+            self.stop_at.clear();
             out.extend(self.clear(screen, at));
             out
         }
@@ -1119,7 +1120,8 @@ pub mod write {
                 if let Some((_, until)) = self.standing.as_mut() {
                     *until = Some(until.map_or(stop, |u| u.min(stop)));
                 }
-                self.stop_at = Some(stop);
+                let k = self.stop_at.partition_point(|&s| s <= stop);
+                self.stop_at.insert(k, stop);
                 return out;
             }
             out.extend(self.clear(screen, at));
@@ -1632,6 +1634,44 @@ mod tests {
         assert!(composer.due(screen, 34.0).is_empty());
         let down = composer.take_down(screen, 35.0);
         assert!((down[0].pts - 35.0).abs() < 1e-9);
+    }
+
+    /// Two delayed stops running at once: a picture put up before the first
+    /// one's time comes down there, one put up between the two at the
+    /// second's -- whichever of the two was handed over first.
+    #[test]
+    fn two_delayed_stops_each_take_down_at_their_own_time() {
+        let screen = (720, 480);
+        let drawn = || crate::vobsub::Drawn {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            indices: vec![1; 4],
+            palette: vec![(0, 0, 0, 0), (255, 255, 255, 255)],
+            until: None,
+            from: 0.0,
+            forced: false,
+        };
+        for (first, second) in [((10.0, 2.0), (10.5, 3.5)), ((10.0, 4.0), (10.5, 1.5))] {
+            let mut composer = write::Composer::default();
+            assert!(composer.stop(screen, first.0, first.1).is_empty());
+            assert!(composer.stop(screen, second.0, second.1).is_empty());
+            // Up at 11.0, before both: down at 12.0.
+            assert_eq!(composer.show_drawn(screen, 11.0, &drawn()).len(), 5);
+            let down = composer.due(screen, 12.5);
+            assert_eq!(down.len(), 3);
+            assert!((down[0].pts - 12.0).abs() < 1e-9);
+            // Up at 13.0, between them: down at 14.0.
+            assert_eq!(composer.show_drawn(screen, 13.0, &drawn()).len(), 5);
+            assert!(composer.due(screen, 13.9).is_empty());
+            let down = composer.due(screen, 14.0);
+            assert_eq!(down.len(), 3);
+            assert!((down[0].pts - 14.0).abs() < 1e-9);
+            // Up after both: it stands.
+            assert_eq!(composer.show_drawn(screen, 15.0, &drawn()).len(), 5);
+            assert!(composer.due(screen, 20.0).is_empty());
+        }
     }
 
     /// A picture that says when it goes is taken down once the clock has

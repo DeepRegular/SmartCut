@@ -233,6 +233,14 @@ fn without_marks(name: &str) -> String {
                     && !(i + 1..i + 1 + end).any(|j| episode_at(&raw, &folded, j));
                 if !inside {
                     i += end + 2;
+                    // A mark between two words leaves one space between
+                    // them, not the two it stood between: `X [Re] Y` is
+                    // `X Y`, where it was `X  Y` on a disc's list.
+                    while out.chars().last().is_some_and(|c| fold(c).is_whitespace())
+                        && raw.get(i).is_some_and(|c| fold(*c).is_whitespace())
+                    {
+                        i += 1;
+                    }
                     continue;
                 }
             }
@@ -488,6 +496,9 @@ mod tests {
         assert_eq!(of("砂の音　最終話「さよなら」[終]"), "砂の音");
         assert_eq!(of("硝子の塔　ＥＰＩＳＯＤＥ　２４"), "硝子の塔");
         assert_eq!(of("灯台守の休日▼第２７話「再会」"), "灯台守の休日");
+        // A mark between two words leaves one space, not two.
+        assert_eq!(of("アニメ Paper Kites [Re] 風の街"), "Paper Kites 風の街");
+        assert_eq!(of("Paper Kites　[新]　風の街"), "Paper Kites　風の街");
     }
 
     /// The season is the series' name and stays; the episode inside the

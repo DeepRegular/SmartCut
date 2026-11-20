@@ -743,7 +743,13 @@ pub fn build_with_sound(
     // entry picture the cut never writes is not held either: see
     // [`crate::preview::Stretches`].
     let mut stretches = crate::preview::Stretches::new(src);
-    for (stream, mut packet) in ictx.read_packets() {
+    // An entry picture whose packet carries no time -- an IDR of an H.264
+    // `.mpg` that the index lists -- is given the time the cut gives it:
+    // passed over, it had no thumbnail and no scene change could be found
+    // on it. See [`crate::preview::Untimed`].
+    let mut untimed = crate::preview::Untimed::new(&src.video);
+    let mut reading = untimed.paired(ictx.read_packets(), idx);
+    while let Some((stream, mut packet, doubted)) = reading.read() {
         if let Some(f) = stop.as_ref() {
             if f() {
                 bail!("abandoned");
@@ -778,6 +784,7 @@ pub fn build_with_sound(
         // recorder never wrote: what follows is the next stretch, whose first
         // packet is no picture's second half. Dropped, as [`crate::preview`]'s
         // walk drops it there.
+        untimed.place(&mut packet, doubted);
         in_force.see(&packet);
         if stretches.reach(packet.position()) {
             pending.clear();
@@ -1028,15 +1035,21 @@ fn decode_on(
     // Whether the decoder holds anything a drain would hand back.
     let mut fed = false;
     // A picture whose packet carries no time, given the one the cut gives
-    // it: see [`crate::preview::Untimed`].
-    let mut untimed = crate::preview::Untimed::new(&src.video);
-    for (stream, mut packet) in ictx.read_packets() {
+    // it: see [`crate::preview::Untimed`]. Knowing the record's sets, as
+    // the read opens at a seek: an x264 `.mp4` remuxed to `.mpg` states them
+    // at its head alone.
+    let mut untimed = match ictx.stream(idx) {
+        Some(stream) => crate::preview::Untimed::knowing(&src.video, &stream.parameters()),
+        None => crate::preview::Untimed::new(&src.video),
+    };
+    let mut reading = untimed.paired(ictx.read_packets(), idx);
+    while let Some((stream, mut packet, doubted)) = reading.read() {
         if stream.index() != idx {
             continue;
         }
         // See [`crate::preview::Landed`].
         crate::preview::Landed::mend(&mut landed, &mut packet, src);
-        untimed.place(&mut packet);
+        untimed.place(&mut packet, doubted);
         in_force.see(&packet);
         let was = stretches.clone();
         if stretches.reach(packet.position()) && fed {

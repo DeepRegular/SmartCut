@@ -1270,10 +1270,16 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
             .collect();
         // A picture whose packet carries no time is where its order puts it,
         // as the cut and the source's pictures have it: see
-        // [`crate::preview::Untimed`].
-        let mut untimed = crate::preview::Untimed::new(&src.video);
-        let mut packets = ictx.read_packets();
-        for (stream, packet) in packets.by_ref() {
+        // [`crate::preview::Untimed`]. Knowing the record's sets, as the read
+        // opens at a seek: an x264 `.mp4` remuxed to `.mpg` states them at its
+        // head alone, and a correct cut of one was failed ("110 written, 84
+        // expected").
+        let mut untimed = match ictx.stream(video) {
+            Some(stream) => crate::preview::Untimed::knowing(&src.video, &stream.parameters()),
+            None => crate::preview::Untimed::new(&src.video),
+        };
+        let mut packets = untimed.paired(ictx.read_packets(), video);
+        while let Some((stream, packet, doubted)) = packets.read() {
             if stop.load(Ordering::Relaxed) {
                 return None;
             }
@@ -1296,7 +1302,7 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
                     to_the_end = false;
                     break;
                 }
-                let Some(t) = untimed.pts_of(&packet).map(|q| q as f64 * tb - start) else { continue };
+                let Some(t) = untimed.pts_of(&packet, doubted).map(|q| q as f64 * tb - start) else { continue };
                 let d = packet.duration();
                 shown.push((t, t + if d > 0 { d as f64 * tb } else { fd }));
             } else if let Some(k) = tracks.iter().position(|&i| i == stream.index()) {
@@ -1333,7 +1339,7 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
             }
         }
         // A read that stopped on an error says nothing it can be held to.
-        packets.finished().ok()?;
+        packets.inner().finished().ok()?;
         drop(packets);
         // Each picture is up until the next begins: a packet's own length is
         // its decode slot, which on a B pyramid is not how long it is shown.
@@ -1422,6 +1428,67 @@ impl Kept {
     }
 }
 
+/// The MPEG-4 Part 2 stream record's headers of `src` where they state a
+/// VOL ([`crate::cut::mpeg4_config`]), read once per recording for the
+/// process: by its name, length and time of writing, as the cut keeps what
+/// its key pictures state. Opened once a range before, `--verify` of an
+/// hour's Xvid `.avi` in 10 ranges took 4 % longer.
+///
+/// With it, whether the recording's second key picture states a VOL of its
+/// own: one that does -- libavcodec's and DivX's habit, a VOL at every key --
+/// has every range's entry picture state its own, and is decoded from there
+/// by it, as the cut copies it without asking ([`crate::cut`] asks only where
+/// the copy's first picture states none). Asked of such a recording all the
+/// same, the key pictures were read for their VOLs through the whole file:
+/// 226 MB more read for an hour's `.avi` whose keys come every 12 pictures.
+fn mpeg4_record(src: &Source) -> Option<(Vec<u8>, bool)> {
+    type Key = (String, u64, Option<std::time::SystemTime>);
+    type Record = Option<(Vec<u8>, bool)>;
+    static RECORDS: std::sync::Mutex<Vec<(Key, Record)>> = std::sync::Mutex::new(Vec::new());
+    let meta = std::fs::metadata(&src.input.url).ok();
+    let key: Key = (
+        src.input.url.clone(),
+        meta.as_ref().map_or(0, |m| m.len()),
+        meta.and_then(|m| m.modified().ok()),
+    );
+    if let Some((_, record)) = RECORDS.lock().ok()?.iter().find(|(k, _)| *k == key) {
+        return record.clone();
+    }
+    let record = crate::input::demux(&src.input.url).ok().and_then(|mut ictx| {
+        let video = src.video.stream_index;
+        let record = crate::cut::mpeg4_config(&ictx.stream(video)?.parameters())?;
+        crate::input::keep_only(&mut ictx, &[video]);
+        // Whether the `nth` key picture read from here on states a VOL.
+        let states = |ictx: &mut crate::input::Demux, nth: usize| {
+            ictx.read_packets()
+                // A few minutes of pictures at most: Xvid's longest GOP is 300.
+                .take(4096)
+                .filter(|(s, p)| s.index() == video && p.is_key())
+                .nth(nth)
+                .is_some_and(|(_, p)| crate::cut::mpeg4_has_vol(p.data().unwrap_or(&[])))
+        };
+        // And the last key picture as well: a libavcodec encode with a VOL at
+        // every key and an Xvid one with its VOL in its first picture only,
+        // joined in that order, answered by the second key alone, had the
+        // later encode's ranges decoded by the first one's VOL -- a copy of
+        // 50 bit-identical pictures called "50 re-encoded, lowest 16.1 dB".
+        let every_key = states(&mut ictx, 1)
+            && src.points.last().is_some_and(|last| {
+                let ts = ((last.time + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
+                ictx.seek(ts, ..ts + 1).is_ok() && states(&mut ictx, 0)
+            });
+        Some((record, every_key))
+    });
+    if let Ok(mut all) = RECORDS.lock() {
+        all.retain(|(k, _)| k.0 != key.0);
+        if all.len() >= 8 {
+            all.remove(0);
+        }
+        all.push((key, record.clone()));
+    }
+    record
+}
+
 /// `src` as the source side is to decode the range opening at `from`, where
 /// that is not `src` itself: the same recording with its entry points between
 /// the last restatement of the H.264 parameter sets and `from` left out, so
@@ -1450,36 +1517,9 @@ impl Kept {
 /// of a remux whose sets are stated only at its head read the whole 32 MiB
 /// look-back once more -- 600 MB more than 0.8.45 read for an hour's
 /// recording cut in 20 ranges.
-/// The MPEG-4 Part 2 stream record's headers of `src` where they state a
-/// VOL ([`crate::cut::mpeg4_config`]), read once per recording for the
-/// process: by its name, length and time of writing, as the cut keeps what
-/// its key pictures state. Opened once a range before, `--verify` of an
-/// hour's Xvid `.avi` in 10 ranges took 4 % longer.
-fn mpeg4_record(src: &Source) -> Option<Vec<u8>> {
-    type Key = (String, u64, Option<std::time::SystemTime>);
-    static RECORDS: std::sync::Mutex<Vec<(Key, Option<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
-    let meta = std::fs::metadata(&src.input.url).ok();
-    let key: Key = (
-        src.input.url.clone(),
-        meta.as_ref().map_or(0, |m| m.len()),
-        meta.and_then(|m| m.modified().ok()),
-    );
-    if let Some((_, record)) = RECORDS.lock().ok()?.iter().find(|(k, _)| *k == key) {
-        return record.clone();
-    }
-    let record = crate::input::demux(&src.input.url)
-        .ok()
-        .and_then(|ictx| crate::cut::mpeg4_config(&ictx.stream(src.video.stream_index)?.parameters()));
-    if let Ok(mut all) = RECORDS.lock() {
-        all.retain(|(k, _)| k.0 != key.0);
-        if all.len() >= 8 {
-            all.remove(0);
-        }
-        all.push((key, record.clone()));
-    }
-    record
-}
-
+///
+/// H.264 in lengths (MP4, Matroska) and MPEG-4 Part 2 are answered too, by
+/// the cut's own memos: see the two branches below.
 fn opened_by_sets_in_force(src: &Source, from: f64, known: &mut Option<(u64, Vec<Vec<u8>>)>) -> Option<Source> {
     use crate::bitstream::NalFraming;
     // Kept only where this range's own look-back follows from it: a range
@@ -1513,7 +1553,10 @@ fn opened_by_sets_in_force(src: &Source, from: f64, known: &mut Option<(u64, Vec
     // key pictures state once per process ([`crate::cut::mpeg4_vol_in_force`]).
     if src.video.codec == "mpeg4" {
         let entry = src.points.iter().rev().find(|p| p.time <= from + 1e-6)?;
-        let record = mpeg4_record(src)?;
+        let (record, every_key) = mpeg4_record(src)?;
+        if every_key {
+            return None;
+        }
         let (t0, t1) = (crate::cut::mpeg4_vol_stated_at(src, entry.time, &record)?, entry.time);
         if t0 >= t1 - 1e-6 {
             return None;

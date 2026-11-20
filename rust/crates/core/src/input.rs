@@ -575,7 +575,17 @@ const LATE_PROBE: &str = "100000000";
 /// [`pictures_undescribed`]. A VC-1 stream on a pressed Blu-ray can come back
 /// with no pixel format at any length of analysis (`has_b_frames` 1), and
 /// each process read its hundred megabytes for nothing on the first open.
+///
+/// Asked of a transport stream only. The MP4/QuickTime reader states the
+/// depth itself, from the composition offsets of its sample table, before a
+/// picture is read: an `.mp4` or `.mov` with B pictures whose pictures begin
+/// six seconds or more after its sound came back with no pixel format and
+/// `has_b_frames` 1, so it was not opened again and every cut of it that
+/// re-encodes was refused.
 fn reordered(ictx: &ff::format::context::Input) -> bool {
+    if !is_transport_stream(ictx) {
+        return false;
+    }
     let Some(st) = ictx.streams().best(ff::media::Type::Video) else {
         return false;
     };
