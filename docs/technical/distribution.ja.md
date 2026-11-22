@@ -232,6 +232,32 @@ deb から、tar.gz 用は AppDir からである。
 - VM の sudo にパスワードが必要なので、Debian 13 への実際のインストールは試していない。
   Ubuntu 24.04 では試していない。
 
+### APT リポジトリ
+
+deb は Releases に置くほか、署名した APT リポジトリとして
+[DeepRegular/smartcut-apt](https://github.com/DeepRegular/smartcut-apt) の
+GitHub Pages（`https://deepregular.github.io/smartcut-apt/`）にも置いている。
+一度登録すれば、新しい版は `apt upgrade` で入る。
+
+```bash
+sudo curl -fsSLo /usr/share/keyrings/smartcut.gpg https://deepregular.github.io/smartcut-apt/smartcut.gpg
+sudo curl -fsSLo /etc/apt/sources.list.d/smartcut.sources https://deepregular.github.io/smartcut-apt/smartcut.sources
+sudo apt update && sudo apt install smartcut
+```
+
+公開は `gui/publish-apt.sh` で、開発 VM で `gui/jammy/build.sh` が作った deb を
+渡す（`FLATPAK_GPG_HOME=... ./gui/publish-apt.sh smartcut_0.8.50_amd64.deb`）。
+`apt-ftparchive` で `Packages` と `Release` を作り、`InRelease` と `Release.gpg` に
+署名して、Pages のリポジトリの main をコミット 1 つで置き換える。
+スイートは `stable`、コンポーネントは `main`、アーキテクチャは amd64 だけで、
+置くのは最新の版だけである。古い版は Releases から入れる。署名の鍵は Flatpak の
+リポジトリと同じものを使う。`smartcut.sources` は deb822 形式で、
+`Signed-By` でこの鍵だけを信用させる。
+
+何も入っていない Ubuntu 22.04 の root で、上の手順のとおりに鍵とソースを入れ、
+`apt update` と `apt install smartcut` が通ることを確かめた（署名の確認つき）。
+新しい版への `apt upgrade` は、次の版を出すときに確かめる。
+
 ## Flatpak
 
 ```bash

@@ -228,6 +228,32 @@ binary comes from Tauri's deb, and the tar.gz's from the AppDir.
 - An actual install on Debian 13 was not done (sudo on the VM needs a password), and
   Ubuntu 24.04 was not tried.
 
+### APT repository
+
+Besides the Releases page, the .deb is in a signed APT repository on the GitHub
+Pages of [DeepRegular/smartcut-apt](https://github.com/DeepRegular/smartcut-apt)
+(`https://deepregular.github.io/smartcut-apt/`). Added once, it brings new versions
+with `apt upgrade`:
+
+```bash
+sudo curl -fsSLo /usr/share/keyrings/smartcut.gpg https://deepregular.github.io/smartcut-apt/smartcut.gpg
+sudo curl -fsSLo /etc/apt/sources.list.d/smartcut.sources https://deepregular.github.io/smartcut-apt/smartcut.sources
+sudo apt update && sudo apt install smartcut
+```
+
+`gui/publish-apt.sh` publishes it, on the development VM, from the .deb
+`gui/jammy/build.sh` made (`FLATPAK_GPG_HOME=... ./gui/publish-apt.sh
+smartcut_0.8.50_amd64.deb`): `apt-ftparchive` writes `Packages` and `Release`,
+`InRelease` and `Release.gpg` are signed, and the Pages repository's main is replaced
+with one commit. One suite, `stable`, component `main`, amd64 only, the newest
+version only; older ones are on the Releases page. The key is the Flatpak
+repository's. `smartcut.sources` is deb822 and trusts this key alone through
+`Signed-By`.
+
+On a clean Ubuntu 22.04 root, adding the key and the source as above, `apt update`
+and `apt install smartcut` went through with the signature checked. An
+`apt upgrade` to a newer version is to be tried with the next release.
+
 ## Flatpak
 
 ```bash
