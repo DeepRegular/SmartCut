@@ -22,7 +22,13 @@ sdk-extensions:
   # every struct with no fields in it. LLVM 20 writes them as the C headers
   # lay them out, as clang 14 and 19 do for the other Linux builds.
   - org.freedesktop.Sdk.Extension.llvm20
-command: smartcut
+# The GUI's own file is named after the app ID. GTK takes the window's
+# Wayland app_id and X11 WM_CLASS from that name, and KDE finds a window's
+# icon by matching them to a desktop file, which in a Flatpak is
+# dev.smartcut.app.desktop: under the name `smartcut` its windows had no icon.
+# A file of that name rather than a wrapper, because the GUI starts its batch
+# tool and project windows by running its own file again.
+command: dev.smartcut.app
 finish-args:
   - --share=ipc
   - --socket=wayland
@@ -35,6 +41,11 @@ finish-args:
   # at a time and not the folder beside it, where the marks, the .keyframe
   # and the outputs go.
   - --filesystem=host
+  # KDE writes its colour scheme and title-bar buttons for GTK into
+  # ~/.config/gtk-3.0 (colors.css, window_decorations.css). Inside the
+  # sandbox the config folder is the app's own, so without this the Breeze
+  # theme came up in its default colours whatever the desktop was set to.
+  - --filesystem=xdg-config/gtk-3.0:ro
   # The notice when a long run finishes behind another window.
   - --talk-name=org.freedesktop.Notifications
 build-options:
@@ -244,7 +255,8 @@ modules:
     build-commands:
       - cargo build --release --manifest-path rust/Cargo.toml -p smartcut-cli
       - cargo build --release --manifest-path gui/src-tauri/Cargo.toml --features tauri/custom-protocol
-      - install -Dm755 gui/src-tauri/target/release/gui /app/bin/smartcut
+      - install -Dm755 gui/src-tauri/target/release/gui /app/bin/dev.smartcut.app
+      - ln -s dev.smartcut.app /app/bin/smartcut
       - install -Dm755 rust/target/release/smartcut /app/bin/smartcut-cli
       - install -Dm644 gui/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/dev.smartcut.app.png
       - install -Dm644 gui/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/dev.smartcut.app.png
