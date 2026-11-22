@@ -618,6 +618,34 @@ pub fn check_placed(
     let v_tb = video.and_then(|i| ictx.stream(i)).map(|s| f64::from(s.time_base())).unwrap_or(0.0);
     // A frame of the output, by its own rate.
     let a_frame = 1.0 / frame_rate(&ictx, video, fps);
+    // A picture of the output whose packet carries no time is where its
+    // order puts it, as the source side has it (see `held_in`): a cut of an
+    // H.264 `.mpg` (`ffmpeg -f mpeg`) writes the source's pts-less pictures
+    // as they came, 26 of them in a row over a black second, and the gap
+    // they left between the timed pictures around them was counted as time
+    // with no picture -- "gaps: 0.920s with no picture, 0.000s in the
+    // source", a correct cut failed. Off for anything but H.264 in start
+    // codes, as there.
+    let mut untimed = video.and_then(|i| {
+        let stream = ictx.stream(i)?;
+        let params = stream.parameters();
+        let extradata = unsafe {
+            let p = params.as_ptr();
+            if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+            }
+        };
+        // The output's own stream, at its own clock and rate.
+        let mut own = pieces.first()?.src.video.clone();
+        own.stream_index = i;
+        own.time_base = v_tb;
+        own.frame_rate = 1.0 / a_frame;
+        own.codec = if params.id() == ff::codec::Id::H264 { "h264".into() } else { String::new() };
+        own.framing = crate::bitstream::framing_from_extradata("h264", extradata);
+        Some(crate::preview::Untimed::knowing(&own, &params))
+    });
     // Where the last picture stops being shown: see below.
     let mut pictures_end: Option<f64> = None;
     // Time between the output's pictures with none in it, as [`holes`] counts
@@ -702,11 +730,16 @@ pub fn check_placed(
             for (src, ranges) in &owned {
                 // What the last range's look-back found in force, and where.
                 let mut known = None;
-                for (a, b, head, copies) in ranges {
+                // Which ranges open on a key picture stating a VOL of its own,
+                // where the recording's keys were judged to: see
+                // [`mpeg4_entry_vols`].
+                let froms: Vec<f64> = ranges.iter().map(|r| r.0).collect();
+                let own_vols = mpeg4_entry_vols(src, &froms);
+                for (k, (a, b, head, copies)) in ranges.iter().enumerate() {
                     // Opened where the sets the cut decoded it by are stated,
                     // where the range's entry picture carries none: see
                     // [`opened_by_sets_in_force`].
-                    let lent = opened_by_sets_in_force(src, *a, &mut known);
+                    let lent = opened_by_sets_in_force(src, *a, &mut known, own_vols.get(k).copied());
                     let src = lent.as_ref().unwrap_or(src);
                     let mut gone = false;
                     // The grid is only read where the pictures are compared.
@@ -827,14 +860,20 @@ pub fn check_placed(
             }
         };
 
-        let mut packets = ictx.read_packets();
-        for (stream, packet) in packets.by_ref() {
+        let mut packets = match &untimed {
+            Some(u) => u.paired(ictx.read_packets(), video.unwrap_or(usize::MAX)),
+            None => crate::cut::poc_seam::Paired::new(ictx.read_packets(), usize::MAX, false),
+        };
+        while let Some((stream, mut packet, doubted)) = packets.read() {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
             let i = stream.index();
             if Some(i) == video {
                 let Some(dec) = decoder.as_mut() else { continue };
+                if let Some(u) = untimed.as_mut() {
+                    u.place(&mut packet, doubted);
+                }
                 if dec.send_packet(&packet).is_err() {
                     // A packet the decoder turns away. Where the pictures are
                     // lined up, a picture it cost is one the count is short
@@ -871,7 +910,7 @@ pub fn check_placed(
         // a file that is short of pictures: counted as one, the check said a
         // cut it never read to the end had lost them. Said as what it is,
         // once the source side has been let finish below.
-        unread = packets.finished().err();
+        unread = packets.inner().finished().err();
         drop(packets);
         if let Some(dec) = decoder.as_mut() {
             let _ = dec.send_eof();
@@ -1489,6 +1528,45 @@ fn mpeg4_record(src: &Source) -> Option<(Vec<u8>, bool)> {
     record
 }
 
+/// For an MPEG-4 Part 2 recording whose keys [`mpeg4_record`] judged to state
+/// a VOL each, by its second and its last: whether the key picture each range
+/// opening at `froms` is read from does. **Judged by those two alone, a
+/// recording joined from three encodes** -- libavcodec's, a VOL at every key;
+/// Xvid's, its VOL in its first picture only; libavcodec's again -- had a
+/// range inside the middle one decoded by the record's VOL, and a copy of 50
+/// bit-identical pictures called "50 re-encoded, lowest 16.3 dB" and "50
+/// damaged". One open for the whole check, a seek and a packet or two a
+/// range: opened once a range, as before [`mpeg4_record`] kept the record, an
+/// hour's `.avi` in 10 ranges took 4 % longer. Empty wherever the question
+/// is not asked, or nothing can be read; a range it cannot answer for is
+/// taken to state its own, as before.
+fn mpeg4_entry_vols(src: &Source, froms: &[f64]) -> Vec<bool> {
+    if src.video.codec != "mpeg4" || froms.is_empty() || !mpeg4_record(src).is_some_and(|(_, every)| every) {
+        return Vec::new();
+    }
+    let Ok(mut ictx) = crate::input::demux(&src.input.url) else { return Vec::new() };
+    let video = src.video.stream_index;
+    crate::input::keep_only(&mut ictx, &[video]);
+    let quarter = src.video.frame_duration() / 4.0;
+    froms
+        .iter()
+        .map(|&from| {
+            // The entry point the read opens on, as `opened_by_sets_in_force`
+            // picks it; sought a quarter of a frame past its time, so that
+            // the key picture at or before is that one and not the one before.
+            let Some(entry) = src.points.iter().rev().find(|p| p.time <= from + 1e-6) else { return true };
+            let ts = ((entry.time + quarter + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
+            if ictx.seek(ts, ..ts).is_err() {
+                return true;
+            }
+            ictx.read_packets()
+                .take(4096)
+                .find(|(s, p)| s.index() == video && p.is_key())
+                .is_none_or(|(_, p)| crate::cut::mpeg4_has_vol(p.data().unwrap_or(&[])))
+        })
+        .collect()
+}
+
 /// `src` as the source side is to decode the range opening at `from`, where
 /// that is not `src` itself: the same recording with its entry points between
 /// the last restatement of the H.264 parameter sets and `from` left out, so
@@ -1520,7 +1598,15 @@ fn mpeg4_record(src: &Source) -> Option<(Vec<u8>, bool)> {
 ///
 /// H.264 in lengths (MP4, Matroska) and MPEG-4 Part 2 are answered too, by
 /// the cut's own memos: see the two branches below.
-fn opened_by_sets_in_force(src: &Source, from: f64, known: &mut Option<(u64, Vec<Vec<u8>>)>) -> Option<Source> {
+///
+/// `own_vol` is whether the range's entry picture states a VOL of its own, on
+/// an MPEG-4 Part 2 recording whose keys were judged to ([`mpeg4_entry_vols`]).
+fn opened_by_sets_in_force(
+    src: &Source,
+    from: f64,
+    known: &mut Option<(u64, Vec<Vec<u8>>)>,
+    own_vol: Option<bool>,
+) -> Option<Source> {
     use crate::bitstream::NalFraming;
     // Kept only where this range's own look-back follows from it: a range
     // that leaves early (a key picture with its own sets) forgets it, and the
@@ -1554,7 +1640,7 @@ fn opened_by_sets_in_force(src: &Source, from: f64, known: &mut Option<(u64, Vec
     if src.video.codec == "mpeg4" {
         let entry = src.points.iter().rev().find(|p| p.time <= from + 1e-6)?;
         let (record, every_key) = mpeg4_record(src)?;
-        if every_key {
+        if every_key && own_vol != Some(false) {
             return None;
         }
         let (t0, t1) = (crate::cut::mpeg4_vol_stated_at(src, entry.time, &record)?, entry.time);

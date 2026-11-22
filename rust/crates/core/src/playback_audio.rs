@@ -1248,12 +1248,33 @@ fn feed_from(
                 }
                 // Folded first, where the row is written in fewer channels:
                 // both what is heard and what is metered are the output's.
-                let heard_as = fold_frame(&mut folder, &mut folded, &frame, fold)?;
+                //
+                // A damaged frame the decoder read as some other number of
+                // channels in no order -- 53, at a broadcast's join into a
+                // commercial -- cannot be folded or brought to the card's:
+                // swresample answers EINVAL, and that ended the playback
+                // with the pictures playing on in silence. It is passed over
+                // as a hole, which the next frame's `due` waits out, as the
+                // cut leaves it one (`crate::audio::decode_on`).
+                let unread = |e: anyhow::Error| if frame.channels() != audio.channels { Ok(()) } else { Err(e) };
+                let heard_as = match fold_frame(&mut folder, &mut folded, &frame, fold) {
+                    Ok(heard_as) => heard_as,
+                    Err(e) => {
+                        unread(e)?;
+                        continue;
+                    }
+                };
                 // Measured before the resampling, so the meter answers for
                 // the recording's channels rather than the card's.
                 let mut peaks = [0f32; METERED];
                 let heard = frame_peaks(heard_as, &mut peaks);
-                let data = resample(&mut resampler, &mut resampled, heard_as, rate, layout)?;
+                let data = match resample(&mut resampler, &mut resampled, heard_as, rate, layout) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        unread(e)?;
+                        continue;
+                    }
+                };
                 let n = data.len() / channels as usize;
                 if let Some((lo, hi)) = frame_window(n, rate, t, start, b) {
                     let mut samples =

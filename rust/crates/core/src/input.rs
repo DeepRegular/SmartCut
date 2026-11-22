@@ -468,7 +468,16 @@ pub fn demux(url: &str) -> Result<Demux> {
 /// does, which go by byte positions and not by the clock, and which
 /// [`true_start`] itself asks.
 pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
-    let ictx = open(url, false)?;
+    // The plain open is there only to answer the three questions below, and
+    // on a broadcast recording the answer is always "open again": the plain
+    // open's 7-10 MB were read and thrown away on each of the dozens of opens
+    // a cut makes. The answers are kept per file (see [`first_answers`]), so
+    // only the first open of a file pays for the plain one.
+    let known = first_answers(url, None).filter(|&(g, a, d)| g || a || d);
+    let ictx = match known {
+        Some(_) => None,
+        None => Some(open(url, false)?),
+    };
     // A program stream -- which on a DVD is every stream -- leaves the
     // presentation time off any picture whose place in the display order can
     // be worked out from the pictures around it, which on the disc this was
@@ -492,15 +501,22 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
     //
     // The third is for a recording that began before the broadcaster
     // finished announcing what it was sending; see [`announced_late`].
-    let (genpts, all_maps) = (
-        is_program_stream(&ictx),
-        is_transport_stream(&ictx) && !states_frame_rate(&ictx),
-    );
-    let deeper = announced_late(url, &ictx);
-    let ictx = if genpts || all_maps || deeper {
-        open_with(url, genpts, all_maps, deeper.then_some(DEEP_PROBE), None)?
-    } else {
-        ictx
+    let (genpts, all_maps, deeper) = match (&ictx, known) {
+        (Some(ictx), _) => {
+            let answers = (
+                is_program_stream(ictx),
+                is_transport_stream(ictx) && !states_frame_rate(ictx),
+                announced_late(url, ictx),
+            );
+            first_answers(url, Some(answers));
+            answers
+        }
+        (None, Some(answers)) => answers,
+        (None, None) => unreachable!("opened above"),
+    };
+    let ictx = match ictx {
+        Some(ictx) if !(genpts || all_maps || deeper) => ictx,
+        _ => open_with(url, genpts, all_maps, deeper.then_some(DEEP_PROBE), None)?,
     };
     // And the fourth is for sound the service's map named only after its
     // first copy -- asked of what the open above came back with, so that
@@ -527,6 +543,31 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
         }
     }
     Ok(ictx)
+}
+
+/// What the plain open of [`demux_as_opened`] said of this file as it is now
+/// -- a program stream, a transport stream that states no frame rate, one
+/// that may announce streams late -- or, with `Some`, note it. All three are
+/// read off the head of the file and the name, so they cannot change while
+/// the file keeps its size and time.
+fn first_answers(url: &str, note: Option<(bool, bool, bool)>) -> Option<(bool, bool, bool)> {
+    use std::sync::Mutex;
+    /// Enough for any list, and no more held than that.
+    const KEPT: usize = 256;
+    type Answers = (bool, bool, bool);
+    type Asked = Vec<(String, (u64, u128), Answers)>;
+    static ASKED: Mutex<Asked> = Mutex::new(Vec::new());
+    let identity = file_identity(url);
+    let mut asked = ASKED.lock().ok()?;
+    if let Some(answers) = note {
+        asked.retain(|(u, _, _)| u != url);
+        if asked.len() >= KEPT {
+            asked.remove(0);
+        }
+        asked.push((url.to_string(), identity, answers));
+        return Some(answers);
+    }
+    asked.iter().find(|(u, id, _)| u == url && *id == identity).map(|&(_, _, a)| a)
 }
 
 /// Whether the longer open of [`pictures_undescribed`] has been tried on this

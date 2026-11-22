@@ -971,6 +971,11 @@ struct Writer {
     /// How long a sound frame really is, per recording and stream, where the
     /// container's clock is too coarse to say. See [`Writer::frame_length`].
     lengths: std::collections::HashMap<(String, usize), crate::sound::Lengths>,
+    /// Where the last sound frame written on each track was laid, in output
+    /// seconds before it was rounded onto the track's clock: what tells a
+    /// frame that rounded onto the last one's tick from a frame stamped
+    /// where the last one was. See [`Writer::push_audio`].
+    laid: std::collections::HashMap<usize, f64>,
     /// The output's caption tracks, likewise.
     captions: Vec<CaptionTrack>,
     /// And the graphics tracks: a disc's own subtitles, which carry the
@@ -1186,6 +1191,20 @@ struct AudioTrack {
     /// copied. Without that the MP4 muxer, running the whole track through
     /// `aac_adtstoasc`, stopped the run at the first raw frame.
     adts: Option<Option<crate::adts::AdtsFormat>>,
+    /// For an ADTS track copied into a file that describes its track once
+    /// (anything but a transport stream): what writes frames of another
+    /// channel count again in the track's shape. See
+    /// [`crate::audio::Mender`].
+    mender: Option<crate::audio::Mender<Mended>>,
+}
+
+/// Where a frame handed to the [`crate::audio::Mender`] goes, for when what
+/// stands in for it comes back.
+struct Mended {
+    at: f64,
+    dur: f64,
+    cut_away: bool,
+    duration: i64,
 }
 
 impl AudioTrack {
@@ -1932,6 +1951,18 @@ impl Writer {
         Ok(())
     }
 
+    /// Frames the [`crate::audio::Mender`] gives back, each where the frame
+    /// it stands in for was to go.
+    fn push_mended(&mut self, track: usize, ready: Vec<(Vec<u8>, Mended)>) -> Result<()> {
+        for (bytes, m) in ready {
+            let mut packet = ff::Packet::copy(&bytes);
+            packet.set_flags(ff::packet::Flags::KEY);
+            packet.set_duration(m.duration);
+            self.push_audio(track, packet, m.at, m.dur, m.cut_away)?;
+        }
+        Ok(())
+    }
+
     fn push_audio_encoded(&mut self, track: usize, mut packet: ff::Packet, pts: i64) -> Result<()> {
         let Some(t) = self.audio.get(track) else {
             return Ok(());
@@ -2059,7 +2090,7 @@ impl Writer {
             Some(end) if self.audio[track].frame_secs > 0.0 => out_start.max(end),
             _ => out_start,
         };
-        let pts = (out_start.max(0.0) / tb).round() as i64;
+        let mut pts = (out_start.max(0.0) / tb).round() as i64;
         // A frame that does not come after the last one written is a frame
         // the muxer refuses, and refusing it stopped the whole cut. It
         // happens where a recording is damaged: the timestamps inside a burst
@@ -2098,6 +2129,24 @@ impl Writer {
             use ff::format::Flags;
             !self.octx.format().flags().intersects(Flags::TS_NONSTRICT | Flags::NO_TIMESTAMPS)
         };
+        // **On a clock whose tick is a frame long, a frame half a tick off
+        // the tick rounds either way.** An .avi keeps MP3, MP2 and AC-3 in
+        // ticks of one frame (3/125 s for MP3 at 48 kHz), and a range whose
+        // offset puts every frame half a tick off one rounded some frames up
+        // and the next down onto the same tick, by nothing but float error:
+        // left out as damage, 400 frames of a 300 s range, the sound ending
+        // 9.6 s early. Such a frame starts at least half a frame after the
+        // last one written was laid, so it goes on the next tick. A frame
+        // stamped where the last one was -- damage -- is not, and is still
+        // left out; a finer clock never gets here.
+        if strict && tb * 2.0 >= out_dur {
+            let laid = self.laid.get(&track).copied();
+            if let (Some(last), Some(laid)) = (self.audio[track].last_out, laid) {
+                if pts == last && out_start - laid >= out_dur / 2.0 {
+                    pts = last + 1;
+                }
+            }
+        }
         let clashes = self.audio[track].last_out.is_some_and(|last| {
             pts < last || (strict && pts == last && (self.into_ts || last != 0))
         });
@@ -2160,6 +2209,7 @@ impl Writer {
         let t = &mut self.audio[track];
         t.written += 1;
         t.last_out = Some(pts);
+        self.laid.insert(track, out_start);
         // On a track laid end to end, from where this frame was laid: the
         // later of its own instant and where the sound had reached. Summed
         // from where the sound had reached instead, a frame that went down
@@ -2859,6 +2909,15 @@ pub(crate) mod poc_seam {
         pace: Option<f64>,
     }
 
+    /// Steps of the order field (`pic_order_cnt_type` 0) from one frame to
+    /// the next, as encoders count it -- a field's apart from its pair's, two
+    /// to a frame -- taken for the step until two pictures with times have
+    /// measured it. **Before then a picture with no time was passed over**,
+    /// and a fade up from black at the head of an `ffmpeg -f mpeg` of an x264
+    /// encode with B pictures has only its first picture timed among some
+    /// forty: a cut of the whole lost all of them (261 of 300 written).
+    const ORDER_PER_FRAME: f64 = 2.0;
+
     /// How a picture says where it is shown.
     #[derive(Clone, Copy)]
     enum Told {
@@ -3206,9 +3265,11 @@ pub(crate) mod poc_seam {
                 let step = match told {
                     // One picture after the latest shown before it.
                     Told::Lsb(..) if afresh => {
-                        return Some(self.shown? + (self.gap? as f64 * self.step?).round() as i64);
+                        return Some(self.shown? + self.one_picture()?.round() as i64);
                     }
-                    Told::Lsb(..) => self.step?,
+                    // Before two times have measured a step, as a frame's
+                    // order is counted: see [`ORDER_PER_FRAME`].
+                    Told::Lsb(..) => self.step.or(self.pace.map(|p| p / ORDER_PER_FRAME))?,
                     Told::Next => self.step.or(self.pace)?,
                 };
                 Some(then + ((order - from) as f64 * step).round() as i64)
@@ -3225,6 +3286,24 @@ pub(crate) mod poc_seam {
                 None => {}
             }
             pts
+        }
+
+        /// How long one picture lasts, in ticks, where the order is read from
+        /// the slices: the fewest steps seen between two pictures with times,
+        /// at the step measured -- **or the stream's rate in steps, where
+        /// that is fewer**, and the rate alone before any step is measured.
+        /// The fewest steps seen is one picture's only where two pictures
+        /// shown one after the other both had times: in a fade up from black
+        /// at the head of an `ffmpeg -f mpeg` of an x264 encode with B
+        /// pictures, the first 47 pictures came with two times between them,
+        /// 25 pictures apart, so the IDR after them with none was placed 25
+        /// pictures late and 19 of the next GOP could not be placed.
+        fn one_picture(&self) -> Option<f64> {
+            let Some((step, gap)) = self.step.zip(self.gap) else {
+                return self.pace;
+            };
+            let paced = self.pace.map(|p| (p / step).round() as i64).filter(|&g| g >= 1 && g < gap);
+            Some(paced.unwrap_or(gap) as f64 * step)
         }
 
         /// The time of a picture read with `pts`, which is the next
@@ -3708,10 +3787,14 @@ fn take_audio(
         writer.audio[audio.track].need_sync = false;
     }
     let track = &writer.audio[audio.track];
+    // Not a patch in the track's shape where the file's track is another's.
+    // See [`crate::audio::Mender::fits_patch`].
     let patch = track
         .patches
         .get(&pts)
-        .filter(|p| p.after.is_none() || p.after == track.prev);
+        .filter(|p| p.after.is_none() || p.after == track.prev)
+        .filter(|_| track.mender.as_ref().is_none_or(|m| m.fits_patch(packet.data().unwrap_or(&[]))));
+    let patched = patch.is_some();
     let packet = match patch {
         Some(p) => {
             let mut patched = ff::Packet::copy(&p.bytes);
@@ -3731,6 +3814,21 @@ fn take_audio(
     // every range after the first looked short and opened early this way;
     // the lengths are the frames' own now -- see `dur` above.)
     let cut_away = first_segment && t + dur / 2.0 <= audio.range_in;
+    // A frame of another channel count, into a file that describes its
+    // track once: written again in the track's shape, or it does not decode.
+    // See [`crate::audio::Mender`]. Every other frame goes through it too, so
+    // that a run is finished before what follows it is written.
+    if let Some(m) = writer.audio[audio.track].mender.as_mut() {
+        let data = packet.data().unwrap_or(&[]);
+        if !patched && m.off_shape(data) {
+            let tag = Mended { at: t + audio.offset, dur, cut_away, duration: packet.duration() };
+            let ready = m.take(&src.input.url, audio.in_index, data, t, dur, tag);
+            writer.push_mended(audio.track, ready)?;
+            return Ok(past_end);
+        }
+        let ready = m.through(data, t, dur);
+        writer.push_mended(audio.track, ready)?;
+    }
     writer.push_audio(audio.track, packet, t + audio.offset, dur, cut_away)?;
     Ok(past_end)
 }
@@ -8348,7 +8446,18 @@ fn open_encoder(
     opts: &CutOptions,
     signalling: &Signalling,
 ) -> Result<SeamEncoder> {
-    let id = params.id();
+    // **An MPEG-2 recording libav calls MPEG-1 is written as MPEG-2.** The
+    // name comes from the last sequence header the open met: one with no
+    // sequence extension after it -- a damaged packet that reads as a
+    // sequence header -- turns a broadcast into `mpeg1video`, while the
+    // header the open kept says MPEG-2. Opened by the name, the seams were
+    // MPEG-1 pictures among MPEG-2 ones (no picture coding extension, "slice
+    // below image" in a decoder) and the cut ended well. A sequence extension
+    // is MPEG-2's alone; a real MPEG-1 recording has none.
+    let id = match params.id() {
+        ff::codec::Id::MPEG1VIDEO if stated_sequence(params).is_some() => ff::codec::Id::MPEG2VIDEO,
+        id => id,
+    };
     let format = unsafe { (*params.as_ptr()).format };
     // **No pixel format is a format no encoder opens with.** libav leaves it
     // unread where the pictures begin past what the open looks at: a
@@ -9973,7 +10082,13 @@ fn reencode_segment(
         // in the second of two encodes spliced together was decoded by the
         // first one's sets and written so.
         let restated = if !keyed && packet.is_key() && opens_by_record {
-            u64::try_from(packet.position()).ok().and_then(|at| {
+            // A key picture that does not begin its PES has no byte of its
+            // own (an H.264 `.mpg` packs small pictures several to a PES);
+            // the last picture's that did stands in for it, as `read_at`
+            // does for the stretch. Taken for none, the head of a range in
+            // the second of two spliced encodes was decoded by the first
+            // one's sets: 149 packets refused, 2 of 10 pictures written.
+            u64::try_from(packet.position()).ok().or(read_at).and_then(|at| {
                 let data = packet.data().unwrap_or(&[]);
                 if crate::bitstream::nal_payloads(data, NalFraming::AnnexB)
                     .iter()
@@ -9982,6 +10097,14 @@ fn reencode_segment(
                     return None;
                 }
                 let sets = sets_at_key(src, writer, at, &record_sets_of(&params));
+                // And the pictures after it are placed by them, as the copy's
+                // are: known by the record's alone, the pictures with no time
+                // after a key in the second of two encodes spliced into one
+                // `.mpg`, each stating its sets at its head only, were read
+                // by the first one's.
+                if let Some(order) = order.as_mut() {
+                    order.learn(&sets);
+                }
                 let data = with_record_sets(data, &sets)?;
                 let mut out = ff::Packet::copy(&data);
                 unsafe {
@@ -12406,12 +12529,32 @@ fn takes_at(
             let (want_before, want_after) = t.takes();
             let before = want_before.min(room(plans[n].last()));
             let after = want_after.min(room(plans.get(n + 1).and_then(|p| p.first())));
-            if t.kind.overlaps() {
+            let (taken, asked, given) = if t.kind.overlaps() {
                 let both = before.min(after);
-                (both, both)
+                ((both, both), want_before, both)
             } else {
-                (before, after)
+                ((before, after), want_before + want_after, before + after)
+            };
+            // Said, not done silently: an 8 s wipe onto an 11.5 s clip came
+            // out 5.77 s long and nothing told the person who asked for 8.
+            // Not after the last reel, where there is no clip to join.
+            if n + 1 < plans.len() && asked - given > 1e-3 {
+                crate::note_once(if given > 1e-3 {
+                    format!(
+                        "note: the transition at join {} runs {given:.2} s, not the {asked:.2} s \
+                         asked for: a transition takes at most half of the range on either side \
+                         of it.",
+                        n + 1
+                    )
+                } else {
+                    format!(
+                        "note: the transition at join {} is left out: the range beside it has no \
+                         picture to give it.",
+                        n + 1
+                    )
+                });
             }
+            taken
         })
         .collect()
 }
@@ -14830,42 +14973,6 @@ fn cut_into(
         }
     }
 
-    {
-        // Scoped: the leftovers borrow the context, and everything below
-        // needs it back. Anything still in here is an option this muxer did
-        // not recognise -- worth tripping over while developing.
-        open_file(&mut octx, output)?;
-        let left = octx.write_header_with(muxer_opts)?;
-        debug_assert!(
-            left.iter().next().is_none(),
-            "muxer ignored an option: {:?}",
-            left.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
-        );
-    }
-
-    if let (Some(index), Some(poster)) = (poster_stream, &opts.poster) {
-        let mut packet = ff::Packet::copy(&poster.jpeg);
-        packet.set_stream(index);
-        packet.set_pts(Some(0));
-        packet.set_dts(Some(0));
-        packet.set_flags(ff::packet::Flags::KEY);
-        packet.write_interleaved(&mut octx)?;
-    }
-
-    // write_header is free to replace the stream's time base with whatever the
-    // container actually uses, so every packet has to be rescaled from the
-    // tick scale we built timestamps in into the one that got written.
-    let out_tb = octx
-        .stream(0)
-        .ok_or_else(|| anyhow!("no output stream"))?
-        .time_base();
-
-    // Smart mode re-encodes the frames the boundaries fall inside, before any
-    // of them is written, so that the pass below can stay a copy with a
-    // lookup in it. Two frames per range edge, in a file of tens of
-    // thousands -- per track, since where a boundary falls inside a frame is
-    // a fact about one track's framing and not about the recording.
-    //
     // Per reel as well as per track. The frames are the reel's own, cut
     // against the reel's own ranges, and where the seam falls inside a frame
     // is a fact about the recording that frame came off.
@@ -14918,6 +15025,124 @@ fn cut_into(
             }
         })
         .collect();
+    // Whether a track's frames of another channel count are written again by
+    // the copy: an ADTS track, smart-rendered, into anything but a transport
+    // stream. See [`crate::audio::Mender`].
+    let one_shape = !octx.format().name().contains("mpegts");
+    let mends = |setup: &AudioSetup| {
+        one_shape
+            && setup.mode == AudioMode::Smart
+            && setup.target == ff::codec::Id::AAC
+            && matches!(setup.source_framing, Some(crate::aac::Framing::Adts(_)))
+    };
+    // The kept stretches of each track of each reel, in the track's samples:
+    // where the frames for the boundaries are prepared, and what the shapes
+    // are counted over.
+    let windows_by_reel: Vec<Vec<Vec<(i64, i64)>>> = (0..reels.len())
+        .map(|n| {
+            setups
+                .iter()
+                .enumerate()
+                .map(|(k, setup)| {
+                    let Some(a) =
+                        threads[n].audio[k].as_ref().filter(|_| setup.mode == AudioMode::Smart)
+                    else {
+                        return Vec::new();
+                    };
+                    sound_spans[n]
+                        .iter()
+                        .map(|&(from, to)| {
+                            (
+                                (from * a.sample_rate as f64).round() as i64,
+                                (to * a.sample_rate as f64).round() as i64,
+                            )
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+        .collect();
+    // The shape most of what is kept is in, which is the one the file's
+    // track is written in: read off every kept frame's header, as the edges
+    // alone miss a film kept with stereo at both ends. Counted over every
+    // reel, as `own_kept` is. See [`crate::audio::Mender::settle`].
+    //
+    // Before the header, which is where a Matroska file states its channel
+    // count, and the count has to be the one the track is written in: told
+    // the track's head shape while the frames were the film's 5.1, an .mkv
+    // said Channels 2 over a CodecPrivate of 6, an .mp4 a channelcount of 2
+    // over an esds of 6.
+    let mut settled: Vec<Option<u8>> = vec![None; setups.len()];
+    for (k, setup) in setups.iter().enumerate() {
+        if !mends(setup) {
+            continue;
+        }
+        let mut tally = std::collections::HashMap::new();
+        for (n, reel) in reels.iter().enumerate() {
+            if let Some(a) = threads[n].audio[k].as_ref() {
+                crate::audio::kept_shapes(reel.src, a, &windows_by_reel[n][k], &mut tally)?;
+            }
+        }
+        // Nothing read (no header at the track's rate): the edges' answer.
+        if !tally.is_empty() {
+            settled[k] = crate::audio::kept_majority(&tally, &setup.info);
+        }
+    }
+    // And the stream says it. Only where the mender is moved off the track's
+    // own shape (see [`crate::audio::Mender::settle`]): everywhere else the
+    // count agrees with what was declared and the header is as it was.
+    for ((setup, &(out_index, _)), shape) in setups.iter().zip(&audio_pending).zip(&settled) {
+        let Some(config) = *shape else { continue };
+        if Some(config) == crate::adts::channel_config(setup.info.channels) {
+            continue;
+        }
+        // `channel_config`'s numbers: 7 is 7.1.
+        let channels = match config {
+            c @ 1..=6 => i32::from(c),
+            7 => 8,
+            _ => continue,
+        };
+        if let Some(ost) = octx.stream_mut(out_index) {
+            unsafe {
+                let p = ost.parameters().as_mut_ptr();
+                if (*p).ch_layout.nb_channels != channels {
+                    ff::ffi::av_channel_layout_uninit(&mut (*p).ch_layout);
+                    ff::ffi::av_channel_layout_default(&mut (*p).ch_layout, channels);
+                }
+            }
+        }
+    }
+
+    {
+        // Scoped: the leftovers borrow the context, and everything below
+        // needs it back. Anything still in here is an option this muxer did
+        // not recognise -- worth tripping over while developing.
+        open_file(&mut octx, output)?;
+        let left = octx.write_header_with(muxer_opts)?;
+        debug_assert!(
+            left.iter().next().is_none(),
+            "muxer ignored an option: {:?}",
+            left.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+        );
+    }
+
+    if let (Some(index), Some(poster)) = (poster_stream, &opts.poster) {
+        let mut packet = ff::Packet::copy(&poster.jpeg);
+        packet.set_stream(index);
+        packet.set_pts(Some(0));
+        packet.set_dts(Some(0));
+        packet.set_flags(ff::packet::Flags::KEY);
+        packet.write_interleaved(&mut octx)?;
+    }
+
+    // write_header is free to replace the stream's time base with whatever the
+    // container actually uses, so every packet has to be rescaled from the
+    // tick scale we built timestamps in into the one that got written.
+    let out_tb = octx
+        .stream(0)
+        .ok_or_else(|| anyhow!("no output stream"))?
+        .time_base();
+
     // Said once, where a reel carries something the output has no second
     // place for. None of it stops a cut: what a joined file holds is the
     // master's streams, and a reel is being written into them.
@@ -14969,7 +15194,15 @@ fn cut_into(
             ));
         }
     }
+    // Smart mode re-encodes the frames the boundaries fall inside, before any
+    // of them is written, so that the pass below can stay a copy with a
+    // lookup in it. Two frames per range edge, in a file of tens of
+    // thousands -- per track, since where a boundary falls inside a frame is
+    // a fact about one track's framing and not about the recording.
     let mut nth_of_all = 0usize;
+    // Whether the cut keeps any of each track's own shape, from the frames
+    // at the ranges' edges. See `decided` in [`crate::audio::Mender`].
+    let mut own_kept = vec![false; setups.len()];
     let mut patches_by_reel: Vec<Vec<std::collections::HashMap<i64, crate::audio::Patch>>> =
         Vec::with_capacity(reels.len());
     for (n, reel) in reels.iter().enumerate() {
@@ -14982,15 +15215,7 @@ fn cut_into(
                 per_track.push(Default::default());
                 continue;
             };
-            let windows: Vec<(i64, i64)> = sound_spans[n]
-                .iter()
-                .map(|&(from, to)| {
-                    (
-                        (from * a.sample_rate as f64).round() as i64,
-                        (to * a.sample_rate as f64).round() as i64,
-                    )
-                })
-                .collect();
+            let windows = &windows_by_reel[n][k];
             // The rate the track is written at, settled once in
             // [`plan_audio`]: the frames at a seam are spliced in among
             // the recording's own and have to have been written at what
@@ -14998,12 +15223,14 @@ fn cut_into(
             per_track.push(crate::audio::boundary_patches(
                 reel.src,
                 a,
-                &windows,
+                windows,
                 setup.bit_rate,
                 setup.frame_as,
                 &fade_lengths,
                 base,
                 ranges_in_all,
+                mends(setup),
+                &mut own_kept[k],
             )?);
         }
         patches_by_reel.push(per_track);
@@ -15057,6 +15284,37 @@ fn cut_into(
                 Some(crate::aac::Framing::Adts(f)) => Some(f),
                 _ => None,
             }),
+            // Copied by request, the frames are only counted, for the note.
+            mender: (mends(setup)
+                || (one_shape
+                    && setup.mode == AudioMode::Copy
+                    && setup.target == ff::codec::Id::AAC
+                    && matches!(setup.source_framing, Some(crate::aac::Framing::Adts(_)))))
+            .then(|| {
+                crate::audio::Mender::new(
+                    &setup.info,
+                    setup.bit_rate,
+                    setup.frame_as.or(setup.source_framing),
+                    setup.mode == AudioMode::Smart,
+                )
+            })
+            .flatten(),
+        })
+        .collect();
+    // What the ranges' edges found, told to each track's mender.
+    let audio_tracks: Vec<AudioTrack> = audio_tracks
+        .into_iter()
+        .zip(own_kept.iter().zip(&settled))
+        .map(|(mut track, (&own, &shape))| {
+            if let Some(m) = track.mender.as_mut() {
+                if own {
+                    m.keeps_own();
+                }
+                if let Some(config) = shape {
+                    m.settle(config);
+                }
+            }
+            track
         })
         .collect();
     let caption_tracks: Vec<CaptionTrack> = captions
@@ -15310,6 +15568,7 @@ fn cut_into(
         halves: 0,
         audio: audio_tracks,
         lengths: Default::default(),
+        laid: Default::default(),
         captions: caption_tracks,
         graphics: graphics_tracks,
         subpictures,
@@ -15409,6 +15668,13 @@ fn cut_into(
         // sheet for the lookup that places them: what `prev` remembers is
         // the frame before, and at a reel's first range the frame before
         // came off another recording.
+        //
+        // A run of frames the mender holds is the recording before's: it is
+        // finished here, onto that recording's part of the file.
+        for k in 0..writer.audio.len() {
+            let ready = writer.audio[k].mender.as_mut().map(|m| m.close()).unwrap_or_default();
+            writer.push_mended(k, ready)?;
+        }
         for (k, track) in writer.audio.iter_mut().enumerate() {
             track.patches = std::mem::take(&mut patches_by_reel[reel_no][k]);
             track.prev = None;
@@ -15436,6 +15702,13 @@ fn cut_into(
         // What this reel is written as: the plan it was given where it
         // matches the master, and one segment per range where it does not.
         for (plan_no, plan) in reel_plans[reel_no].iter().enumerate() {
+        // A run of frames the mender still holds is the range before's, and
+        // where its sound reaches (`end`) is what this range opens against:
+        // written out first. See [`crate::audio::Mender`].
+        for k in 0..writer.audio.len() {
+            let ready = writer.audio[k].mender.as_mut().map(|m| m.close()).unwrap_or_default();
+            writer.push_mended(k, ready)?;
+        }
         // Every range after the first drops a decoder that is already reading
         // into a stream from somewhere else. A TrueHD frame is read against
         // the last major sync seen, so one joined anywhere else is read
@@ -16023,6 +16296,17 @@ fn cut_into(
         nth += 1;
         }
     }
+    // What the menders still hold, and what they did. See
+    // [`crate::audio::Mender`].
+    for track in 0..writer.audio.len() {
+        let ready = writer.audio[track].mender.as_mut().map(|m| m.close()).unwrap_or_default();
+        writer.push_mended(track, ready)?;
+        let t = &writer.audio[track];
+        if let Some(m) = t.mender.as_ref() {
+            let named = crate::track_name(writer.on_a_ts, t.info.pid, t.info.stream_index);
+            crate::audio::mender_notes(m, &named, t.info.channels);
+        }
+    }
     // Flush whatever each audio encoder still holds before closing the file.
     for track in 0..writer.audio.len() {
         let mut tail = Vec::new();
@@ -16116,7 +16400,19 @@ fn cut_into(
         if t.dropped == 0 {
             continue;
         }
-        let (why, cost) = if src.joins.is_empty() {
+        // A clock a frame long (an .avi's MP3, MP2 or AC-3) has a second
+        // reason: a kept range opening on a frame that starts more than half
+        // a frame inside the last one of the range before has no tick of its
+        // own (see `push_audio`). That is not damage, and nothing was lost.
+        let (why, cost) = if src.joins.is_empty() && t.out_tb > 2e-3 {
+            (
+                "on a clock that counts whole frames, as this file's does, that is a kept \
+                 range's first frame starting more than half a frame inside the last one of \
+                 the range before it, or damage to the recording's timestamps",
+                "The range before already covers the instant of such a first frame; where it \
+                 was damage, the sound there was lost with the packets that carried it.",
+            )
+        } else if src.joins.is_empty() {
             (
                 "which is what damage does to a recording's timestamps",
                 "The sound there was lost with the packets that carried it.",
@@ -16649,7 +16945,7 @@ mod tests {
             field_ticks: 1, sub: 1, our_tb: (1, 50).into(), out_tb, depth: 2,
             pending: Default::default(), seen: Default::default(), shown: Default::default(),
             first_shown: None, last_dts: None, written: 0, skipped: 0, halves: 0,
-            audio: Vec::new(), lengths: Default::default(), captions: Vec::new(),
+            audio: Vec::new(), lengths: Default::default(), laid: Default::default(), captions: Vec::new(),
             graphics: Vec::new(), subpictures: None, converted: Vec::new(),
             progress: None, expected: 0, shrink: None, held: None, opening: false,
             keep_last: true, hold_latest: true, ends: None, top_written: None, h264_sets: None,
@@ -17218,6 +17514,39 @@ mod tests {
         }
         assert_eq!(order.untimed(&picture_with(4, true, true, 0, 0)), Some(14 * frame));
         assert_eq!(order.untimed(&picture_with(4, false, true, 1, 2)), Some(15 * frame));
+    }
+
+    /// With B pictures, a read whose first picture alone has a time among
+    /// many (a fade up from black in an `ffmpeg -f mpeg`): told the rate,
+    /// the ones before a step is measured are placed two steps a frame, and
+    /// an IDR with no time after two times many pictures apart is placed one
+    /// picture -- not as many as that -- after the last shown. Not told it,
+    /// they are passed over as before.
+    #[test]
+    fn a_head_with_one_time_is_placed_by_the_rate() {
+        let frame = 3600i64;
+        let pic = |idr: bool, n: u32, lsb: u32| picture_with(6, idr, true, n % 16, lsb % 64);
+        for paced in [true, false] {
+            let order = poc_seam::Order::default();
+            let mut order = if paced { order.paced(frame as f64) } else { order };
+            order.timed(&[sets_with(6), pic(true, 0, 0)].concat(), 0);
+            // Decode order 0, 4, 2, 1, 3 (by frames), none timed.
+            for (k, shown) in [4u32, 2, 1, 3].into_iter().enumerate() {
+                let placed = order.untimed(&pic(false, k as u32 + 1, 2 * shown));
+                assert_eq!(placed, paced.then(|| i64::from(shown) * frame), "paced {paced}, {shown}");
+            }
+            if !paced {
+                continue;
+            }
+            // Frame 10 timed, 10 frames after the IDR; then 5..=9, none timed.
+            order.timed(&pic(false, 5, 20), 10 * frame);
+            for shown in 5..10u32 {
+                assert_eq!(order.untimed(&pic(false, shown, 2 * shown)), Some(i64::from(shown) * frame));
+            }
+            // The IDR after them, with none: frame 11.
+            assert_eq!(order.untimed(&pic(true, 0, 0)), Some(11 * frame));
+            assert_eq!(order.untimed(&pic(false, 1, 2)), Some(12 * frame));
+        }
     }
 
     /// Without B pictures (`pic_order_cnt_type` 2), after a read that starts

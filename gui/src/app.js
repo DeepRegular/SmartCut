@@ -10618,8 +10618,9 @@ const newBorn = () => `${Date.now().toString(36)}-${Math.random().toString(36).s
 /// writes this file rather than making the queue a copy of its own.
 let queuedJob = "";
 
-/// The stamp that job had in the queue as this window opened on it, or null
-/// where the queue could not be read then. See `holdingQueuedJob`.
+/// The stamp that job had in the queue as this window opened on it, null
+/// where the queue could not be read then, or `false` where the job was no
+/// longer in it. See `holdingQueuedJob`.
 let queuedBorn = null;
 
 /// Whether the output settings are this list's answer, or merely what the
@@ -11024,6 +11025,13 @@ function keptInOrder(job) {
   return keptQueue;
 }
 
+/// The queued job this window holds, written down with the copy: a window
+/// opened on a job that crashed came back holding the job's file as a plain
+/// project, and its 保存 and バッチに登録 wrote over that file by path -- the
+/// list of whichever window had since been registered under the name.
+/// Nothing for a window that holds no job.
+const heldJob = () => (queuedJob ? { queued: queuedJob, born: queuedBorn } : {});
+
 function keepSafe(unsaved) {
   // The batch tool's jobs are files already, and a queue it did not finish
   // is a queue still on disc.
@@ -11050,7 +11058,7 @@ function keepSafe(unsaved) {
     const shape = shapeOf();
     if (shape === keptShape) return;
     keptShape = shape;
-    const body = JSON.stringify({ recovered: 1, project: projectPath, doc: captureProject() });
+    const body = JSON.stringify({ recovered: 1, project: projectPath, ...heldJob(), doc: captureProject() });
     keptInOrder(() => invoke("recovery_put", { body })).catch((e) => {
       // Not "": an earlier write may still be on disc, and "" is what tells
       // a save there is nothing to take away -- a crash after that save
@@ -11116,6 +11124,13 @@ async function offerRecovery() {
     // stays up until the work is saved over it.
     projectPath = project;
     savedShape = "";
+    // And the job it was holding, known by the stamp it had: the first
+    // press asks the queue whether it is still that job (`holdingQueuedJob`).
+    if (typeof kept.queued === "string" && kept.queued) {
+      queuedJob = kept.queued;
+      queuedBorn = typeof kept.born === "string" || kept.born === false ? kept.born : null;
+      paintEnlistButton();
+    }
     retitleMain();
     sayNote("recover.done", { n });
     // This window's own copy before the old one goes, rather than at the
@@ -11125,7 +11140,7 @@ async function offerRecovery() {
     // window closes, and is offered again.
     try {
       keptShape = shapeOf();
-      const body = JSON.stringify({ recovered: 1, project: projectPath, doc: captureProject() });
+      const body = JSON.stringify({ recovered: 1, project: projectPath, ...heldJob(), doc: captureProject() });
       await keptInOrder(() => invoke("recovery_put", { body }));
     } catch (e) {
       keptShape = "";
@@ -12658,7 +12673,11 @@ async function holdingQueuedJob() {
   const jobs = queue && Array.isArray(queue.jobs) ? queue.jobs : [];
   const job = jobs.find((j) => j && j.path === queuedJob);
   const born = job && typeof job.born === "string" ? job.born : "";
-  if (job && (queuedBorn === null || born === queuedBorn)) return true;
+  // A window that could not read the queue as it opened knows the job by
+  // the first stamp it does read, so that a job taken out and another added
+  // under the name after that is told apart all the same.
+  if (job && queuedBorn === null) queuedBorn = born;
+  if (job && born === queuedBorn) return true;
   if (projectPath === queuedJob) {
     projectPath = "";
     savedShape = "";
@@ -13535,9 +13554,22 @@ async function settleRole() {
   }
   if (!isTool()) {
     await refreshQueue();
+    // Off the file itself rather than `batchJobs`, which is as empty for a
+    // queue that did not read as for one the job has already left: taken as
+    // "could not be read", a window opened on a job taken out in the second
+    // it took to start held whatever job was later added under that name.
+    // One that has left is let go of at the first press (no stamp is
+    // `false`).
     if (queuedJob) {
-      const job = batchJobs.find((j) => j.path === queuedJob);
-      queuedBorn = job ? job.born : null;
+      queuedBorn = null;
+      try {
+        const queue = await invoke("batch_read");
+        const jobs = queue && Array.isArray(queue.jobs) ? queue.jobs : [];
+        const job = jobs.find((j) => j && j.path === queuedJob);
+        queuedBorn = job ? (typeof job.born === "string" ? job.born : "") : false;
+      } catch {
+        queuedBorn = null;
+      }
     }
     return;
   }

@@ -324,7 +324,14 @@ function srcToOut(s) {
   // after it. Called cut away, that picture made the stage ask a frame
   // earlier and show a removed one at the join (about a third of the cuts
   // on a 59.94 .mkv). Only before a start, where the time was in a cut.
-  const slack = 2 * coarseTick();
+  //
+  // On a fine clock the cutter's own slack, a thousandth of a frame
+  // (cut.rs `tol`): a 90 kHz clock cannot hold 3753.75 or 1501.5 ticks, so
+  // at 23.976 and 59.94 the picture after OUT is stored up to a tick before
+  // the end ✂ puts a frame past OUT's (a quarter / half of the cuts). The
+  // cut keeps it; called cut away, J to the join showed a removed picture
+  // and → stopped at the picture before the join.
+  const slack = Math.max(2 * coarseTick(), src && !src.variable ? frame() * 1e-3 : 0);
   for (let i = 0; i < keeps.length; i++) {
     const k = keeps[i];
     if (s < k.a - 1e-9) {
@@ -351,6 +358,26 @@ function srcToOutSeam(s) {
   let best = 0;
   for (const k of keeps) if (k.a <= s) best = k.at + (k.b - k.a);
   return best;
+}
+
+/// An output time less than half a frame before a join, as the join: the
+/// picture nearest it on the edited timeline is the first one after the
+/// join -- the picture before is more than half a frame back, and the one
+/// the recording has there is the first the cut took. A keep's length is
+/// the difference of two stored times, so the joins drift off the frame grid
+/// by the clock's rounding (a millisecond a cut on .mkv / .webm, a tick of
+/// 90 kHz at 23.976 / 59.94), and J to the frame the counter gives the join
+/// landed just before it: the stage showed the picture before the cut, and
+/// → from there came back to it every time, so the join could not be
+/// stepped over. Only where the pictures keep to a rate.
+function ontoJoin(o) {
+  if (!src || src.variable) return o;
+  const half = frame() / 2;
+  for (let i = 1; i < keeps.length; i++) {
+    const d = keeps[i].at - o;
+    if (d > 1e-9 && d < half) return keeps[i].at;
+  }
+  return o;
 }
 
 function outToSrc(o) {
@@ -1950,7 +1977,7 @@ async function showFrame(t) {
   // all, and a frame short of the container's length left it out of reach.
   // A last picture the edit has taken away leaves the end of what is kept
   // as the end, and that is a frame short of the timeline's length as ever.
-  playhead = outToSrc(clamp(srcToOutSeam(t), 0, lastStop()));
+  playhead = outToSrc(ontoJoin(clamp(srcToOutSeam(t), 0, lastStop())));
   updateReadouts();
   draw();
 
@@ -4493,7 +4520,12 @@ const PICTURE_ASK = 0.01;
 function stepFrame(dir, from = playOut()) {
   if (!src) return;
   if (!src.variable || !walked()) {
-    scrubTo(from + dir * frame());
+    // A picture of a recording that keeps to a rate (`rateStep`): where ✂
+    // ends cuts at the gap the pictures come at and the average is longer
+    // (a spliced remux at 24.967 of 25 a second), a frame of the average
+    // back from the second picture after a join stopped short of the first
+    // and ← showed the picture before the cut instead.
+    scrubTo(from + dir * (src.variable ? frame() : rateStep()));
     return;
   }
   // One at a time: a held key or a run of notches is the next step, asked

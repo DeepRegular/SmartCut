@@ -1081,8 +1081,9 @@ struct Stream {
     /// For each of `at`, when it acts where that runs at a delay of its
     /// own -- its picture goes up, or for a unit that only stops, the last
     /// comes down ([`acts_after`]); `None` for at once. See
-    /// [`Sidecar::withdraw_late`].
-    up: Vec<Option<f64>>,
+    /// [`Sidecar::withdraw_late`]. With it, where the unit's own stop takes
+    /// it down ([`stops_after`]), `None` for never.
+    up: Vec<Option<(f64, Option<f64>)>>,
 }
 
 /// The pair being built.
@@ -1160,7 +1161,8 @@ impl Sidecar {
             s.at.push((at.max(0.0), filepos));
             // Where it acts ([`acts_after`]): its start, or for a unit with
             // none -- one that only takes the last picture down -- its stop.
-            s.up.push(Some(acts_after(spu)).filter(|&d| d > 0.0).map(|d| at + d));
+            let down = stops_after(spu).map(|d| at + d);
+            s.up.push(Some(acts_after(spu)).filter(|&d| d > 0.0).map(|d| (at + d, down)));
         }
     }
 
@@ -1180,12 +1182,26 @@ impl Sidecar {
     /// on into the next range and took down the line that opens it there,
     /// where the converted subtitle (`pgs`'s Composer, whose take-down at a
     /// range's end forgets the stop) keeps it up.
+    ///
+    /// **Not one whose own stop lands within a tick of `end`.** The unit
+    /// that ends the range writes no take-down for a stream whose last unit
+    /// has taken itself down by then, counted to one tick
+    /// (`cut::Subpictures::end_range`), and a stop-only unit acting exactly
+    /// at the end is such a unit: withdrawn as well, nothing at all took the
+    /// line down there, and it stood into the next range until its own stop
+    /// -- the patched DVD's `--keep 120-125.106 --keep 126-129 --subtitles
+    /// beside`, 0.86 s, where the converted subtitle and the preview end it
+    /// at the cut. Kept, it takes the line down at the end, as it did in
+    /// 0.8.48.
     pub fn withdraw_late(&mut self, end: f64) -> usize {
         let mut gone: Vec<u64> = Vec::new();
         for s in &mut self.streams {
             let mut k = 0;
             while k < s.at.len() {
-                if s.up[k].is_some_and(|up| up >= end) {
+                let late = s.up[k].is_some_and(|(up, down)| {
+                    up >= end && !down.is_some_and(|down| down <= end + TICK)
+                });
+                if late {
                     gone.push(s.at.remove(k).1);
                     s.up.remove(k);
                 } else {
@@ -1577,6 +1593,26 @@ mod tests {
         plain.add(0x20, 4.0, &take_down());
         assert_eq!(side.index(), plain.index());
         assert_eq!(side.sub, plain.sub);
+    }
+
+    /// A unit that only stops, its stop landing on the range's end (to a
+    /// tick), stays: the end writes no take-down for it, so it is what takes
+    /// the line down there. A late start whose own stop lands there too.
+    #[test]
+    fn a_stop_landing_on_the_end_is_kept() {
+        let stop_in = |ticks: u16| {
+            let mut stop = take_down();
+            stop[4..6].copy_from_slice(&ticks.to_be_bytes());
+            stop
+        };
+        let end = 2.0 + 88.0 * TICK;
+        let mut side = Sidecar::new(720, 480, Palette::grey());
+        side.add(0x20, 1.0, &standing(64));
+        side.add(0x20, 2.0, &stop_in(88)); // acts at `end`
+        assert_eq!(side.withdraw_late(end), 0);
+        assert_eq!(side.withdraw_late(end - TICK / 2.0), 0, "within a tick");
+        // Past the tick, it is withdrawn as before.
+        assert_eq!(side.withdraw_late(end - 2.0 * TICK), 1);
     }
 
     /// The streams are named in the order they were declared, whatever order

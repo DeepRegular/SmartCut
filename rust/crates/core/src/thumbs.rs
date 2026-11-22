@@ -935,7 +935,13 @@ pub fn differences_near(src: &Source, at: f64, window: f64) -> Result<Vec<(f64, 
     // Straight to the byte the entry point starts at where the index has it.
     // Failing that, a transport stream seeks by byte position of its own
     // reckoning and can land a GOP late, so aim early and read forward.
-    let landed = crate::index::seek_to_entry(&mut ictx, src, entry);
+    // Never on the entry point itself for an H.264 program stream: see
+    // [`crate::preview::Untimed::reads_back`].
+    let landed = if crate::preview::Untimed::reads_back(src) {
+        None
+    } else {
+        crate::index::seek_to_entry(&mut ictx, src, entry)
+    };
     if landed.is_none() {
         let target = front_or(src, entry - src.seek_margin);
         let _ = ictx.seek(target, ..target);
@@ -961,7 +967,8 @@ pub fn differences_near(src: &Source, at: f64, window: f64) -> Result<Vec<(f64, 
     // Read straight on (0.8.26) the seam's broken leading pictures stood in
     // for it. Nothing changes on a recording without seams.
     let mut before: Option<(f64, [u8; SIG])> = None;
-    decode_on(src, &mut ictx, &mut decoder, landed, |t, frame| {
+    let ahead = if landed.is_none() { crate::preview::Ahead::new(src, entry) } else { None };
+    decode_on(src, &mut ictx, &mut decoder, landed, ahead, |t, frame| {
         if t > until + fd {
             return false;
         }
@@ -1005,11 +1012,14 @@ pub fn differences_near(src: &Source, at: f64, window: f64) -> Result<Vec<(f64, 
 ///
 /// `landed` is the entry point a seek by byte put the read at, whose picture
 /// a program stream can hand over mistimed; see [`crate::preview::Landed`].
+/// `ahead`, what the read takes in before the entry point it was sought
+/// back from, for the order alone; see [`crate::preview::Ahead`].
 fn decode_on(
     src: &Source,
     ictx: &mut crate::input::Demux,
     decoder: &mut ff::decoder::Video,
     mut landed: Option<crate::preview::Landed>,
+    mut ahead: Option<crate::preview::Ahead>,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) {
     let idx = src.video.stream_index;
@@ -1051,6 +1061,9 @@ fn decode_on(
         crate::preview::Landed::mend(&mut landed, &mut packet, src);
         untimed.place(&mut packet, doubted);
         in_force.see(&packet);
+        if crate::preview::Ahead::before(&mut ahead, &packet, src) {
+            continue;
+        }
         let was = stretches.clone();
         if stretches.reach(packet.position()) && fed {
             fed = false;
@@ -1171,7 +1184,12 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
     // Straight to the byte the entry point starts at where the index has it;
     // otherwise start well before the picture wanted and read forward, since
     // a transport stream's own seeking can land a GOP late.
-    let landed = crate::index::seek_to_entry(&mut ictx, src, from);
+    // As in [`differences_near`].
+    let landed = if crate::preview::Untimed::reads_back(src) {
+        None
+    } else {
+        crate::index::seek_to_entry(&mut ictx, src, from)
+    };
     if landed.is_none() {
         let target = front_or(src, from - src.seek_margin);
         let _ = ictx.seek(target, ..target);
@@ -1186,7 +1204,8 @@ pub fn refine(src: &Source, at: f64) -> Result<f64> {
     let mut decoder = crate::video_context(params)?.decoder().video()?;
 
     let mut seen: Vec<(f64, [u8; SIG])> = Vec::new();
-    decode_on(src, &mut ictx, &mut decoder, landed, |t, frame| {
+    let ahead = if landed.is_none() { crate::preview::Ahead::new(src, from) } else { None };
+    decode_on(src, &mut ictx, &mut decoder, landed, ahead, |t, frame| {
         if t > at + fd / 2.0 {
             return false;
         }

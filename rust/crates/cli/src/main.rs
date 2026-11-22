@@ -1454,6 +1454,22 @@ fn run() -> Result<()> {
         if !std::path::Path::new(image).is_file() {
             bail!("--transition-image {image}: there is no such file");
         }
+        // And one that is a file but no picture (a text file, a name typed
+        // onto the wrong file) failed the same way, as late: the whole first
+        // recording cut, and a file already under `-o` gone with the run.
+        // What a probe can tell is asked here; only where a crossing will be
+        // written, since without one the image is read by nothing.
+        if !matches!(crossing, smartcut_core::transition::Crossing::None) {
+            let probed = smartcut_core::mediainfo::media_info(image)
+                .with_context(|| format!("--transition-image {image}: not a picture that can be read"))?;
+            if !probed.streams.iter().any(|s| s.kind == "video") {
+                bail!("--transition-image {image}: there is no picture in it to lay over the transition");
+            }
+            // And one that opens but does not decode (a PNG cut short),
+            // which only reading its picture tells.
+            smartcut_core::blend::check_laid(image)
+                .with_context(|| format!("--transition-image {image}: not a picture that can be read"))?;
+        }
     }
     // A joined recording is one recording: a disc names several, and opened
     // as a file it failed with libav's "Is a directory" or "Invalid data
@@ -1494,6 +1510,21 @@ fn run() -> Result<()> {
         // late (libav's "Is a directory").
         if at.is_dir() {
             bail!("--join {j} is a folder, and --join takes one recording: name a file in it");
+        }
+        // Nor a plain name with nothing under it -- ` `, `-`, a typo: as the
+        // empty one was, it was planned past (and `--analyze` ended well)
+        // and the run failed on "cannot open" once the first recording had
+        // been read and a `--bdav` slot taken. Only a name that is a path and
+        // nothing else: a stretch of a DVD title, a clip inside an image or
+        // anything with a protocol in it is a name of another kind, and a
+        // share that is not mounted says so where it is opened.
+        let plain = smartcut_core::netpath::resolve(j).is_ok()
+            && !j.contains(':')
+            && smartcut_core::input::Input::parse(&at.to_string_lossy()).is_ok_and(|i| {
+                i.range.is_none() && i.parts.is_empty() && i.url == i.spec
+            });
+        if plain && !at.exists() {
+            bail!("--join {j:?}: there is no such file");
         }
     }
     // A recording named the way libavformat names several files or a part
@@ -3150,6 +3181,14 @@ fn run() -> Result<()> {
             // `-o http://...` ended `--analyze` well and the run in an error.
             smartcut_core::input::refuse_url_output(out)?;
             reads(out)?;
+            // Nor into a folder that is not there, which the writer does not
+            // make: `--analyze -o typo/x.ts` ended well and the run with the
+            // same line in "No such file or directory".
+            if let Some(dir) = std::path::Path::new(out).parent().filter(|d| !d.as_os_str().is_empty()) {
+                if !dir.is_dir() {
+                    bail!("{out}: there is no folder {}", dir.display());
+                }
+            }
         }
         return Ok(());
     }

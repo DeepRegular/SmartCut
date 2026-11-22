@@ -778,31 +778,17 @@ pub fn read_laid(
     read_laid_in(path, width, height, want, full, None)
 }
 
-/// As [`read_laid`], into the YUV matrix `matrix` (an `AVColorSpace`, as
-/// [`crate::conform::read_matrix`] answers it) of the frames it is laid
-/// over; `None` reads it by their size, as a player reads an unstated one.
-///
-/// **An image is RGB, and the frames' YUV has a matrix.** libswscale makes
-/// YUV out of RGB with BT.601's unless told another, so a title laid over a
-/// high-definition master went in through the wrong matrix and showed in
-/// other colours than the image -- a pure red some 8 % darker, greens bluer
-/// -- in the output and in the window that sets it alike. Told the frames'
-/// matrix, the image is what it was. A standard-definition master's is
-/// BT.601 already, and there nothing changes.
-pub fn read_laid_in(
-    path: &str,
-    width: u32,
-    height: u32,
-    want: ff::format::Pixel,
-    full: bool,
-    matrix: Option<i32>,
-) -> Result<Laid> {
-    // A format no blend can be made in is refused as the blend would refuse
-    // it, before a scaler is asked for it: a palette master's transition
-    // image stopped the run with "cannot convert RGBA ... to PAL8".
-    if working(want).is_none() {
-        shape_of(want)?;
-    }
+/// Whether `path` is an image [`read_laid`] can lay over a transition: it
+/// opens, has a picture in it, and that picture decodes. Asked before a run
+/// writes anything, since the image is first read where the first crossing
+/// is written -- and a file that opens but does not decode (a PNG cut short)
+/// failed there, once the whole first recording had been cut.
+pub fn check_laid(path: &str) -> Result<()> {
+    laid_picture(path).map(|_| ())
+}
+
+/// The first picture of the image at `path`, as it was decoded.
+fn laid_picture(path: &str) -> Result<ff::frame::Video> {
     let mut ictx = crate::input::open_local(path)
         .map_err(|e| anyhow::anyhow!("the image over the transition, {path}: {e}"))?;
     let stream = ictx
@@ -829,6 +815,35 @@ pub fn read_laid_in(
             bail!("{path} could not be decoded into a picture");
         }
     }
+    Ok(frame)
+}
+
+/// As [`read_laid`], into the YUV matrix `matrix` (an `AVColorSpace`, as
+/// [`crate::conform::read_matrix`] answers it) of the frames it is laid
+/// over; `None` reads it by their size, as a player reads an unstated one.
+///
+/// **An image is RGB, and the frames' YUV has a matrix.** libswscale makes
+/// YUV out of RGB with BT.601's unless told another, so a title laid over a
+/// high-definition master went in through the wrong matrix and showed in
+/// other colours than the image -- a pure red some 8 % darker, greens bluer
+/// -- in the output and in the window that sets it alike. Told the frames'
+/// matrix, the image is what it was. A standard-definition master's is
+/// BT.601 already, and there nothing changes.
+pub fn read_laid_in(
+    path: &str,
+    width: u32,
+    height: u32,
+    want: ff::format::Pixel,
+    full: bool,
+    matrix: Option<i32>,
+) -> Result<Laid> {
+    // A format no blend can be made in is refused as the blend would refuse
+    // it, before a scaler is asked for it: a palette master's transition
+    // image stopped the run with "cannot convert RGBA ... to PAL8".
+    if working(want).is_none() {
+        shape_of(want)?;
+    }
+    let mut frame = laid_picture(path)?;
     // **A palette image is RGB too.** libswscale turns a palette into YUV
     // with BT.601's numbers whatever matrix it is told, so an indexed PNG or
     // a GIF over a high-definition master went in through BT.601 and showed

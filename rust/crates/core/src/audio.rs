@@ -1854,6 +1854,616 @@ pub fn uncompressed(id: ff::codec::Id) -> bool {
     )
 }
 
+/// Frames of another channel count than the track's, met in the middle of a
+/// range that is copied into a container which describes its track once.
+///
+/// A broadcast changes the shape of its sound where the programme does: a
+/// film in 5.1 with the channel's trailers in stereo either side of it, a
+/// stereo programme with a 5.1 stretch. Each ADTS frame says what it is, so
+/// a transport stream carries the change as it came. An MP4 or a Matroska
+/// file does not: the muxer turns the first frame's header into the one
+/// AudioSpecificConfig the whole track is decoded by, and every frame of the
+/// other shape was copied under it -- stereo frames read as 5.1 do not
+/// decode, so a kept 2.0 stretch of a 5.1 film came out silent (305 of 492
+/// frames decoded, and nothing said). [`foreign_reach`] puts the head of a
+/// range into the track's shape; this is the same for the rest of it.
+///
+/// Each run of such frames is decoded, brought to the track's channels by
+/// `conform` (libav's own rematrixing, as a whole-track re-encode does) and
+/// encoded again, one packet standing in for each frame -- the frame before
+/// the run, where there is one, priming the encoder, and the frame after
+/// flushing it, as [`patch_run`] does at a boundary. Held only as long as
+/// the encoder holds them: a frame or two.
+///
+/// Only AAC in ADTS, which is the only sound that changes shape mid-track
+/// in anything recorded; and only frames whose header names a channel count
+/// other than the track's at the track's own rate. A header naming half the
+/// rate is SBR (HE-AAC, and parametric stereo, whose header says mono for a
+/// track that decodes as stereo): those are never taken. Where anything
+/// fails, the run's frames are handed back as the recording has them, which
+/// is what was always written.
+pub(crate) struct Mender<T> {
+    /// Whether the frames are written again at all. Not where the sound is
+    /// copied by request (`--audio-mode copy`): they are only counted, for
+    /// the note.
+    mend: bool,
+    audio: AudioInfo,
+    bit_rate: usize,
+    framing: Framing,
+    /// The `channel_config` and sampling index of the track's own frames.
+    own: (u8, u8),
+    /// The recording the decoder is opened on, and its stream.
+    source: Option<(String, usize, ff::codec::Parameters)>,
+    /// The last two of the track's own frames passed through, with where
+    /// each starts and how long it is (seconds): the lead a run opens on.
+    last: std::collections::VecDeque<(Vec<u8>, f64, f64)>,
+    run: Option<Run<T>>,
+    /// Whether a frame of the track's own shape has been written, and
+    /// whether the decode at the kept ranges' edges found one in what the
+    /// cut keeps (see [`Mender::keeps_own`]).
+    seen_own: bool,
+    kept_own: bool,
+    /// Settled at the first frame of another shape: whether this file's
+    /// frames of another shape are written again. **Not where nothing the
+    /// cut keeps is in the track's own shape** -- a range wholly inside the
+    /// 5.1 half of a recording whose track is called stereo by its head.
+    /// The file's one description is then the one its first frame gives,
+    /// the frames are all of that shape and play as they are, and written
+    /// again they were folded to stereo for nothing (858 frames of a 20 s
+    /// range). Left as they are, as they always were.
+    decided: Option<bool>,
+    /// Where that was so: the file's track is the shape of that first frame
+    /// rather than the track's, and `own`, `audio` and `framing` have been
+    /// moved to it -- so that a frame of a third shape (a mono break inside
+    /// a 5.1 film of a stereo recording), or of the track's own shape where
+    /// a later piece brings some, is written again in the file's shape
+    /// rather than copied under a description it does not fit. And the
+    /// frames prepared for the ranges' edges, which are in the track's
+    /// shape, do not fit either (see [`Mender::fits_patch`]).
+    retargeted: bool,
+    /// Whether that shape was settled before anything was written, as the
+    /// one most of the sound the cut keeps is in (see [`Mender::settle`]),
+    /// rather than taken from the first frame.
+    by_majority: bool,
+    /// Patches turned down for that, for the note.
+    misfits: std::cell::Cell<usize>,
+    /// Frames written again, frames left as they were where that failed or
+    /// was not asked for, and frames kept as they are because nothing kept
+    /// is of the track's shape.
+    pub mended: usize,
+    pub left: usize,
+    pub kept: usize,
+    /// The seconds each of those covers.
+    pub secs: f64,
+    pub left_secs: f64,
+    pub kept_secs: f64,
+    /// Frames of another shape met one at a time, the file's own shape on
+    /// both sides of each with nothing between, and copied as they are: see
+    /// [`Mender::finish`].
+    pub lone: usize,
+    pub lone_secs: f64,
+}
+
+struct Run<T> {
+    decoder: ff::decoder::Audio,
+    /// `None` once the run cannot be mended: its frames go out as they are.
+    encoder: Option<ff::encoder::Audio>,
+    to_encoder: Option<ff::software::resampling::Context>,
+    frame: ff::frame::Audio,
+    converted: ff::frame::Audio,
+    /// What the encoder has given and nothing has matched yet, labelled with
+    /// where in what was fed each packet's samples begin.
+    got: Vec<(i64, Vec<u8>)>,
+    size: usize,
+    /// Samples fed to the encoder so far, and where the run's first frame
+    /// was fed (after the lead).
+    fed: i64,
+    first: i64,
+    /// The run's frames not yet written: their place in the run, the
+    /// recording's bytes, the caller's own note of where each goes, and its
+    /// length in seconds.
+    slots: std::collections::VecDeque<(i64, Vec<u8>, T, f64)>,
+    taken: i64,
+    /// Where the frame after the run's last would start, in seconds.
+    next: f64,
+    /// Whether the run follows on from a frame of the file's own shape.
+    led: bool,
+}
+
+impl<T> Mender<T> {
+    /// A mender for a track, where its frames can be mended at all: AAC in
+    /// ADTS whose own frames have a `channel_config` for its channel count.
+    pub(crate) fn new(audio: &AudioInfo, bit_rate: usize, framing: Option<Framing>, mend: bool) -> Option<Self> {
+        let Some(Framing::Adts(f)) = framing else { return None };
+        let own = (
+            crate::adts::channel_config(audio.channels)?,
+            crate::adts::sampling_index(audio.sample_rate)?,
+        );
+        Some(Self {
+            mend,
+            audio: audio.clone(),
+            bit_rate,
+            framing: Framing::Adts(f.with_channels(audio.channels)),
+            own,
+            source: None,
+            last: Default::default(),
+            run: None,
+            seen_own: false,
+            kept_own: false,
+            decided: None,
+            retargeted: false,
+            by_majority: false,
+            misfits: Default::default(),
+            mended: 0,
+            left: 0,
+            kept: 0,
+            secs: 0.0,
+            left_secs: 0.0,
+            kept_secs: 0.0,
+            lone: 0,
+            lone_secs: 0.0,
+        })
+    }
+
+    /// That the cut keeps frames of the track's own shape: the decode at a
+    /// kept range's edge found one inside it. See `decided`.
+    pub(crate) fn keeps_own(&mut self) {
+        self.kept_own = true;
+    }
+
+    /// The shape most of the sound the cut keeps is in, counted over every
+    /// kept range before anything is written ([`kept_shapes`]): `config` is
+    /// its `channel_config`. The track's own is the rule as it was. Another is
+    /// what the file's track is from its first frame, and what is not of it
+    /// -- the track's own shape among them -- is written again in it: a 5.1
+    /// film kept with a few seconds of stereo either side was folded to
+    /// stereo whole for the few seconds' sake.
+    pub(crate) fn settle(&mut self, config: u8) {
+        if !self.mend {
+            return;
+        }
+        if config == self.own.0 {
+            self.kept_own = true;
+            return;
+        }
+        if self.retarget_to(config) {
+            self.decided = Some(true);
+            self.by_majority = true;
+        }
+    }
+
+    /// Whether a frame prepared for a range's edge (in the track's shape)
+    /// may stand in for the recording's frame `raw`: not where the file's
+    /// track is, or is about to be, the shape of frames other than the
+    /// track's. Its first frame is what the file is described by, and a
+    /// patch in the track's shape written first had the whole of a range
+    /// kept from inside the 5.1 half of a stereo recording folded to stereo
+    /// by `--sound-only` (where the cut kept 5.1), and written among them
+    /// two frames at every edge that did not decode. The recording's own
+    /// frame goes instead, as a copy without smart rendering would have it.
+    pub(crate) fn fits_patch(&self, raw: &[u8]) -> bool {
+        if !self.mend {
+            return true;
+        }
+        let fits = !self.retargeted
+            && !(self.decided.is_none() && !(self.seen_own || self.kept_own) && self.off_shape(raw));
+        if !fits {
+            self.misfits.set(self.misfits.get() + 1);
+        }
+        fits
+    }
+
+    /// Whether a frame of the recording is one of another channel count, at
+    /// the track's own rate.
+    pub(crate) fn off_shape(&self, data: &[u8]) -> bool {
+        crate::adts::AdtsFormat::parse(data).is_some_and(|h| {
+            h.channel_config != 0 && h.channel_config != self.own.0 && h.sampling_index == self.own.1
+        })
+    }
+
+    /// One of the track's own frames, about to be written as it is: the run
+    /// before it, if one is open, is finished first -- with this frame to
+    /// flush the encoder where it follows on -- and what that gives back is
+    /// written before it.
+    pub(crate) fn through(&mut self, data: &[u8], at: f64, dur: f64) -> Vec<(Vec<u8>, T)> {
+        self.seen_own = true;
+        if self.retargeted
+            && crate::adts::AdtsFormat::parse(data).is_some_and(|h| h.channel_config == self.own.0)
+        {
+            self.kept += 1;
+            self.kept_secs += dur.max(0.0);
+        }
+        let out = self.finish(Some((data, at)));
+        let follows = self.last.back().is_some_and(|&(_, t, d)| (t + d - at).abs() < dur / 2.0);
+        if !follows {
+            self.last.clear();
+        }
+        self.last.push_back((data.to_vec(), at, dur));
+        while self.last.len() > 2 {
+            self.last.pop_front();
+        }
+        out
+    }
+
+    /// A frame of another shape. What is ready to be written comes back, in
+    /// order: this frame's stand-in, or earlier ones', or nothing yet.
+    pub(crate) fn take(
+        &mut self,
+        url: &str,
+        stream: usize,
+        data: &[u8],
+        at: f64,
+        dur: f64,
+        tag: T,
+    ) -> Vec<(Vec<u8>, T)> {
+        if !self.mend {
+            self.left += 1;
+            self.left_secs += dur.max(0.0);
+            return vec![(data.to_vec(), tag)];
+        }
+        if self.decided.is_none() {
+            let kept_own = self.seen_own || self.kept_own;
+            self.decided = Some(kept_own);
+            if !kept_own {
+                // The frame the file's track takes its shape from: kept as
+                // it is, and what is mended from here on is mended into it.
+                self.retarget(data);
+                self.last.clear();
+                self.last.push_back((data.to_vec(), at, dur));
+                self.kept += 1;
+                self.kept_secs += dur.max(0.0);
+                return vec![(data.to_vec(), tag)];
+            }
+        }
+        if self.decided == Some(false) && !self.retargeted {
+            self.kept += 1;
+            self.kept_secs += dur.max(0.0);
+            return vec![(data.to_vec(), tag)];
+        }
+        let mut out = Vec::new();
+        if self.run.as_ref().is_some_and(|r| (r.next - at).abs() >= dur / 2.0) {
+            out = self.finish(None);
+        }
+        if self.run.is_none() {
+            let lead: Vec<Vec<u8>> = match self.last.back() {
+                Some(&(_, t, d)) if (t + d - at).abs() < dur / 2.0 => {
+                    self.last.iter().map(|(b, _, _)| b.clone()).collect()
+                }
+                _ => Vec::new(),
+            };
+            self.last.clear();
+            self.run = self.open(url, stream, &lead);
+        }
+        let Some(run) = self.run.as_mut() else {
+            self.left += 1;
+            self.left_secs += dur.max(0.0);
+            out.push((data.to_vec(), tag));
+            return out;
+        };
+        run.next = at + dur;
+        let index = run.taken;
+        run.taken += 1;
+        run.slots.push_back((index, data.to_vec(), tag, dur.max(0.0)));
+        if run.encoder.is_some() && run.feed(Some(data), &self.audio).is_err() {
+            run.encoder = None;
+        }
+        out.extend(self.collect(false));
+        out
+    }
+
+    /// The file's track takes the shape of `data`, the first frame of
+    /// another shape when nothing the cut keeps is of the track's own:
+    /// what is mended from here on is mended into that. See `retargeted`.
+    fn retarget(&mut self, data: &[u8]) {
+        if let Some(h) = crate::adts::AdtsFormat::parse(data) {
+            self.retarget_to(h.channel_config);
+        }
+    }
+
+    /// The file's track is `config`'s shape from here on; whether it could be.
+    fn retarget_to(&mut self, config: u8) -> bool {
+        let channels = match config {
+            c @ 1..=6 => u16::from(c),
+            7 => 8,
+            _ => return false,
+        };
+        let Framing::Adts(f) = self.framing else { return false };
+        self.own.0 = config;
+        self.audio.channels = channels;
+        self.framing = Framing::Adts(f.with_channels(channels));
+        self.retargeted = true;
+        true
+    }
+
+    /// Finish whatever run is open, with nothing after it: the end of a
+    /// reel, the end of the cut.
+    pub(crate) fn close(&mut self) -> Vec<(Vec<u8>, T)> {
+        self.last.clear();
+        self.finish(None)
+    }
+
+    fn finish(&mut self, after: Option<(&[u8], f64)>) -> Vec<(Vec<u8>, T)> {
+        // **One frame of another shape, with frames of the file's own shape
+        // right before and right after it, is a damaged header, not another
+        // programme.** A broadcast changes shape where its programme does
+        // and stays changed; a lone frame whose header alone says otherwise
+        // carries the sound of the frames around it, and copied it plays as
+        // it always did (as before there was a mender, too). Its
+        // header read as 5.1 by a decoder written again into stereo was
+        // noise -- two frames of it, the one after being copied against an
+        // encode it does not follow (25 headers of a stereo broadcast with
+        // their channel bits flipped: 0 decode errors copied, 2-3 dB from
+        // the sound written again).
+        let lone = self.run.as_ref().is_some_and(|run| {
+            run.led
+                && run.taken == 1
+                && run.slots.len() == 1
+                && after.is_some_and(|(_, at)| (run.next - at).abs() < 0.01)
+        });
+        if lone {
+            let run = self.run.take().expect("checked above");
+            let mut out = Vec::with_capacity(1);
+            for (_, bytes, tag, dur) in run.slots {
+                self.lone += 1;
+                self.lone_secs += dur;
+                out.push((bytes, tag));
+            }
+            return out;
+        }
+        let Some(run) = self.run.as_mut() else { return Vec::new() };
+        if run.encoder.is_some() {
+            let trail = after.filter(|&(_, at)| (run.next - at).abs() < 0.01).map(|(d, _)| d);
+            let flushed = (|| -> Result<()> {
+                if trail.is_some() {
+                    run.feed(trail, &self.audio)?;
+                }
+                let encoder = run.encoder.as_mut().expect("checked above");
+                encoder.send_eof()?;
+                collect_patch(encoder, &mut run.got)?;
+                Ok(())
+            })();
+            if flushed.is_err() {
+                run.encoder = None;
+            }
+        }
+        let out = self.collect(true);
+        self.run = None;
+        out
+    }
+
+    /// The decoder and encoder for a run, primed with the frames before it.
+    /// `None` where there is no decoder to be had.
+    fn open(&mut self, url: &str, stream: usize, lead: &[Vec<u8>]) -> Option<Run<T>> {
+        let same = self.source.as_ref().is_some_and(|(u, s, _)| u == url && *s == stream);
+        if !same {
+            self.source = crate::input::demux(url)
+                .ok()
+                .and_then(|probe| probe.stream(stream).map(|s| s.parameters()))
+                .map(|p| (url.to_string(), stream, p));
+        }
+        let (_, _, params) = self.source.as_ref()?;
+        let decoder = track_decoder(params.clone(), &self.audio).ok()?;
+        let encoder = open_encoder(
+            encoder_for(params.id()),
+            sample_format(params),
+            self.audio.sample_rate,
+            self.audio.channels,
+            layout_of(params).as_ref(),
+            self.bit_rate,
+            false,
+        )
+        .ok()
+        .filter(|e| e.frame_size() == 1024);
+        let mut run = Run {
+            decoder,
+            encoder,
+            to_encoder: None,
+            frame: ff::frame::Audio::empty(),
+            converted: ff::frame::Audio::empty(),
+            got: Vec::new(),
+            size: 1024,
+            fed: 0,
+            first: 0,
+            slots: Default::default(),
+            taken: 0,
+            next: 0.0,
+            led: !lead.is_empty(),
+        };
+        if run.encoder.is_some() {
+            // The frame before the lead only brings the decoder up to the
+            // lead; the lead itself is fed, so the encoder's packet for the
+            // run's first frame is built on what came before it, as the
+            // recording's was.
+            if let Some((last, before)) = lead.split_last() {
+                for b in before {
+                    run.decode(b);
+                }
+                if run.feed(Some(last), &self.audio).is_err() {
+                    run.encoder = None;
+                }
+            }
+            run.first = run.fed;
+        }
+        Some(run)
+    }
+
+    /// The stand-ins the encoder has given, matched to the frames they
+    /// stand in for; at the end of a run, every frame still waiting goes
+    /// out, as it is where nothing stands in for it.
+    fn collect(&mut self, at_end: bool) -> Vec<(Vec<u8>, T)> {
+        let Some(run) = self.run.as_mut() else { return Vec::new() };
+        let mut out = Vec::new();
+        let size = run.size as i64;
+        for (offset, data) in std::mem::take(&mut run.got) {
+            let k = offset - run.first;
+            if k < 0 || k % size != 0 {
+                continue;
+            }
+            let j = k / size;
+            // Counted and drained rather than VecDeque::pop_front_if, which
+            // is newer than the toolchain the workspace declares (1.82).
+            let before = run.slots.iter().take_while(|s| s.0 < j).count();
+            for (_, bytes, tag, dur) in run.slots.drain(..before) {
+                self.left += 1;
+                self.left_secs += dur;
+                out.push((bytes, tag));
+            }
+            let here = usize::from(run.slots.front().is_some_and(|s| s.0 == j));
+            for (_, _, tag, dur) in run.slots.drain(..here) {
+                self.mended += 1;
+                self.secs += dur;
+                out.push((self.framing.wrap(&data), tag));
+            }
+        }
+        if at_end || run.encoder.is_none() {
+            for (_, bytes, tag, dur) in run.slots.drain(..) {
+                self.left += 1;
+                self.left_secs += dur;
+                out.push((bytes, tag));
+            }
+        }
+        out
+    }
+}
+
+impl<T> Run<T> {
+    /// One frame decoded into `frame`, and whether there is one.
+    fn decode(&mut self, data: &[u8]) -> bool {
+        if self.decoder.send_packet(&ff::Packet::copy(data)).is_err() {
+            return false;
+        }
+        // Into a frame of its own: a receive that finds nothing more empties
+        // the frame it was handed.
+        let mut any = false;
+        let mut next = ff::frame::Audio::empty();
+        while self.decoder.receive_frame(&mut next).is_ok() {
+            std::mem::swap(&mut self.frame, &mut next);
+            any = true;
+        }
+        any
+    }
+
+    /// One frame fed to the encoder in the track's shape -- or, where it
+    /// will not decode into that, a frame of silence, so that every frame of
+    /// the run keeps its place.
+    fn feed(&mut self, data: Option<&[u8]>, audio: &AudioInfo) -> Result<()> {
+        let size = self.size;
+        let have = data.is_some_and(|d| self.decode(d))
+            && self.frame.samples() == size
+            && self.frame.rate() == audio.sample_rate;
+        let encoder = self.encoder.as_mut().ok_or_else(|| anyhow!("no encoder"))?;
+        let (layout, format) = (encoder.channel_layout(), encoder.format());
+        let pts = Some(self.fed);
+        let mut sent = false;
+        if have {
+            self.frame.set_pts(pts);
+            if let Ok(f) = conform(&mut self.to_encoder, &mut self.converted, &self.frame, layout, format) {
+                encoder.send_frame(f)?;
+                sent = true;
+            }
+        }
+        if !sent {
+            let mut silent = ff::frame::Audio::new(PLANAR_F32, size, layout);
+            silent.set_rate(audio.sample_rate);
+            for ch in 0..silent.planes() {
+                channel_mut(&mut silent, ch).fill(0.0);
+            }
+            silent.set_pts(pts);
+            let (mut to, mut converted) = (None, ff::frame::Audio::empty());
+            encoder.send_frame(conform(&mut to, &mut converted, &silent, layout, format)?)?;
+        }
+        collect_patch(encoder, &mut self.got)?;
+        self.fed += size as i64;
+        Ok(())
+    }
+}
+
+/// What a [`Mender`] did, said once the file is written. `named` is the
+/// track, as the recording names it.
+pub(crate) fn mender_notes<T>(m: &Mender<T>, named: &str, channels: u16) {
+    // Where the file's track took the shape of its first frame instead of
+    // the track's (see `retargeted` in [`Mender`]), what is mended is
+    // mended into that.
+    let file = m.audio.channels;
+    if m.mended > 0 && m.by_majority {
+        crate::say!(
+            "note: {} frame(s) of the sound on {named} ({:.1}s) are in another channel count than \
+             the {file} this file's track is in (most of the sound this cut keeps is in that \
+             shape, not the track's own {channels}). This file holds a track in one shape, so \
+             they were written again in it; a .ts keeps them as they are.",
+            m.mended,
+            m.secs,
+        );
+    } else if m.mended > 0 && m.retargeted {
+        crate::say!(
+            "note: {} frame(s) of the sound on {named} ({:.1}s) are in another channel count than \
+             the {file} this file's track is in (it opens on sound that is not the track's own \
+             {channels}, and takes that sound's shape). This file holds a track in one shape, so \
+             they were written again in it; a .ts keeps them as they are.",
+            m.mended,
+            m.secs,
+        );
+    } else if m.mended > 0 {
+        crate::say!(
+            "note: {} frame(s) of the sound on {named} ({:.1}s) are in another channel count than \
+             the track's {channels}. This file holds a track in one shape, so they were written \
+             again in it; a .ts keeps them as they are.",
+            m.mended,
+            m.secs,
+        );
+    }
+    if m.left > 0 {
+        crate::say!(
+            "note: {} frame(s) of the sound on {named} ({:.1}s) are in another channel count than \
+             the {}{} and were copied as they are{}. This file holds a track in one \
+             shape, so those frames will not play from it; a .ts keeps them{}.",
+            m.left,
+            m.left_secs,
+            if m.retargeted { "file's " } else { "track's " },
+            if m.retargeted { file } else { channels },
+            if m.mend { " (they could not be written again)" } else { " (--audio-mode copy)" },
+            // Not "smart audio writes them again" where it is smart audio
+            // that could not.
+            if m.mend { "" } else { ", and smart audio, the default, writes them again in one shape" },
+        );
+    }
+    if m.lone > 0 {
+        crate::say!(
+            "note: {} frame(s) of the sound on {named} ({:.1}s) have a header naming another channel \
+             count, one frame at a time between frames that do not -- a damaged header rather than \
+             another programme -- and were copied as they are.",
+            m.lone,
+            m.lone_secs,
+        );
+    }
+    if m.misfits.get() > 0 {
+        crate::say!(
+            "note: {} frame(s) at the kept ranges' edges on {named} were copied as they are \
+             rather than written again for the cut, which would have put them in the track's \
+             {channels} channel(s) where this file's track is {file}: those edges land on whole \
+             frames, and a fade asked for there is not on them.",
+            m.misfits.get(),
+        );
+    }
+    if m.kept > 0 && m.by_majority {
+        crate::say!(
+            "note: {} frame(s) of the sound on {named} ({:.1}s) are in another channel count than \
+             the track's {channels}; most of the sound this cut keeps is in their shape, so they \
+             were copied as they are and this file's track is theirs.",
+            m.kept,
+            m.kept_secs,
+        );
+    } else if m.kept > 0 {
+        crate::say!(
+            "note: {} frame(s) of the sound on {named} ({:.1}s) are in another channel count than \
+             the track's {channels}, and none of the sound this file opens with is in the track's \
+             own shape, so they were copied as they are and this file's track is theirs.",
+            m.kept,
+            m.kept_secs,
+        );
+    }
+}
+
 /// A frame to write in place of one of the recording's own.
 pub struct Patch {
     /// The frame, framed as the recording's frames are.
@@ -1884,6 +2494,10 @@ struct Decoded {
     /// end of the programme before this one is in the file too, and it can
     /// be mono where the programme is stereo -- see [`foreign_reach`].
     shape: (u16, u32),
+    /// Whether the frame could not be brought to the track's channels at
+    /// all -- a damaged one, decoded as 53 channels in no order -- and `pcm`
+    /// is silence for its length. See `decode_on`.
+    unread: bool,
     pcm: Pcm,
     /// The same samples as integers, for 32-bit PCM. See [`int32_pcm`].
     wide: Option<Ints>,
@@ -2062,6 +2676,14 @@ fn frame_shape(
 /// not this recording's, because the pair at the end of a recording is the
 /// join's answer rather than the recording's -- see `fade_lengths` in
 /// [`crate::cut`].
+///
+/// `one_shape` is whether the file describes its track once (an MP4, a
+/// Matroska file), so that frames of another channel count past what is
+/// patched here are written again by the copy ([`Mender`]); only the notes
+/// read it. `own_kept` is set where a frame of the track's own shape is
+/// found inside a range, which is what the [`Mender`] asks before it writes
+/// anything again -- where the count of every kept frame's header
+/// ([`kept_shapes`]) found none to go by.
 #[allow(clippy::too_many_arguments)]
 pub fn boundary_patches(
     src: &Source,
@@ -2072,6 +2694,8 @@ pub fn boundary_patches(
     fades: &[(f64, f64)],
     nth_base: usize,
     of_all: usize,
+    one_shape: bool,
+    own_kept: &mut bool,
 ) -> Result<HashMap<i64, Patch>> {
     let mut out = HashMap::new();
     if windows.is_empty() {
@@ -2202,21 +2826,77 @@ pub fn boundary_patches(
                 let cap = (FOREIGN_CAP * audio.sample_rate as f64) as i64;
                 frames = decode_around(&mut ictx, &params, src, audio, at, cap, true)?;
                 let said = opens_on.map_or(0, |it| it.0);
+                // Not the programme before when every frame of the run is
+                // one the decoder read as channels in no order: a damaged
+                // frame, which is written again as silence, and was called
+                // "the end of the programme before it, in 53 channel(s)".
+                let damaged = frames
+                    .iter()
+                    .filter(|f| f.first + f.len() as i64 > edge)
+                    .take_while(|f| f.shape != shape)
+                    .all(|f| f.unread);
                 match foreign_reach(&frames, edge, shape, cap) {
+                    Some(n) if n > 0 && damaged => {
+                        reach = reach.max(n);
+                        crate::note_once(format!(
+                            "note: this range opens on {:.2}s of damaged sound -- frames the decoder \
+                             read as {said} channel(s) where this track is {}. They are written \
+                             again as silence in the track's shape.",
+                            n as f64 / audio.sample_rate as f64,
+                            audio.channels,
+                        ));
+                    }
                     Some(n) if n > 0 => {
                         reach = reach.max(n);
+                        // The programme before's own count, not a damaged
+                        // frame's 53 where one opens the run.
+                        let said = frames
+                            .iter()
+                            .filter(|f| f.first + f.len() as i64 > edge)
+                            .take_while(|f| f.shape != shape)
+                            .find(|f| !f.unread)
+                            .map_or(said, |f| f.shape.0);
                         crate::note_once(format!(
                             "note: this range opens {:.2}s before the programme's own sound \
                              does -- what is there is the end of the programme before it, in \
                              {said} channel(s) where this track is {}. Those frames are \
                              written again in the track's shape instead of copied, so the \
                              track is one shape from its first frame; the rest of the range \
-                             is the recording's own bytes.",
+                             is the recording's own bytes.{}",
                             n as f64 / audio.sample_rate as f64,
                             audio.channels,
+                            // Not where most of what a file of one shape keeps is
+                            // in theirs: see [`Mender::settle`].
+                            if one_shape {
+                                " (Unless most of the sound this cut keeps is in their shape: \
+                                 then the file's track is in that one, as is said once the file \
+                                 is written.)"
+                            } else {
+                                ""
+                            },
                         ));
                     }
                     Some(_) => {}
+                    // Frames of other channels at the track's rate, in a file
+                    // that describes its track once: the copy writes them
+                    // again in the track's shape (see [`Mender`]), and "carried
+                    // through as it is" was not what the file holds.
+                    None if one_shape
+                        && !frames
+                            .iter()
+                            .filter(|f| f.first + f.len() as i64 > edge)
+                            .take_while(|f| f.shape != shape)
+                            .any(|f| f.shape.1 != shape.1) =>
+                    {
+                        crate::note_once(format!(
+                            "note: the sound this range opens on is not the shape the rest of \
+                             the track is, and there is more of it than a recording that began \
+                             a moment early accounts for -- over {:.0} seconds. This file holds \
+                             a track in one shape; what became of those frames is said once the \
+                             file is written.",
+                            FOREIGN_CAP,
+                        ))
+                    }
                     None => crate::note_once(format!(
                         "note: the sound this range opens on is not the shape the rest of \
                          the track is, and there is more of it than a recording that began \
@@ -2226,6 +2906,13 @@ pub fn boundary_patches(
                         FOREIGN_CAP,
                     )),
                 }
+            }
+            // Whether the cut keeps any of the track's own shape, as far as
+            // the frames at its edges say. See `decided` in [`Mender`].
+            if frames.iter().any(|f| {
+                f.shape == shape && !f.unread && f.first < w1 && f.first + f.len() as i64 > w0
+            }) {
+                *own_kept = true;
             }
             let Some(emit) = run_range(&frames, edge, is_head, reach) else {
                 continue;
@@ -2258,6 +2945,74 @@ pub fn boundary_patches(
         }
     }
     Ok(out)
+}
+
+/// How many ADTS frames of each `channel_config` the track has over the kept
+/// `windows` (samples of the track), at its own rate, added to `tally`. Read
+/// off the frames' headers, without decoding, over the whole of every kept
+/// range of a file that describes its track once: the edges are not all a
+/// range holds -- a 5.1 film kept from a recording whose track is stereo,
+/// with a stereo break inside it, a few seconds of stereo at one end, or a
+/// minute of stereo at both, is mostly 5.1, and which shape the file's one
+/// track is given is the one most of what it keeps is in; with both edges
+/// in stereo nothing at them says so. See [`Mender::settle`].
+pub(crate) fn kept_shapes(
+    src: &Source,
+    audio: &AudioInfo,
+    windows: &[(i64, i64)],
+    tally: &mut HashMap<u8, u64>,
+) -> Result<()> {
+    let Some(index) = crate::adts::sampling_index(audio.sample_rate) else { return Ok(()) };
+    if windows.is_empty() {
+        return Ok(());
+    }
+    let mut ictx = crate::input::demux(&src.input.url)?;
+    crate::input::keep_with_pictures(&mut ictx, &[audio.stream_index]);
+    let rate = audio.sample_rate as f64;
+    for &(w0, w1) in windows {
+        let (from, to) = (w0 as f64 / rate, w1 as f64 / rate);
+        let target = ((from + src.start_time).max(0.0) * ff::ffi::AV_TIME_BASE as f64) as i64;
+        ictx.seek(target, ..target)?;
+        for (stream, packet) in ictx.read_packets() {
+            let Some(t) = read_reached(&stream, &packet, src.start_time) else { continue };
+            if stream.index() != audio.stream_index {
+                // The pictures, well past the range with none of this track:
+                // the track has stopped.
+                if t > to + 10.0 {
+                    break;
+                }
+                continue;
+            }
+            if t >= to {
+                break;
+            }
+            // Counted by where each frame's middle is, as the writers take
+            // a frame into a range.
+            let dur = 1024.0 / rate;
+            if t + dur / 2.0 <= from {
+                continue;
+            }
+            if let Some(h) = packet.data().and_then(crate::adts::AdtsFormat::parse) {
+                if h.sampling_index == index && h.channel_config != 0 {
+                    *tally.entry(h.channel_config).or_default() += 1;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The `channel_config` most of the counted frames have ([`kept_shapes`]);
+/// the track's own where it has as many as any other.
+pub(crate) fn kept_majority(tally: &HashMap<u8, u64>, audio: &AudioInfo) -> Option<u8> {
+    let own = crate::adts::channel_config(audio.channels)?;
+    let mine = tally.get(&own).copied().unwrap_or(0);
+    let best = tally
+        .iter()
+        .filter(|&(&c, &n)| c != own && n > mine)
+        .max_by_key(|&(&c, &n)| (n, std::cmp::Reverse(c)))
+        .map(|(&c, _)| c);
+    Some(best.unwrap_or(own))
 }
 
 /// Decode the frames around `at`, with enough lead-in that their samples are
@@ -2465,7 +3220,7 @@ fn decode_on(
             // argument". It is silence here, as the reencoder leaves it a
             // hole: its own shape is kept, so the runs read it as the
             // disagreeing frame it is.
-            let (pcm, wide) = match conform(&mut resampler, &mut floated, &frame, want, PLANAR_F32) {
+            let (pcm, wide, unread) = match conform(&mut resampler, &mut floated, &frame, want, PLANAR_F32) {
                 Ok(floats) => {
                     let n = floats.samples();
                     let mut pcm: Pcm = vec![Vec::with_capacity(n); channels];
@@ -2477,11 +3232,11 @@ fn decode_on(
                                 .then_some(ints)
                         })
                         .flatten();
-                    (pcm, wide)
+                    (pcm, wide, false)
                 }
                 Err(_) if frame.channels() as usize != channels => {
                     resampler = None;
-                    (vec![vec![0.0; frame.samples()]; channels], None)
+                    (vec![vec![0.0; frame.samples()]; channels], None, true)
                 }
                 Err(e) => return Err(e),
             };
@@ -2491,6 +3246,7 @@ fn decode_on(
                 first,
                 bytes,
                 shape,
+                unread,
                 pcm,
                 wide,
             });
@@ -3193,6 +3949,7 @@ mod tests {
             first,
             bytes: 0,
             shape,
+            unread: false,
             pcm: vec![vec![1.0; n]],
             wide: None,
         }
@@ -3457,6 +4214,7 @@ mod tests {
             first: 0,
             bytes,
             shape: (6, 48_000),
+            unread: false,
             pcm: vec![vec![0.0; 1536]],
             wide: None,
         };
@@ -3474,6 +4232,97 @@ mod tests {
         // And AAC is not asked at all: its frames are as long as the sound
         // in them needs, and four that happen to agree say nothing.
         assert_eq!(own_bit_rate(ff::codec::Id::AAC, &run, 48_000, 1536), None);
+    }
+
+    /// Which frames the copy writes again: another channel count at the
+    /// track's rate. Not a header of no `channel_config` (a PCE says it),
+    /// and not one at half the rate, which is SBR -- parametric stereo says
+    /// mono there for a track that decodes as stereo.
+    #[test]
+    fn mends_only_another_channel_count_at_the_tracks_rate() {
+        let header = |config: u8, index: u8| {
+            let f = crate::adts::AdtsFormat {
+                mpeg2: true,
+                profile: 1,
+                sampling_index: index,
+                channel_config: config,
+                private: false,
+                original: false,
+                home: false,
+            };
+            f.wrap(&[0u8; 16])
+        };
+        let track = |channels: u16| crate::AudioInfo {
+            stream_index: 1,
+            pid: 0x110,
+            language: None,
+            codec: "aac".into(),
+            sample_rate: 48_000,
+            channels,
+            bits: 16,
+            time_base: 1.0 / 90_000.0,
+            bit_rate: None,
+            said: None,
+        };
+        let framing = |config| Some(Framing::Adts(crate::adts::AdtsFormat::parse(&header(config, 3)).unwrap()));
+        let stereo: Mender<()> = Mender::new(&track(2), 192_000, framing(2), true).unwrap();
+        assert!(stereo.off_shape(&header(6, 3)));
+        assert!(stereo.off_shape(&header(1, 3)));
+        assert!(!stereo.off_shape(&header(2, 3)));
+        assert!(!stereo.off_shape(&header(0, 3)));
+        assert!(!stereo.off_shape(&header(1, 6)));
+        let surround: Mender<()> = Mender::new(&track(6), 384_000, framing(2), true).unwrap();
+        assert!(surround.off_shape(&header(2, 3)));
+        assert!(!surround.off_shape(&header(6, 3)));
+        // Raw AAC, LATM, or no framing at all: nothing to read a header off.
+        assert!(Mender::<()>::new(&track(2), 192_000, None, true).is_none());
+        // Nothing the cut keeps is of the track's own shape (neither written
+        // before nor found at the ranges' edges): the frames go out as they
+        // are, and nothing is opened to write them again.
+        let mut whole: Mender<()> = Mender::new(&track(2), 192_000, framing(2), true).unwrap();
+        let out = whole.take("/nonexistent.ts", 1, &header(6, 3), 0.0, 0.021, ());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, header(6, 3));
+        assert_eq!((whole.kept, whole.mended, whole.left), (1, 0, 0));
+        // ...and the file's track is that frame's shape from then on: its
+        // like go through, the track's own (or a third shape) are the ones
+        // that would be written again, and no patch in the track's shape
+        // stands in for anything.
+        assert!(!whole.off_shape(&header(6, 3)));
+        assert!(whole.off_shape(&header(2, 3)));
+        assert!(whole.off_shape(&header(1, 3)));
+        assert!(!whole.fits_patch(&header(6, 3)));
+        assert!(!whole.fits_patch(&header(2, 3)));
+        // Before anything is written: a patch for a frame of another shape
+        // fits only where the track's own shape is kept somewhere.
+        let mut fresh: Mender<()> = Mender::new(&track(2), 192_000, framing(2), true).unwrap();
+        assert!(!fresh.fits_patch(&header(6, 3)));
+        assert!(fresh.fits_patch(&header(2, 3)));
+        fresh.keeps_own();
+        assert!(fresh.fits_patch(&header(6, 3)));
+        // Copied by request: patches are not this one's business.
+        let copy: Mender<()> = Mender::new(&track(2), 192_000, framing(2), false).unwrap();
+        assert!(copy.fits_patch(&header(6, 3)));
+        // Settled by the count of what is kept: the track's own shape is the
+        // rule as it was, another is the file's from its first frame -- the
+        // track's own frames then being the ones written again.
+        let mut most: Mender<()> = Mender::new(&track(2), 192_000, framing(2), true).unwrap();
+        most.settle(6);
+        assert!(!most.off_shape(&header(6, 3)));
+        assert!(most.off_shape(&header(2, 3)));
+        assert!(!most.fits_patch(&header(6, 3)));
+        assert_eq!(most.audio.channels, 6);
+        let mut own: Mender<()> = Mender::new(&track(2), 192_000, framing(2), true).unwrap();
+        own.settle(2);
+        assert!(own.off_shape(&header(6, 3)));
+        assert!(own.fits_patch(&header(6, 3)));
+        // The count: most frames, and the track's own on a tie.
+        let tally = |pairs: &[(u8, u64)]| pairs.iter().copied().collect::<HashMap<u8, u64>>();
+        assert_eq!(kept_majority(&tally(&[(2, 235), (6, 3984)]), &track(2)), Some(6));
+        assert_eq!(kept_majority(&tally(&[(2, 3000), (6, 900)]), &track(2)), Some(2));
+        assert_eq!(kept_majority(&tally(&[(2, 500), (6, 500)]), &track(2)), Some(2));
+        assert_eq!(kept_majority(&tally(&[(6, 500), (1, 200)]), &track(2)), Some(6));
+        assert_eq!(kept_majority(&tally(&[]), &track(2)), Some(2));
     }
 
     #[test]

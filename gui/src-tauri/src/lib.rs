@@ -8942,13 +8942,24 @@ fn free_in(dir: &std::path::Path, stem: &str, ext: &str, held: &[std::path::Path
 }
 
 /// The paths the queue's jobs name, for [`free_in`]. Read as it stands and
-/// never put aside: a queue that does not read this instant holds nothing
-/// here, and the add that follows says why.
-fn queued_paths(batch: &std::path::Path) -> Vec<std::path::PathBuf> {
-    std::fs::read_to_string(batch.join("batch.json"))
-        .ok()
-        .and_then(|body| serde_json::from_str::<BatchQueue>(&body).ok())
-        .map_or_else(Vec::new, |q| q.jobs.into_iter().map(|j| std::path::PathBuf::from(j.path)).collect())
+/// never put aside: a queue that does not parse holds nothing here (the add
+/// that follows puts it aside and starts a new one, whose jobs these are
+/// not), and no queue at all holds nothing.
+///
+/// But a queue that is there and could not be read this instant is an error,
+/// as it is in [`read_queue`], not a queue holding nothing: the name it held
+/// was given out, and an add a moment later -- the file readable again --
+/// passed over the new job as the one already queued under that name, which
+/// then ran this list.
+fn queued_paths(batch: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let at = batch.join("batch.json");
+    let body = match std::fs::read_to_string(&at) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", at.display())),
+    };
+    Ok(serde_json::from_str::<BatchQueue>(&body)
+        .map_or_else(|_| Vec::new(), |q| q.jobs.into_iter().map(|j| std::path::PathBuf::from(j.path)).collect()))
 }
 
 /// Where to write a list that is going into the queue. The name is the list
@@ -8959,7 +8970,7 @@ fn queued_paths(batch: &std::path::Path) -> Vec<std::path::PathBuf> {
 fn queue_temp_path(app: tauri::AppHandle, stem: String, ext: String) -> Result<String, String> {
     let dir = queue_dir(&app)?;
     let batch = batch_dir(&app)?;
-    with_queue_lock(&batch, || free_in(&dir, &stem, &ext, &queued_paths(&batch)))
+    with_queue_lock(&batch, || free_in(&dir, &stem, &ext, &queued_paths(&batch)?))
 }
 
 /// Take a copy of a project that is already on disc, for ジョブ追加.
@@ -9002,7 +9013,7 @@ fn queue_copy_now(app: &tauri::AppHandle, path: &str) -> Result<String, String> 
     }
     let dir = queue_dir(app)?;
     let batch = batch_dir(app)?;
-    let at = with_queue_lock(&batch, || free_in(&dir, &stem, &ext, &queued_paths(&batch)))?;
+    let at = with_queue_lock(&batch, || free_in(&dir, &stem, &ext, &queued_paths(&batch)?))?;
     std::fs::copy(from, &at).map_err(|e| {
         // The name taken for it goes back: an empty project in the queue's
         // folder is nobody's.
@@ -10718,12 +10729,21 @@ mod tests {
             ..Default::default()
         };
         put_queue(&root, &queue).unwrap();
-        let got = free_in(&root, "p", "scproj", &queued_paths(&root)).unwrap();
+        let got = free_in(&root, "p", "scproj", &queued_paths(&root).unwrap()).unwrap();
         assert!(got.ends_with("p-2.scproj"));
         assert!(!std::path::Path::new(&held).exists());
+        // A queue that is there and cannot be read holds what it holds: no
+        // name is given out against it.
+        std::fs::rename(root.join("batch.json"), root.join("keep.json")).unwrap();
+        std::fs::create_dir(root.join("batch.json")).unwrap();
+        assert!(queued_paths(&root).is_err());
+        std::fs::remove_dir(root.join("batch.json")).unwrap();
+        // One that does not parse holds nothing: the add puts it aside.
+        std::fs::write(root.join("batch.json"), b"{").unwrap();
+        assert!(queued_paths(&root).unwrap().is_empty());
         // And with no queue at all, the first name is the one given.
         std::fs::remove_file(root.join("batch.json")).unwrap();
-        let got = free_in(&root, "q", "scproj", &queued_paths(&root)).unwrap();
+        let got = free_in(&root, "q", "scproj", &queued_paths(&root).unwrap()).unwrap();
         assert!(got.ends_with("q.scproj"));
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -1961,6 +1961,10 @@ fn encode_still(picture: &ff::frame::Video, id: ff::codec::Id) -> Result<Vec<u8>
 /// Answers where a seek by byte put it (see [`Landed`]); `None` after a seek
 /// by the clock.
 fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -> Result<Option<Landed>> {
+    // **An H.264 program stream is read from the cut's margin before, never
+    // from the entry point itself** (see [`Untimed::reads_back`]); what comes
+    // before the entry point is read for the order alone ([`Ahead`]).
+    let margin = if margin == 0.0 && Untimed::reads_back(src) { src.seek_margin } else { margin };
     // The index knows the byte `from` begins at, so on the first attempt
     // there is nothing to approximate and no margin to spend. The timestamp
     // seek below is what is left for the containers and indexes that cannot
@@ -2210,6 +2214,9 @@ fn walk(
     let mut vols = if sets { VolInForce::single(&params) } else { VolInForce::off() };
     // Before the record goes to the decoder; used below.
     let mut untimed = Untimed::knowing(&src.video, &params);
+    // What `place` read ahead of the entry point, for the order alone: see
+    // [`Ahead`]. Not where the caller asked for a margin of its own.
+    let mut ahead = if margin == 0.0 { Ahead::new(src, from) } else { None };
     let mut decoder = match cores {
         Cores::One => crate::video_context(params)?.decoder().video()?,
         Cores::All => crate::video_decoder(params)?,
@@ -2290,6 +2297,9 @@ fn walk(
         Landed::mend(&mut landed, &mut packet, src);
         untimed.place(&mut packet, doubted);
         in_force.see(&packet);
+        if Ahead::before(&mut ahead, &packet, src) {
+            continue;
+        }
         if packet.position() >= 0 {
             read_at = Some(packet.position() as u64);
         }
@@ -2432,6 +2442,42 @@ fn walk(
         }
     }
     Ok(first)
+}
+
+/// **The packets a read that [`Untimed::reads_back`] takes in before the
+/// entry point it wants**: read, so that [`Untimed`] has measured the step its
+/// pictures with no time are placed by, and nothing more -- not decoded, so
+/// that the read decodes what it decoded from the entry point itself (a still
+/// of a 1080p `.mpg` read three GOPs back and decoded from there took five
+/// times as long). The first key picture at the entry point (to a quarter of
+/// a frame) or past it is where decoding begins; and an earlier key picture
+/// that could not be timed even so, so that a read whose order never got a
+/// step decodes from there rather than not at all.
+pub(crate) struct Ahead {
+    entry: f64,
+}
+
+impl Ahead {
+    /// For a read of `src` sought `seek_margin` before the entry point at
+    /// `entry`; `None` where the read is not one of those.
+    pub(crate) fn new(src: &Source, entry: f64) -> Option<Self> {
+        Untimed::reads_back(src).then_some(Ahead { entry })
+    }
+
+    /// Whether `packet`, of the pictures, placed, comes before the entry
+    /// point's key picture, and so is not to be decoded. Clears `slot` at
+    /// that key picture.
+    pub(crate) fn before(slot: &mut Option<Ahead>, packet: &ff::Packet, src: &Source) -> bool {
+        let Some(ahead) = slot.as_ref() else { return false };
+        if packet.is_key() {
+            let at = packet.pts().map(|p| p as f64 * src.video.time_base - src.start_time);
+            if at.is_none_or(|t| t >= ahead.entry - src.video.frame_duration() / 4.0) {
+                *slot = None;
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Whether a picture presented at `t`, read inside the stretch that begins at
@@ -2718,6 +2764,25 @@ impl Untimed {
     /// editor's picture landed on the one before or after it.
     pub(crate) fn knowing(video: &crate::VideoInfo, params: &ff::codec::Parameters) -> Self {
         Self::with(Self::wanted(video), Some(params), Self::pace_of(video))
+    }
+
+    /// Whether a read of `src` that seeks has to start [`Source::seek_margin`]
+    /// before the entry point it wants, as the cut's copy starts
+    /// (`seek_to` in [`crate::cut`]): H.264 in a program stream. **Its
+    /// pictures with no time are placed by the step two timed ones have
+    /// measured** ([`crate::cut::poc_seam::Order`]; until then by the rate,
+    /// which is a guess), and a read that starts on an entry point has
+    /// measured none: a second of black or a still packs fifty pictures and
+    /// more into PES packets with no time, and after a key picture there the
+    /// whole run was passed over -- a still asked anywhere in it was the
+    /// picture before or after the run, and played from it the run was not
+    /// shown, where the cut, reading from its margin before, wrote every
+    /// picture of it. Read from the same margin, the order here is the one
+    /// the cut measured, not a guess the cut never makes. A transport stream
+    /// times every picture (a second field is passed over as before) and is
+    /// read as it was.
+    pub(crate) fn reads_back(src: &Source) -> bool {
+        Self::wanted(&src.video) && !src.on_a_ts
     }
 
     fn wanted(video: &crate::VideoInfo) -> bool {

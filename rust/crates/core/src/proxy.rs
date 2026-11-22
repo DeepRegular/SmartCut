@@ -682,6 +682,17 @@ pub fn build(
         .ok_or_else(|| anyhow!("video stream vanished"))?;
     let tb_in = stream.time_base();
     let params = stream.parameters();
+    // A picture whose packet carries no time -- most of an H.264 `.mpg`'s
+    // (`ffmpeg -f mpeg`), and the first of two that begin in one PES, which
+    // libav hands over with the second's -- is given the time the cut gives
+    // it. Read as it came, the decoder handed such a picture back with no
+    // time and it was left out: an x264 `.mpg` with 73 % of its packets
+    // untimed made a proxy of 79 of its 300 pictures and 2 of its 10
+    // thumbnails, and the editor scrubbing it showed the picture before
+    // where the cut has another. See [`crate::preview::Untimed`]; nothing
+    // changes but H.264 in start codes, and a transport stream's packets
+    // all have their times.
+    let mut untimed = crate::preview::Untimed::knowing(&src.video, &params);
     let mut decoder = crate::video_decoder(params)?;
 
     let fd = src.video.frame_duration();
@@ -843,11 +854,12 @@ pub fn build(
             };
 
         'read: {
-            let mut packets = ictx.read_packets();
-            for (stream, packet) in packets.by_ref() {
+            let mut packets = untimed.paired(ictx.read_packets(), idx);
+            while let Some((stream, mut packet, doubted)) = packets.read() {
                 if stream.index() != idx {
                     continue;
                 }
+                untimed.place(&mut packet, doubted);
                 if stop.as_ref().is_some_and(|s| s()) {
                     cancelled = true;
                     break 'read;
@@ -868,7 +880,7 @@ pub fn build(
                     }
                 }
             }
-            packets.finished()?;
+            packets.inner().finished()?;
             if !cancelled {
                 let _ = decoder.send_eof();
                 loop {

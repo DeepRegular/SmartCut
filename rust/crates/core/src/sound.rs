@@ -590,17 +590,6 @@ fn run(
     if octx.format().name() == "wav" {
         muxer_opts.set("rf64", "auto");
     }
-    crate::cut::open_file(&mut octx, output)?;
-    octx.write_header_with(muxer_opts)?;
-    let out_tb = f64::from(
-        octx.stream(0)
-            .ok_or_else(|| anyhow!("no output stream"))?
-            .time_base(),
-    );
-    // The rate a re-encoded packet's own clock counts in, which is the
-    // encoder's last word rather than what was asked for.
-    let out_rate = recoder.as_ref().map_or(setup.sample_rate, Reencoder::rate) as f64;
-
     // Where the sound has reached, in seconds. Frames are laid end to end:
     // they are whole, so a range's worth of them is a whole number of frames
     // however the range was chosen, and end to end is the only arrangement
@@ -622,6 +611,36 @@ fn run(
     // Whether the boundaries of a track carried whole have been asked about
     // yet. See `patches` below.
     let mut asked_whole = false;
+    // Frames of another channel count, into a file that describes its track
+    // once (an .m4a, an .mka): written again in the track's shape, or -- the
+    // sound copied by request -- counted for the note. See
+    // [`crate::audio::Mender`]. An .aac says it frame by frame, as a .ts does.
+    let one_shape = {
+        let format = octx.format();
+        let name = format.name();
+        !name.contains("adts") && !name.contains("mpegts")
+    };
+    let mends = one_shape
+        && setup.mode == AudioMode::Smart
+        && setup.target == ff::codec::Id::AAC
+        && matches!(setup.source_framing, Some(crate::aac::Framing::Adts(_)));
+    let mut mender = (mends
+        || (one_shape
+            && setup.mode == AudioMode::Copy
+            && setup.target == ff::codec::Id::AAC
+            && matches!(setup.source_framing, Some(crate::aac::Framing::Adts(_)))))
+    .then(|| {
+        crate::audio::Mender::new(
+            &setup.info,
+            setup.bit_rate,
+            setup.frame_as.or(setup.source_framing),
+            setup.mode == AudioMode::Smart,
+        )
+    })
+    .flatten();
+    // Whether the ranges' edges have found any of the track's own shape so
+    // far. See `decided` in [`crate::audio::Mender`].
+    let mut own_kept = false;
     let say = |done: usize| {
         if let Some(report) = progress.as_ref() {
             let share = done as f64 / ranges_in_all as f64;
@@ -630,18 +649,18 @@ fn run(
     };
     say(0);
 
+    // Every piece's ranges, and the frames prepared for their edges, before
+    // anything is written: whether the file keeps any of the track's own
+    // shape is the whole job's answer, as it is the cut's (`own_kept` in
+    // [`crate::cut`]). Learnt piece by piece, a join whose master's range is
+    // wholly in the other shape took that shape and wrote the joined
+    // recording's own frames again in it, where the cut with pictures wrote
+    // the master's range in the track's. See `decided` in
+    // [`crate::audio::Mender`].
+    let mut prepared = Vec::with_capacity(pieces.len());
     for (n, piece) in pieces.iter().enumerate() {
-        // A clip joined on with no sound has none to give, and failing the
-        // whole file over it would lose every other clip's. Its ranges are
-        // left out, which makes the file that much shorter than the cut
-        // with pictures, and that is said.
         let Ok(track) = track_for(pieces, master, n, opts).cloned() else {
-            crate::note_once(format!(
-                "note: {} has no sound, so its part of the join is left out of the audio file",
-                piece.src.path,
-            ));
-            ranges_done += piece.ranges.len();
-            say(ranges_done);
+            prepared.push(None);
             continue;
         };
         let base = pieces[..n].iter().map(|p| p.ranges.len()).sum::<usize>();
@@ -683,7 +702,6 @@ fn run(
         if let Some(head) = ranges.first_mut() {
             head.0 = primed_from(piece.src, &track, *head)?;
         }
-        let ranges = &ranges;
         let windows: Vec<(i64, i64)> = ranges
             .iter()
             .map(|&r| window(r, track.sample_rate))
@@ -711,10 +729,80 @@ fn run(
                 &fades,
                 base,
                 ranges_in_all,
+                mends,
+                &mut own_kept,
             )?
         } else {
             Default::default()
         };
+        prepared.push(Some((track, ranges, windows, patches)));
+    }
+    // The shape most of what is kept is in, over every piece, as the cut
+    // with pictures counts it over every reel. See
+    // [`crate::audio::Mender::settle`].
+    if let Some(m) = mender.as_mut().filter(|_| mends) {
+        let mut tally = std::collections::HashMap::new();
+        for (piece, prepared) in pieces.iter().zip(&prepared) {
+            if let Some((track, _, windows, _)) = prepared {
+                crate::audio::kept_shapes(piece.src, track, windows, &mut tally)?;
+            }
+        }
+        if own_kept {
+            m.keeps_own();
+        }
+        if let Some(config) =
+            crate::audio::kept_majority(&tally, &setup.info).filter(|_| !tally.is_empty())
+        {
+            m.settle(config);
+            // And the stream says it, before the header that states it (a
+            // Matroska file's Channels): the mender's shape, where it is not
+            // the track's own. See the same in [`crate::cut`].
+            let channels = match config {
+                _ if Some(config) == crate::adts::channel_config(setup.info.channels) => None,
+                c @ 1..=6 => Some(i32::from(c)),
+                7 => Some(8),
+                _ => None,
+            };
+            if let (Some(channels), Some(ost)) = (channels, octx.stream_mut(0)) {
+                unsafe {
+                    let p = ost.parameters().as_mut_ptr();
+                    if (*p).ch_layout.nb_channels != channels {
+                        ff::ffi::av_channel_layout_uninit(&mut (*p).ch_layout);
+                        ff::ffi::av_channel_layout_default(&mut (*p).ch_layout, channels);
+                    }
+                }
+            }
+        }
+    }
+
+    // Written once the track's shape is settled (above).
+    crate::cut::open_file(&mut octx, output)?;
+    octx.write_header_with(muxer_opts)?;
+    let out_tb = f64::from(
+        octx.stream(0)
+            .ok_or_else(|| anyhow!("no output stream"))?
+            .time_base(),
+    );
+    // The rate a re-encoded packet's own clock counts in, which is the
+    // encoder's last word rather than what was asked for.
+    let out_rate = recoder.as_ref().map_or(setup.sample_rate, Reencoder::rate) as f64;
+
+    for (n, (piece, prepared)) in pieces.iter().zip(prepared).enumerate() {
+        // A clip joined on with no sound has none to give, and failing the
+        // whole file over it would lose every other clip's. Its ranges are
+        // left out, which makes the file that much shorter than the cut
+        // with pictures, and that is said.
+        let Some((track, ranges, windows, patches)) = prepared else {
+            crate::note_once(format!(
+                "note: {} has no sound, so its part of the join is left out of the audio file",
+                piece.src.path,
+            ));
+            ranges_done += piece.ranges.len();
+            say(ranges_done);
+            continue;
+        };
+        let base = pieces[..n].iter().map(|p| p.ranges.len()).sum::<usize>();
+        let ranges = &ranges;
         // A reel of another recording is another stream: the decoder inside
         // the re-encoder has to be told, or it reads the next recording's
         // frames against the one before it. It was opened on the master's,
@@ -731,6 +819,11 @@ fn run(
             }
         }
 
+        // A run of frames the mender holds is the recording before's.
+        if let Some(m) = mender.as_mut() {
+            let clock = Clock { tb: out_tb, rate: out_rate, frame_secs: setup.frame_secs };
+            write_mended(&mut octx, m.close(), clock)?;
+        }
         let mut prev: Option<i64> = None;
         for (k, &range) in ranges.iter().enumerate() {
             let at = base + k;
@@ -796,6 +889,7 @@ fn run(
                 range.0 + drift,
                 joins_at_sync && at > 0,
                 at_out,
+                mender.as_mut(),
             )?;
             written = reached;
             if std::env::var("SMARTCUT_DEBUG").is_ok() {
@@ -856,6 +950,12 @@ fn run(
         }
     }
 
+    if let Some(m) = mender.as_mut() {
+        let clock = Clock { tb: out_tb, rate: out_rate, frame_secs: setup.frame_secs };
+        write_mended(&mut octx, m.close(), clock)?;
+        let named = crate::track_name(pieces[master].src.on_a_ts, setup.info.pid, setup.info.stream_index);
+        crate::audio::mender_notes(m, &named, setup.info.channels);
+    }
     if let Some(re) = recoder.as_mut() {
         let mut out = Vec::new();
         re.finish(&mut out)?;
@@ -1624,6 +1724,9 @@ fn take_range(
     // Where on the output a re-encoded range's first sample belongs, where
     // that is decided (see `placed` in `run`).
     at_out: Option<f64>,
+    // What writes frames of another channel count again. See `mender` in
+    // `run`: where each goes, its length, and the packet's own.
+    mut mender: Option<&mut crate::audio::Mender<(f64, f64, i64)>>,
 ) -> Result<(f64, Option<Opening>, f64)> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Half a second before the range, so the frame it opens on has been
@@ -1793,7 +1896,9 @@ fn take_range(
         // is kept. A guard is only used when it is what came before it.
         let patch = patches
             .get(&pts)
-            .filter(|p| p.after.is_none() || p.after == *prev);
+            .filter(|p| p.after.is_none() || p.after == *prev)
+            .filter(|_| mender.as_deref().is_none_or(|m| m.fits_patch(packet.data().unwrap_or(&[]))));
+        let patched = patch.is_some();
         let packet = match patch {
             Some(p) => {
                 let mut patched = ff::Packet::copy(&p.bytes);
@@ -1804,6 +1909,18 @@ fn take_range(
             None => packet,
         };
         *prev = Some(pts);
+        if let Some(m) = mender.as_deref_mut() {
+            let data = packet.data().unwrap_or(&[]);
+            if !patched && m.off_shape(data) {
+                let tag = (written, dur, packet.duration());
+                let ready = m.take(&src.input.url, track.stream_index, data, t, dur, tag);
+                write_mended(octx, ready, clock)?;
+                written += dur;
+                continue;
+            }
+            let ready = m.through(data, t, dur);
+            write_mended(octx, ready, clock)?;
+        }
         write_copied(octx, packet, written, dur, clock)?;
         written += dur;
     }
@@ -2047,6 +2164,22 @@ fn write_copied(
         }
         r => Ok(r?),
     }
+}
+
+/// Frames the [`crate::audio::Mender`] gives back, each where the frame it
+/// stands in for was to go.
+fn write_mended(
+    octx: &mut ff::format::context::Output,
+    ready: Vec<(Vec<u8>, (f64, f64, i64))>,
+    clock: Clock,
+) -> Result<()> {
+    for (bytes, (at, dur, duration)) in ready {
+        let mut packet = ff::Packet::copy(&bytes);
+        packet.set_flags(ff::packet::Flags::KEY);
+        packet.set_duration(duration);
+        write_copied(octx, packet, at, dur, clock)?;
+    }
+    Ok(())
 }
 
 /// ...and one the re-encoder made, which carries its own clock.
