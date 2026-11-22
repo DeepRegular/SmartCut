@@ -31,8 +31,12 @@ sdk-extensions:
 command: dev.smartcut.app
 finish-args:
   - --share=ipc
-  - --socket=wayland
-  - --socket=fallback-x11
+  # X11 (XWayland on a Wayland desktop), as the AppImage and the tar.gz run:
+  # their GTK hook sets GDK_BACKEND=x11 because Tauri breaks on the Wayland
+  # backend (tauri-apps/tauri#8541). On KDE's Wayland the Flatpak, which has
+  # no such hook, drew its own title bar and its buttons did not take clicks.
+  - --socket=x11
+  - --env=GDK_BACKEND=x11
   - --socket=pulseaudio
   # GPU for the WebKit view, and /dev/nvidia* for NVENC.
   - --device=all

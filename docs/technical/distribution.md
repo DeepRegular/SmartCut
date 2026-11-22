@@ -246,7 +246,7 @@ Not on Flathub: a signed OSTree repository goes on GitHub Pages, and a bundle
 | Runtime | `org.gnome.Platform//50` (freedesktop 25.08) |
 | SDK extensions | `rust-stable//25.08`, `llvm20//25.08` |
 | FFmpeg | 7.1.5, built from source in the manifest with its encoders |
-| Size | 29.3 MB (the runtime is not in it) |
+| Size | 28.1 MB (the runtime is not in it) |
 | Settings and queue | `~/.var/app/dev.smartcut.app/` (apart from the AppImage's and the deb's) |
 
 FFmpeg and its encoders (x264, x265, SVT-AV1, dav1d, libvpx, aom, rav1e, NVENC,
@@ -295,7 +295,9 @@ install the key again.
 
 | Permission | Why |
 |---|---|
+| `--socket=x11`, `--env=GDK_BACKEND=x11` | XWayland on a Wayland desktop, as the AppImage's and the tar.gz's GTK hook sets it: Tauri does not work right on the Wayland backend (tauri-apps/tauri#8541). Left on Wayland under KDE, the buttons took no clicks and GTK drew the title bar |
 | `--filesystem=host` | Recordings live on other drives and NAS mounts, and the marks, the `.keyframe` and the outputs go into the recording's folder. A portal hands over one file, not its folder |
+| `--filesystem=xdg-config/gtk-3.0:ro` | The colour scheme (`colors.css`) and title-bar buttons (`window_decorations.css`) KDE writes for GTK. Inside the sandbox the config folder is the app's own, so without it Breeze comes up in its default colours |
 | `--device=all` | The GPU for WebKit, and `/dev/nvidia*` for NVENC |
 | `--socket=pulseaudio` | Preview sound |
 | `--talk-name=org.freedesktop.Notifications` | The notice when a long run finishes behind another window |

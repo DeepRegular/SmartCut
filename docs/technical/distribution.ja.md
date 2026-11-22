@@ -250,7 +250,7 @@ Flathub には出さない。署名した OSTree リポジトリを GitHub Pages
 | ランタイム | `org.gnome.Platform//50`（freedesktop 25.08） |
 | SDK 拡張 | `rust-stable//25.08`、`llvm20//25.08` |
 | FFmpeg | 7.1.5。エンコーダとともにマニフェストの中でソースからビルドする |
-| 大きさ | 29.3 MB（ランタイムは含まない） |
+| 大きさ | 28.1 MB（ランタイムは含まない） |
 | 設定・キューの置き場所 | `~/.var/app/dev.smartcut.app/`（AppImage・deb とは別） |
 
 FFmpeg とエンコーダ（x264・x265・SVT-AV1・dav1d・libvpx・aom・rav1e・NVENC・
@@ -300,7 +300,9 @@ OSTree のオブジェクトを配らないためである。
 
 | 権限 | 理由 |
 |---|---|
+| `--socket=x11`、`--env=GDK_BACKEND=x11` | Wayland のデスクトップでも XWayland で動かす。AppImage と tar.gz の GTK フックと同じ指定で、Tauri は Wayland で正しく動かない（tauri-apps/tauri#8541）。KDE の Wayland で、Wayland のまま動かすとボタンが押せず、タイトルバーも GTK が描いていた |
 | `--filesystem=host` | 録画はほかのドライブや NAS にもある。マーク・`.keyframe`・出力は録画と同じフォルダーに書く。ポータルは 1 ファイルずつしか渡さないので、フォルダーには書けない |
+| `--filesystem=xdg-config/gtk-3.0:ro` | KDE が GTK 向けに書き出す配色（`colors.css`）とタイトルバーのボタン（`window_decorations.css`）を読むため。サンドボックスの中では設定フォルダーがアプリ専用になるので、これが無いと Breeze が既定の色になる |
 | `--device=all` | WebKit の GPU と、NVENC の `/dev/nvidia*` |
 | `--socket=pulseaudio` | プレビューの音声 |
 | `--talk-name=org.freedesktop.Notifications` | 長い処理が裏で終わったときの通知 |
