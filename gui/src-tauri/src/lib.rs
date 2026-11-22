@@ -9443,6 +9443,10 @@ fn reap(mut child: std::process::Child) {
     });
 }
 
+/// Whether [`run`] set `GDK_BACKEND=x11` itself, so that the desktop's own
+/// programs are started without it. See [`desktop_command`].
+static X11_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// What `GTK_IM_MODULE` was before [`run`] set it, when it did. `None`
 /// inside is "it was not set".
 static IM_BEFORE: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
@@ -9479,6 +9483,11 @@ fn im_as_before(run: &mut std::process::Command) {
 fn desktop_command(program: &str) -> std::process::Command {
     let mut run = std::process::Command::new(program);
     im_as_before(&mut run);
+    // The file manager or editor is the desktop's: it runs on whatever
+    // display the desktop gave it, not on the X11 this window was put on.
+    if X11_SET.load(std::sync::atomic::Ordering::Relaxed) {
+        run.env_remove("GDK_BACKEND");
+    }
     let Some(root) = std::env::var_os("APPDIR").filter(|r| !r.is_empty()) else {
         return run;
     };
@@ -10153,6 +10162,24 @@ pub fn run() {
     }
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
+    // **X11 on a Wayland desktop, through XWayland.** On GTK's Wayland
+    // backend Tauri's windows break (tauri-apps/tauri#8541): under KDE the
+    // buttons took no clicks and GTK drew a title bar of its own in place of
+    // the desktop's. The AppImage and the tar.gz never met it -- the GTK hook
+    // their launcher runs sets GDK_BACKEND=x11 -- and the Flatpak sets it in
+    // its manifest; the .deb starts this binary directly, so it ran on
+    // Wayland. Only
+    // where an X server is there to be had (DISPLAY), and never over a
+    // choice already made.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("GDK_BACKEND").is_none_or(|v| v.is_empty())
+        && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+        && std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty())
+    {
+        std::env::set_var("GDK_BACKEND", "x11");
+        X11_SET.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     // The same freeze from the other end, and this one waits until a text
