@@ -1221,6 +1221,21 @@ mod tests {
     }
 
     #[test]
+    fn a_sequence_header_states_its_rate() {
+        // 720x480, aspect 3, code 4 (29.97), then an extension with n 0, d 0.
+        let mut h = vec![0, 0, 1, 0xB3, 0x2D, 0x01, 0xE0, 0x34, 0xFF, 0xFF, 0xE0, 0x18];
+        assert_eq!(mpeg2_frame_rate(&h), Some((30000, 1001)));
+        h.extend_from_slice(&[0, 0, 1, 0xB5, 0x14, 0x8A, 0x00, 0x01, 0x00, 0x00]);
+        assert_eq!(mpeg2_frame_rate(&h), Some((30000, 1001)));
+        // Code 2 (24) halved by d 1: the 12 fps a damaged header made up.
+        h[7] = 0x32;
+        h[21] = 0x01;
+        assert_eq!(mpeg2_frame_rate(&h), Some((24, 2)));
+        h[7] = 0x30;
+        assert_eq!(mpeg2_frame_rate(&h), None);
+    }
+
+    #[test]
     fn a_progressive_picture_is_put_back_into_an_interlaced_sequence() {
         let mut p = progressive_picture();
         assert_eq!(mpeg2_interlaced_sequence(&p), Some(false));
@@ -1618,4 +1633,41 @@ pub fn mpeg2_rate(data: &[u8]) -> Option<(u32, u32)> {
     // All ones is the header saying it does not know, which is no more use
     // to copy than it was to write.
     (rate != 0 && rate != 0x3_FFFF).then_some((rate, vbv))
+}
+
+/// The picture rate an MPEG-2 sequence header states, as a fraction.
+///
+/// The frame rate code of the first sequence header, scaled by the sequence
+/// extension's `frame_rate_extension_n` and `_d` where one follows it:
+///
+/// ```text
+///   sequence header   4 bits frame rate code (in the byte after the sizes)
+///   extension (id 1)  2 bits frame_rate_extension_n, 5 bits _d, at its end
+///   rate = code's rate * (n + 1) / (d + 1)
+/// ```
+pub fn mpeg2_frame_rate(data: &[u8]) -> Option<(u32, u32)> {
+    let at = data
+        .windows(4)
+        .position(|w| w == [0x00, 0x00, 0x01, 0xB3])?;
+    let code = data.get(at + 7)? & 0x0F;
+    let (num, den) = match code {
+        1 => (24000, 1001),
+        2 => (24, 1),
+        3 => (25, 1),
+        4 => (30000, 1001),
+        5 => (30, 1),
+        6 => (50, 1),
+        7 => (60000, 1001),
+        8 => (60, 1),
+        _ => return None,
+    };
+    let ext = data[at + 4..]
+        .windows(5)
+        .position(|w| w[..4] == [0x00, 0x00, 0x01, 0xB5] && w[4] >> 4 == 0x1)
+        .map(|e| at + 4 + e);
+    let (n, d) = match ext.and_then(|e| data.get(e + 9)) {
+        Some(b) => (u32::from((b >> 5) & 0x03), u32::from(b & 0x1F)),
+        None => (0, 0),
+    };
+    Some((num * (n + 1), den * (d + 1)))
 }

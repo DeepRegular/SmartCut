@@ -8458,6 +8458,27 @@ fn open_encoder(
         ff::codec::Id::MPEG1VIDEO if stated_sequence(params).is_some() => ff::codec::Id::MPEG2VIDEO,
         id => id,
     };
+    // **Nor at a rate the damage made up.** The same packet can carry the
+    // frame rate code as well: a 29.97 broadcast read as a 12 fps MPEG-1
+    // opened as MPEG-2 and wrote seams whose sequence headers said 12 fps,
+    // and the cut ended well where it used to stop at "cannot open encoder".
+    // The header the open kept states the recording's own rate; where the
+    // rate the cut runs on is not it, the seams cannot be written right.
+    if id != params.id() {
+        if let Some((num, den)) = stated_frame_rate(params) {
+            let stated = f64::from(num) / f64::from(den);
+            if (stated - video.frame_rate).abs() > stated * 0.005 {
+                bail!(
+                    "the recording's picture rate was misread: a damaged packet reads as an \
+                     MPEG-1 sequence header saying {:.3} fps, where the recording's own header \
+                     says {stated:.3} fps, so the pictures at the ends of a range cannot be \
+                     re-encoded. A cut that copies every picture -- ranges whose ends fall on \
+                     the recording's own key pictures -- still works",
+                    video.frame_rate
+                );
+            }
+        }
+    }
     let format = unsafe { (*params.as_ptr()).format };
     // **No pixel format is a format no encoder opens with.** libav leaves it
     // unread where the pictures begin past what the open looks at: a
@@ -9472,6 +9493,18 @@ fn mpeg2_segment_shape(src: &Source, seg: &Segment, tol: f64) -> Result<(bool, O
 
 /// Whether the sequence extension a stream's parameters carry calls the
 /// sequence interlaced, where they carry one.
+/// The picture rate the header an open kept states. See [`open_encoder`].
+fn stated_frame_rate(params: &ff::codec::Parameters) -> Option<(u32, u32)> {
+    let extradata = unsafe {
+        let p = params.as_ptr();
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            return None;
+        }
+        std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+    };
+    crate::bitstream::mpeg2_frame_rate(extradata)
+}
+
 fn stated_sequence(params: &ff::codec::Parameters) -> Option<bool> {
     let extradata = unsafe {
         let p = params.as_ptr();

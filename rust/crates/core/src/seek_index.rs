@@ -152,7 +152,12 @@ static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// never a release -- can call constant a recording whose pictures come at
 /// three times its average between long holds (a screen recording remuxed
 /// into Matroska), and a cut planned on it lost a quarter of its pictures.
-pub const VERSION: u32 = 20;
+///
+/// 21: pictures without a pts in H.264 carried in MPEG-PS are paced before
+/// the step between them is measured (`poc_seam::Order`). An index written
+/// before places a run of them -- a fade in, a black stretch -- on the old
+/// guess: on a 59.94 recording every range began one picture early.
+pub const VERSION: u32 = 21;
 
 const MAGIC: &[u8; 4] = b"SCIX";
 
