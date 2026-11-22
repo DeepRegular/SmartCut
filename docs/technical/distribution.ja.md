@@ -235,11 +235,13 @@ deb から、tar.gz 用は AppDir からである。
 ## Flatpak
 
 ```bash
-./gui/build-flatpak.sh   # 開発 VM（Debian 13）で
+./gui/build-flatpak.sh     # 開発 VM（Debian 13）で。署名したリポジトリとバンドル
 # -> gui/src-tauri/target/flatpak/SmartCut-0.8.50-x86_64.flatpak
+./gui/publish-flatpak.sh   # リポジトリを GitHub Pages へ
 ```
 
-Flathub には出さず、Releases にバンドル（`.flatpak`）を置く。マニフェストは
+Flathub には出さない。署名した OSTree リポジトリを GitHub Pages に置き、Releases
+にはバンドル（`.flatpak`）を置く。マニフェストは
 `gui/flatpak/dev.smartcut.app.yml` で、アプリ ID は `tauri.conf.json` の
 `identifier` と同じ `dev.smartcut.app` である。
 
@@ -261,12 +263,41 @@ WebKitGTK・GTK と、lame・opus・vorbis はランタイムのものを使う�
 コマンドライン版も同じバンドルに入っている。
 
 ```bash
-flatpak install --user ./SmartCut-0.8.50-x86_64.flatpak
+flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref
 flatpak run dev.smartcut.app                              # GUI
 flatpak run --command=smartcut-cli dev.smartcut.app --help  # コマンドライン版
 ```
 
-### 権限
+### 更新の配布（GitHub Pages）
+
+`flatpak update` で新しい版を届けるために、リポジトリを
+[DeepRegular/smartcut-flatpak](https://github.com/DeepRegular/smartcut-flatpak) の
+GitHub Pages（`https://deepregular.github.io/smartcut-flatpak/`）に置いている。
+SmartCut 本体のリポジトリに置かないのは、clone する人全員に 120 MB の
+OSTree のオブジェクトを配らないためである。
+
+| ファイル | 中身 |
+|---|---|
+| `repo/` | OSTree リポジトリ（archive-z2）。最新のコミットだけを持つ |
+| `smartcut.flatpakref` | `flatpak install` に渡す。リポジトリの URL・公開鍵・Flathub の場所 |
+| `smartcut.flatpakrepo` | `flatpak remote-add` に渡す |
+
+`publish-flatpak.sh` は、Pages のリポジトリの main をコミット 1 つで毎回
+置き換えて force push する。git の履歴が積もらないので、サイトは 1 版分の
+大きさのままである。クライアントの更新に必要なのは最新のコミットだけで、
+それは OSTree のリポジトリが持っている。`build-flatpak.sh` も
+`--prune-depth=0` で古いコミットを消す。
+
+バンドルには `--repo-url` でこのリポジトリを書いてあるので、Releases の
+`.flatpak` から入れた場合も、`app-origin` という名前で同じ場所から更新が届く。
+`.flatpakref` から入れた場合のリモート名は `smartcut` である。
+
+署名には、この用途だけの鍵（RSA 4096、パスフレーズ無し、指紋
+`E8A2ACD236581DDDF68AE7FFA0DCC65533C608DA`）を使う。秘密鍵は開発 VM の
+`~/.smartcut-flatpak-gpg` にあり、秘密鍵・公開鍵・失効証明書の複製をホストの
+`~/.smartcut-flatpak-gpg-backup/` に置いている。鍵を失うと、利用者に公開鍵を
+入れ直してもらうことになる。
+
 
 | 権限 | 理由 |
 |---|---|
@@ -306,6 +337,9 @@ LLVM 拡張は PATH に入らないので、SmartCut のモジュールにだけ
 - 同じ VM で、0.8.49 と比べたものと同じ 6 種類のカットを、バンドルの
   `smartcut-cli` と VM で直接ビルドした CLI に切らせた。.ts・.mp4・.m2ts は
   バイト単位で、.mkv はフレーム単位で一致した。
+- Pages の `.flatpakref` から入れると、リモート `smartcut` が署名の確認つきで
+  登録され、`flatpak update` が通る。バンドルから入れると `app-origin` が
+  Pages の URL を指す。どちらも、新しい版が出たときの更新はまだ試していない。
 - 何も入っていない環境へのインストールと、GNOME・KDE のデスクトップでは
   試していない。
 

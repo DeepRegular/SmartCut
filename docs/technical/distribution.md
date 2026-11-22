@@ -231,11 +231,13 @@ binary comes from Tauri's deb, and the tar.gz's from the AppDir.
 ## Flatpak
 
 ```bash
-./gui/build-flatpak.sh   # on the development VM (Debian 13)
+./gui/build-flatpak.sh     # on the development VM (Debian 13): signed repository + bundle
 # -> gui/src-tauri/target/flatpak/SmartCut-0.8.50-x86_64.flatpak
+./gui/publish-flatpak.sh   # the repository onto GitHub Pages
 ```
 
-Not on Flathub: a bundle (`.flatpak`) goes on the Releases page. The manifest is
+Not on Flathub: a signed OSTree repository goes on GitHub Pages, and a bundle
+(`.flatpak`) on the Releases page. The manifest is
 `gui/flatpak/dev.smartcut.app.yml`, and the app ID is `dev.smartcut.app`, the
 `identifier` in `tauri.conf.json`.
 
@@ -257,12 +259,39 @@ allowed on Flathub, fine for a bundle.
 The command-line tool is in the same bundle:
 
 ```bash
-flatpak install --user ./SmartCut-0.8.50-x86_64.flatpak
+flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref
 flatpak run dev.smartcut.app                                # GUI
 flatpak run --command=smartcut-cli dev.smartcut.app --help  # command line
 ```
 
-### Permissions
+### Updates through GitHub Pages
+
+For `flatpak update` to bring new versions, the repository is served by the GitHub
+Pages of [DeepRegular/smartcut-flatpak](https://github.com/DeepRegular/smartcut-flatpak)
+(`https://deepregular.github.io/smartcut-flatpak/`) -- not SmartCut's own repository,
+so that a clone of SmartCut does not carry 120 MB of OSTree objects.
+
+| File | What it is |
+|---|---|
+| `repo/` | The OSTree repository (archive-z2), holding the newest commit only |
+| `smartcut.flatpakref` | For `flatpak install`: the repository's URL, its key, and where Flathub is |
+| `smartcut.flatpakrepo` | For `flatpak remote-add` |
+
+`publish-flatpak.sh` replaces the Pages repository's main with a single commit and
+force-pushes it, so no git history piles up and the site stays one version big. A
+client updating needs only the newest commit, which the OSTree repository holds;
+`build-flatpak.sh` prunes older ones with `--prune-depth=0`.
+
+The bundle names this repository with `--repo-url`, so an install from the Releases
+`.flatpak` takes updates from the same place, under the remote name `app-origin`; an
+install from the `.flatpakref` calls it `smartcut`.
+
+The signing key is used for this alone (RSA 4096, no passphrase, fingerprint
+`E8A2ACD236581DDDF68AE7FFA0DCC65533C608DA`). The secret key lives on the development
+VM in `~/.smartcut-flatpak-gpg`; the secret key, the public key and the revocation
+certificate are copied to `~/.smartcut-flatpak-gpg-backup/` on the host. Losing it
+would mean asking every user to install the key again.
+
 
 | Permission | Why |
 |---|---|
@@ -303,6 +332,10 @@ the LLVM extension is not on the path: the SmartCut module alone gets the path a
 - On the same VM, the six cuts compared against 0.8.49 were made by the bundle's
   `smartcut-cli` and by a CLI built on the VM directly: .ts, .mp4 and .m2ts are the
   same byte for byte, the .mkv frame for frame.
+- Installed from the Pages `.flatpakref`, the remote `smartcut` is added with
+  signature checking and `flatpak update` runs; installed from the bundle,
+  `app-origin` points at the Pages URL. An actual update to a newer version has not
+  been tried yet.
 - Not tried: installing on a clean system, and GNOME or KDE desktops.
 
 ## Windows
