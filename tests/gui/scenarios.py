@@ -13156,6 +13156,210 @@ def queue_job_window_unstamped_53(cfg, t):
 SCENARIOS += [queue_job_window_unstamped_53]
 
 
+def queue_job_window_recovered_54(cfg, t):
+    """(54th pass, appjs.) The 53rd's rule -- a window opened on a job writes
+    the job's file only while the queue still holds THAT job (its `born`) --
+    across a crash. A registers: the job queued/p.scproj. The job is opened in
+    a window of its own (J), edited (its container) and killed before it is
+    saved: the copy put down for recovery names the job's file. The job is
+    taken out (the row out, the copy deleted) and B registers: the freed name
+    is B's copy. Started again on nothing, the work J left is offered and
+    taken; its 保存 must leave B's copy alone (before the fix the restored
+    window held the job's file as a plain project and wrote J's list over B's
+    job). The batch tool is kept from starting by a beat that says one is
+    running."""
+    a = App(cfg, "queue_job_window_recovered_54_a", [{"path": cfg.a}])
+    b = App(cfg, "queue_job_window_recovered_54_b", [{"path": cfg.c}])
+    for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+        b.env[k] = a.env[k]
+
+    def jobs(app):
+        app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+                 ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: app.s.js("return window.__q"), 10, 0.1)
+        return [j["path"] for j in json.loads(got)["jobs"]]
+
+    def doc(path):
+        try:
+            d = json.load(open(path))
+            return ([os.path.basename(c["path"]) for c in d["clips"]], (d.get("settings") or {}).get("container"))
+        except (OSError, ValueError, KeyError):
+            return None
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        a.s.js("document.getElementById('enlist-export').click()")
+        first = wait_for("one job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(a)), 20, 0.3)[0]
+        mine = (doc(first) or [0, 0])[1]
+        theirs = "mp4" if mine == "mkv" else "mkv"
+        job = _QueuedJobWindow(cfg, "queue_job_window_recovered_54_job", a, first)
+        with job:
+            job.to_list()
+            job.s.js("const s = document.getElementById('out-container'); s.value = arguments[0];"
+                     "s.dispatchEvent(new Event('input'));", theirs)
+            rec = wait_for("the recovery dir", lambda: glob_one(job.env["XDG_DATA_HOME"], "recovery"), 30, 0.5)
+
+            def kept():
+                for f in os.listdir(rec):
+                    if f.endswith(".scproj"):
+                        try:
+                            body = json.load(open(os.path.join(rec, f)))
+                        except (OSError, ValueError):
+                            continue
+                        if body.get("project") == first:
+                            return body
+                return None
+            body = wait_for("J's recovery copy", kept, 30, 0.5)
+            os.kill(job.gui_pid(), 9)
+            time.sleep(1)
+        t.check("54q the job window's recovery copy names the job it held",
+                body.get("queued") == first and isinstance(body.get("born"), str) and body.get("born"),
+                f"queued {body.get('queued')!r} born {body.get('born')!r}")
+        a.s.js("window.__d = null; const inv = window.__TAURI__.core.invoke;"
+               "inv('batch_write', {queue: {jobs: [], after: ''}})"
+               ".then(() => inv('drop_temp_project', {path: arguments[0]}))"
+               ".then((r) => window.__d = 'ok ' + r, (e) => window.__d = 'err ' + e);", first)
+        wait_for("the job taken out", lambda: a.s.js("return window.__d"), 10, 0.1)
+        with b:
+            b.to_list()
+            b.s.js("document.getElementById('enlist-export').click()")
+            got = wait_for("B's job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(b)), 20, 0.3)[0]
+        bdoc = doc(first)
+        with _SameProfile(cfg, "queue_job_window_recovered_54_r", a) as r:
+            offered = r.answer(True, timeout=30)
+            wait_for("the rows put back", lambda: r.rows() == 1, 30)
+            time.sleep(1)
+            r.s.js("document.getElementById('menu-save').click()")
+            time.sleep(3)
+            t.check("54q ... restored after the crash, B taking the name: its 保存 leaves B's copy alone",
+                    offered and got == first and bdoc is not None and bdoc[0] == ["c.ts"] and doc(first) == bdoc,
+                    f"{'offered' if offered else 'NOT offered'}; B {got}; B's copy {bdoc} -> {doc(first)}")
+    for n in ("job", "r"):
+        shutil.rmtree(os.path.join(cfg.work, "runs", f"queue_job_window_recovered_54_{n}"), ignore_errors=True)
+
+
+SCENARIOS += [queue_job_window_recovered_54]
+
+
+
+def _overwrites(label):
+    return "上書き" in (label or "") or "Overwrite" in (label or "")
+
+
+def queue_job_window_recovered_two_54(cfg, t):
+    """(54th pass, second stage, p2gui.) The other side of
+    queue_job_window_recovered_54, with two lists gone at once. A registers
+    (the job queued/p.scproj); a plain list L (another recording) is edited and
+    killed, then the job window J (opened on the job) is edited and killed, the
+    job still queued under the stamp it had. Started on nothing, the newest
+    work (J's) is offered and taken: it must come back holding its job -- the
+    button reads バッチを上書き and 保存 writes J's list over the job's own file
+    (the job is still that job). Started on nothing again, L's work is offered
+    and comes back as L's rows, holding no job."""
+    a = App(cfg, "queue_job_window_recovered_two_54_a", [{"path": cfg.a}])
+    lw = App(cfg, "queue_job_window_recovered_two_54_l", [{"path": cfg.c}])
+    for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+        lw.env[k] = a.env[k]
+
+    def jobs(app):
+        app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+                 ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: app.s.js("return window.__q"), 10, 0.1)
+        return json.loads(got)["jobs"]
+
+    def doc(path):
+        try:
+            d = json.load(open(path))
+            return ([os.path.basename(c["path"]) for c in d["clips"]], (d.get("settings") or {}).get("container"))
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def set_container(app, v):
+        app.s.js("const s = document.getElementById('out-container'); s.value = arguments[0];"
+                 "s.dispatchEvent(new Event('input'));", v)
+
+    def copy_of(app, pred):
+        rec = wait_for("the recovery dir", lambda: glob_one(app.env["XDG_DATA_HOME"], "recovery"), 30, 0.5)
+
+        def kept():
+            for f in os.listdir(rec):
+                if f.endswith(".scproj"):
+                    try:
+                        body = json.load(open(os.path.join(rec, f)))
+                    except (OSError, ValueError):
+                        continue
+                    if pred(body):
+                        return body
+            return None
+        return wait_for("a recovery copy", kept, 30, 0.5)
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        a.s.js("document.getElementById('enlist-export').click()")
+        q = wait_for("one job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(a)), 20, 0.3)
+        first, born = q[0]["path"], q[0].get("born")
+        mine = (doc(first) or [0, 0])[1]
+        theirs = "mp4" if mine == "mkv" else "mkv"
+        with lw:
+            lw.to_list()
+            set_container(lw, theirs)
+            copy_of(lw, lambda b: not b.get("queued") and b.get("doc") and
+                    [os.path.basename(c["path"]) for c in b["doc"]["clips"]] == ["c.ts"])
+            os.kill(lw.gui_pid(), 9)
+            time.sleep(1)
+        time.sleep(1.5)
+        job = _QueuedJobWindow(cfg, "queue_job_window_recovered_two_54_job", a, first)
+        with job:
+            job.to_list()
+            set_container(job, theirs)
+            body = copy_of(job, lambda b: b.get("project") == first)
+            os.kill(job.gui_pid(), 9)
+            time.sleep(1)
+        t.check("54r J's copy names its job and stamp", body.get("queued") == first and body.get("born") == born,
+                f"queued {body.get('queued')!r} born {body.get('born')!r} (queue's {born!r})")
+        with _SameProfile(cfg, "queue_job_window_recovered_two_54_r1", a) as r:
+            offered = r.answer(True, timeout=30)
+            wait_for("the rows put back", lambda: r.rows() == 1, 30)
+            time.sleep(1)
+            rows = r.s.js("return [...document.querySelectorAll('#cliplist > li .nm')].map((e) => e.innerText)")
+            label = r.s.js("return document.getElementById('enlist-export').textContent")
+            r.s.js("document.getElementById('menu-save').click()")
+            time.sleep(3)
+            after = doc(first)
+            still = [j["path"] for j in jobs(r)]
+            t.check("54r the newest (J's) comes back holding its job; 保存 writes the job's own file",
+                    offered and after == (["a.ts"], theirs) and still == [first] and _overwrites(label),
+                    f"{'offered' if offered else 'NOT offered'}; rows {rows}; button {label!r}; job file {after}; "
+                    f"queue {still}")
+        with _SameProfile(cfg, "queue_job_window_recovered_two_54_r2", a) as r:
+            offered = r.answer(True, timeout=30)
+            wait_for("the rows put back", lambda: r.rows() == 1, 30)
+            time.sleep(1)
+            rows = r.s.js("return [...document.querySelectorAll('#cliplist > li .nm')].map((e) => e.innerText)")
+            label = r.s.js("return document.getElementById('enlist-export').textContent")
+            t.check("54r then L's comes back, holding no job",
+                    offered and len(rows) == 1 and "c" in rows[0] and not _overwrites(label)
+                    and doc(first) == (["a.ts"], theirs),
+                    f"{'offered' if offered else 'NOT offered'}; rows {rows}; button {label!r}; job file {doc(first)}")
+    for n in ("l", "job", "r1", "r2"):
+        shutil.rmtree(os.path.join(cfg.work, "runs", f"queue_job_window_recovered_two_54_{n}"), ignore_errors=True)
+
+
+SCENARIOS += [queue_job_window_recovered_two_54]
+
+
 
 # --- 53rd pass, mainjs ------------------------------------------------------
 
@@ -13774,6 +13978,491 @@ def lpcm32_wav_rate_53(cfg, t):
 
 
 EXTRA.append(lpcm32_wav_rate_53)
+
+
+def queue_name_held_54(cfg, t):
+    """(54th pass, tauri.) A name a queued job holds is not given out again,
+    though its file is gone. A registers: the job queued/p.scproj. Its copy is
+    deleted by hand while the job stays in the queue. B (a project named p
+    too) registers: its copy must be p-2.scproj, B's list in it, and two jobs
+    (0.8.48 gave B p.scproj, the add passed it over as the job already queued,
+    and A's job ran B's list). Then, with batch.json there but unreadable, a
+    name asked for is refused rather than given against a queue read as empty
+    (before the 54th's fix p.scproj was given again); readable again, the next
+    name is p-3. The batch tool is kept from starting by a beat that says one
+    is running."""
+    a = App(cfg, "queue_name_held_54_a", [{"path": cfg.a}])
+    b = App(cfg, "queue_name_held_54_b", [{"path": cfg.c}])
+    for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+        b.env[k] = a.env[k]
+
+    def jobs(app):
+        app.to_list()
+        app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+                 ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: app.s.js("return window.__q"), 10, 0.1)
+        return [j["path"] for j in json.loads(got)["jobs"]]
+
+    def rows_in(path):
+        try:
+            return [os.path.basename(c["path"]) for c in json.load(open(path))["clips"]]
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def enlist(app, n):
+        app.to_list()
+        app.s.js("document.getElementById('enlist-export').click()")
+        return wait_for(f"{n} job(s) in the queue", lambda: (lambda q: q if len(q) == n else None)(jobs(app)),
+                        20, 0.3)
+
+    def ask(app):
+        app.s.js("window.__n = null; window.__TAURI__.core.invoke('queue_temp_path', {stem: 'p', ext: 'scproj'})"
+                 ".then((r) => window.__n = 'ok ' + r, (e) => window.__n = 'err ' + e);")
+        return wait_for("the name", lambda: app.s.js("return window.__n"), 15, 0.1)
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        first = enlist(a, 1)[0]
+        t.check("54q A's list registered as a copy named p", os.path.basename(first) == "p.scproj"
+                and rows_in(first) == ["a.ts"], f"{first}: {rows_in(first)}")
+        os.remove(first)
+    with b:
+        q = enlist(b, 2)
+        second = [p for p in q if p != first]
+        t.check("54q ... A's copy gone by hand, the job kept: B's copy takes another name, A's job keeps its own",
+                len(second) == 1 and os.path.basename(second[0]) == "p-2.scproj"
+                and rows_in(second[0]) == ["c.ts"] and rows_in(first) is None,
+                f"queue {[(os.path.basename(p), rows_in(p)) for p in q]}")
+        qpath = os.path.join(os.path.dirname(beat), "batch.json")
+        os.chmod(qpath, 0)
+        try:
+            said = ask(b)
+        finally:
+            os.chmod(qpath, 0o600)
+        t.check("54q ... batch.json there but unreadable: no name is given against it",
+                said.startswith("err ") and not os.path.exists(first), f"{said!r}")
+        said = ask(b)
+        t.check("54q ... readable again: the next free name, past both the jobs hold",
+                said.startswith("ok ") and said.endswith("p-3.scproj"), f"{said!r}")
+        if said.startswith("ok "):
+            try:
+                os.remove(said[3:])
+            except OSError:
+                pass
+
+
+SCENARIOS += [queue_name_held_54]
+
+
+def nonutf8_disc_folder_54(cfg, t):
+    """(54th pass, tauri.) A dropped folder holding a disc folder whose name is
+    not UTF-8 (a link to a BDAV disc), a .ts so named and a folder so named
+    shaped like a disc with nothing in it: the UTF-8 file is listed; the disc
+    and the .ts are said by name; the empty disc shape is passed over, as a
+    UTF-8 one is."""
+    disc = None
+    for d in (os.path.join(cfg.work, "disc_join_crossing"), os.path.expanduser("~/Videos/disc")):
+        if os.path.isdir(os.path.join(d, "BDAV")) or os.path.isdir(os.path.join(d, "BDMV")):
+            disc = d
+            break
+    if disc is None:
+        t.check("54d a BDAV disc folder to link to: NOT REACHED", True, "no disc folder")
+        return
+    with App(cfg, "nonutf8_disc_folder_54", clips(cfg)) as app:
+        app.to_list()
+        drop = os.path.join(app.dir, "drop")
+        os.makedirs(drop)
+        os.symlink(cfg.a, os.path.join(drop, "ok.ts"))
+        # The same disc under a UTF-8 name is listed as a disc: so it is one.
+        os.symlink(disc, os.path.join(drop, "same"))
+        r = app.s.js("return window.__TAURI__.core.invoke('resolve_paths', {paths: [arguments[0]]})"
+                     ".then((r) => r)", drop)
+        kinds = [f.get("what") for f in r[0]["files"]] if isinstance(r, list) else None
+        os.remove(os.path.join(drop, "same"))
+        os.symlink(disc, os.path.join(drop.encode(), b"\x83\x66\x83\x42"))
+        os.symlink(cfg.a, os.path.join(drop.encode(), b"\x98\x5e.ts"))
+        os.makedirs(os.path.join(drop.encode(), b"\x83\x7a", b"BDMV"))
+        r = app.s.js("return window.__TAURI__.core.invoke('resolve_paths', {paths: [arguments[0]]})"
+                     ".then((r) => r)", drop)
+        r = r if isinstance(r, list) else None
+        files = [f.get("path") for f in r[0]["files"]] if r else None
+        err = (r[0].get("error") if r else None) or ""
+        t.check("54d a non-UTF-8 disc folder and .ts are said, the empty disc shape is not",
+                "disc" in (kinds or []) and files == [os.path.join(drop, "ok.ts")] and "UTF-8" in err
+                and err.count("、") == 1 and "�f�B" in err and "�^.ts" in err
+                and "�z" not in err, f"UTF-8 name: {kinds}; {files}; {err!r}")
+
+
+SCENARIOS += [nonutf8_disc_folder_54]
+
+
+
+# --- 54th pass, mainjs: many cuts on every clock the editor counts frames on --
+H54 = 360
+K54 = ["k2398.mkv", "k2997.webm", "k25.mkv", "k2398ms.mp4", "k2997ms.mp4", "k5994.ts", "k5994k.mp4", "k2398.ts",
+       "rs53.mp4"]
+
+
+def _k54_make(cfg, names):
+    d = os.path.join(cfg.work, "k54mainjs")
+    os.makedirs(d, exist_ok=True)
+    sec = 24
+    sine = ["-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate=48000"]
+    x264 = lambda g: ["-c:v", "libx264", "-preset", "veryfast", "-g", str(g), "-bf", "3",
+                      "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-shortest"]
+    rates = {"2398": "24000/1001", "2997": "30000/1001", "25": "25", "5994": "60000/1001"}
+    paths = {}
+    for name in names:
+        if name == "rs53.mp4":
+            paths[name] = os.path.join(_m53_make(cfg, [name]), name)
+            continue
+        out = os.path.join(d, name)
+        paths[name] = out
+        if os.path.exists(out):
+            continue
+        part = out + ".part" + os.path.splitext(name)[1]
+        r = rates[re.match(r"k(\d+)", name).group(1)]
+        g = ["-filter_complex", _num_graph(640, H54, r, sec), "-map", "[v]", "-map", "0:a"]
+        if name.endswith(".webm"):
+            enc = ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "600k", "-g", "60",
+                   "-pix_fmt", "yuv420p", "-c:a", "libopus", "-b:a", "96k", "-shortest", "-f", "webm"]
+        elif name.endswith(".mkv"):
+            enc = x264(48) + ["-f", "matroska"]
+        elif name.endswith("ms.mp4"):
+            enc = x264(48) + ["-video_track_timescale", "1000", "-f", "mp4"]
+        elif name.endswith("k.mp4"):
+            enc = x264(120) + ["-video_track_timescale", "90000", "-f", "mp4"]
+        else:
+            enc = x264(48) + ["-f", "mpegts"]
+        _m50_ff(sine + g + enc + [part])
+        os.replace(part, out)
+    return paths
+
+
+def _many_cuts54(app, t, tag, name, src, ncuts, h):
+    """`ncuts` cuts of five pictures by J / I / O / Del; both sides of each
+    join and J past the last one must show what the editor left. Returns
+    (want, removed)."""
+    total = app.state()["frames"]
+    removed, took, cur, joins_bad = [], [], list(src), []
+    step = total // (ncuts + 2)
+    for k in range(ncuts):
+        left = app.state()["frames"]
+        a = step * (k + 1) - 5 * k + 3
+        na = _ord_mark(app, a, "i", h)
+        nb = _ord_mark(app, a + 4, "o", h)
+        time.sleep(0.3)
+        app.s.keys("Delete")
+        wait_for(f"{name} cut {k}", lambda: app.state()["frames"] < left, 10)
+        time.sleep(0.3)
+        took.append(left - app.state()["frames"])
+        removed.append((na, nb))
+        if na in cur and nb in cur:
+            del cur[cur.index(na):cur.index(nb) + 1]
+        at_join = (_shown_at(app, a - 1, h), _shown_at(app, a, h))
+        if at_join != (cur[a - 1], cur[a]):
+            joins_bad.append((k, a, (na, nb), at_join, (cur[a - 1], cur[a])))
+    gone = set()
+    for na, nb in removed:
+        if na in src and nb in src:
+            gone.update(src[src.index(na):src.index(nb) + 1])
+    want = [n for n in src if n not in gone]
+    last = step * ncuts - 5 * (ncuts - 1) + 3
+    probes = [f for f in [last + j for j in (0, 1, 2, 5, 9, 17, 33, 50, 80)] + [5, step * (ncuts // 2) - 30]
+              if 0 <= f < len(want) - 2]
+    t.check(f"54k {tag} {name}: either side of each join after its cut is what the editor left",
+            not joins_bad and all(x == 5 for x in took),
+            f"(cut, J, shown IN/OUT, shown at J-1/J, want) {joins_bad[:4]}; took {took}")
+    seen = [(f, _shown_at(app, f, h), want[f]) for f in probes]
+    t.check(f"54k {tag} {name}: J shows the picture the counter names after {ncuts} cuts",
+            all(s == w for _, s, w in seen) and len(want) <= app.state()["frames"] <= len(want) + 2,
+            f"(J, shown, want) {[x for x in seen if x[1] != x[2]] or seen[:3]}; counter {app.state()['frames']} "
+            f"want {len(want)}; marks {removed[-3:]}")
+    # ← / → across the last join.
+    j = last
+    app.goto(j - 3)
+    fw = [_shown_number(app, h)]
+    for _ in range(6):
+        app.s.keys("Right")
+        time.sleep(0.5)
+        fw.append(_shown_number(app, h))
+    back = [fw[-1]]
+    for _ in range(6):
+        app.s.keys("Left")
+        time.sleep(0.5)
+        back.append(_shown_number(app, h))
+    t.check(f"54k {tag} {name}: → / ← across the last join", fw == want[j - 3:j + 4] and back == want[j - 3:j + 4][::-1],
+            f"→ {fw} ← {back} want {want[j - 3:j + 4]}")
+    return want, removed
+
+
+def many_cuts_kinds_54(cfg, t):
+    """(54th pass, mainjs.) The 53rd's rateStep / coarseTick / srcToOut slack on
+    every clock the editor counts frames on: ms-clock .mkv / .webm / 1000-timescale
+    .mp4 at 23.976 / 25 / 29.97, a 90 kHz .ts and .mp4 at 59.94 and 23.976 (their
+    stored steps alternate 1501/1502 and 3753/3754 ticks), and the spliced remux
+    whose average is 24.967 (rs53.mp4). Ten cuts of five pictures each by J / I /
+    O / Del: both sides of every join, J past the last one, → / ← across it, then
+    OK, 出力開始: the output must hold exactly what the editor left."""
+    names = K54
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    paths = _k54_make(cfg, names)
+    ncuts = int(os.environ.get("K54_CUTS", "10"))
+    rows = [{"path": paths[n]} for n in names]
+    with App(cfg, "many_cuts_kinds_54", rows) as app:
+        shown = {}
+        for i, name in enumerate(names, 1):
+            src = _numbers(paths[name])
+            app.to_list()
+            app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(1)
+            if app.state()["frames"] is None:
+                t.check(f"54k {name}: counted in frames", False, "read as variable")
+                app.ok()
+                app.gone()
+                continue
+            # The count comes from the length, which can run a picture or two past the last (known).
+            t.check(f"54k {name}: the counter counts the recording's pictures",
+                    len(src) <= app.state()["frames"] <= len(src) + 2,
+                    f"counter {app.state()['frames']} pictures {len(src)}")
+            want, removed = _many_cuts54(app, t, "fresh", name, src, ncuts, H54)
+            shown[i] = (name, want)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=1200)
+        outs = _ord_outputs(app)
+        for i, (name, want) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            diff = [(k, a, b) for k, (a, b) in enumerate(zip(got or [], want)) if a != b][:4]
+            print(f"        cuts of {name}: {fmt(cuts_of(p, i))}", flush=True)
+            t.check(f"54k {name}: output = what the editor left", got == want,
+                    f"got {len(got) if got else None} want {len(want)}; first differences {diff}")
+            for f in files:
+                os.remove(f)
+
+
+EXTRA.append(many_cuts_kinds_54)
+
+
+# --- 54th pass, mainjs: more H.264 .mpg shapes through ps_sets_vol_53 ---------
+_m53_make_one_53 = _m53_make_one
+
+
+def _m53_make_one(d, name):
+    if name not in ("og54.mpg", "base54.mpg"):
+        return _m53_make_one_53(d, name)
+    out = os.path.join(d, name)
+    part = out + ".part.mpg"
+    g = _num_graph(640, H53, "25", 12)
+    sine = ["-f", "lavfi", "-i", "sine=frequency=440:duration=12:sample_rate=48000"]
+    if name == "og54.mpg":
+        # Open-GOP x264 in an .mp4, remuxed to MPEG-PS: the sets only at the head (as ~/rev53w/cut1/og.mpg).
+        mp4 = out + ".mp4"
+        _m50_ff(["-filter_complex", g, "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast",
+                 "-x264-params", "open-gop=1:keyint=50", "-bf", "3", "-b:v", "300k", "-pix_fmt", "yuv420p", mp4])
+        _m50_ff(["-i", mp4] + sine + ["-map", "0:v", "-map", "1:a", "-c:v", "copy", "-bsf:v", "h264_mp4toannexb",
+                                       "-c:a", "mp2", "-shortest", "-f", "mpeg", part])
+        os.remove(mp4)
+    else:
+        # Baseline at a low rate: small pictures sharing a PES, two given one pts (as ~/rev52w/p2cut/base.mpg).
+        _m50_ff(sine + ["-filter_complex", g, "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-preset",
+                        "veryfast", "-profile:v", "baseline", "-b:v", "250k", "-g", "50", "-pix_fmt", "yuv420p",
+                        "-c:a", "mp2", "-shortest", "-f", "mpeg", part])
+    os.replace(part, out)
+
+
+# og54.mpg (open GOP, sets at the head) passes every check but the count, which
+# comes from the length and runs two past its 297 pictures (known): ORD_ONLY only.
+M53 += ["base54.mpg"] + (["og54.mpg"] if "og54.mpg" in os.environ.get("ORD_ONLY", "") else [])
+
+
+
+# --- 54th pass, second stage (p2gui): the editor's edges on the other clocks --
+# e30vfr.mp4 (made below) reads as variable: no frame counter to J on, and the hunks skip it (vfr_del_then_ok).
+E54 = ["e2997.vob", "e25.m2ts", "e2997h.m2ts", "cam53.mpg", "nob53.mpg", "base54.mpg", "dvd"]
+
+
+def _e54_make(cfg, names):
+    d = os.path.join(cfg.work, "e54p2gui")
+    os.makedirs(d, exist_ok=True)
+    paths = {}
+    for name in names:
+        if name in M53:
+            paths[name] = (os.path.join(_m53_make(cfg, [name]), name), H53)
+            continue
+        if name == "dvd":
+            # A DVD title out of a VIDEO_TS folder (29.97, MPEG-2, two VOBs): the row is the title.
+            _m48_make(cfg)
+            paths[name] = (_m48_title(cfg)[2], 480)
+            continue
+        out = os.path.join(d, name)
+        sec = 20
+        sine = ["-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate=48000"]
+        if name == "e2997.vob":
+            w, h, r = 720, 480, "30000/1001"
+            enc = ["-c:v", "mpeg2video", "-b:v", "4M", "-g", "15", "-bf", "2", "-flags", "+ilme+ildct",
+                   "-top", "1", "-c:a", "ac3", "-b:a", "192k", "-shortest", "-f", "vob"]
+        elif name == "e25.m2ts":
+            w, h, r = 720, 576, "25"
+            enc = ["-c:v", "mpeg2video", "-b:v", "5M", "-g", "12", "-bf", "2", "-flags", "+ilme+ildct",
+                   "-top", "1", "-c:a", "ac3", "-b:a", "192k", "-shortest", "-f", "mpegts",
+                   "-mpegts_m2ts_mode", "1"]
+        elif name == "e2997h.m2ts":
+            w, h, r = 720, 480, "30000/1001"
+            enc = ["-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-bf", "3", "-flags", "+ilme+ildct",
+                   "-x264-params", "tff=1", "-pix_fmt", "yuv420p", "-c:a", "ac3", "-b:a", "192k", "-shortest",
+                   "-f", "mpegts", "-mpegts_m2ts_mode", "1"]
+        else:
+            # A phone's 30 a second with the stamps 0 / 4 / 8 ms late in turn.
+            w, h, r = 640, 360, "30"
+            enc = ["-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-bf", "2", "-pix_fmt", "yuv420p",
+                   "-fps_mode", "passthrough", "-video_track_timescale", "90000", "-c:a", "aac", "-b:a", "96k",
+                   "-shortest", "-f", "mp4"]
+        paths[name] = (out, h)
+        if os.path.exists(out):
+            continue
+        graph = _num_graph(w, h, r, sec)
+        if name == "e30vfr.mp4":
+            graph = graph.replace("[a][s]vstack,format=yuv420p[v]",
+                                  "[a][s]vstack,format=yuv420p,setpts='(N/30+0.004*mod(N\\,3))/TB'[v]")
+        part = out + ".part" + os.path.splitext(name)[1]
+        _m50_ff(sine + ["-filter_complex", graph, "-map", "[v]", "-map", "0:a"] + enc + [part])
+        os.replace(part, out)
+    return paths
+
+
+def _e54_end(app, h):
+    app.s.keys("End")
+    time.sleep(0.8)
+    return _shown_number(app, h)
+
+
+def _e54_home(app, h):
+    app.s.keys("Home")
+    time.sleep(0.8)
+    return _shown_number(app, h)
+
+
+def edges_kinds_54(cfg, t):
+    """(54th pass, second stage, p2gui.) What the first stage's ontoJoin /
+    srcToOut slack / stepFrame changed, on the clocks many_cuts_kinds_54 has
+    none of: a DVD-shaped MPEG-2 .vob (29.97 interlaced), MPEG-2 and H.264
+    interlaced .m2ts (192-byte packets), a phone-like VFR .mp4 (30 a second,
+    stamps 0/4/8 ms late in turn), H.264 .mpg with pts-less pictures
+    (cam53 / nob53 / base54) and a DVD title (VIDEO_TS, two VOBs). Each recording twice: (1) four cuts by J / I / O /
+    Del with both sides of each join, J past the last and → / ← across it,
+    then a head cut (IN at 0) checked with Home and a tail cut (IN, End, OUT,
+    Del) checked with End; (2) its copy with IN 30, OUT 80 and 外側をカット,
+    checked with Home and End (not the DVD title). OK, 出力開始: each output must hold exactly what
+    the editor left."""
+    names = E54
+    only = os.environ.get("ORD_ONLY")
+    if only:
+        names = [n for n in names if n in only.split(",")]
+    made = _e54_make(cfg, names)
+    rows, order = [], []
+    for n in names:
+        path, h = made[n]
+        if n == "dvd":
+            # No twin: the same title twice is one row.
+            rows.append(_m48_row(cfg, n))
+            order.append((_m48_label(n), path, h, False))
+            continue
+        twin = os.path.join(os.path.dirname(path), "o_" + n)
+        if not os.path.exists(twin):
+            shutil.copyfile(path, twin)
+        rows += [{"path": path}, {"path": twin}]
+        order += [(n, path, h, False), ("o_" + n, twin, h, True)]
+    with App(cfg, "edges_kinds_54", rows) as app:
+        shown = {}
+        for i, (name, path, h, outside) in enumerate(order, 1):
+            src = _numbers(path)
+            app.to_list()
+            app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
+            app.open_row(i, name)
+            _walk_done(app)
+            time.sleep(1)
+            variable = app.state()["frames"] is None
+            if variable:
+                print(f"        {name}: read as variable, no frame counter", flush=True)
+                app.ok()
+                app.gone()
+                continue
+            if outside:
+                left = app.state()["frames"]
+                na = _ord_mark(app, 30, "i", h)
+                nb = _ord_mark(app, 80, "o", h)
+                time.sleep(0.3)
+                app.s.click("#cut-outside")
+                wait_for(f"{name} outside cut", lambda: app.state()["frames"] < left, 10)
+                time.sleep(0.5)
+                want = src[src.index(na):src.index(nb) + 1] if na in src and nb in src else []
+                ends = (_e54_home(app, h), _e54_end(app, h))
+                t.check(f"54e {name}: 外側をカット keeps IN..OUT, Home / End on them",
+                        ends == (na, nb) and len(want) <= app.state()["frames"] <= len(want) + 1,
+                        f"IN {na} OUT {nb} Home/End {ends} counter {app.state()['frames']} want {len(want)}")
+            else:
+                want, _ = _many_cuts54(app, t, "fresh", name, src, 4, h)
+                left = app.state()["frames"]
+                n0 = _ord_mark(app, 0, "i", h)
+                n4 = _ord_mark(app, 4, "o", h)
+                app.s.keys("Delete")
+                wait_for(f"{name} head cut", lambda: app.state()["frames"] < left, 10)
+                time.sleep(0.5)
+                want = want[5:]
+                home = _e54_home(app, h)
+                t.check(f"54e {name}: a head cut, Home on the first picture kept",
+                        (n0, n4) == (src[0], src[4]) and home == want[0] and left - app.state()["frames"] == 5,
+                        f"IN/OUT {(n0, n4)} Home {home} want {want[0]} took {left - app.state()['frames']}")
+                last = _e54_end(app, h)
+                left = app.state()["frames"]
+                ni = _ord_mark(app, len(want) - 6, "i", h)
+                ne = _e54_end(app, h)
+                app.s.keys("o")
+                time.sleep(0.3)
+                app.s.keys("Delete")
+                wait_for(f"{name} tail cut", lambda: app.state()["frames"] < left, 10)
+                time.sleep(0.5)
+                end = _e54_end(app, h)
+                t.check(f"54e {name}: a tail cut, End on the last picture kept",
+                        last == want[-1] and (ni, ne) == (want[-6], want[-1]) and end == want[-7],
+                        f"End before {last} want {want[-1]}; IN/End {(ni, ne)} want {(want[-6], want[-1])}; "
+                        f"End after {end} want {want[-7]}")
+                want = want[:-6]
+            shown[i] = (name, want)
+            app.ok()
+            app.gone()
+            time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=1500)
+        outs = _ord_outputs(app)
+        for i, (name, want) in shown.items():
+            files = outs.get(i, [])
+            vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log"))]
+            got = _numbers(vids[0]) if len(vids) == 1 else None
+            diff = [(k, a, b) for k, (a, b) in enumerate(zip(got or [], want)) if a != b][:4]
+            print(f"        cuts of {name}: {fmt(cuts_of(p, i))}", flush=True)
+            t.check(f"54e {name}: output = what the editor left", got == want,
+                    f"got {len(got) if got else None} want {len(want)}; first differences {diff}")
+            for f in files:
+                os.remove(f)
+
+
+EXTRA.append(edges_kinds_54)
 
 
 def main():
