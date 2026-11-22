@@ -228,6 +228,83 @@ binary comes from Tauri's deb, and the tar.gz's from the AppDir.
 - An actual install on Debian 13 was not done (sudo on the VM needs a password), and
   Ubuntu 24.04 was not tried.
 
+## Flatpak
+
+```bash
+./gui/build-flatpak.sh   # on the development VM (Debian 13)
+# -> gui/src-tauri/target/flatpak/SmartCut-0.8.50-x86_64.flatpak
+```
+
+Not on Flathub: a bundle (`.flatpak`) goes on the Releases page. The manifest is
+`gui/flatpak/dev.smartcut.app.yml`, and the app ID is `dev.smartcut.app`, the
+`identifier` in `tauri.conf.json`.
+
+| Item | Value |
+|---|---|
+| Runtime | `org.gnome.Platform//50` (freedesktop 25.08) |
+| SDK extensions | `rust-stable//25.08`, `llvm20//25.08` |
+| FFmpeg | 7.1.5, built from source in the manifest with its encoders |
+| Size | 29.3 MB (the runtime is not in it) |
+| Settings and queue | `~/.var/app/dev.smartcut.app/` (apart from the AppImage's and the deb's) |
+
+FFmpeg and its encoders (x264, x265, SVT-AV1, dav1d, libvpx, aom, rav1e, NVENC,
+libvpl) are built from the same sources, at the same versions and with the same
+configure line as in `gui/jammy/`, so every Linux download reads with the same decoder
+and writes with the same encoders. WebKitGTK, GTK, lame, opus and vorbis come from the
+runtime. The Rust crates are fetched while building (`--share=network`) -- not
+allowed on Flathub, fine for a bundle.
+
+The command-line tool is in the same bundle:
+
+```bash
+flatpak install --user ./SmartCut-0.8.50-x86_64.flatpak
+flatpak run dev.smartcut.app                                # GUI
+flatpak run --command=smartcut-cli dev.smartcut.app --help  # command line
+```
+
+### Permissions
+
+| Permission | Why |
+|---|---|
+| `--filesystem=host` | Recordings live on other drives and NAS mounts, and the marks, the `.keyframe` and the outputs go into the recording's folder. A portal hands over one file, not its folder |
+| `--device=all` | The GPU for WebKit, and `/dev/nvidia*` for NVENC |
+| `--socket=pulseaudio` | Preview sound |
+| `--talk-name=org.freedesktop.Notifications` | The notice when a long run finishes behind another window |
+
+### GNOME 50, not 51
+
+ffmpeg-sys-next 7.1 writes its bindings with bindgen 0.70. Run against LLVM 22's
+libclang, it writes every struct with no fields (`_address: u8`, and the size checks
+stop the compile). GNOME 51's SDK has no LLVM extension older than 22. GNOME 50's
+LLVM 20 writes the structs as the C headers lay them out (`AVFormatContext` is 472
+bytes), as clang 14 (22.04) and clang 19 (Debian 13) do for the other builds. A newer
+ffmpeg-sys-next would allow GNOME 51; that moves a dependency, so it waits until
+after 1.0.
+
+### What the newer SDK needed
+
+Three places are patched in the manifest, none of them inside an encoder:
+
+| What | Symptom | Fix |
+|---|---|---|
+| x265 4.1 | CMake 4 refuses setting policies CMP0025 and CMP0054 to OLD | Both set to NEW. No `if()` in x265 quotes a string that names a variable, so nothing changes |
+| x265 4.1, SVT-AV1 2.3.0's cpuinfo | CMake 4 refuses a `cmake_minimum_required` below 3.5 | `CMAKE_POLICY_VERSION_MINIMUM=3.5` in the environment |
+| aom 3.12.1 | Looks for `-Ox` in `nasm -hf` and calls NASM 3 too old | That check is taken out; NASM 3 optimises in several passes by default |
+
+bindgen finds clang's own headers (`limits.h` and the like) from where clang is, and
+the LLVM extension is not on the path: the SmartCut module alone gets the path and a
+`-resource-dir`.
+
+### What was verified
+
+- Installed on the development VM (Debian 13, Xfce), the GUI starts; a recording
+  opens in the editor with its index, thumbnails and sound meter, and playback runs on
+  the sound clock.
+- On the same VM, the six cuts compared against 0.8.49 were made by the bundle's
+  `smartcut-cli` and by a CLI built on the VM directly: .ts, .mp4 and .m2ts are the
+  same byte for byte, the .mkv frame for frame.
+- Not tried: installing on a clean system, and GNOME or KDE desktops.
+
 ## Windows
 
 Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.

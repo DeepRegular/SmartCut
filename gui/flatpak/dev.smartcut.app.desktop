@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SmartCut
+Comment=スマートレンダリング対応の動画カットツール
+Comment[en]=Cut a broadcast recording without re-encoding it
+Exec=smartcut %f
+Icon=dev.smartcut.app
+Terminal=false
+Categories=AudioVideo;Video;
+MimeType=video/mp2t;video/mp4;
+StartupWMClass=smartcut

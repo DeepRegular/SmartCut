@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.smartcut.app</id>
+  <name>SmartCut</name>
+  <summary>Cut a broadcast recording without re-encoding it</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.deepregular">
+    <name>DeepRegular</name>
+  </developer>
+  <description>
+    <p>
+      A smart-rendering cutter: only the partial GOPs at each cut point are
+      re-encoded, and everything else is copied bit for bit. It is built
+      mainly for cutting the adverts out of broadcast recordings (MPEG-2 TS).
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.smartcut.app.desktop</launchable>
+  <url type="homepage">https://github.com/DeepRegular/SmartCut</url>
+  <url type="bugtracker">https://github.com/DeepRegular/SmartCut/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.8.50" date="2026-11-22"/>
+  </releases>
+</component>

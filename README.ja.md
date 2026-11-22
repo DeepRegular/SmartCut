@@ -140,13 +140,16 @@ CM 自動検出で決めた 5 区間・22 分の書き出しでは、**40589 フ
 | **Linux** | `SmartCut_0.8.50_amd64.AppImage` | 実行権限を付けて起動します |
 | **Linux** | `SmartCut-0.8.50-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
 | **Linux (Debian/Ubuntu)** | `smartcut_0.8.50_amd64.deb` | `sudo apt install ./smartcut_0.8.50_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 30.0 MB で済みます |
+| **Linux (Flatpak)** | `SmartCut-0.8.50-x86_64.flatpak` | `flatpak install --user ./SmartCut-0.8.50-x86_64.flatpak`。ランタイム（GNOME 50）は Flathub から入ります。コマンドライン版は `flatpak run --command=smartcut-cli dev.smartcut.app` です |
 | **Windows** | `SmartCut_0.8.50_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
 | **Windows** | `smartcut-portable-x64-0.8.50.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
 
 **動作条件。** AppImage と tar.gz には glibc 2.35 以降が必要です（Ubuntu 22.04、
 Debian 12、Fedora 36 以降）。deb は Ubuntu 22.04 以降と Debian 13 以降で
-使えます。deb では GUI が `smartcut`、コマンドライン版が
-`smartcut-cli` としてインストールされます。Windows 版でもコマンドライン版は
+使えます。Flatpak は flatpak が入っていればディストリビューションを問いません。
+設定とキューは `~/.var/app/dev.smartcut.app/` に置かれ、ほかの版とは共有しません。
+deb では GUI が `smartcut`、コマンドライン版が `smartcut-cli` として
+インストールされます。Windows 版でもコマンドライン版は
 `smartcut-cli.exe` という名前です。Windows 版は x64 のみで、WebView2
 ランタイムが必要です（Windows 11 には標準で入っており、Windows 10 でもほとんどの
 環境に入っています）。

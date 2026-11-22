@@ -1,0 +1,264 @@
+# The Flatpak of SmartCut (see docs/technical/distribution.md).
+#   gui/build-flatpak.sh   -> SmartCut-<version>-x86_64.flatpak
+#
+# FFmpeg 7.1.5 and the encoders it reaches are built here from the same
+# sources, at the same versions, as the AppImage's and the .deb's
+# (gui/jammy/setup.sh, deps.sh, ffmpeg.sh), so every Linux download runs the
+# same decoder and writes with the same encoders. The GNOME runtime brings
+# WebKitGTK, GTK and the audio codec libraries.
+#
+# This is a bundle handed out on the Releases page, not a Flathub build: the
+# Rust modules fetch their crates while they build (--share=network), as
+# `cargo build` does anywhere else.
+id: dev.smartcut.app
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  # libclang, for the bindgen that writes ffmpeg-sys-next's bindings. Not a
+  # newer one, and so not a newer runtime: ffmpeg-sys-next 7.1 brings
+  # bindgen 0.70, which on LLVM 22 (the oldest GNOME 51's SDK offers) writes
+  # every struct with no fields in it. LLVM 20 writes them as the C headers
+  # lay them out, as clang 14 and 19 do for the other Linux builds.
+  - org.freedesktop.Sdk.Extension.llvm20
+command: smartcut
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  # GPU for the WebKit view, and /dev/nvidia* for NVENC.
+  - --device=all
+  # Recordings are opened, and cuts written, wherever the user keeps them:
+  # other drives, NAS mounts, a disc's folder. A portal hands over one file
+  # at a time and not the folder beside it, where the marks, the .keyframe
+  # and the outputs go.
+  - --filesystem=host
+  # The notice when a long run finishes behind another window.
+  - --talk-name=org.freedesktop.Notifications
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  prepend-pkg-config-path: /app/lib/pkgconfig
+  env:
+    CARGO_HOME: /run/build/cargo-home
+    # The SDK's CMake is 4.x, which refuses a cmake_minimum_required below
+    # 3.5; x265 4.1 and SVT-AV1 2.3.0's cpuinfo still ask for older.
+    CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/cmake
+  - /share/doc
+  - /share/man
+  - '*.a'
+  - '*.la'
+modules:
+  - name: x264
+    config-opts:
+      - --enable-shared
+      - --disable-cli
+      - --enable-pic
+    sources:
+      # Debian's libx264-164 is this commit of the stable branch.
+      - type: git
+        url: https://code.videolan.org/videolan/x264.git
+        commit: 31e19f92f00c7003fa115047ce50978bc98c3a0d
+
+  - name: x265
+    buildsystem: cmake-ninja
+    subdir: source
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DENABLE_SHARED=ON
+      - -DENABLE_CLI=OFF
+      - -DCMAKE_INSTALL_LIBDIR=lib
+    sources:
+      - type: archive
+        url: https://bitbucket.org/multicoreware/x265_git/downloads/x265_4.1.tar.gz
+        sha256: a31699c6a89806b74b0151e5e6a7df65de4b49050482fe5ebf8a4379d7af8f29
+      # CMake 4 no longer sets a policy to OLD. Neither matters here: 0025
+      # is how Apple's Clang is named, and 0054 changes only if() on a
+      # quoted string that names a variable, which x265 does not write.
+      - type: shell
+        commands:
+          - sed -i 's/cmake_policy(SET CMP0025 OLD)/cmake_policy(SET CMP0025 NEW)/; s/cmake_policy(SET
+            CMP0054 OLD)/cmake_policy(SET CMP0054 NEW)/' source/CMakeLists.txt
+
+  - name: svt-av1
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_APPS=OFF
+      - -DBUILD_DEC=OFF
+      - -DBUILD_TESTING=OFF
+      - -DCMAKE_INSTALL_LIBDIR=lib
+    sources:
+      - type: archive
+        url: https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v2.3.0/SVT-AV1-v2.3.0.tar.gz
+        sha256: ebb0b484ef4a0dc281e94342a9f73ad458496f5d3457eca7465bec943910c6c3
+
+  - name: dav1d
+    buildsystem: meson
+    config-opts:
+      - --libdir=lib
+      - --buildtype=release
+      - -Denable_tools=false
+      - -Denable_tests=false
+    sources:
+      - type: archive
+        url: https://code.videolan.org/videolan/dav1d/-/archive/1.5.1/dav1d-1.5.1.tar.gz
+        sha256: fa635e2bdb25147b1384007c83e15de44c589582bb3b9a53fc1579cb9d74b695
+
+  - name: libvpx
+    config-opts:
+      - --enable-shared
+      - --disable-static
+      - --enable-pic
+      - --enable-vp9-highbitdepth
+      - --disable-examples
+      - --disable-tools
+      - --disable-docs
+      - --disable-unit-tests
+    sources:
+      - type: archive
+        url: https://github.com/webmproject/libvpx/archive/refs/tags/v1.15.0.tar.gz
+        dest-filename: libvpx-1.15.0.tar.gz
+        sha256: e935eded7d81631a538bfae703fd1e293aad1c7fd3407ba00440c95105d2011e
+
+  - name: aom
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DENABLE_DOCS=OFF
+      - -DENABLE_EXAMPLES=OFF
+      - -DENABLE_TESTS=OFF
+      - -DENABLE_TOOLS=OFF
+      - -DCMAKE_INSTALL_LIBDIR=lib
+    sources:
+      - type: archive
+        url: https://storage.googleapis.com/aom-releases/libaom-3.12.1.tar.gz
+        sha256: 9e9775180dec7dfd61a79e00bda3809d43891aee6b2e331ff7f26986207ea22e
+      # aom looks for "-Ox" in `nasm -hf` to see that nasm optimises in
+      # several passes. NASM 3 still does, by default, but its help no longer
+      # lists the option, so the check is taken out.
+      - type: shell
+        commands:
+          - sed -i 's/if(NOT "${nasm_helptext}" MATCHES "-Ox")/if(FALSE)/' build/cmake/aom_optimization.cmake
+
+  - name: nv-codec-headers
+    buildsystem: simple
+    build-commands:
+      - make PREFIX=/app install
+    sources:
+      - type: archive
+        url: https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n12.2.72.0.tar.gz
+        dest-filename: nv-codec-headers-12.2.72.0.tar.gz
+        sha256: dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563
+
+  - name: libvpl
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DINSTALL_EXAMPLES=OFF
+      - -DBUILD_TOOLS=OFF
+      - -DCMAKE_INSTALL_LIBDIR=lib
+    sources:
+      - type: archive
+        url: https://github.com/intel/libvpl/archive/refs/tags/v2.14.0.tar.gz
+        dest-filename: libvpl-2.14.0.tar.gz
+        sha256: 7c6bff1c1708d910032c2e6c44998ffff3f5fdbf06b00972bc48bf2dd9e5ac06
+
+  - name: rav1e
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+    # cargo-c comes with the Rust extension, as `cargo capi`.
+    build-commands:
+      - cargo capi install --release --prefix=/app --libdir=/app/lib --library-type=cdylib
+    sources:
+      - type: archive
+        url: https://github.com/xiph/rav1e/archive/refs/tags/v0.7.1.tar.gz
+        dest-filename: rav1e-0.7.1.tar.gz
+        sha256: da7ae0df2b608e539de5d443c096e109442cdfa6c5e9b4014361211cf61d030c
+
+  # The same configure line as gui/jammy/ffmpeg.sh. lame, opus and vorbis
+  # come from the runtime.
+  - name: ffmpeg
+    config-opts:
+      - --enable-gpl
+      - --enable-shared
+      - --disable-static
+      - --disable-doc
+      - --disable-programs
+      - --enable-libx264
+      - --enable-libx265
+      - --enable-libsvtav1
+      - --enable-librav1e
+      - --enable-libaom
+      - --enable-libvpx
+      - --enable-libdav1d
+      - --enable-libmp3lame
+      - --enable-libopus
+      - --enable-libvorbis
+      - --enable-nvenc
+      - --enable-ffnvcodec
+      - --enable-libvpl
+      - --disable-vaapi
+      - --disable-vdpau
+      - --disable-xlib
+      - --disable-libxcb
+      - --disable-sdl2
+      - --disable-libdrm
+      - --disable-opencl
+      - --disable-vulkan
+      - --disable-cuda-llvm
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz
+        sha256: de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
+
+  # The GUI and the command line, from this working tree. The pages are
+  # plain files (tauri.conf.json's frontendDist), so no Node step: cargo with
+  # tauri's custom-protocol feature is what `cargo tauri build` runs.
+  - name: smartcut
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+      # clang's own headers (limits.h, stddef.h) are found from where clang
+      # is, which the extension does not put on the path.
+      append-path: /usr/lib/sdk/llvm20/bin
+      env:
+        LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
+        BINDGEN_EXTRA_CLANG_ARGS: -resource-dir=/usr/lib/sdk/llvm20/lib/clang/20
+    build-commands:
+      - cargo build --release --manifest-path rust/Cargo.toml -p smartcut-cli
+      - cargo build --release --manifest-path gui/src-tauri/Cargo.toml --features tauri/custom-protocol
+      - install -Dm755 gui/src-tauri/target/release/gui /app/bin/smartcut
+      - install -Dm755 rust/target/release/smartcut /app/bin/smartcut-cli
+      - install -Dm644 gui/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/dev.smartcut.app.png
+      - install -Dm644 gui/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/dev.smartcut.app.png
+      - install -Dm644 gui/src-tauri/icons/128x128@2x.png /app/share/icons/hicolor/256x256/apps/dev.smartcut.app.png
+      - install -Dm644 gui/flatpak/dev.smartcut.app.desktop /app/share/applications/dev.smartcut.app.desktop
+      - install -Dm644 gui/flatpak/dev.smartcut.app.metainfo.xml /app/share/metainfo/dev.smartcut.app.metainfo.xml
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - rust/target
+          - gui/src-tauri/target
+          - gui/src-tauri/gen/schemas
+          - gui/node_modules
+          - dist
+          - .flatpak-builder
+          - .git

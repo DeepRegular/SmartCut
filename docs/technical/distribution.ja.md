@@ -232,6 +232,83 @@ deb から、tar.gz 用は AppDir からである。
 - VM の sudo にパスワードが必要なので、Debian 13 への実際のインストールは試していない。
   Ubuntu 24.04 では試していない。
 
+## Flatpak
+
+```bash
+./gui/build-flatpak.sh   # 開発 VM（Debian 13）で
+# -> gui/src-tauri/target/flatpak/SmartCut-0.8.50-x86_64.flatpak
+```
+
+Flathub には出さず、Releases にバンドル（`.flatpak`）を置く。マニフェストは
+`gui/flatpak/dev.smartcut.app.yml` で、アプリ ID は `tauri.conf.json` の
+`identifier` と同じ `dev.smartcut.app` である。
+
+| 項目 | 値 |
+|---|---|
+| ランタイム | `org.gnome.Platform//50`（freedesktop 25.08） |
+| SDK 拡張 | `rust-stable//25.08`、`llvm20//25.08` |
+| FFmpeg | 7.1.5。エンコーダとともにマニフェストの中でソースからビルドする |
+| 大きさ | 29.3 MB（ランタイムは含まない） |
+| 設定・キューの置き場所 | `~/.var/app/dev.smartcut.app/`（AppImage・deb とは別） |
+
+FFmpeg とエンコーダ（x264・x265・SVT-AV1・dav1d・libvpx・aom・rav1e・NVENC・
+libvpl）は、`gui/jammy/` と同じソース・同じ版・同じ configure でビルドする。
+Linux のどの配布物でも、同じデコーダで読み、同じエンコーダで書くためである。
+WebKitGTK・GTK と、lame・opus・vorbis はランタイムのものを使う。Rust のクレートは
+ビルドの途中でネットワークから取る（`--share=network`）。Flathub ではこれが
+許されないが、バンドルで配るぶんには問題ない。
+
+コマンドライン版も同じバンドルに入っている。
+
+```bash
+flatpak install --user ./SmartCut-0.8.50-x86_64.flatpak
+flatpak run dev.smartcut.app                              # GUI
+flatpak run --command=smartcut-cli dev.smartcut.app --help  # コマンドライン版
+```
+
+### 権限
+
+| 権限 | 理由 |
+|---|---|
+| `--filesystem=host` | 録画はほかのドライブや NAS にもある。マーク・`.keyframe`・出力は録画と同じフォルダーに書く。ポータルは 1 ファイルずつしか渡さないので、フォルダーには書けない |
+| `--device=all` | WebKit の GPU と、NVENC の `/dev/nvidia*` |
+| `--socket=pulseaudio` | プレビューの音声 |
+| `--talk-name=org.freedesktop.Notifications` | 長い処理が裏で終わったときの通知 |
+
+### GNOME 51 ではなく 50 にした理由
+
+ffmpeg-sys-next 7.1 は bindgen 0.70 でバインディングを作る。これを LLVM 22 の
+libclang で動かすと、構造体のフィールドがすべて抜け落ちる（`_address: u8` だけの
+型になり、大きさの検査でコンパイルが止まる）。GNOME 51 の SDK 拡張には LLVM 22
+より古いものが無い。GNOME 50 の LLVM 20 では、C のヘッダーどおりの構造体が出る
+（`AVFormatContext` が 472 バイト）。ほかの配布物は clang 14（22.04）と
+clang 19（Debian 13）で作っている。ffmpeg-sys-next を上げれば GNOME 51 にできるが、
+依存関係を動かすことになるので 1.0 のあとに回す。
+
+### SDK が新しいために直したところ
+
+マニフェストの中で次の 3 か所を直している。どれもエンコーダの中身には触れない。
+
+| 対象 | 症状 | 直し方 |
+|---|---|---|
+| x265 4.1 | CMake 4 がポリシー CMP0025・CMP0054 を OLD にする行を受け付けない | 2 行を NEW にする。x265 の `if()` には引用符付きの文字列が変数名に当たる書き方が無いので、設定は変わらない |
+| x265 4.1、SVT-AV1 2.3.0 の cpuinfo | CMake 4 が `cmake_minimum_required` の 3.5 未満を受け付けない | 環境変数 `CMAKE_POLICY_VERSION_MINIMUM=3.5` |
+| aom 3.12.1 | `nasm -hf` に `-Ox` が無いので、NASM 3 を古いと判定する | その検査だけを外す。NASM 3 は既定で複数パスの最適化をする |
+
+bindgen は clang の組み込みヘッダー（`limits.h` など）を clang の場所から探す。
+LLVM 拡張は PATH に入らないので、SmartCut のモジュールにだけ PATH と
+`-resource-dir` を渡している。
+
+### 確認したこと
+
+- 開発 VM（Debian 13、Xfce）にバンドルを入れて、GUI が起動する。録画を渡すと
+  編集画面が開き、索引・サムネイル・音声メーターが出る。再生は音声の時計で進む。
+- 同じ VM で、0.8.49 と比べたものと同じ 6 種類のカットを、バンドルの
+  `smartcut-cli` と VM で直接ビルドした CLI に切らせた。.ts・.mp4・.m2ts は
+  バイト単位で、.mkv はフレーム単位で一致した。
+- 何も入っていない環境へのインストールと、GNOME・KDE のデスクトップでは
+  試していない。
+
 ## Windows
 
 Linux の開発 VM から `x86_64-pc-windows-msvc` へクロスビルドしている。

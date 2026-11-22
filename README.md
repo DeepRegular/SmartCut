@@ -147,12 +147,15 @@ Every build bundles FFmpeg, so there is nothing else to install.
 | **Linux** | `SmartCut_0.8.50_amd64.AppImage` | Make it executable and run it |
 | **Linux** | `SmartCut-0.8.50-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
 | **Linux (Debian/Ubuntu)** | `smartcut_0.8.50_amd64.deb` | `sudo apt install ./smartcut_0.8.50_amd64.deb`. 30.0 MB, because GTK and WebKitGTK come from your system |
+| **Linux (Flatpak)** | `SmartCut-0.8.50-x86_64.flatpak` | `flatpak install --user ./SmartCut-0.8.50-x86_64.flatpak`. The runtime (GNOME 50) comes from Flathub. The command-line tool is `flatpak run --command=smartcut-cli dev.smartcut.app` |
 | **Windows** | `SmartCut_0.8.50_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
 | **Windows** | `smartcut-portable-x64-0.8.50.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.35 or newer, which
 means Ubuntu 22.04, Debian 12, Fedora 36 or later. The `.deb` is for Ubuntu 22.04
-or later and Debian 13 or later; it installs the GUI as
+or later and Debian 13 or later. The Flatpak runs on any distribution with flatpak,
+and keeps its settings and queue in `~/.var/app/dev.smartcut.app/`, apart from the
+other builds. The `.deb` installs the GUI as
 `smartcut` and the command-line tool as `smartcut-cli`, which on Windows is
 `smartcut-cli.exe`. The Windows builds are
 x64 only and need the WebView2 runtime, which ships with Windows 11 and is
