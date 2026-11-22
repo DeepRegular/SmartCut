@@ -287,10 +287,10 @@ The bundle names this repository with `--repo-url`, so an install from the Relea
 install from the `.flatpakref` calls it `smartcut`.
 
 The signing key is used for this alone (RSA 4096, no passphrase, fingerprint
-`E8A2ACD236581DDDF68AE7FFA0DCC65533C608DA`). The secret key lives on the development
-VM in `~/.smartcut-flatpak-gpg`; the secret key, the public key and the revocation
-certificate are copied to `~/.smartcut-flatpak-gpg-backup/` on the host. Losing it
-would mean asking every user to install the key again.
+`E8A2ACD236581DDDF68AE7FFA0DCC65533C608DA`). Both scripts take the key's folder
+from `FLATPAK_GPG_HOME`; the secret key, the public key and the revocation
+certificate are copied elsewhere as well. Losing it would mean asking every user to
+install the key again.
 
 
 | Permission | Why |

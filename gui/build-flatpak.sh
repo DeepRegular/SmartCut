@@ -24,7 +24,7 @@ cd "$(dirname "$0")"
 APP=dev.smartcut.app
 VERSION=$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
 STATE=${FLATPAK_STATE:-$HOME/.cache/smartcut-flatpak}
-GPG_HOME=${FLATPAK_GPG_HOME:-$HOME/.smartcut-flatpak-gpg}
+GPG_HOME=${FLATPAK_GPG_HOME:?set FLATPAK_GPG_HOME to the folder holding the signing key}
 KEY=E8A2ACD236581DDDF68AE7FFA0DCC65533C608DA
 REPO_URL=https://deepregular.github.io/smartcut-flatpak/repo/
 OUT=src-tauri/target/flatpak
