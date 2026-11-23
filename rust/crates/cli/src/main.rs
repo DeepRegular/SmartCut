@@ -1460,10 +1460,21 @@ fn run() -> Result<()> {
         // What a probe can tell is asked here; only where a crossing will be
         // written, since without one the image is read by nothing.
         if !matches!(crossing, smartcut_core::transition::Crossing::None) {
-            let probed = smartcut_core::mediainfo::media_info(image)
-                .with_context(|| format!("--transition-image {image}: not a picture that can be read"))?;
-            if !probed.streams.iter().any(|s| s.kind == "video") {
-                bail!("--transition-image {image}: there is no picture in it to lay over the transition");
+            // A name with a `%` in it (`a%03d.png`) the probe reads as a
+            // numbered sequence and cannot open, where the image itself is
+            // read as the one file it is: that read has the last word.
+            match smartcut_core::mediainfo::media_info(image) {
+                Ok(probed) => {
+                    if !probed.streams.iter().any(|s| s.kind == "video") {
+                        bail!(
+                            "--transition-image {image}: there is no picture in it to lay over the transition"
+                        );
+                    }
+                }
+                Err(e) if smartcut_core::blend::check_laid(image).is_err() => {
+                    return Err(e.context(format!("--transition-image {image}: not a picture that can be read")));
+                }
+                Err(_) => {}
             }
             // And one that opens but does not decode (a PNG cut short),
             // which only reading its picture tells.
@@ -1518,8 +1529,17 @@ fn run() -> Result<()> {
         // nothing else: a stretch of a DVD title, a clip inside an image or
         // anything with a protocol in it is a name of another kind, and a
         // share that is not mounted says so where it is opened.
+        // A colon alone does not make a protocol: libavformat reads a
+        // Windows path (`C:\rec\b.ts`) and a name like `番組 21:00.ts` as a
+        // file, and `12:00.ts` as a protocol nobody has -- each a file name
+        // all the same, and a typo in one of them went through to the late
+        // failure. `file:` and this program's own `restamp:` are not.
+        let named_as_file = !j.contains(':')
+            || (!j.starts_with("file:")
+                && !j.starts_with("restamp:")
+                && smartcut_core::input::refuse_url_output(j).is_ok());
         let plain = smartcut_core::netpath::resolve(j).is_ok()
-            && !j.contains(':')
+            && named_as_file
             && smartcut_core::input::Input::parse(&at.to_string_lossy()).is_ok_and(|i| {
                 i.range.is_none() && i.parts.is_empty() && i.url == i.spec
             });
@@ -3134,6 +3154,35 @@ fn run() -> Result<()> {
         let at = std::path::Path::new(at);
         if let Some(why) = smartcut_core::udfw::refused(at, &image_beside(at)?) {
             bail!("{why}");
+        }
+    }
+    // Names of sound files that libavformat writes with a muxer taking
+    // pictures of a few kinds only: `.m4a` and `.m4b` (the iPod's MP4) H.264
+    // and MPEG-4 Part 2 (`codec_ipod_tags`), `.ogg` and `.ogv` Theora and VP8
+    // (`ogg_init`), `.ra` and `.rm` RealVideo. Other pictures were turned
+    // away only once the output had been created, with a bare "Invalid
+    // argument" or "Invalid data found", and a file already under the name
+    // went with the run; H.264 into a `.ra` was written under RealVideo's
+    // name, which no player decodes. `.mka` is a Matroska file and holds
+    // them as they are. The pictures are the first recording's: a `--join`
+    // is written in its shape, unless `--master` names another.
+    if !sound_only && stopping_at.is_none() && bdav.is_none() && master <= 1 {
+        if let Some(out) = output.as_deref() {
+            let ext = smartcut_core::carry::extension(out);
+            let takes: &[&str] = match ext.as_str() {
+                "m4a" | "m4b" => &["h264", "mpeg4"],
+                "ogg" | "ogv" => &["theora", "vp8"],
+                "ra" | "rm" => &["rv10", "rv20"],
+                _ => &[],
+            };
+            if !takes.is_empty() && !takes.contains(&src.video.codec.as_str()) {
+                bail!(
+                    "a .{ext} cannot carry {} pictures: it holds only {} ones. Add --sound-only to \
+                     write the sound alone, or name a .mkv, which holds the pictures as they are",
+                    src.video.codec,
+                    takes.join(" or ")
+                );
+            }
         }
     }
     // `--analyze` stops here, before the disc is touched. Reserving a slot on

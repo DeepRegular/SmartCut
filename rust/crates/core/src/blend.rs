@@ -789,7 +789,7 @@ pub fn check_laid(path: &str) -> Result<()> {
 
 /// The first picture of the image at `path`, as it was decoded.
 fn laid_picture(path: &str) -> Result<ff::frame::Video> {
-    let mut ictx = crate::input::open_local(path)
+    let mut ictx = crate::input::open_still(path)
         .map_err(|e| anyhow::anyhow!("the image over the transition, {path}: {e}"))?;
     let stream = ictx
         .streams()
@@ -851,6 +851,9 @@ pub fn read_laid_in(
     // the same image saved as RGB was right. Its colours are looked up first,
     // at its own size and nothing mixed, and it goes on from there as an RGB
     // image does.
+    // The palette lookup below makes a new frame with no side data, so the
+    // orientation is read off the decoded picture first.
+    let turn = turn_of(&frame);
     let palette = unsafe {
         let d = ff::ffi::av_pix_fmt_desc_get(frame.format().into());
         !d.is_null() && (*d).flags & (ff::ffi::AV_PIX_FMT_FLAG_PAL as u64) != 0
@@ -873,6 +876,16 @@ pub fn read_laid_in(
             (*looked_up.as_mut_ptr()).colorspace = (*frame.as_ptr()).colorspace;
         }
         frame = looked_up;
+    }
+    // **A photograph stands the way its camera says it does.** A phone
+    // stores a portrait photo on its side and an EXIF orientation that says
+    // so, which libavcodec hands over as the picture's display matrix; read
+    // as it was stored, such a photo was laid over the crossing on its side
+    // (and stretched to the frame), in the window that sets it and in the
+    // output alike. Turned as ffmpeg's own autorotate turns it; an image
+    // that says nothing is read as before.
+    if let Some(turn) = turn {
+        frame = turned(&frame, turn)?;
     }
 
     let (w, h) = (width, height);
@@ -952,6 +965,113 @@ pub fn read_laid_in(
         picture: colour,
         alpha,
     })
+}
+
+/// How a picture is turned to stand as it is shown: shown `(x, y)` is
+/// stored `(a, b)` -- `(y, x)` where `swap` -- each read from the far edge
+/// where `flip_x` / `flip_y`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Turn {
+    swap: bool,
+    flip_x: bool,
+    flip_y: bool,
+}
+
+/// The turn `frame`'s display matrix asks for, read as ffmpeg's autorotate
+/// reads it (`get_rotation` and the transpose / flip it picks); `None` for
+/// none, and for an angle that is not a quarter turn.
+fn turn_of(frame: &ff::frame::Video) -> Option<Turn> {
+    let side = frame.side_data(ff::frame::side_data::Type::DisplayMatrix)?;
+    let bytes = side.data();
+    if bytes.len() < 36 {
+        return None;
+    }
+    let mut m = [0i32; 9];
+    for (nth, v) in m.iter_mut().enumerate() {
+        *v = i32::from_ne_bytes(bytes[nth * 4..nth * 4 + 4].try_into().ok()?);
+    }
+    let theta = -unsafe { ff::ffi::av_display_rotation_get(m.as_ptr()) }.round();
+    if !theta.is_finite() {
+        return None;
+    }
+    let theta = theta - 360.0 * (theta / 360.0 + 0.9 / 360.0).floor();
+    let turn = |swap, flip_x, flip_y| Turn { swap, flip_x, flip_y };
+    let t = if (theta - 90.0).abs() < 1.0 {
+        // "cclock_flip" where m[3] > 0, else "clock".
+        if m[3] > 0 { turn(true, false, false) } else { turn(true, false, true) }
+    } else if (theta - 180.0).abs() < 1.0 {
+        turn(false, m[0] < 0, m[4] < 0)
+    } else if (theta - 270.0).abs() < 1.0 {
+        // "clock_flip" where m[3] < 0, else "cclock".
+        if m[3] < 0 { turn(true, true, true) } else { turn(true, true, false) }
+    } else if theta.abs() < 1.0 {
+        turn(false, false, m[4] < 0)
+    } else {
+        return None;
+    };
+    (t != turn(false, false, false)).then_some(t)
+}
+
+/// `frame` turned by `turn`: in RGBA where it is RGB, else in 4:4:4 YUV (a
+/// subsampled picture's chroma would not turn with it), with its range and
+/// matrix as they were.
+fn turned(frame: &ff::frame::Video, turn: Turn) -> Result<ff::frame::Video> {
+    use ff::format::Pixel;
+    let (w, h) = (frame.width(), frame.height());
+    let (flags, depth) = unsafe {
+        let d = ff::ffi::av_pix_fmt_desc_get(frame.format().into());
+        if d.is_null() { (ff::ffi::AV_PIX_FMT_FLAG_RGB as u64, 8) } else { ((*d).flags, (*d).comp[0].depth) }
+    };
+    // In 16 bits where the image has more than 8 (a 10-bit AVIF or HEIC, a
+    // 16-bit PNG): turned in 8, it lost them on the way to a deep master.
+    let deep = depth > 8;
+    let (work, bpp) = if flags & (ff::ffi::AV_PIX_FMT_FLAG_RGB as u64) != 0 {
+        if deep { (Pixel::RGBA64LE, 8) } else { (Pixel::RGBA, 4) }
+    } else if flags & (ff::ffi::AV_PIX_FMT_FLAG_ALPHA as u64) != 0 {
+        if deep { (Pixel::YUVA444P16LE, 2) } else { (Pixel::YUVA444P, 1) }
+    } else if deep {
+        (Pixel::YUV444P16LE, 2)
+    } else {
+        (Pixel::YUV444P, 1)
+    };
+    // RGBA is one plane of whole pixels; the YUV ones a plane a component.
+    let packed = flags & (ff::ffi::AV_PIX_FMT_FLAG_RGB as u64) != 0;
+    let full = full_range_frame(frame);
+    let mut flat = ff::frame::Video::new(work, w, h);
+    Scaler::with_flags(
+        (w, h, frame.format(), full),
+        (w, h, work, full),
+        ff::software::scaling::Flags::POINT,
+    )?
+    .run(frame, &mut flat)?;
+    let (tw, th) = if turn.swap { (h, w) } else { (w, h) };
+    let mut out = ff::frame::Video::new(work, tw, th);
+    let planes = if packed { 1 } else { flat.planes() };
+    let (w, h) = (w as usize, h as usize);
+    for p in 0..planes {
+        let (from, to) = (flat.stride(p), out.stride(p));
+        let src = flat.data(p);
+        let dst = out.data_mut(p);
+        for y in 0..th as usize {
+            for x in 0..tw as usize {
+                let (a, b) = if turn.swap { (y, x) } else { (x, y) };
+                let sx = if turn.flip_x { w - 1 - a } else { a };
+                let sy = if turn.flip_y { h - 1 - b } else { b };
+                let s = sy * from + sx * bpp;
+                let d = y * to + x * bpp;
+                dst[d..d + bpp].copy_from_slice(&src[s..s + bpp]);
+            }
+        }
+    }
+    out.set_color_range(if full_by_format(frame.format()) {
+        ff::util::color::Range::JPEG
+    } else {
+        frame.color_range()
+    });
+    unsafe {
+        (*out.as_mut_ptr()).colorspace = (*frame.as_ptr()).colorspace;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

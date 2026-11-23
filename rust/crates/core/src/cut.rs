@@ -1156,6 +1156,14 @@ struct AudioTrack {
     /// concatenates samples, so this -- not the packet's nominal timestamp --
     /// is where the next frame will actually be heard.
     end: Option<f64>,
+    /// How far after `end` the range being written opened: its first frame
+    /// goes down on the frame nearest where the sound is owed, up to half a
+    /// frame either side of it (more on a clock coarser than the frames,
+    /// or where frames differ in length), and every frame after it is that
+    /// far from `end` as well. `None` until the range's first frame is
+    /// written. What a hole the cut keeps is measured past. See
+    /// [`Writer::push_audio`].
+    head: Option<f64>,
     /// Set when this track is being re-encoded; packets then carry the
     /// encoder's own timestamps instead of the source's.
     reencoder: Option<crate::audio::Reencoder>,
@@ -2175,6 +2183,10 @@ impl Writer {
                 let t = &mut self.audio[track];
                 if t.end.is_some_and(|end| reach - end > out_dur / 2.0) {
                     t.end = Some(reach);
+                    // Measured from where the sound reaches now.
+                    if t.head.is_some() {
+                        t.head = Some(0.0);
+                    }
                 }
             }
             return Ok(());
@@ -2219,10 +2231,45 @@ impl Writer {
         // longer than that: every frame after went at its own millisecond,
         // and the sixth of them that share one were left out of a transport
         // stream, or stopped an MP4 with "Invalid argument". Every other
-        // track sums as it always did.
+        // track sums as it always did --
+        //
+        // **except across a hole the cut keeps.** A frame laid at its own
+        // instant more than half a frame after where the sound had reached
+        // leaves a gap in the output, a stretch of the recording with none of
+        // the track in it, and the sound now reaches from the frame's own
+        // instant. Summed past it, `end` stayed behind by the hole, and the
+        // next range took that for sound still owed: it opened the hole's
+        // length early, on frames the cut had taken away that clashed with
+        // the last one written, and went down on the first that did not --
+        // up to a frame from the nearest (a recorder BD-RE title: 0.255 s
+        // owed at one seam that was not). Nearer than half a frame, the gap
+        // is the rounding of the stamps, and is summed past as before.
+        //
+        // **Measured past where the range opened (`head`).** A range opens
+        // on the frame nearest where the sound is owed, up to half a frame
+        // either side, and every frame of it after is as far from `end`: on
+        // a millisecond clock, where the stamps of 21.33 ms AAC frames step
+        // 21 and 22, a range that opened just under half a frame late went
+        // over by the rounding a few frames in, with nothing missing, and
+        // every range after it opened a frame off from the cut before (from
+        // the tenth range on, in 25 cut from an ordinary `ffmpeg -c copy`
+        // .mkv of a broadcast). The range's first frame itself is a hole only past a
+        // whole frame and 50 ms, which no frame nearest the owed instant is.
+        let late = t.end.map(|reached| out_start - reached);
+        let hole = match (late, t.head) {
+            (Some(late), None) => late > out_dur.max(0.05),
+            (Some(late), Some(head)) => late - head > out_dur / 2.0,
+            (None, _) => false,
+        };
         t.end = Some(match t.end {
             Some(_) if t.frame_secs > 0.0 => out_start.max(0.0) + out_dur,
+            Some(_) if hole => out_start + out_dur,
             reached => reached.unwrap_or(out_start.max(0.0)) + out_dur,
+        });
+        t.head = Some(match late {
+            Some(_) if hole => 0.0,
+            Some(late) => t.head.unwrap_or(late),
+            None => out_start.min(0.0),
         });
         Ok(())
     }
@@ -9491,8 +9538,6 @@ fn mpeg2_segment_shape(src: &Source, seg: &Segment, tol: f64) -> Result<(bool, O
     Ok((repeats, sequence))
 }
 
-/// Whether the sequence extension a stream's parameters carry calls the
-/// sequence interlaced, where they carry one.
 /// The picture rate the header an open kept states. See [`open_encoder`].
 fn stated_frame_rate(params: &ff::codec::Parameters) -> Option<(u32, u32)> {
     let extradata = unsafe {
@@ -9505,6 +9550,8 @@ fn stated_frame_rate(params: &ff::codec::Parameters) -> Option<(u32, u32)> {
     crate::bitstream::mpeg2_frame_rate(extradata)
 }
 
+/// Whether the sequence extension a stream's parameters carry calls the
+/// sequence interlaced, where they carry one.
 fn stated_sequence(params: &ff::codec::Parameters) -> Option<bool> {
     let extradata = unsafe {
         let p = params.as_ptr();
@@ -14123,7 +14170,7 @@ fn cut_into(
             let how = if family == "ts" {
                 "would be written as private data of no stated kind, which is a stream every \
                  player carries and none can read"
-            } else if family == "avi" && codec.starts_with("pcm_") && codec.ends_with("be") {
+            } else if matches!(family, "avi" | "asf") && codec.starts_with("pcm_") && codec.ends_with("be") {
                 // A DVD's or a Blu-ray's LPCM is written as big-endian PCM
                 // outside a transport stream (see `carriage`), and that is
                 // the name that reaches here, whatever the recording called it.
@@ -14131,6 +14178,10 @@ fn cut_into(
                  disc, or asked for with --audio-codec lpcm, is written as here"
             } else if family == "avi" {
                 "has no WAVE format tag for it, which is how an AVI names its sound"
+            } else if family == "asf" {
+                "has no WAVE format tag for it, which is how an ASF file names its sound"
+            } else if family == "ogg" {
+                "has no Ogg mapping for it"
             } else {
                 "has no box for it"
             };
@@ -14150,6 +14201,12 @@ fn cut_into(
             } else if family == "avi" && what == "sound" {
                 "--audio-codec ac3 or --audio-codec aac writes it as AC-3 or AAC, which an AVI \
                  holds; a .mkv holds it as it is"
+            } else if family == "asf" && what == "sound" {
+                "--audio-codec ac3 or --audio-codec aac writes it as AC-3 or AAC, which an ASF \
+                 file holds; a .mkv holds it as it is"
+            } else if family == "ogg" {
+                "An Ogg file holds Theora and VP8 pictures and Vorbis, Opus, FLAC and Speex sound \
+                 only; a .mkv holds it as it is"
             } else if codec == "pcm_s8" {
                 "Into a .mkv, .mp4 or .mov, --audio-bits 24 writes it as 24 bit PCM, which \
                  each of them holds"
@@ -15105,20 +15162,27 @@ fn cut_into(
     // the track's head shape while the frames were the film's 5.1, an .mkv
     // said Channels 2 over a CodecPrivate of 6, an .mp4 a channelcount of 2
     // over an esds of 6.
+    //
+    // Every such track of a reel in one read: counted track by track, a
+    // broadcast with a commentary track read its kept part twice.
+    let mut tallies: Vec<std::collections::HashMap<u8, u64>> = vec![Default::default(); setups.len()];
+    for (n, reel) in reels.iter().enumerate() {
+        let mut tracks: Vec<_> = setups
+            .iter()
+            .zip(tallies.iter_mut())
+            .enumerate()
+            .filter(|(_, (setup, _))| mends(setup))
+            .filter_map(|(k, (_, tally))| {
+                threads[n].audio[k].as_ref().map(|a| (a, windows_by_reel[n][k].as_slice(), tally))
+            })
+            .collect();
+        crate::audio::kept_shapes_of(reel.src, &mut tracks)?;
+    }
     let mut settled: Vec<Option<u8>> = vec![None; setups.len()];
     for (k, setup) in setups.iter().enumerate() {
-        if !mends(setup) {
-            continue;
-        }
-        let mut tally = std::collections::HashMap::new();
-        for (n, reel) in reels.iter().enumerate() {
-            if let Some(a) = threads[n].audio[k].as_ref() {
-                crate::audio::kept_shapes(reel.src, a, &windows_by_reel[n][k], &mut tally)?;
-            }
-        }
         // Nothing read (no header at the track's rate): the edges' answer.
-        if !tally.is_empty() {
-            settled[k] = crate::audio::kept_majority(&tally, &setup.info);
+        if mends(setup) && !tallies[k].is_empty() {
+            settled[k] = crate::audio::kept_majority(&tallies[k], &setup.info);
         }
     }
     // And the stream says it. Only where the mender is moved off the track's
@@ -15299,6 +15363,7 @@ fn cut_into(
             written: 0,
             prev: None,
             end: None,
+            head: None,
             reencoder,
             // Filled in at the head of each reel, from the frames prepared
             // for that reel's own boundaries.
@@ -15741,6 +15806,8 @@ fn cut_into(
         for k in 0..writer.audio.len() {
             let ready = writer.audio[k].mender.as_mut().map(|m| m.close()).unwrap_or_default();
             writer.push_mended(k, ready)?;
+            // And this range opens afresh. See `AudioTrack::head`.
+            writer.audio[k].head = None;
         }
         // Every range after the first drops a decoder that is already reading
         // into a stream from somewhere else. A TrueHD frame is read against

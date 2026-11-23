@@ -2962,40 +2962,83 @@ pub(crate) fn kept_shapes(
     windows: &[(i64, i64)],
     tally: &mut HashMap<u8, u64>,
 ) -> Result<()> {
-    let Some(index) = crate::adts::sampling_index(audio.sample_rate) else { return Ok(()) };
-    if windows.is_empty() {
+    kept_shapes_of(src, &mut [(audio, windows, tally)])
+}
+
+/// One track [`kept_shapes_of`] counts: the track, its kept windows, and the
+/// tally its headers are added to.
+pub(crate) type Counted<'a> = (&'a AudioInfo, &'a [(i64, i64)], &'a mut HashMap<u8, u64>);
+
+/// [`kept_shapes`] for several tracks of one recording in one read. Each
+/// track counted on its own was a read of every kept range per track: a
+/// broadcast with a commentary track (or two languages) read the kept part
+/// of the file twice before writing anything, where one read holds every
+/// track's headers. Each track's count is the one [`kept_shapes`] makes for
+/// it alone: the read starts where the earliest of them starts (what it
+/// sees before a track's own start is passed over, as there), and each
+/// track stops where it would have stopped by itself.
+pub(crate) fn kept_shapes_of(src: &Source, tracks: &mut [Counted<'_>]) -> Result<()> {
+    // The tracks with a header to read at their rate and a range to read it in.
+    let counted: Vec<usize> = (0..tracks.len())
+        .filter(|&j| {
+            crate::adts::sampling_index(tracks[j].0.sample_rate).is_some() && !tracks[j].1.is_empty()
+        })
+        .collect();
+    if counted.is_empty() {
         return Ok(());
     }
     let mut ictx = crate::input::demux(&src.input.url)?;
-    crate::input::keep_with_pictures(&mut ictx, &[audio.stream_index]);
-    let rate = audio.sample_rate as f64;
-    for &(w0, w1) in windows {
-        let (from, to) = (w0 as f64 / rate, w1 as f64 / rate);
+    let streams: Vec<usize> = counted.iter().map(|&j| tracks[j].0.stream_index).collect();
+    crate::input::keep_with_pictures(&mut ictx, &streams);
+    let ranges = counted.iter().map(|&j| tracks[j].1.len()).max().unwrap_or(0);
+    for r in 0..ranges {
+        // Each track's own stretch of this range, in seconds; `None` once
+        // the track has stopped reading it (or has no such range).
+        let mut open: Vec<Option<(f64, f64)>> = counted
+            .iter()
+            .map(|&j| {
+                let rate = tracks[j].0.sample_rate as f64;
+                tracks[j].1.get(r).map(|&(w0, w1)| (w0 as f64 / rate, w1 as f64 / rate))
+            })
+            .collect();
+        let Some(from) = open.iter().flatten().map(|&(f, _)| f).reduce(f64::min) else { continue };
         let target = ((from + src.start_time).max(0.0) * ff::ffi::AV_TIME_BASE as f64) as i64;
         ictx.seek(target, ..target)?;
         for (stream, packet) in ictx.read_packets() {
             let Some(t) = read_reached(&stream, &packet, src.start_time) else { continue };
-            if stream.index() != audio.stream_index {
-                // The pictures, well past the range with none of this track:
-                // the track has stopped.
-                if t > to + 10.0 {
-                    break;
+            match streams.iter().position(|&s| s == stream.index()) {
+                None => {
+                    // The pictures, well past the range with none of a
+                    // track: that track has stopped.
+                    for o in open.iter_mut() {
+                        if o.is_some_and(|(_, to)| t > to + 10.0) {
+                            *o = None;
+                        }
+                    }
                 }
-                continue;
+                Some(i) => {
+                    let Some((from, to)) = open[i] else { continue };
+                    if t >= to {
+                        open[i] = None;
+                    } else {
+                        let audio = tracks[counted[i]].0;
+                        let rate = audio.sample_rate as f64;
+                        // Counted by where each frame's middle is, as the
+                        // writers take a frame into a range.
+                        let dur = 1024.0 / rate;
+                        if t + dur / 2.0 > from {
+                            let index = crate::adts::sampling_index(audio.sample_rate);
+                            if let Some(h) = packet.data().and_then(crate::adts::AdtsFormat::parse) {
+                                if Some(h.sampling_index) == index && h.channel_config != 0 {
+                                    *tracks[counted[i]].2.entry(h.channel_config).or_default() += 1;
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            if t >= to {
+            if open.iter().all(Option::is_none) {
                 break;
-            }
-            // Counted by where each frame's middle is, as the writers take
-            // a frame into a range.
-            let dur = 1024.0 / rate;
-            if t + dur / 2.0 <= from {
-                continue;
-            }
-            if let Some(h) = packet.data().and_then(crate::adts::AdtsFormat::parse) {
-                if h.sampling_index == index && h.channel_config != 0 {
-                    *tally.entry(h.channel_config).or_default() += 1;
-                }
             }
         }
     }

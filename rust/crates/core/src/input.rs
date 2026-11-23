@@ -473,7 +473,13 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
     // open's 7-10 MB were read and thrown away on each of the dozens of opens
     // a cut makes. The answers are kept per file (see [`first_answers`]), so
     // only the first open of a file pays for the plain one.
-    let known = first_answers(url, None).filter(|&(g, a, d)| g || a || d);
+    //
+    // The file's size and time are taken before anything is read, so that
+    // what is noted below is held to the file as the opens found it: taken
+    // after, a recording that grew while it was opened and then stopped
+    // would be held to answers read off a shorter head.
+    let identity = file_identity(url);
+    let known = first_answers(url, identity, None).filter(|&(g, a, d)| g || a || d);
     let ictx = match known {
         Some(_) => None,
         None => Some(open(url, false)?),
@@ -508,7 +514,7 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
                 is_transport_stream(ictx) && !states_frame_rate(ictx),
                 announced_late(url, ictx),
             );
-            first_answers(url, Some(answers));
+            first_answers(url, identity, Some(answers));
             answers
         }
         (None, Some(answers)) => answers,
@@ -530,7 +536,7 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
     }
     // And the fifth for pictures that begin after the analysis has ended;
     // see [`pictures_undescribed`].
-    if pictures_undescribed(&ictx) && !reordered(&ictx) && !late_open_failed(url, None) {
+    if pictures_undescribed(&ictx) && !reordered(&ictx) && !late_open_failed(url, identity, None) {
         let cut = READS_CUT.with(|c| c.get());
         if let Ok(again) = open_with(url, genpts, all_maps, Some(LATE_PROBE), Some(LATE_PICTURES)) {
             if !pictures_undescribed(&again) {
@@ -538,7 +544,7 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
             }
             // Not asked again of the same file: see [`late_open_failed`].
             if READS_CUT.with(|c| c.get()) == cut {
-                late_open_failed(url, Some(()));
+                late_open_failed(url, identity, Some(()));
             }
         }
     }
@@ -550,17 +556,26 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
 /// that may announce streams late -- or, with `Some`, note it. All three are
 /// read off the head of the file and the name, so they cannot change while
 /// the file keeps its size and time.
-fn first_answers(url: &str, note: Option<(bool, bool, bool)>) -> Option<(bool, bool, bool)> {
+fn first_answers(
+    url: &str,
+    identity: (u64, u128),
+    note: Option<(bool, bool, bool)>,
+) -> Option<(bool, bool, bool)> {
     use std::sync::Mutex;
     /// Enough for any list, and no more held than that.
     const KEPT: usize = 256;
     type Answers = (bool, bool, bool);
     type Asked = Vec<(String, (u64, u128), Answers)>;
     static ASKED: Mutex<Asked> = Mutex::new(Vec::new());
-    let identity = file_identity(url);
     let mut asked = ASKED.lock().ok()?;
     if let Some(answers) = note {
         asked.retain(|(u, _, _)| u != url);
+        // Only answers that skip the plain open are worth a place: held for
+        // every ordinary file too, a long list of them pushed the broadcast
+        // recordings' answers out, and those were opened plainly again.
+        if !(answers.0 || answers.1 || answers.2) {
+            return Some(answers);
+        }
         if asked.len() >= KEPT {
             asked.remove(0);
         }
@@ -580,12 +595,11 @@ fn first_answers(url: &str, note: Option<(bool, bool, bool)>) -> Option<(bool, b
 /// begin 150 s in took 0.59 s for a sound-only file of two short ranges
 /// where it had taken 0.17. Kept while the file keeps its size and time, so
 /// that a recording still being written is tried again as it grows.
-fn late_open_failed(url: &str, note: Option<()>) -> bool {
+fn late_open_failed(url: &str, identity: (u64, u128), note: Option<()>) -> bool {
     use std::sync::Mutex;
     /// Enough for any list, and no more held than that.
     const KEPT: usize = 256;
     static FAILED: Mutex<Vec<(String, (u64, u128))>> = Mutex::new(Vec::new());
-    let identity = file_identity(url);
     let Ok(mut failed) = FAILED.lock() else {
         return false;
     };
@@ -1759,6 +1773,17 @@ pub fn open_local(path: &str) -> Result<ff::format::context::Input> {
     no_nul(path)?;
     let mut opts = ff::Dictionary::new();
     opts.set("protocol_whitelist", LOCAL_PROTOCOLS);
+    Ok(ff::format::input_with_dictionary(&*as_local(path), opts)?)
+}
+
+/// As [`open_local`], for one still image: a file whose name has a `%` in
+/// it (`a%03d.png`) is that file, not a numbered sequence libavformat's image
+/// reader would look for -- and find none of, and refuse.
+pub(crate) fn open_still(path: &str) -> Result<ff::format::context::Input> {
+    no_nul(path)?;
+    let mut opts = ff::Dictionary::new();
+    opts.set("protocol_whitelist", LOCAL_PROTOCOLS);
+    opts.set("pattern_type", "none");
     Ok(ff::format::input_with_dictionary(&*as_local(path), opts)?)
 }
 

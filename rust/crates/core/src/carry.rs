@@ -143,6 +143,14 @@ const MOV_REFUSES: &[&str] = &["vp8", "vp9", "av1", "truehd", "mlp", "flac", "op
 /// the window has had one container greyed out since before this module.
 const WEBM: &[&str] = &["vp8", "vp9", "av1", "opus", "vorbis"];
 
+/// What an Ogg file holds: the codecs libavformat's Ogg muxer has a mapping
+/// for (`ogg_init`), whichever of its names it is written under -- `.ogg`,
+/// `.oga`, `.ogv`, `.spx` or `.opus`. Anything else it turns away at the
+/// header with "Unsupported codec id", once the output has been created:
+/// AAC, AC-3, MP2, MP3 and linear PCM among the sound, H.264 and MPEG-2
+/// among the pictures. Each was written with FFmpeg 7.1 into all of them.
+const OGG: &[&str] = &["vorbis", "opus", "flac", "speex", "theora", "vp8"];
+
 /// Which container a cut is going into, by the name on the end of it.
 ///
 /// The families rather than the extensions: a `.m2ts` is a transport stream
@@ -163,6 +171,10 @@ pub fn family(output: &str) -> &'static str {
         // Not offered by the window; a name the command line can be given.
         // Asked about by [`pictures_refused`], and [`holds`] for its sound.
         "avi" => "avi",
+        // Nor these, the names libavformat writes an ASF file and an Ogg
+        // file under: asked about by [`holds`] alone.
+        "asf" | "wmv" | "wma" => "asf",
+        "ogg" | "oga" | "ogv" | "spx" | "opus" => "ogg",
         _ => "",
     }
 }
@@ -202,6 +214,12 @@ pub fn holds(family: &str, codec: &str) -> bool {
         // ALAC, Opus or big-endian PCM: the muxer turned each away at the
         // header with a bare "Operation not permitted".
         "avi" => !is_sound(codec) || riff_sound(codec),
+        // An ASF file names its sound the same way, from the same table, and
+        // turns away one it has no tag for at the header with "Operation not
+        // permitted" -- Opus, ALAC, TrueHD, MLP and big-endian PCM, measured
+        // with FFmpeg 7.1. Its pictures it writes whatever they are.
+        "asf" => !is_sound(codec) || riff_sound(codec),
+        "ogg" => OGG.contains(&codec),
         // An unknown name is not this module's to refuse.
         _ => true,
     }
@@ -422,6 +440,33 @@ mod tests {
             assert!(!holds("avi", codec), "{codec}");
         }
         assert!(holds("avi", "h264") && holds("avi", "prores"));
+    }
+
+    #[test]
+    fn an_asf_and_an_ogg_file() {
+        for name in ["x.wma", "x.WMV", "x.asf"] {
+            assert_eq!(family(name), "asf", "{name}");
+        }
+        for name in ["x.ogg", "x.oga", "x.OGV", "x.spx", "x.opus"] {
+            assert_eq!(family(name), "ogg", "{name}");
+        }
+        // What FFmpeg 7.1's ASF muxer wrote and what it turned away.
+        for codec in ["aac", "ac3", "eac3", "mp2", "mp3", "vorbis", "flac", "dts", "speex", "wmav2", "pcm_s16le", "pcm_s24le", "pcm_f32le", "pcm_u8"] {
+            assert!(holds("asf", codec), "{codec}");
+        }
+        for codec in ["opus", "alac", "truehd", "mlp", "pcm_s16be"] {
+            assert!(!holds("asf", codec), "{codec}");
+        }
+        for codec in ["h264", "vp8", "vp9", "av1", "mpeg2video", "mpeg4", "theora", "ffv1", "wmv2"] {
+            assert!(holds("asf", codec), "{codec}");
+        }
+        // And its Ogg muxer.
+        for codec in ["vorbis", "opus", "flac", "speex", "theora", "vp8"] {
+            assert!(holds("ogg", codec), "{codec}");
+        }
+        for codec in ["aac", "ac3", "mp2", "mp3", "dts", "truehd", "pcm_s16le", "h264", "vp9", "av1", "mpeg2video"] {
+            assert!(!holds("ogg", codec), "{codec}");
+        }
     }
 
     #[test]

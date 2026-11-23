@@ -432,6 +432,19 @@ impl Reader {
 /// the line stood until the next unit, where [`stops_after`] -- which the
 /// pair beside a cut is written by -- had it come down.
 pub(crate) fn timed_by(mut drawn: Drawn, unit: &[u8]) -> Drawn {
+    // **And its start to the tick, not the millisecond.** The decoder
+    // counts a start in whole milliseconds, rounded down, where the pair
+    // beside the cut ([`Sidecar::withdraw_late`]) counts the unit's own
+    // ticks: a start landing under a millisecond after a range's end was
+    // withdrawn from the `.idx` there and put up by the converted subtitle
+    // (`pgs`'s Composer) and cleared at the same instant -- three display
+    // sets on one time. Only that rounding is taken back: a start the
+    // decoder read off another sequence is left as it read it.
+    if let Some(start) = starts_after(unit) {
+        if start > drawn.from && start - drawn.from < 0.001 {
+            drawn.from = start;
+        }
+    }
     if drawn.until.is_none() {
         drawn.until = stops_after(unit).filter(|&u| u > drawn.from);
     }
@@ -1613,6 +1626,36 @@ mod tests {
         assert_eq!(side.withdraw_late(end - TICK / 2.0), 0, "within a tick");
         // Past the tick, it is withdrawn as before.
         assert_eq!(side.withdraw_late(end - 2.0 * TICK), 1);
+    }
+
+    /// A delayed start is timed to its tick, as the pair counts it, not to
+    /// the millisecond the decoder rounds it down to; a start the decoder
+    /// read elsewhere is left alone.
+    #[test]
+    fn a_delayed_start_is_timed_to_the_tick() {
+        let mut unit = standing(64);
+        let first = u16be(&unit, 2) as usize;
+        unit[first..first + 2].copy_from_slice(&264u16.to_be_bytes());
+        let exact = 264.0 * TICK;
+        let drawn = |from: f64| Drawn {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            indices: vec![0],
+            palette: vec![(0, 0, 0, 255)],
+            until: None,
+            from,
+            forced: false,
+        };
+        // What libavcodec says: (264 << 10) / 90 = 3003 ms.
+        let read = timed_by(drawn(3.003), &unit);
+        assert!((read.from - exact).abs() < 1e-9, "{}", read.from);
+        assert!(read.from > 3.003);
+        // Further off than the rounding: the decoder's own reading stands.
+        assert_eq!(timed_by(drawn(2.0), &unit).from, 2.0);
+        // No delay at all: nothing moves.
+        assert_eq!(timed_by(drawn(0.0), &standing(64)).from, 0.0);
     }
 
     /// The streams are named in the order they were declared, whatever order

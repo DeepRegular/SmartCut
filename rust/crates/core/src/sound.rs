@@ -425,7 +425,7 @@ fn run(
     // An Ogg file opens on the same STREAMINFO: a FLAC player read ten
     // seconds kept into an `.ogg` as forty, the recording's length.
     if setup.target == ff::codec::Id::FLAC
-        && matches!(octx.format().name(), "flac" | "ogg" | "oga")
+        && matches!(octx.format().name(), "flac" | "ogg" | "oga" | "ogv")
         && setup.mode != AudioMode::Reencode
     {
         setup.mode = AudioMode::Reencode;
@@ -786,6 +786,8 @@ fn run(
     // The rate a re-encoded packet's own clock counts in, which is the
     // encoder's last word rather than what was asked for.
     let out_rate = recoder.as_ref().map_or(setup.sample_rate, Reencoder::rate) as f64;
+    // What a hole inside a range is laid as. See [`Gap`].
+    let mut gap = Gap::of(&octx, recoder.is_some(), setup.target, &params, setup.bit_rate);
 
     for (n, (piece, prepared)) in pieces.iter().zip(prepared).enumerate() {
         // A clip joined on with no sound has none to give, and failing the
@@ -890,6 +892,7 @@ fn run(
                 joins_at_sync && at > 0,
                 at_out,
                 mender.as_mut(),
+                &mut gap,
             )?;
             written = reached;
             if std::env::var("SMARTCUT_DEBUG").is_ok() {
@@ -934,14 +937,16 @@ fn run(
                 };
                 opened = true;
             }
-            // And a hole further into the range, for the same reason: the
-            // picture writer leaves it as silence and the frames after it at
-            // their own instants, so the next range's early frames clash
-            // and are left out there. Counted as drift here, the next range
-            // opened that much early on the sound the cut took away -- and,
-            // where a recorder stretch's sound breaks off a moment before
-            // the seam and resumes, on the stretch at the seam that no cut
-            // writes (0.28 and 0.44 s on a BD-RE title kept across two).
+            // And a hole further into the range that this file could not
+            // keep (see [`Gap`]), for the same reason: the picture writer
+            // leaves it as silence and the frames after it at their own
+            // instants, so the next range's early frames clash and are left
+            // out there. Counted as drift here, the next range opened that
+            // much early on the sound the cut took away -- and, where a
+            // recorder stretch's sound breaks off a moment before the seam
+            // and resumes, on the stretch at the seam that no cut writes
+            // (0.28 and 0.44 s on a BD-RE title kept across two). A hole the
+            // file keeps is in `written` already, and is not counted again.
             laid -= holes;
             laid += ends - range.0;
             placed += ends - range.0;
@@ -1705,7 +1710,7 @@ type Opening = (f64, f64, Option<f64>);
 /// or left out waiting for a sync), where it laid one, with where the
 /// track's frame before that one ended, where the read passed one over;
 /// and how much of the range after that first frame the track had no sound
-/// for (see `hole_before`).
+/// for (see `hole_before`) and the file could not keep (see [`Gap`]).
 #[allow(clippy::too_many_arguments)]
 fn take_range(
     src: &Source,
@@ -1727,6 +1732,8 @@ fn take_range(
     // What writes frames of another channel count again. See `mender` in
     // `run`: where each goes, its length, and the packet's own.
     mut mender: Option<&mut crate::audio::Mender<(f64, f64, i64)>>,
+    // What a hole between two of the range's frames is laid as.
+    gap: &mut Gap,
 ) -> Result<(f64, Option<Opening>, f64)> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Half a second before the range, so the frame it opens on has been
@@ -1768,6 +1775,9 @@ fn take_range(
     let mut reached: Option<f64> = None;
     let mut latest: Option<f64> = None;
     let mut holes = 0.0f64;
+    // How much longer than itself the container says the frame laid last
+    // lasts, in a file with no clock. See `longer` below.
+    let mut longer = 0.0f64;
     // The track's frames as the cut with pictures takes them: a frame of a
     // program stream one frame late on the next one's stamp is put back
     // where it belongs. See [`crate::input::LateFrames`]. What it hands on
@@ -1781,22 +1791,7 @@ fn take_range(
             Some(packet) => packet,
             None if read_over => break,
             None => {
-                match packets.next() {
-                    Some((stream, packet)) if stream.index() != track.stream_index => {
-                        // Leeway for the pictures running a little ahead of their sound.
-                        if crate::audio::read_reached(&stream, &packet, src.start_time)
-                            .is_some_and(|t| t >= range.1 + 5.0)
-                        {
-                            read_over = true;
-                            due.extend(late.rest().into_iter().map(|(_, p)| p));
-                        }
-                    }
-                    Some((_, packet)) => due.extend(late.pass(0, packet).into_iter().flatten()),
-                    None => {
-                        read_over = true;
-                        due.extend(late.rest().into_iter().map(|(_, p)| p));
-                    }
-                }
+                read_on(&mut packets, &mut late, &mut due, &mut read_over, track.stream_index, src.start_time, range.1);
                 continue;
             }
         };
@@ -1874,13 +1869,82 @@ fn take_range(
             }
             continue;
         }
-        let hole = hole_before(reached, t, dur);
+        let mut hole = hole_before(reached, t, dur);
+        // **A hole that is only this frame's stamp.** One frame of a
+        // damaged recording stamped ahead of where it belongs, by more than
+        // half a frame or by seconds, with the frame after it stamped where
+        // that one belongs: no sound is missing, and laid as a hole it put
+        // the rest of the range that much late (silence for seconds in a
+        // file with no clock), every frame up to the wild stamp passed over
+        // as `behind` it. The frame after it starting before this one's
+        // middle says so: then it goes down end to end, as it always did,
+        // and its stamp is not counted. A real hole is followed by frames
+        // that carry on from the frame after it.
+        let mut stray = false;
+        if hole > 0.0 {
+            while due.is_empty() && !read_over {
+                read_on(&mut packets, &mut late, &mut due, &mut read_over, track.stream_index, src.start_time, range.1);
+            }
+            if let Some(after) = due.front().and_then(|p| p.pts()) {
+                if (after as f64 * in_tb - src.start_time) < t + dur / 2.0 {
+                    if std::env::var("SMARTCUT_DEBUG").is_ok() {
+                        crate::say!("  sound stamp {:.4} out of place in range {:.4}-{:.4}", t, range.0, range.1);
+                    }
+                    hole = 0.0;
+                    stray = true;
+                }
+            }
+        }
         if hole > 0.0 && std::env::var("SMARTCUT_DEBUG").is_ok() {
             crate::say!("  sound hole {:.4}-{:.4} in range {:.4}-{:.4}", t - hole, t, range.0, range.1);
         }
-        holes += hole;
-        reached = Some(reached.map_or(t + dur, |r| r.max(t + dur)));
-        latest = Some(latest.map_or(t, |l| l.max(t)));
+        // **The frames after a hole go where the recording has them, as
+        // the picture writer puts them.** Laid end to end over it, the rest
+        // of the range ran early by the hole: 62 ms after a broadcast's
+        // switch from the programme before (three frames missing between
+        // the two), against the cut with pictures and the recording alike.
+        // Kept by the file's clock, or as silence where it has none; where
+        // neither can be had, closed up and carried as before.
+        //
+        // **And a hole an MP4 keeps as the length of the frame before it.**
+        // Its clock has no gaps, only lengths, so three frames missing are
+        // one frame of 85 ms: no hole between the two, and a file with no
+        // clock, which plays every frame for its own length, ran early by
+        // the other 64 ms from there on (an `ffmpeg -c copy` .mp4 of a
+        // broadcast, cut to an .aac). The frame went down for its own length
+        // and the rest is laid with this frame's hole -- only once a frame
+        // follows it, so a range that ends on such a frame ends as it did.
+        let owed = std::mem::take(&mut longer);
+        if hole > 0.0 || owed > 0.0 {
+            let next = packet.data().unwrap_or(&[]);
+            let rewritten = mender.as_deref().is_some_and(|m| m.off_shape(next));
+            match gap.lay(octx, hole + owed, next, rewritten, track, written - owed, clock)? {
+                Some(kept) => written += kept - owed,
+                None => holes += hole,
+            }
+        }
+        if gap.bare() {
+            if let Some(own) = lengths.own(&packet) {
+                if dur - own > own / 2.0 + 1e-3 {
+                    longer = dur - own;
+                }
+            }
+        }
+        // A frame stamped half a frame or more before where the sound has
+        // reached -- a damaged recording's repeated stamp, the frame before's
+        // given again -- is not `behind` and goes down end to end like any
+        // other: it reaches a frame on from there. Counted from its stamp it
+        // reached nothing, the frame after it read as a hole of one frame
+        // and went down a frame late, and the rest of the range with it: a
+        // frame late more for every such stamp.
+        reached = Some(match reached {
+            Some(r) if stray || t <= r - dur / 2.0 => r + dur,
+            Some(r) => r.max(t + dur),
+            None => t + dur,
+        });
+        if !stray {
+            latest = Some(latest.map_or(t, |l| l.max(t)));
+        }
         if need_sync {
             if !opens_on_sync(packet.data()) {
                 // Left out, but its instant is still spent, so what follows
@@ -1928,6 +1992,34 @@ fn take_range(
     Ok((written, first, holes))
 }
 
+/// One step of [`take_range`]'s read: the next packet read, a frame of the
+/// track handed to `due` (through `late`), the read over where the pictures
+/// have passed the range's `end` by enough or the file ends.
+fn read_on(
+    packets: &mut crate::input::Packets<'_>,
+    late: &mut crate::input::LateFrames,
+    due: &mut std::collections::VecDeque<ff::Packet>,
+    read_over: &mut bool,
+    stream_index: usize,
+    start_time: f64,
+    end: f64,
+) {
+    match packets.next() {
+        Some((stream, packet)) if stream.index() != stream_index => {
+            // Leeway for the pictures running a little ahead of their sound.
+            if crate::audio::read_reached(&stream, &packet, start_time).is_some_and(|t| t >= end + 5.0) {
+                *read_over = true;
+                due.extend(late.rest().into_iter().map(|(_, p)| p));
+            }
+        }
+        Some((_, packet)) => due.extend(late.pass(0, packet).into_iter().flatten()),
+        None => {
+            *read_over = true;
+            due.extend(late.rest().into_iter().map(|(_, p)| p));
+        }
+    }
+}
+
 /// How much sound the track is missing just before a frame of a range,
 /// after the frame before it in the same range ended at `reached`: nothing
 /// where it runs on, within the rounding of a clock that keeps whole
@@ -1938,6 +2030,226 @@ fn hole_before(reached: Option<f64>, t: f64, dur: f64) -> f64 {
         Some(end) if t - end > dur / 2.0 + 1e-3 => t - end,
         _ => 0.0,
     }
+}
+
+/// What a hole between two frames of a range is laid as.
+///
+/// The picture writer puts every frame at its own instant, so a hole in the
+/// track inside a range stays a hole: a gap in the stamps of an MP4, a
+/// Matroska file or a transport stream. This file keeps it the same way
+/// where its container keeps a time for every frame. A bare stream (`.aac`,
+/// `.ac3`, `.mp2` ...) keeps none, and frames written one after another are
+/// played one after another; the hole is laid there as frames of silence of
+/// the codec's own, which is what a player of the cut's transport stream
+/// gives for the gap. A file with no clock whose codec has no encoder here
+/// to make silence with (and HE-AAC, whose frames a plain AAC one does not
+/// sit among) closes the hole up, as every file used to.
+/// A frame of silence and how long it lasts, in seconds.
+type Silent = (Vec<u8>, f64);
+
+enum Gap {
+    Closed,
+    Timed,
+    Silent {
+        id: ff::codec::Id,
+        bit_rate: usize,
+        /// The track's own arrangement of its channels, where it names one.
+        keep: Option<ff::channel_layout::ChannelLayout>,
+        /// The frame of silence for each shape, once it has been made, or
+        /// that it cannot be: its bytes and how long it lasts.
+        made: std::collections::HashMap<(u16, u32), Option<Silent>>,
+    },
+}
+
+impl Gap {
+    fn of(
+        octx: &ff::format::context::Output,
+        reencoded: bool,
+        target: ff::codec::Id,
+        params: &ff::codec::Parameters,
+        bit_rate: usize,
+    ) -> Self {
+        use ff::codec::Id;
+        // A re-encoded track has its holes filled by the re-encoder.
+        if reencoded {
+            return Gap::Closed;
+        }
+        let format = octx.format();
+        let timed = ["mp4", "mov", "ipod", "3gp", "3g2", "matroska", "webm", "mpegts"];
+        if format.name().split(',').any(|n| timed.contains(&n)) {
+            return Gap::Timed;
+        }
+        let bare = format.flags().contains(ff::format::Flags::NO_TIMESTAMPS);
+        // FF_PROFILE_AAC_HE and _HE_V2.
+        let he = target == Id::AAC && matches!(unsafe { (*params.as_ptr()).profile }, 4 | 28);
+        if bare && !he && matches!(target, Id::AAC | Id::AC3 | Id::EAC3 | Id::MP2 | Id::MP3) {
+            let keep = crate::audio::layout_of(params);
+            Gap::Silent { id: target, bit_rate, keep, made: Default::default() }
+        } else {
+            Gap::Closed
+        }
+    }
+
+    /// Whether holes are laid as frames of silence: a file with no clock.
+    fn bare(&self) -> bool {
+        matches!(self, Gap::Silent { .. })
+    }
+
+    /// Lay a hole of `hole` seconds before the frame `next`, the sound
+    /// having reached `at`. How much of it the file now holds, or `None`
+    /// where it is closed up.
+    ///
+    /// `rewritten`: `next` is of another shape than the file's one, which
+    /// the [`crate::audio::Mender`] writes such frames again in (a `.latm`).
+    /// Silence in `next`'s shape would not be, and among the mended frames
+    /// it did not decode (three frames of stereo in a 5.1 `.latm` at a
+    /// broadcast's switch), so that hole is closed up as before.
+    #[allow(clippy::too_many_arguments)]
+    fn lay(
+        &mut self,
+        octx: &mut ff::format::context::Output,
+        hole: f64,
+        next: &[u8],
+        rewritten: bool,
+        track: &AudioInfo,
+        at: f64,
+        clock: Clock,
+    ) -> Result<Option<f64>> {
+        let (id, bit_rate, keep, made) = match self {
+            Gap::Closed => return Ok(None),
+            Gap::Timed => return Ok(Some(hole)),
+            Gap::Silent { .. } if rewritten => return Ok(None),
+            Gap::Silent { id, bit_rate, keep, made } => (*id, *bit_rate, *keep, made),
+        };
+        // An ADTS frame says its own shape, which at a switch between
+        // programmes is not the track's; the silence is the next frame's,
+        // under its header. LC only: see `of`.
+        let adts = (id == ff::codec::Id::AAC).then(|| crate::adts::AdtsFormat::parse(next)).flatten();
+        let shape = match adts {
+            Some(f) if f.profile != 1 => return Ok(None),
+            Some(f) => {
+                const RATES: [u32; 13] =
+                    [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+                let channels = match f.channel_config {
+                    c @ 1..=6 => u16::from(c),
+                    7 => 8,
+                    _ => return Ok(None),
+                };
+                let Some(&rate) = RATES.get(usize::from(f.sampling_index)) else {
+                    return Ok(None);
+                };
+                (channels, rate)
+            }
+            None => (track.channels, track.sample_rate),
+        };
+        let silent = made
+            .entry(shape)
+            .or_insert_with(|| silent_frame(id, shape.0, shape.1, bit_rate, keep))
+            .clone();
+        let Some((payload, secs)) = silent else { return Ok(None) };
+        let count = (hole / secs).round() as usize;
+        let bytes = adts.map_or(payload.clone(), |f| f.wrap(&payload));
+        for n in 0..count {
+            let mut packet = ff::Packet::copy(&bytes);
+            packet.set_flags(ff::packet::Flags::KEY);
+            write_copied(octx, packet, at + n as f64 * secs, secs, clock)?;
+        }
+        if std::env::var("SMARTCUT_DEBUG").is_ok() {
+            crate::say!("  sound hole of {hole:.4}s laid as {count} frame(s) of silence");
+        }
+        Ok(Some(count as f64 * secs))
+    }
+}
+
+/// One frame of silence from `id`'s encoder in this shape, and how long it
+/// lasts: taken from the middle of a few, past whatever the encoder opens
+/// with. `None` where the encoder will not be opened so.
+///
+/// In the arrangement the frames around it have: `keep`, the track's own,
+/// where it is of this many channels. Three channels are not one thing: an
+/// AC-3 track of 3/0 or 2/2 got silence coded 2/0+LFE or 3/1, another
+/// arrangement for those frames alone. And AAC's are the ones its
+/// `channel_config` names, whatever `keep` says: three channels opened as
+/// the 2.1 the count defaults to were coded with a program config element
+/// of their own, under a header that said 3/0, and did not decode.
+fn silent_frame(
+    id: ff::codec::Id,
+    channels: u16,
+    rate: u32,
+    bit_rate: usize,
+    keep: Option<ff::channel_layout::ChannelLayout>,
+) -> Option<Silent> {
+    use ff::channel_layout::ChannelLayout;
+    let codec = ff::encoder::find(id)?;
+    let audio = codec.audio().ok()?;
+    let format = audio.formats().and_then(|mut f| f.next())?;
+    let want = match (id, channels) {
+        (ff::codec::Id::AAC, 3) => ChannelLayout::SURROUND,
+        (ff::codec::Id::AAC, _) => ChannelLayout::default(i32::from(channels)),
+        _ => keep
+            .filter(|l| l.channels() == i32::from(channels))
+            .unwrap_or_else(|| ChannelLayout::default(i32::from(channels))),
+    };
+    let layout = match audio.channel_layouts().map(|l| l.collect::<Vec<_>>()) {
+        Some(listed) if !listed.is_empty() && !listed.contains(&want) => {
+            listed.into_iter().find(|l| l.channels() == i32::from(channels))?
+        }
+        _ => want,
+    };
+    let open = |bit_rate: usize| {
+        let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().audio().ok()?;
+        unsafe {
+            (*enc.as_mut_ptr()).log_level_offset = ff::ffi::AV_LOG_ERROR;
+        }
+        enc.set_rate(rate as i32);
+        enc.set_channel_layout(layout);
+        enc.set_format(format);
+        if bit_rate > 0 {
+            enc.set_bit_rate(bit_rate);
+        }
+        enc.set_time_base(ff::Rational::new(1, rate as i32));
+        let mut opts = ff::Dictionary::new();
+        if id == ff::codec::Id::AAC {
+            opts.set("aac_pns", "0");
+        }
+        // Each frame on its own, owing nothing to the frames before it.
+        if id == ff::codec::Id::MP3 {
+            opts.set("reservoir", "0");
+        }
+        enc.open_as_with(codec, opts).ok()
+    };
+    let mut enc = open(bit_rate).or_else(|| open(0))?;
+    let size = usize::try_from(enc.frame_size()).ok().filter(|&s| s > 0)?;
+    if enc.rate() != rate {
+        return None;
+    }
+    let mut frame = ff::frame::Audio::new(format, size, layout);
+    frame.set_rate(rate);
+    unsafe {
+        let f = frame.as_mut_ptr();
+        ff::ffi::av_samples_set_silence(
+            (*f).extended_data,
+            0,
+            size as i32,
+            i32::from(channels),
+            format.into(),
+        );
+    }
+    let mut got = Vec::new();
+    let mut packet = ff::Packet::empty();
+    for n in 0..5 {
+        frame.set_pts(Some((n * size) as i64));
+        enc.send_frame(&frame).ok()?;
+        while enc.receive_packet(&mut packet).is_ok() {
+            got.extend(packet.data().filter(|d| !d.is_empty()).map(<[u8]>::to_vec));
+        }
+    }
+    enc.send_eof().ok()?;
+    while enc.receive_packet(&mut packet).is_ok() {
+        got.extend(packet.data().filter(|d| !d.is_empty()).map(<[u8]>::to_vec));
+    }
+    let middle = got.len() / 2;
+    got.into_iter().nth(middle).map(|bytes| (bytes, size as f64 / f64::from(rate)))
 }
 
 /// Whether a frame of a range starts before the latest one the range laid
@@ -2245,7 +2557,7 @@ pub(crate) fn pcm_in(file: ff::codec::Id, target: ff::codec::Id) -> ff::codec::I
 /// for anything but its own codec, and the FLAC and Opus ones then turn
 /// the rest away at the header as "Invalid argument" -- AC-3 asked for as
 /// `.flac` or AAC as `.opus` ended on that and nothing else. They take
-/// their own codec and only that. `.ogg`, `.oga` and `.spx` answer the
+/// their own codec and only that. `.ogg`, `.oga`, `.ogv` and `.spx` answer the
 /// same and take Vorbis, Speex, FLAC and Opus alike (libavformat's
 /// `ogg_init`), and turned MP2 or AAC away just as bare; the LATM muxer
 /// takes AAC either way it is framed, and AMR's its two kinds.
@@ -2259,7 +2571,7 @@ fn answer(fmt: *const ff::ffi::AVOutputFormat, name: &str, id: ff::codec::Id) ->
     let own = unsafe { (*fmt).audio_codec };
     let takes: Option<&[Id]> = match name {
         "flac" | "opus" => Some(&[]),
-        "ogg" | "oga" | "spx" => Some(&[Id::VORBIS, Id::SPEEX, Id::FLAC, Id::OPUS]),
+        "ogg" | "oga" | "ogv" | "spx" => Some(&[Id::VORBIS, Id::SPEEX, Id::FLAC, Id::OPUS]),
         "latm" => Some(&[Id::AAC, Id::AAC_LATM]),
         "amr" => Some(&[Id::AMR_NB, Id::AMR_WB]),
         _ => None,
@@ -2315,7 +2627,9 @@ fn file_pcm(output: &str) -> Option<ff::codec::Id> {
 
 #[cfg(test)]
 mod tests {
-    use super::{behind, cut_start, drift_from, dts_core, flac_block, head_owed, hole_before, less, opus_samples};
+    use super::{
+        behind, cut_start, drift_from, dts_core, flac_block, head_owed, hole_before, less, opus_samples, silent_frame,
+    };
 
     #[test]
     fn ranges_lose_the_unwritten_stretches() {
@@ -2414,6 +2728,30 @@ mod tests {
         assert_eq!(cut_start(0.0, 0.624, -0.3, -0.3, aac, false), 0.0);
         // Opus priming that the nearest-frame rule keeps: up to its zero.
         assert!((cut_start(0.0, 0.007, -0.007, -0.007, 0.0, true) - 0.007).abs() < 1e-9);
+    }
+
+    /// The silence a hole in a bare stream is laid as: one frame of the
+    /// codec's own length, in the shape asked for, where there is one.
+    #[test]
+    fn a_frame_of_silence_per_codec() {
+        use ffmpeg_next::codec::Id;
+        for (id, channels, rate, samples) in [
+            (Id::AAC, 2, 48_000, 1024),
+            (Id::AAC, 6, 48_000, 1024),
+            (Id::AAC, 1, 32_000, 1024),
+            (Id::AAC, 3, 48_000, 1024),
+            (Id::AC3, 6, 48_000, 1536),
+            (Id::MP2, 2, 48_000, 1152),
+        ] {
+            let (bytes, secs) = silent_frame(id, channels, rate, 0, None).unwrap_or_else(|| panic!("{id:?} {channels}"));
+            assert!(!bytes.is_empty());
+            // An AAC frame opens on its first channel element, not on a
+            // program config element (id 5) of its own.
+            assert!(id != Id::AAC || bytes[0] >> 5 != 5, "{id:?} {channels}");
+            assert!((secs - f64::from(samples) / f64::from(rate)).abs() < 1e-9, "{id:?}");
+        }
+        // MP2 has no 5.1.
+        assert!(silent_frame(Id::MP2, 6, 48_000, 0, None).is_none());
     }
 
     #[test]
