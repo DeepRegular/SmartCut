@@ -8953,12 +8953,14 @@ fn free_in(dir: &std::path::Path, stem: &str, ext: &str, held: &[std::path::Path
 /// then ran this list.
 fn queued_paths(batch: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
     let at = batch.join("batch.json");
-    let body = match std::fs::read_to_string(&at) {
+    // Bytes, not text: one that is not UTF-8 (saved by hand in the system's
+    // code page) does not parse, which is not a read that failed.
+    let body = match std::fs::read(&at) {
         Ok(body) => body,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("{}: {e}", at.display())),
     };
-    Ok(serde_json::from_str::<BatchQueue>(&body)
+    Ok(serde_json::from_slice::<BatchQueue>(unmarked(&body))
         .map_or_else(|_| Vec::new(), |q| q.jobs.into_iter().map(|j| std::path::PathBuf::from(j.path)).collect()))
 }
 
@@ -9064,8 +9066,9 @@ fn batch_read(app: tauri::AppHandle) -> Result<BatchQueue, String> {
     // on a share that stalled) an empty queue, for the same reason.
     let dir = batch_dir(&app)?;
     let at = dir.join("batch.json");
-    match std::fs::read_to_string(&at) {
-        Ok(body) => Ok(serde_json::from_str(&body).unwrap_or_default()),
+    // Bytes, as in [`read_queue`]: one that is not UTF-8 does not parse.
+    match std::fs::read(&at) {
+        Ok(body) => Ok(serde_json::from_slice(unmarked(&body)).unwrap_or_default()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BatchQueue::default()),
         Err(e) => Err(format!("{}: {e}", at.display())),
     }
@@ -9148,6 +9151,14 @@ fn keep_born(queue: &mut BatchQueue, now: &BatchQueue) {
     }
 }
 
+/// The queue's bytes without the UTF-8 byte-order mark an editor can put at
+/// the head (Notepad's "UTF-8 with BOM"), which serde_json does not pass
+/// over: a queue edited by hand and saved that way did not parse, and the
+/// next add put every job in it aside.
+fn unmarked(body: &[u8]) -> &[u8] {
+    body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body)
+}
+
 /// The queue off its file, where there is one that reads.
 ///
 /// One that does not is put aside under another name rather than read as an
@@ -9160,12 +9171,15 @@ fn keep_born(queue: &mut BatchQueue, now: &BatchQueue) {
 /// put down the one job being added as the whole of the queue.
 fn read_queue(dir: &std::path::Path) -> Result<BatchQueue, String> {
     let at = dir.join("batch.json");
-    let body = match std::fs::read_to_string(&at) {
+    // Bytes, not text: a file that is not UTF-8 -- edited by hand and saved in
+    // the system's code page -- was a read that failed, every time, and so a
+    // queue nothing could add to or clear rather than one put aside.
+    let body = match std::fs::read(&at) {
         Ok(body) => body,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BatchQueue::default()),
         Err(e) => return Err(format!("{}: {e}", at.display())),
     };
-    Ok(match serde_json::from_str(&body) {
+    Ok(match serde_json::from_slice(unmarked(&body)) {
         Ok(queue) => queue,
         Err(e) => {
             let aside = dir.join(format!("batch.json.unreadable-{}", now_secs()));
@@ -9444,7 +9458,8 @@ fn reap(mut child: std::process::Child) {
 }
 
 /// Whether [`run`] set `GDK_BACKEND=x11` itself, so that the desktop's own
-/// programs are started without it. See [`desktop_command`].
+/// programs -- and this one started again -- are started without it. See
+/// [`im_as_before`].
 static X11_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// What `GTK_IM_MODULE` was before [`run`] set it, when it did. `None`
@@ -9465,6 +9480,13 @@ fn im_as_before(run: &mut std::process::Command) {
             None => run.env_remove("GTK_IM_MODULE"),
         };
     }
+    // And `GDK_BACKEND`, which [`run`] sets only over nothing: this program
+    // started again finds the desktop as this one did and sets it itself --
+    // and knows then to take it out for the folder the batch tool shows,
+    // which finding this one's it did not.
+    if X11_SET.load(std::sync::atomic::Ordering::Relaxed) {
+        run.env_remove("GDK_BACKEND");
+    }
 }
 
 /// A program of the desktop's rather than this one's -- the file manager, the
@@ -9482,12 +9504,10 @@ fn im_as_before(run: &mut std::process::Command) {
 /// Not for starting this program again: that one wants the bundle.
 fn desktop_command(program: &str) -> std::process::Command {
     let mut run = std::process::Command::new(program);
-    im_as_before(&mut run);
     // The file manager or editor is the desktop's: it runs on whatever
-    // display the desktop gave it, not on the X11 this window was put on.
-    if X11_SET.load(std::sync::atomic::Ordering::Relaxed) {
-        run.env_remove("GDK_BACKEND");
-    }
+    // display the desktop gave it, not on the X11 this window was put on
+    // (`GDK_BACKEND` goes with the rest of what [`im_as_before`] puts back).
+    im_as_before(&mut run);
     let Some(root) = std::env::var_os("APPDIR").filter(|r| !r.is_empty()) else {
         return run;
     };
@@ -10768,11 +10788,42 @@ mod tests {
         // One that does not parse holds nothing: the add puts it aside.
         std::fs::write(root.join("batch.json"), b"{").unwrap();
         assert!(queued_paths(&root).unwrap().is_empty());
+        // Nor does one that is not UTF-8 (saved by hand in Shift_JIS): it
+        // is not a read that failed, and the add puts it aside.
+        std::fs::write(root.join("batch.json"), b"{\"jobs\":[{\"note\":\"\x82\xa0\"}]}").unwrap();
+        assert!(queued_paths(&root).unwrap().is_empty());
+        assert!(read_queue(&root).unwrap().jobs.is_empty());
+        assert!(!root.join("batch.json").exists());
+        // One saved with a byte-order mark reads as it would without.
+        std::fs::write(root.join("batch.json"), b"\xEF\xBB\xBF{\"jobs\":[{\"path\":\"/q/a.scproj\"}]}").unwrap();
+        assert_eq!(queued_paths(&root).unwrap(), vec![std::path::PathBuf::from("/q/a.scproj")]);
+        assert_eq!(read_queue(&root).unwrap().jobs.len(), 1);
+        std::fs::write(root.join("batch.json"), b"{").unwrap();
         // And with no queue at all, the first name is the one given.
         std::fs::remove_file(root.join("batch.json")).unwrap();
         let got = free_in(&root, "q", "scproj", &queued_paths(&root).unwrap()).unwrap();
         assert!(got.ends_with("q.scproj"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn x11_set_is_taken_out_for_every_child() {
+        let gdk = |run: &std::process::Command| {
+            run.get_envs().find(|(k, _)| *k == "GDK_BACKEND").map(|(_, v)| v.map(|v| v.to_owned()))
+        };
+        // Not set by this program: nothing said about it, the user's own
+        // value (or none) goes through.
+        let mut run = std::process::Command::new("true");
+        im_as_before(&mut run);
+        assert_eq!(gdk(&run), None);
+        X11_SET.store(true, std::sync::atomic::Ordering::Relaxed);
+        // Set by it: taken out for this program started again and for the
+        // desktop's.
+        let mut run = std::process::Command::new("true");
+        im_as_before(&mut run);
+        assert_eq!(gdk(&run), Some(None));
+        assert_eq!(gdk(&desktop_command("true")), Some(None));
+        X11_SET.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// A file in a dropped folder whose name is not UTF-8 is not listed under

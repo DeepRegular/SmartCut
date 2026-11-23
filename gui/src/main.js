@@ -1977,7 +1977,9 @@ async function showFrame(t) {
   // all, and a frame short of the container's length left it out of reach.
   // A last picture the edit has taken away leaves the end of what is kept
   // as the end, and that is a frame short of the timeline's length as ever.
-  playhead = outToSrc(ontoJoin(clamp(srcToOutSeam(t), 0, lastStop())));
+  const asked = clamp(srcToOutSeam(t), 0, lastStop());
+  const join = ontoJoin(asked);
+  playhead = outToSrc(join);
   updateReadouts();
   draw();
 
@@ -1988,10 +1990,38 @@ async function showFrame(t) {
     // of a segment would show a frame that no longer exists. Ask again a
     // frame earlier until the picture is one that survived.
     let shot = null;
-    for (let ask = playhead, i = 0; i < 3; i++, ask -= frame()) {
+    // Less than half a frame before a join (`ontoJoin`) the join's picture
+    // is the nearer -- unless a cut begins part-way into a picture, which the
+    // cut then keeps: a Trim line counted on frames the pictures do not sit
+    // on (a .ts whose pictures resume a fraction of a frame off after a
+    // gap), or I pressed before the stage answered. That picture stands less
+    // than a frame before the join on the timeline, and taken onto the join
+    // it could not be reached at all, while the output has it. So the
+    // instant is asked about first, and the join only where what the
+    // recording has there is cut away, nearer the join, or within the
+    // cutter's slack of it (`srcToOut`).
+    if (join !== asked) {
+      shot = await stagePicture(outToSrc(asked));
+      if (token !== previewToken) return;
+      const at = srcToOut(shot.time);
+      const slack = Math.max(2 * coarseTick(), frame() * 1e-3);
+      if (at !== null && join - at > slack && join - at < 0.9 * frame() && Math.abs(at - asked) < join - asked) {
+        playhead = outToSrc(asked);
+      } else {
+        shot = null;
+      }
+    }
+    for (let ask = playhead, i = shot === null ? 0 : 3; i < 3; i++) {
       shot = await stagePicture(ask);
       if (token !== previewToken) return;
       if (srcToOut(shot.time) !== null) break;
+      // Asked for an instant that is kept and answered with a cut picture
+      // that begins before it: the cut ends part-way into that picture (a
+      // Trim line counted on frames the pictures do not sit on), and the
+      // kept one is the picture after it, not one further into the cut --
+      // three frames back, the stage showed a picture the cut had taken.
+      const into = walked() && shot.time < ask - 1e-9 && srcToOut(ask) !== null;
+      const next = into ? shot.time + frame() : ask - frame();
       // Before the walk a glimpse answers with the entry picture at or
       // before the instant where one is near (`glance_now`), and asked for
       // the first frame after a cut that one is in the stretch the cut took:
@@ -2010,6 +2040,7 @@ async function showFrame(t) {
           break;
         }
       }
+      ask = next;
     }
     // Snap to the picture that actually came back, so the frame counter and
     // the picture never disagree. They would under 2:3 pulldown, where the

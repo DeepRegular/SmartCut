@@ -13247,6 +13247,111 @@ def queue_job_window_recovered_54(cfg, t):
 SCENARIOS += [queue_job_window_recovered_54]
 
 
+def queue_job_window_recovered_old_55(cfg, t):
+    """(55th pass, appjs.) queue_job_window_recovered_54 with a recovery copy
+    as 0.8.49 wrote it: no `queued`, no `born`, only `project` naming the job's
+    file in the queue's folder. J is killed, its copy is rewritten without the
+    two fields, the job is taken out and B registers under the freed name.
+    Restored, J's 保存 must leave B's copy alone (before the fix the restored
+    window held the queue's file as a plain project and wrote J's list over
+    B's job by path)."""
+    a = App(cfg, "queue_job_window_recovered_old_55_a", [{"path": cfg.a}])
+    b = App(cfg, "queue_job_window_recovered_old_55_b", [{"path": cfg.c}])
+    for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+        b.env[k] = a.env[k]
+
+    def jobs(app):
+        app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+                 ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: app.s.js("return window.__q"), 10, 0.1)
+        return [j["path"] for j in json.loads(got)["jobs"]]
+
+    def doc(path):
+        try:
+            d = json.load(open(path))
+            return ([os.path.basename(c["path"]) for c in d["clips"]], (d.get("settings") or {}).get("container"))
+        except (OSError, ValueError, KeyError):
+            return None
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        a.s.js("document.getElementById('enlist-export').click()")
+        first = wait_for("one job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(a)), 20, 0.3)[0]
+        mine = (doc(first) or [0, 0])[1]
+        theirs = "mp4" if mine == "mkv" else "mkv"
+        job = _QueuedJobWindow(cfg, "queue_job_window_recovered_old_55_job", a, first)
+        with job:
+            job.to_list()
+            job.s.js("const s = document.getElementById('out-container'); s.value = arguments[0];"
+                     "s.dispatchEvent(new Event('input'));", theirs)
+            rec = wait_for("the recovery dir", lambda: glob_one(job.env["XDG_DATA_HOME"], "recovery"), 30, 0.5)
+
+            def kept():
+                for f in os.listdir(rec):
+                    if f.endswith(".scproj"):
+                        try:
+                            body = json.load(open(os.path.join(rec, f)))
+                        except (OSError, ValueError):
+                            continue
+                        if body.get("project") == first:
+                            return body
+                return None
+            body = wait_for("J's recovery copy", kept, 30, 0.5)
+            os.kill(job.gui_pid(), 9)
+            time.sleep(1)
+            stripped = 0
+            for f in os.listdir(rec):
+                fp = os.path.join(rec, f)
+                try:
+                    old_body = json.load(open(fp))
+                except (OSError, ValueError):
+                    continue
+                if old_body.get("project") == first:
+                    old_body.pop("queued", None)
+                    old_body.pop("born", None)
+                    with open(fp, "w") as w:
+                        json.dump(old_body, w)
+                    stripped += 1
+        t.check("55q a 0.8.49-shaped recovery copy (no queued/born) was put down",
+                stripped == 1, f"{stripped} copies rewritten")
+        a.s.js("window.__d = null; const inv = window.__TAURI__.core.invoke;"
+               "inv('batch_write', {queue: {jobs: [], after: ''}})"
+               ".then(() => inv('drop_temp_project', {path: arguments[0]}))"
+               ".then((r) => window.__d = 'ok ' + r, (e) => window.__d = 'err ' + e);", first)
+        wait_for("the job taken out", lambda: a.s.js("return window.__d"), 10, 0.1)
+        with b:
+            b.to_list()
+            b.s.js("document.getElementById('enlist-export').click()")
+            got = wait_for("B's job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(b)), 20, 0.3)[0]
+        bdoc = doc(first)
+        with _SameProfile(cfg, "queue_job_window_recovered_old_55_r", a) as r:
+            offered = r.answer(True, timeout=30)
+            wait_for("the rows put back", lambda: r.rows() == 1, 30)
+            time.sleep(1)
+            r.s.js("window.__c = null; Promise.resolve(window.__TAURI__.path && window.__TAURI__.path.appConfigDir())"
+                   ".then((c) => window.__c = String(c), (e) => window.__c = 'err ' + e);")
+            conf = wait_for("the settings folder", lambda: r.s.js("return window.__c"), 10, 0.1)
+            label = r.s.js("return document.getElementById('enlist-export').textContent")
+            r.s.js("document.getElementById('menu-save').click()")
+            time.sleep(3)
+            t.check("55q ... a 0.8.49 copy restored, B taking the name: its 保存 leaves B's copy alone",
+                    offered and got == first and bdoc is not None and bdoc[0] == ["c.ts"] and doc(first) == bdoc,
+                    f"{'offered' if offered else 'NOT offered'}; B {got}; B's copy {bdoc} -> {doc(first)}; "
+                    f"settings folder {conf}; button {label!r}")
+    for n in ("job", "r"):
+        shutil.rmtree(os.path.join(cfg.work, "runs", f"queue_job_window_recovered_old_55_{n}"), ignore_errors=True)
+
+
+SCENARIOS += [queue_job_window_recovered_old_55]
+
+
+
 
 def _overwrites(label):
     return "上書き" in (label or "") or "Overwrite" in (label or "")
@@ -14463,6 +14568,242 @@ def edges_kinds_54(cfg, t):
 
 
 EXTRA.append(edges_kinds_54)
+
+
+def x11_children_env_55(cfg, t):
+    """(55th pass, tauri.) Under a Wayland session that also has DISPLAY the
+    GUI sets GDK_BACKEND=x11 for itself (3f7b49b). Every program it starts
+    gets the user's own environment back: the desktop's opener (show_folder,
+    open_log) and this program started again (the batch tool) -- which then
+    decides for itself, and so knows to take it out for the folder IT shows.
+    And a GDK_BACKEND the user set is kept for all of them. xdg-open is a
+    stand-in on PATH that writes down what it was given. WAYLAND_DISPLAY names
+    no socket: the window itself is on X11 either way."""
+    for own in (None, "x11"):
+        tag = "unset" if own is None else f"user's {own}"
+        a = App(cfg, os.path.join("x11_children_env_55", "none" if own is None else own), [{"path": cfg.a}])
+        bin_dir = os.path.join(a.dir, "bin")
+        os.makedirs(bin_dir)
+        seen = os.path.join(a.dir, "seen")
+        os.makedirs(seen)
+        with open(os.path.join(bin_dir, "xdg-open"), "w") as f:
+            f.write(f"#!/bin/sh\nenv > {seen}/open.$$\n")
+        os.chmod(os.path.join(bin_dir, "xdg-open"), 0o755)
+        a.env["PATH"] = bin_dir + os.pathsep + a.env.get("PATH", "")
+        a.env["WAYLAND_DISPLAY"] = "wayland-smartcut-test-none"
+        a.env.pop("GDK_BACKEND", None)
+        if own is not None:
+            a.env["GDK_BACKEND"] = own
+
+        def gdk_of(lines):
+            got = [l.split("=", 1)[1] for l in lines if l.startswith("GDK_BACKEND=")]
+            return got[0] if got else None
+
+        def call(cmd, args):
+            a.s.js("window.__r = null; window.__TAURI__.core.invoke(arguments[0], arguments[1])"
+                   ".then(() => window.__r = 'ok', (e) => window.__r = 'err ' + e);", cmd, args)
+            return wait_for(cmd, lambda: a.s.js("return window.__r"), 20, 0.1)
+
+        with a:
+            a.to_list()
+            r = call("show_folder", {"path": a.out})
+            got = wait_for("the opener", lambda: os.listdir(seen) or None, 10, 0.1)
+            time.sleep(0.3)
+            with open(os.path.join(seen, got[0])) as f:
+                env = f.read().splitlines()
+            t.check(f"55x {tag}: the folder's opener gets GDK_BACKEND={own}",
+                    r == "ok" and gdk_of(env) == own, f"{r}; GDK_BACKEND={gdk_of(env)}")
+            # The batch tool: its own starting environment, off /proc.
+            gui = a.gui_pid()
+            before = set(subprocess.run(["pgrep", "-P", str(gui)], capture_output=True,
+                                        text=True).stdout.split())
+            r = call("open_batch_tool", {})
+
+            def tool():
+                for pid in subprocess.run(["pgrep", "-P", str(gui)], capture_output=True,
+                                          text=True).stdout.split():
+                    if pid in before:
+                        continue
+                    try:
+                        with open(f"/proc/{pid}/cmdline", "rb") as f:
+                            if b"--batch" in f.read().split(b"\0"):
+                                return int(pid)
+                    except OSError:
+                        pass
+                return None
+            pid = wait_for("the batch tool", tool, 20, 0.1)
+            try:
+                with open(f"/proc/{pid}/environ", "rb") as f:
+                    env = f.read().decode("utf-8", "replace").split("\0")
+            finally:
+                time.sleep(1)
+                try:
+                    os.kill(pid, 9)
+                except ProcessLookupError:
+                    pass
+            t.check(f"55x {tag}: the batch tool starts with GDK_BACKEND={own}",
+                    r == "ok" and gdk_of(env) == own, f"{r}; GDK_BACKEND={gdk_of(env)}")
+
+
+SCENARIOS += [x11_children_env_55]
+
+
+# --- 55th pass, mainjs: the 54th's pts-less H.264 .mpg shapes under the editor --
+# A fade from black (pictures so small that several share a PES, the ones after
+# the first given no pts) and a moving dot on black (long pts-less runs of
+# distinct pictures), both x264 -bf 3 in ffmpeg -f mpeg: the 54th's S1 shapes
+# (~/rev54w/cut1, ~/rev54w/newcore/mkdot.sh) with the number strip. Through
+# ps_sets_vol_53: ORD_ONLY=fade55.mpg,dot55.mpg (M53_BASE=~/rev54base/smartcut
+# for an index of 0.8.49, VERSION 20, which the first open makes again).
+_m53_make_one_54 = _m53_make_one
+
+
+def _m53_make_one(d, name):
+    if name not in ("fade55.mpg", "dot55.mpg"):
+        return _m53_make_one_54(d, name)
+    out = os.path.join(d, name)
+    part = out + ".part.mpg"
+    if name == "fade55.mpg":
+        box = "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,3,6)'"
+    else:
+        box = ("drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,5,6.5)',"
+               "drawbox=enable='between(t,5,6.5)':x='mod(t*200,600)':y=100:w=8:h=8:c=white:t=fill")
+    g = (f"testsrc2=s=640x{H53 - STRIP}:r=25:d=12,{box}[a];"
+         f"color=c=black:s=640x{STRIP}:r=25:d=12,format=yuv420p,"
+         f"geq=lum='16+28*mod(floor(N/pow(8\\,floor(X*4/W)))\\,8)':cb=128:cr=128[s];"
+         f"[a][s]vstack,format=yuv420p[v]")
+    _m50_ff(["-f", "lavfi", "-i", "sine=frequency=440:duration=12:sample_rate=48000", "-filter_complex", g,
+             "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-preset", "veryfast", "-bf", "3", "-g", "50",
+             "-b:v", "250k", "-pix_fmt", "yuv420p", "-c:a", "mp2", "-shortest", "-f", "mpeg", part])
+    os.replace(part, out)
+
+
+if any(n in os.environ.get("ORD_ONLY", "") for n in ("fade55.mpg", "dot55.mpg")):
+    M53 += [n for n in ("fade55.mpg", "dot55.mpg") if n in os.environ.get("ORD_ONLY", "")]
+
+
+
+# --- 55th pass, mainjs: a cut that begins part-way into a picture -------------
+# A 25p H.264 .ts whose pictures resume 12.75 frames later after a gap (one
+# long gap: still a constant-rate recording, so the editor counts frames on
+# head + n/25, which the pictures after the gap sit a quarter frame off). A
+# Trim line read with the recording cuts 400..419 on that count: the cut
+# begins a quarter of a frame after picture 387 begins, and the cut keeps it.
+# 0.8.50's ontoJoin took the instant of 387 onto the join, so → went from 386
+# straight to 408 while the output has 387 (0.8.49 showed it).
+def gap_trim_join_55(cfg, t):
+    """(55th pass, mainjs.) → across a join whose cut begins part-way into a
+    picture (a Trim line on a recording whose pictures sit off the frame
+    count after a gap) shows the pictures the output has; and the output."""
+    d = os.path.join(cfg.work, "g55mainjs")
+    os.makedirs(d, exist_ok=True)
+    name = "g25gap.ts"
+    path = os.path.join(d, name)
+    if not os.path.exists(path):
+        part = path + ".part.ts"
+        _m50_ff(["-f", "lavfi", "-i", "sine=frequency=440:duration=24:sample_rate=48000",
+                 "-filter_complex", _num_graph(640, H53, "25", 24), "-map", "[v]", "-map", "0:a",
+                 "-c:v", "libx264", "-preset", "veryfast", "-g", "50", "-bf", "0", "-pix_fmt", "yuv420p",
+                 "-c:a", "aac", "-b:a", "96k", "-shortest", "-f", "mpegts", part])
+        moved = path + ".moved.ts"
+        _m50_ff(["-i", part, "-map", "0", "-c", "copy", "-bsf:v",
+                 "setts=ts=if(gte(N\\,300)\\,TS+0.51/TB\\,TS)", "-f", "mpegts", moved])
+        os.replace(moved, path)
+        os.remove(part)
+    with open(path + ".trim.avs", "w") as f:
+        f.write("Trim(0,399) ++ Trim(420,0)\n")
+    src = _numbers(path)
+    with App(cfg, "gap_trim_join_55", [{"path": path}]) as app:
+        app.open_row(1, name)
+        _walk_done(app)
+        time.sleep(1.5)
+        app.goto(395)
+        fw = [_shown_number(app, H53)]
+        for _ in range(9):
+            app.s.keys("Right")
+            time.sleep(0.6)
+            fw.append(_shown_number(app, H53))
+        back = [fw[-1]]
+        for _ in range(9):
+            app.s.keys("Left")
+            time.sleep(0.6)
+            back.append(_shown_number(app, H53))
+        at_join = _shown_at(app, 400, H53)
+        print(f"        → from 395: {fw}; ← {back}; J 400 {at_join}", flush=True)
+        app.ok()
+        app.gone()
+        time.sleep(0.5)
+        p = app.save()
+        app.export(timeout=600)
+        outs = _ord_outputs(app)
+        files = outs.get(1, [])
+        vids = [f for f in files if not f.endswith((".srt", ".sup", ".idx", ".sub", ".log", ".keyframe"))]
+        got = _numbers(vids[0]) if len(vids) == 1 else None
+        print(f"        cuts {fmt(cuts_of(p, 1))}; output around the join "
+              f"{got[got.index(380):got.index(380) + 12] if got and 380 in got else got}", flush=True)
+        t.check("g55 the cut keeps the picture it begins in (387), and only it", got is not None
+                and 387 in got and 388 not in got and 407 not in got and 408 in got, f"src {len(src)} got {len(got or [])}")
+        k = got.index(fw[0]) if got and fw[0] in got else None
+        t.check("g55 → across the join shows what the output has", k is not None and got[k:k + 10] == fw,
+                f"→ {fw} output {got[k:k + 10] if k is not None else None}")
+        # ← gives 387 the quarter frame the timeline holds it for (as 0.8.49): only kept pictures, in order.
+        t.check("g55 ← across the join shows only what the output has, in order", got is not None
+                and all(n in got for n in back) and all(got.index(a) > got.index(b) for a, b in zip(back, back[1:])),
+                f"← {back}")
+        t.check("g55 J to the join's number shows the first picture after it", at_join == 408, f"J 400 {at_join}")
+        for f in files:
+            os.remove(f)
+    os.remove(path + ".trim.avs")
+
+
+EXTRA.append(gap_trim_join_55)
+
+
+def gap_trim_join_burst_55(cfg, t):
+    """(55th pass, p2gui.) The same join as gap_trim_join_55, crossed with
+    presses that come faster than the stage answers (a held key): showFrame's
+    extra question before a join must not let an earlier press's answer win.
+    Each burst must end on the picture and counter that as many presses one
+    at a time end on. (J to the counter's number is not the test: J 400 shows
+    the join's picture while → shows 387 at 400, the off-grid quarter frame
+    gap_trim_join_55 describes.)"""
+    name = "g25gap.ts"
+    path = os.path.join(cfg.work, "g55mainjs", name)
+    if not os.path.exists(path):
+        t.check("g55b the material of gap_trim_join_55", False, "run gap_trim_join_55 first")
+        return
+    with open(path + ".trim.avs", "w") as f:
+        f.write("Trim(0,399) ++ Trim(420,0)\n")
+    with App(cfg, "gap_trim_join_burst_55", [{"path": path}]) as app:
+        app.open_row(1, name)
+        _walk_done(app)
+        time.sleep(1.5)
+        ref = {}
+        for key, start in (("Right", 395), ("Left", 404)):
+            app.goto(start)
+            row = [(app.state()["at"], _shown_number(app, H53))]
+            for _ in range(9):
+                app.s.keys(key)
+                time.sleep(0.6)
+                row.append((app.state()["at"], _shown_number(app, H53)))
+            ref[key] = row
+        print(f"        one at a time {ref}", flush=True)
+        for key, start in (("Right", 395), ("Left", 404)):
+            for n in (3, 5, 6, 9):
+                app.goto(start)
+                _shown_number(app, H53)
+                app.s.keys(*([key] * n))
+                time.sleep(2.5)
+                got = (app.state()["at"], _shown_number(app, H53))
+                t.check(f"g55b {key} x{n} from {start} in one burst ends where {n} single presses do",
+                        got == ref[key][n], f"burst {got}; one at a time {ref[key][n]}")
+        app.ok()
+        app.gone()
+    os.remove(path + ".trim.avs")
+
+
+EXTRA.append(gap_trim_join_burst_55)
+
 
 
 def main():

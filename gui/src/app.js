@@ -11032,6 +11032,23 @@ function keptInOrder(job) {
 /// Nothing for a window that holds no job.
 const heldJob = () => (queuedJob ? { queued: queuedJob, born: queuedBorn } : {});
 
+/// Whether `path` is in the folder the queue keeps its own copies in
+/// (`queue_dir` in lib.rs: `queued` in the program's settings folder).
+/// False where that cannot be told.
+async function queuedCopy(path) {
+  try {
+    const conf = T.path && (await T.path.appConfigDir());
+    if (typeof conf !== "string" || !conf) return false;
+    const norm = (p) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+    const here = norm(dirOf(path));
+    const there = `${norm(conf)}/queued`;
+    // A Windows path is the same path in either case.
+    return /^[A-Za-z]:/.test(there) ? here.toLowerCase() === there.toLowerCase() : here === there;
+  } catch {
+    return false;
+  }
+}
+
 function keepSafe(unsaved) {
   // The batch tool's jobs are files already, and a queue it did not finish
   // is a queue still on disc.
@@ -11126,9 +11143,21 @@ async function offerRecovery() {
     savedShape = "";
     // And the job it was holding, known by the stamp it had: the first
     // press asks the queue whether it is still that job (`holdingQueuedJob`).
+    // A stamp that was not known (`null`) is not taken from the queue now:
+    // the crash may be days back, and the first stamp read would be that of
+    // whichever job has since been registered under the name. Let go of at
+    // the first press, as a job that had left is.
     if (typeof kept.queued === "string" && kept.queued) {
       queuedJob = kept.queued;
-      queuedBorn = typeof kept.born === "string" || kept.born === false ? kept.born : null;
+      queuedBorn = typeof kept.born === "string" ? kept.born : false;
+      paintEnlistButton();
+    } else if (project && (await queuedCopy(project))) {
+      // A copy written before it said which job it held (0.8.49), naming
+      // one of the queue's own files: held the same way, under no stamp, so
+      // that 保存 and バッチに登録 ask the queue before writing that file
+      // rather than writing it by path over whatever job now has the name.
+      queuedJob = project;
+      queuedBorn = false;
       paintEnlistButton();
     }
     retitleMain();

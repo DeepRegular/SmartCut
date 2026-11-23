@@ -190,6 +190,14 @@ pub fn recovery_orphans(app: tauri::AppHandle, state: tauri::State<Recovery>) ->
                 found.push(Orphan { id: id.clone(), body, saved });
                 claimed.push((id, lock));
             }
+            // There and not readable this instant -- a virus scanner holding
+            // it on Windows, a share that stalled -- is not a lock with no
+            // copy: cleared away as one, the lock went and the copy stayed
+            // with nothing beside it that any start-up looks for. Let go,
+            // and offered at the next start.
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                eprintln!("recovery: {} does not read ({e}); left for the next start", body_path.display());
+            }
             Err(_) => {
                 // Removed while still held, so that no other window can take
                 // it in between and find it again.
