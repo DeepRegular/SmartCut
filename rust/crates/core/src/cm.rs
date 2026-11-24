@@ -902,6 +902,33 @@ pub fn blocks_from_resets(resets: &[f64], duration: f64) -> Vec<Block> {
         }
     }
 
+    // **The programme's opening, marked at both ends, is not a break.** Only
+    // a station that marks every junction gets here (see
+    // [`marks_every_junction`]), and the mark in the first seconds of a
+    // recording is where its programme begins. The piece after it runs to
+    // the next mark unbroken -- an opening, a cold open and the opening, the
+    // title and sponsor cards -- and where that is a whole number of units
+    // long the two marks read as a break: 90 s of opening offered as a
+    // commercial, and taken out by anyone who accepted it. A break the
+    // station marks has a mark at every junction inside it, so a first gap
+    // of more than one unit is one piece, and at the head that piece is the
+    // programme. The mark stands alone, and the edge rule below makes the
+    // stretch in front of it the block it is: the end of the slot before.
+    //
+    // Only the head. At the tail a single long piece is as often the
+    // teleshopping that fills the end of a slot, and further in, a lone
+    // two-minute spot is as likely as a stretch of programme -- measured
+    // across forty recordings of such stations, the long unmarked gaps
+    // inside a recording were spots as often as programme, and the first
+    // gap after the head mark was programme every time it was longer than a
+    // unit (five recordings: 60, 90 twice, 135 and 165 s).
+    if let Some(run) = runs.first_mut() {
+        if run.len() >= 2 && run[0] <= RESET_EDGE && run[1] - run[0] > 15.0 + RESET_GRID {
+            let rest = run.split_off(1);
+            runs.insert(1, rest);
+        }
+    }
+
     runs.into_iter()
         .filter_map(|run| {
             let (first, last) = (run[0], *run.last().expect("runs are never empty"));
@@ -1080,6 +1107,31 @@ mod tests {
         let head = blocks_from_resets(&[3.7, 9.0, 300.0, 315.0], 1800.0);
         let head: Vec<(f64, f64)> = head.iter().map(|b| (b.start, b.end)).collect();
         assert_eq!(head, vec![(0.0, 9.0), (300.0, 315.0)]);
+    }
+
+    /// The opening after the head mark, marked at its end too, is programme;
+    /// a first gap of one unit at the head, and a long gap anywhere else,
+    /// are read as they were.
+    #[test]
+    fn an_opening_marked_at_both_ends_is_programme() {
+        let spans = |r: &[f64]| -> Vec<(f64, f64)> {
+            blocks_from_resets(r, 1805.0).iter().map(|b| (b.start, b.end)).collect()
+        };
+        // A 90 s opening, the sponsor card, then a break marked throughout.
+        assert_eq!(
+            spans(&[3.8, 93.8, 98.8, 113.8, 128.8, 143.8]),
+            vec![(0.0, 3.8), (98.8, 143.8)]
+        );
+        // Cold open and opening, then a break whose first junction is on the
+        // grid with the opening's end: the break starts at that end.
+        assert_eq!(spans(&[4.5, 139.5, 169.5, 199.5]), vec![(0.0, 4.5), (139.5, 199.5)]);
+        // A 15 s spot at the head is still a break.
+        assert_eq!(spans(&[4.4, 19.4, 34.5]), vec![(4.4, 34.5)]);
+        // A long gap with no mark in it further in is still a break.
+        assert_eq!(
+            spans(&[4.1, 348.2, 1079.2, 1169.2]),
+            vec![(0.0, 4.1), (1079.2, 1169.2)]
+        );
     }
 
     /// An absence that runs off the end of the recording makes a block that

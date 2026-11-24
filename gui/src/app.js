@@ -8936,9 +8936,11 @@ let writing = null;
 /// as a position in the list here, and the rows are filled from where it
 /// falls. See `joinParts`.
 let writingJoin = null;
-/// Whether the row being written is in its second pass -- the one that puts
-/// the broadcast's own tables back. Held so the sentence is written once, on
-/// the report that crosses over, rather than on every one after it.
+/// Whether the row being written is in a pass over the finished file, and
+/// which: "tables" for the one that puts the broadcast's own tables back,
+/// "arrivals" for the arrival times of a standalone `.m2ts`, false while it
+/// is being written. Held so the sentence is written once, on the report
+/// that crosses over, rather than on every one after it.
 let writingTables = false;
 /// What that row's output file is called, for the sentence the second pass
 /// writes. Held because the report carries the recording's path and the
@@ -9114,7 +9116,7 @@ function paintOutProgress(overall, since = began) {
 
 if (listen) {
   listen("export-progress", (ev) => {
-    const [path, tables, done, within] = ev.payload;
+    const [path, tables, done, within, arrivals] = ev.payload;
     if (!writing || writing.path !== path) return;
     const clip = writing;
     // Whether anything anybody can see has moved since the last report. What
@@ -9152,10 +9154,16 @@ if (listen) {
     // muxer cannot write, put back over the ones it did. It is a read and a
     // write of the whole finished file, so a window still saying 出力中
     // through it is saying the wrong thing for a third of the run.
-    if (tables !== writingTables) {
-      writingTables = tables;
-      if (tables) {
-        el("out-state").textContent = t("out.writingTables", { name: writingName });
+    // And a `.m2ts` of its own has one more, last: its arrival times,
+    // written again over the whole file.
+    const stage = arrivals ? "arrivals" : tables ? "tables" : false;
+    if (stage !== writingTables) {
+      writingTables = stage;
+      if (stage) {
+        el("out-state").textContent = t(
+          stage === "arrivals" ? "out.writingArrivals" : "out.writingTables",
+          { name: writingName },
+        );
       }
     } else if (!moved) {
       return;
@@ -9453,8 +9461,14 @@ function keptWrong(r) {
 /// place of it, and `detail` in full, for the row's tooltip and the log.
 function verdict(r) {
   const secs = (d) => Math.abs(d).toFixed(1);
+  // Off by where it is laid (out of step) rather than by its length: to the
+  // hundredth, since a tenth of a second is what it is about.
+  const steps = r.soundStep || [];
   const sound = r.soundOff
-    .map(([i, d]) => t(d < 0 ? "out.verifySoundShort" : "out.verifySoundLong", { i, secs: secs(d) }))
+    .map(([i, d]) =>
+      steps.some(([j, e]) => j === i && e === d)
+        ? t(d > 0 ? "out.verifySoundLate" : "out.verifySoundEarly", { i, secs: Math.abs(d).toFixed(2) })
+        : t(d < 0 ? "out.verifySoundShort" : "out.verifySoundLong", { i, secs: secs(d) }))
     .join(t("sep"));
   if (!r.picturesOk) {
     let why;
@@ -11049,6 +11063,21 @@ async function queuedCopy(path) {
   }
 }
 
+/// The stamp the job on `path` has in the queue this instant: `false` for no
+/// such job (let go of at the first press), "" for a job with no stamp, null
+/// where the queue cannot be read (the first stamp read later is taken). The
+/// same answers the window opened on a job settles at startup.
+async function bornInQueue(path) {
+  try {
+    const queue = await invoke("batch_read");
+    const jobs = queue && Array.isArray(queue.jobs) ? queue.jobs : [];
+    const job = jobs.find((j) => j && j.path === path);
+    return job ? (typeof job.born === "string" ? job.born : "") : false;
+  } catch {
+    return null;
+  }
+}
+
 function keepSafe(unsaved) {
   // The batch tool's jobs are files already, and a queue it did not finish
   // is a queue still on disc.
@@ -11399,6 +11428,10 @@ async function loadProject(path, given = null) {
     return false;
   }
   if (!(await sharesAsked(doc))) return false;
+  // Asked before anything is taken down, so that the list is put up without
+  // a wait in the middle of it. See where `byHand` is used below.
+  const byHand =
+    path && path !== queuedJob && !isTool() && (await queuedCopy(path)) ? { born: await bornInQueue(path) } : null;
   // Not merely emptied: a lane reading a row has to be told to stop, and the
   // editor open on one has nothing left to be about. All of which `remove`
   // already knows how to do.
@@ -11589,6 +11622,18 @@ async function loadProject(path, given = null) {
   // list into a file it is no longer about. Unless it is the same file --
   // which is how the window opens in the first place.
   if (path !== queuedJob) queuedJob = "";
+  // One of the queue's own copies opened by hand -- through プロジェクトを開く
+  // or from a file manager, rather than by the batch tool -- is held as the
+  // job it is, known by the stamp it has in the queue now, just as a window
+  // the tool opens on it is. Opened as a plain project, its 保存 wrote that
+  // file by path: once the job had left the queue and another list had been
+  // registered under the name, over that list's job. A copy whose job has
+  // already left is let go of at the first press (no stamp is `false`), and
+  // 保存 asks for a name. Not in the batch tool, which opens its own jobs.
+  if (byHand) {
+    queuedJob = path;
+    queuedBorn = byHand.born;
+  }
   savedShape = shapeOf();
   retitleMain();
   // Onto the screen the list is on -- except in the batch tool, which has no

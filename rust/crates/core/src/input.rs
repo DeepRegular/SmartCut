@@ -510,7 +510,7 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
     let (genpts, all_maps, deeper) = match (&ictx, known) {
         (Some(ictx), _) => {
             let answers = (
-                is_program_stream(ictx),
+                is_program_stream(ictx) || avi_untimed(ictx),
                 is_transport_stream(ictx) && !states_frame_rate(ictx),
                 announced_late(url, ictx),
             );
@@ -532,7 +532,7 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
         let mut again =
             open_with(url, genpts, true, deeper.then_some(DEEP_PROBE), deeper.then_some(LONGER_ANALYSIS))?;
         keep_the_clock(&ictx, &mut again);
-        return Ok(again);
+        return Ok(sound_begins_late(url, identity, genpts, true, again));
     }
     // And the fifth for pictures that begin after the analysis has ended;
     // see [`pictures_undescribed`].
@@ -542,13 +542,79 @@ pub(crate) fn demux_as_opened(url: &str) -> Result<Demux> {
             if !pictures_undescribed(&again) {
                 return Ok(again);
             }
+            // And later still, bounded by the bytes alone: see
+            // [`LATEST_PICTURES`]. Only where the open above came back
+            // without, so that every file it describes opens as it did.
+            drop(again);
+            if let Ok(later) = open_with(url, genpts, all_maps, Some(LATE_PROBE), Some(LATEST_PICTURES)) {
+                if !pictures_undescribed(&later) {
+                    return Ok(later);
+                }
+            }
             // Not asked again of the same file: see [`late_open_failed`].
             if READS_CUT.with(|c| c.get()) == cut {
                 late_open_failed(url, identity, Some(()));
             }
         }
     }
-    Ok(ictx)
+    // And the sixth for sound that begins after the analysis has ended; see
+    // [`sound_undescribed`].
+    Ok(sound_begins_late(url, identity, genpts, all_maps, ictx))
+}
+
+/// `ictx`, or where none of its sound is described ([`sound_undescribed`]),
+/// the longer open of [`pictures_undescribed`] where that describes it. Tried
+/// once per file as that one is, and not again where that one was tried.
+/// Reading every map does not help here -- the map named the track from the
+/// start -- so it is asked after that open as well as after the plain one.
+fn sound_begins_late(url: &str, identity: (u64, u128), genpts: bool, all_maps: bool, ictx: Demux) -> Demux {
+    if !sound_undescribed(&ictx) || late_open_failed(url, identity, None) {
+        return ictx;
+    }
+    let cut = READS_CUT.with(|c| c.get());
+    if let Ok(mut again) = open_with(url, genpts, all_maps, Some(LATE_PROBE), Some(LATE_PICTURES)) {
+        if !sound_undescribed(&again) && !(pictures_undescribed(&again) && !pictures_undescribed(&ictx)) {
+            keep_the_clock(&ictx, &mut again);
+            return again;
+        }
+    }
+    if READS_CUT.with(|c| c.get()) == cut {
+        late_open_failed(url, identity, Some(()));
+    }
+    ictx
+}
+
+/// Whether the open ended before it saw any of the sound: the recording has
+/// sound streams with a decoder, and not one of them came back with its
+/// channels and rate.
+///
+/// **A transport stream whose only sound track sends nothing for its first
+/// twenty seconds** -- the map lists it from the start -- came back with the
+/// track at 0 channels, and everything downstream took that for no sound:
+/// the cut left the track out without a word and `--sound-only` said the
+/// recording had none. Opened again for longer, only where no sound at all
+/// is described: a broadcast whose map lists a second track that is not on
+/// air (one station in twelve tried) has its main sound described, and
+/// opens as it did.
+fn sound_undescribed(ictx: &ff::format::context::Input) -> bool {
+    let mut listed = false;
+    for st in ictx.streams() {
+        // SAFETY: the stream and its parameters belong to the open context.
+        unsafe {
+            let par = st.parameters();
+            let par = par.as_ptr();
+            if (*par).codec_type != ff::ffi::AVMediaType::AVMEDIA_TYPE_AUDIO
+                || ff::ffi::avcodec_find_decoder((*par).codec_id).is_null()
+            {
+                continue;
+            }
+            if (*par).ch_layout.nb_channels > 0 && (*par).sample_rate > 0 {
+                return false;
+            }
+            listed = true;
+        }
+    }
+    listed
 }
 
 /// What the plain open of [`demux_as_opened`] said of this file as it is now
@@ -623,6 +689,16 @@ const LATE_PICTURES: &str = "120000000";
 
 /// The bytes [`LATE_PICTURES`] may read.
 const LATE_PROBE: &str = "100000000";
+
+/// The same look as [`LATE_PICTURES`] with no limit of time worth the name
+/// (ten hours), so that what ends it is [`LATE_PROBE`]'s bytes: pictures
+/// 150 s after an AAC track's start (under 2 MB of sound) were past the two
+/// minutes, came back with no pixel format, and every cut that re-encodes
+/// was refused. Now that is so only past 100 MB of what comes first --
+/// about 2 hours of 96 kbps AAC, 20 minutes of 640 kbps AC-3, 9 minutes of
+/// 16-bit stereo PCM. Tried only after the two-minute look has come back
+/// without, so a file that look describes reads nothing more than before.
+const LATEST_PICTURES: &str = "36000000000";
 
 /// Whether the open learned how deep the main video's pictures are
 /// reordered (`has_b_frames`), which it learns only from pictures it read:
@@ -1536,11 +1612,15 @@ pub fn keep_everything(ictx: &mut Demux) {
 /// How far into a recording to look for a stream the first program map did
 /// not mention. libavformat's own limit is five megabytes.
 ///
-/// A ceiling rather than a read: the analysis stops at five seconds of
-/// stream whatever this says, which on a Japanese broadcast is about ten
-/// megabytes. So a recording with nothing more to find pays for ten and not
-/// for thirty-two -- three tenths of a second, measured, on top of an open
-/// that took a quarter.
+/// **Read in full, not a ceiling.** The analysis itself stops at five
+/// seconds of stream, about ten megabytes on a Japanese broadcast; but a
+/// recording that carries a data broadcast has a stream libavformat cannot
+/// name, and every packet behind its first is held back until the probe's
+/// bytes are spent. So every open with this reads 35 to 46 MB before it
+/// hands over a packet (measured with `ffprobe -probesize 32000000` on a
+/// dozen stations: the same analysis, five seconds and the same pictures,
+/// at 10 MB and at 32 MB, reading 11 MB and 34 MB). The second and later
+/// opens of a file read those bytes out of memory: see [`HeadReader`].
 const DEEP_PROBE: &str = "32000000";
 
 /// How long into a broadcast recording the reading of every map goes on
@@ -1639,6 +1719,49 @@ fn states_frame_rate(ictx: &ff::format::context::Input) -> bool {
 /// DVD title read out of either.
 fn is_program_stream(ictx: &ff::format::context::Input) -> bool {
     ictx.format().name().split(',').any(|n| n.trim() == "mpeg")
+}
+
+/// Whether what is open is an AVI.
+pub(crate) fn is_avi(ictx: &ff::format::context::Input) -> bool {
+    ictx.format().name().split(',').any(|n| n.trim() == "avi")
+}
+
+/// **An AVI whose pictures libavformat hands over with no presentation
+/// time**, and which it times right when asked to: MPEG-1, MPEG-2, and
+/// MPEG-4 Part 2 with B pictures. An AVI keeps one time per chunk, in the
+/// order the chunks are stored, and nothing else; for a codec whose pictures
+/// may be shown out of that order libavformat leaves every presentation time
+/// off, and every such `.avi` was refused with "no random access points
+/// found" -- an MPEG-2 one with no B pictures as well. Asked (`+genpts`), it
+/// gives a picture that is not a B picture the next such picture's stored
+/// time and a B picture its own: the order a decoder hands them back in,
+/// at the chunk it hands each back at, which is when a player shows them --
+/// wherever no B picture is a reference and each has a chunk of its own.
+/// Measured against flashes and clicks: MPEG-2 with and without B pictures
+/// and lavc MPEG-4 with them are cut with their sound where the source plays
+/// it.
+///
+/// **Not H.264**: its decoder hands a picture back at its own chunk where
+/// nothing is reordered, and the rule above put every picture of a B-less
+/// x264 `.avi` a frame (40 ms) behind its sound; with B pictures, which may
+/// be references, the order is in the slices and libavformat does not read
+/// it. Nor MPEG-4 B pictures packed into the chunk before them. Both are
+/// refused by name in [`crate::outline_of`].
+///
+/// Nothing else is asked: an MPEG-4 encode with no B pictures (an Xvid `.avi`
+/// in its usual shape) comes with its times and opens as it did.
+fn avi_untimed(ictx: &ff::format::context::Input) -> bool {
+    use ff::codec::Id;
+    is_avi(ictx)
+        && ictx.streams().best(ff::media::Type::Video).is_some_and(|s| {
+            let par = s.parameters();
+            match par.id() {
+                Id::MPEG1VIDEO | Id::MPEG2VIDEO => true,
+                // SAFETY: the parameters of a stream of a context still open.
+                Id::MPEG4 => unsafe { (*par.as_ptr()).video_delay > 0 },
+                _ => false,
+            }
+        })
 }
 
 /// Sound frames of an MPEG program stream that came stamped a frame late.
@@ -1894,7 +2017,72 @@ fn open_with(
     if generate_pts {
         opts.set("fflags", "+genpts");
     }
-    Ok(Demux::plain(ff::format::input_with_dictionary(&*as_local(url), opts)?))
+    // A broadcast recording -- the one kind of file opened with the deeper
+    // probe -- is read through the copy of its head the last open kept. See
+    // [`HeadReader`].
+    if probe == Some(DEEP_PROBE) && Path::new(url).is_file() {
+        return open_through_head(Path::new(url), &as_local(url), opts);
+    }
+    Ok(Demux::plain(input_stoppable(&as_local(url), opts)?))
+}
+
+/// What libavformat asks while it opens a file on a thread that
+/// [`stop_reads_when`] watches. See [`input_stoppable`].
+unsafe extern "C" fn open_interrupted(_: *mut c_void) -> c_int {
+    let stop = STOP_READS
+        .try_with(|s| s.try_borrow().ok().is_some_and(|f| f.as_ref().is_some_and(|f| f())))
+        .unwrap_or(false);
+    c_int::from(stop)
+}
+
+/// `input_with_dictionary`, stopped where [`stop_reads_when`] says so.
+///
+/// **The open is a read too, and it can be a long one.** Where the pictures
+/// begin far in, the open that looks for them ([`pictures_undescribed`]) reads
+/// up to [`LATE_PROBE`] -- 132 MB on a recording whose first key picture is
+/// 120 MB in -- and none of it went through [`Packets`], where a stop is
+/// asked: closing 分割 on such a row read all of it twice (the container's
+/// table, then the walk) before the walk could see the stop. Asked here
+/// through libavformat's own interrupt, which every read of the open passes;
+/// an open stopped part way is no open at all, and is said to have been
+/// stopped as a read is.
+///
+/// Only on a thread that is watched. Every other open -- the whole of the
+/// command line -- is libavformat's own, exactly as before.
+fn input_stoppable(path: &str, opts: ff::Dictionary) -> Result<ff::format::context::Input, ff::Error> {
+    let watched = STOP_READS.try_with(|s| s.try_borrow().ok().is_some_and(|f| f.is_some())).unwrap_or(false);
+    if !watched {
+        return ff::format::input_with_dictionary(path, opts);
+    }
+    let name = CString::new(path).map_err(|_| ff::Error::InvalidData)?;
+    let stopped = || {
+        READS_STOPPED.with(|s| s.set(true));
+        read_cut();
+        ff::Error::Exit
+    };
+    unsafe {
+        let mut ps = ff::ffi::avformat_alloc_context();
+        if ps.is_null() {
+            return Err(ff::Error::Other { errno: ff::util::error::ENOMEM });
+        }
+        (*ps).interrupt_callback = ff::ffi::AVIOInterruptCB {
+            callback: Some(open_interrupted),
+            opaque: ptr::null_mut(),
+        };
+        let mut opts = opts.disown();
+        let res = ff::ffi::avformat_open_input(&mut ps, name.as_ptr(), ptr::null_mut(), &mut opts);
+        ff::Dictionary::own(opts);
+        if res < 0 {
+            // libavformat has freed the context.
+            return Err(if asked_to_stop() { stopped() } else { ff::Error::from(res) });
+        }
+        let res = ff::ffi::avformat_find_stream_info(ps, ptr::null_mut());
+        if res < 0 || asked_to_stop() {
+            ff::ffi::avformat_close_input(&mut ps);
+            return Err(if asked_to_stop() { stopped() } else { ff::Error::from(res) });
+        }
+        Ok(ff::format::context::Input::wrap(ps))
+    }
 }
 
 /// The seams in a recording, timed on the clock the demuxer will report.
@@ -1930,8 +2118,20 @@ pub struct Demux {
     ictx: std::mem::ManuallyDrop<ff::format::context::Input>,
     /// The reader underneath, when there is one. libavformat is told the i/o
     /// is not its own -- `AVFMT_FLAG_CUSTOM_IO` -- so closing the context
-    /// leaves this alone and it is freed here.
-    io: Option<*mut ff::ffi::AVIOContext>,
+    /// leaves this alone and it is freed here, with what frees the reader's
+    /// own state (a [`Bridge`] or a [`HeadReader`]).
+    io: Option<ReaderIo>,
+}
+
+/// A reader libavformat reads through, and what frees its state.
+type ReaderIo = (*mut ff::ffi::AVIOContext, unsafe fn(*mut c_void));
+
+/// Free a reader's state that was handed to libavformat as a `Box<T>`'s raw
+/// pointer. See [`Demux`]'s `io`.
+unsafe fn free_reader<T>(opaque: *mut c_void) {
+    if !opaque.is_null() {
+        drop(Box::from_raw(opaque as *mut T));
+    }
 }
 
 // The context is `Send` and so is everything hung off it here: the reader is
@@ -1966,17 +2166,15 @@ impl Drop for Demux {
         // The context goes first: it may still read while it is being closed,
         // and what it would read through is freed below.
         unsafe { std::mem::ManuallyDrop::drop(&mut self.ictx) };
-        let Some(pb) = self.io.take() else { return };
+        let Some((pb, free)) = self.io.take() else { return };
         unsafe {
             // The buffer is freed as it stands rather than as it was handed
             // over, because libavformat is free to have grown it.
-            let bridge = (*pb).opaque as *mut Bridge;
+            let reader = (*pb).opaque;
             ff::ffi::av_freep(std::ptr::addr_of_mut!((*pb).buffer) as *mut c_void);
             let mut pb = pb;
             ff::ffi::avio_context_free(&mut pb);
-            if !bridge.is_null() {
-                drop(Box::from_raw(bridge));
-            }
+            free(reader);
         }
     }
 }
@@ -2173,7 +2371,7 @@ fn restamped(
         }
         let demux = Demux {
             ictx: std::mem::ManuallyDrop::new(ff::format::context::Input::wrap(ctx)),
-            io: Some(pb),
+            io: Some((pb, free_reader::<Bridge>)),
         };
         let err = ff::ffi::avformat_find_stream_info(ctx, ptr::null_mut());
         if err < 0 {
@@ -2189,6 +2387,254 @@ unsafe fn set(opts: *mut *mut ff::ffi::AVDictionary, key: &str, value: &str) {
         return;
     };
     ff::ffi::av_dict_set(opts, key.as_ptr(), value.as_ptr(), 0);
+}
+
+/// How much of the head of a broadcast recording is kept in memory once read,
+/// for the next open of the same file. See [`HeadReader`].
+const HEAD_HELD: u64 = 48 << 20;
+
+/// The pieces it is kept in: read whole, kept whole.
+const HEAD_BLOCK: usize = 1 << 20;
+
+/// How many recordings' heads are kept: the one being cut, and one more for
+/// a join or a list that goes back and forth between two.
+const HEADS_KEPT: usize = 2;
+
+/// The head of one recording as it is now, as far as the opens have read it.
+struct Head {
+    path: PathBuf,
+    identity: (u64, u128),
+    blocks: std::sync::Mutex<Vec<Option<std::sync::Arc<[u8]>>>>,
+}
+
+/// The heads of the recordings opened last, newest at the end.
+static HEADS: std::sync::Mutex<Vec<std::sync::Arc<Head>>> = std::sync::Mutex::new(Vec::new());
+
+/// The head of `path` as it is now, kept or new.
+fn kept_head(path: &Path, identity: (u64, u128)) -> std::sync::Arc<Head> {
+    let mut heads = HEADS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(at) = heads.iter().position(|h| h.path == path && h.identity == identity) {
+        let head = heads.remove(at);
+        heads.push(head.clone());
+        return head;
+    }
+    // A file that changed is a different head: the one kept for it goes.
+    heads.retain(|h| h.path != path);
+    if heads.len() >= HEADS_KEPT {
+        heads.remove(0);
+    }
+    let head = std::sync::Arc::new(Head {
+        path: path.to_path_buf(),
+        identity,
+        blocks: std::sync::Mutex::new(vec![None; (HEAD_HELD as usize).div_ceil(HEAD_BLOCK)]),
+    });
+    heads.push(head.clone());
+    head
+}
+
+/// A broadcast recording read through a copy of its head kept in memory.
+///
+/// **Every open of a broadcast recording reads 35 to 46 MB before it hands
+/// over a packet**, and a cut opens its recording again some seven times a
+/// range -- to look for the pictures around a range's ends, to look back for
+/// a caption line already up, for each copied and re-encoded stretch -- so
+/// half a gigabyte a range went past on a 30-minute recording before anything
+/// useful was read. The reason is the deeper probe ([`DEEP_PROBE`]): the
+/// data broadcast's stream is one libavformat cannot name, and it holds back
+/// every packet behind its first one until either it is named or the probe's
+/// bytes are spent, which they always are. Spending fewer of them would
+/// change what the open finds (streams announced late, the sound's rate), so
+/// the open reads what it read before, and only the second and later ones
+/// read it out of memory.
+///
+/// The bytes handed over are the file's own, from the same places, so the
+/// demuxer sees the same stream and every output is the same. Kept while
+/// the file keeps its size and time (as [`first_answers`] is), and only in
+/// whole blocks: a recording still being written is a new head on every
+/// open, and a block the end of the file cut short is read again.
+struct HeadReader {
+    file: File,
+    head: std::sync::Arc<Head>,
+    at: u64,
+    /// Whether the open was made on a thread that [`stop_reads_when`]
+    /// watches, where a read is to be stopped as the file protocol's is.
+    watched: bool,
+}
+
+impl HeadReader {
+    fn read(&mut self, out: *mut u8, size: c_int) -> c_int {
+        if self.watched && unsafe { open_interrupted(ptr::null_mut()) } != 0 {
+            return c_int::from(ff::Error::Exit);
+        }
+        let size = size.max(0) as usize;
+        if size == 0 {
+            return ff::ffi::AVERROR_EOF;
+        }
+        let out = unsafe { std::slice::from_raw_parts_mut(out, size) };
+        if self.at < HEAD_HELD {
+            let n = self.at as usize / HEAD_BLOCK;
+            let kept = self.head.blocks.lock().unwrap_or_else(|e| e.into_inner())[n].clone();
+            let block = match kept {
+                Some(block) => Some(block),
+                None => self.load(n),
+            };
+            if let Some(block) = block {
+                let from = self.at as usize - n * HEAD_BLOCK;
+                let take = size.min(HEAD_BLOCK - from);
+                out[..take].copy_from_slice(&block[from..from + take]);
+                self.at += take as u64;
+                return take as c_int;
+            }
+        }
+        self.direct(out)
+    }
+
+    /// Block `n` of the head, read and kept, or `None` where the file does
+    /// not hold all of it (or could not be read: the plain read below meets
+    /// the failure and says it).
+    fn load(&self, n: usize) -> Option<std::sync::Arc<[u8]>> {
+        let mut block = vec![0u8; HEAD_BLOCK];
+        let mut got = 0;
+        while got < HEAD_BLOCK {
+            match read_at(&self.file, &mut block[got..], (n * HEAD_BLOCK + got) as u64) {
+                Ok(0) => return None,
+                Ok(k) => got += k,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return None,
+            }
+        }
+        let block: std::sync::Arc<[u8]> = block.into();
+        let mut blocks = self.head.blocks.lock().unwrap_or_else(|e| e.into_inner());
+        Some(blocks[n].get_or_insert(block).clone())
+    }
+
+    fn direct(&mut self, out: &mut [u8]) -> c_int {
+        loop {
+            match read_at(&self.file, out, self.at) {
+                Ok(0) => return ff::ffi::AVERROR_EOF,
+                Ok(k) => {
+                    self.at += k as u64;
+                    return k as c_int;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                // As an errno where there is one; EIO otherwise.
+                Err(e) => return -(if cfg!(unix) { e.raw_os_error().unwrap_or(5) } else { 5 }),
+            }
+        }
+    }
+
+    fn seek(&mut self, to: i64, whence: c_int) -> i64 {
+        let size = || self.file.metadata().map(|m| m.len() as i64).unwrap_or(-5);
+        if whence & AVSEEK_SIZE != 0 {
+            return size();
+        }
+        const SEEK_END: c_int = 2;
+        let at = match whence & !AVSEEK_FORCE {
+            SEEK_SET => Some(to),
+            SEEK_CUR => (self.at as i64).checked_add(to),
+            SEEK_END => size().checked_add(to),
+            _ => None,
+        };
+        match at {
+            Some(at) if at >= 0 => {
+                self.at = at as u64;
+                at
+            }
+            _ => -22,
+        }
+    }
+}
+
+/// A read at a place in the file, leaving no position behind that matters.
+fn read_at(file: &File, buf: &mut [u8], at: u64) -> std::io::Result<usize> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::read_at(file, buf, at)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::FileExt::seek_read(file, buf, at)
+    }
+}
+
+unsafe extern "C" fn kept_head_read(opaque: *mut c_void, out: *mut u8, size: c_int) -> c_int {
+    (*(opaque as *mut HeadReader)).read(out, size)
+}
+
+unsafe extern "C" fn kept_head_seek(opaque: *mut c_void, to: i64, whence: c_int) -> i64 {
+    (*(opaque as *mut HeadReader)).seek(to, whence)
+}
+
+/// The buffer libavformat's own file reader is given, so that it asks for
+/// what it asked for before.
+const HEAD_BUFFER: usize = 32768;
+
+/// Open `path` -- a broadcast recording, opened with the deeper probe -- as
+/// [`input_stoppable`] opens it, but reading through a [`HeadReader`]. `name`
+/// is what libavformat is told the file is called, as before.
+fn open_through_head(path: &Path, name: &str, opts: ff::Dictionary) -> Result<Demux> {
+    let identity = file_identity(&path.to_string_lossy());
+    let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+    let watched = STOP_READS.try_with(|s| s.try_borrow().ok().is_some_and(|f| f.is_some())).unwrap_or(false);
+    let reader = Box::into_raw(Box::new(HeadReader {
+        file,
+        head: kept_head(path, identity),
+        at: 0,
+        watched,
+    }));
+    let name = CString::new(name).context("that name cannot be opened")?;
+    let stopped = || {
+        READS_STOPPED.with(|s| s.set(true));
+        read_cut();
+        anyhow::Error::from(ff::Error::Exit)
+    };
+    unsafe {
+        let buffer = ff::ffi::av_malloc(HEAD_BUFFER) as *mut u8;
+        let pb = ff::ffi::avio_alloc_context(
+            buffer,
+            HEAD_BUFFER as c_int,
+            0,
+            reader as *mut c_void,
+            Some(kept_head_read),
+            None,
+            Some(kept_head_seek),
+        );
+        let mut ps = ff::ffi::avformat_alloc_context();
+        if buffer.is_null() || pb.is_null() || ps.is_null() {
+            bail!("out of memory opening {}", path.display());
+        }
+        (*ps).pb = pb;
+        (*ps).flags |= ff::ffi::AVFMT_FLAG_CUSTOM_IO as c_int;
+        if watched {
+            (*ps).interrupt_callback = ff::ffi::AVIOInterruptCB {
+                callback: Some(open_interrupted),
+                opaque: ptr::null_mut(),
+            };
+        }
+        let mut opts = opts.disown();
+        let res = ff::ffi::avformat_open_input(&mut ps, name.as_ptr(), ptr::null_mut(), &mut opts);
+        ff::Dictionary::own(opts);
+        if res < 0 {
+            // libavformat has freed the context and left the i/o alone.
+            ff::ffi::av_freep(std::ptr::addr_of_mut!((*pb).buffer) as *mut c_void);
+            let mut pb = pb;
+            ff::ffi::avio_context_free(&mut pb);
+            free_reader::<HeadReader>(reader as *mut c_void);
+            if watched && asked_to_stop() {
+                return Err(stopped());
+            }
+            return Err(ff::Error::from(res).into());
+        }
+        let demux = Demux {
+            ictx: std::mem::ManuallyDrop::new(ff::format::context::Input::wrap(ps)),
+            io: Some((pb, free_reader::<HeadReader>)),
+        };
+        let res = ff::ffi::avformat_find_stream_info(ps, ptr::null_mut());
+        if res < 0 || (watched && asked_to_stop()) {
+            return Err(if watched && asked_to_stop() { stopped() } else { ff::Error::from(res).into() });
+        }
+        Ok(demux)
+    }
 }
 
 /// Split a DVD title's name into the stream it plays and the sectors of it.
@@ -2530,6 +2976,37 @@ mod tests {
         assert!(sound_in_maps(&ts).is_empty());
     }
 
+    /// An open on a thread watched by [`stop_reads_when`] is stopped there,
+    /// and says so; watched by a stop that never comes, it opens as an open
+    /// that is not watched does.
+    #[test]
+    fn an_open_is_stopped_where_the_reads_are() {
+        crate::init().ok();
+        let pat = section(0x00, 1, &[0x00, 0x00, 0xE0, 0x1F, 0x18, 0x20, 0xE1, 0x00]);
+        let map = pmt(&[(0x1B, 0x1011), (0x0F, 0x1100)]);
+        let mut ts = Vec::new();
+        for _ in 0..200 {
+            ts.extend_from_slice(&section_packet(0, &pat)[4..]);
+            ts.extend_from_slice(&section_packet(0x100, &map)[4..]);
+        }
+        let path = std::env::temp_dir().join(format!("smartcut-open-stop-{}.ts", std::process::id()));
+        std::fs::File::create(&path).unwrap().write_all(&ts).unwrap();
+        let name = path.to_str().unwrap();
+        let plain = open(name, false).map(|d| d.nb_streams());
+        {
+            let _reads = stop_reads_when(|| false);
+            assert_eq!(open(name, false).map(|d| d.nb_streams()).ok(), plain.as_ref().ok().copied());
+            assert!(!reads_stopped());
+        }
+        {
+            let _reads = stop_reads_when(|| true);
+            assert!(open(name, false).is_err());
+            assert!(reads_stopped());
+        }
+        assert!(!reads_stopped());
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn an_output_is_written_under_the_name_it_is_given() {
         assert_eq!(as_output("/a/rec.ts"), "/a/rec.ts");
@@ -2673,6 +3150,58 @@ mod tests {
         let spec = format!("{}@0-1", first.to_string_lossy());
         assert!(Input::parse(&spec).unwrap().url.starts_with("concat:"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_kept_head_hands_over_the_files_own_bytes() {
+        let dir = std::env::temp_dir().join(format!("smartcut-input-head-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rec.ts");
+        // Past the part that is kept, and not a whole number of blocks.
+        let len = HEAD_HELD as usize + 3 * HEAD_BLOCK + 12345;
+        let bytes: Vec<u8> = (0..len).map(|i| (i * 7 + i / 977) as u8).collect();
+        File::create(&path).unwrap().write_all(&bytes).unwrap();
+        let identity = file_identity(&path.to_string_lossy());
+        let reader = || HeadReader {
+            file: File::open(&path).unwrap(),
+            head: kept_head(&path, identity),
+            at: 0,
+            watched: false,
+        };
+        let read = |r: &mut HeadReader, size: usize| {
+            let mut buf = vec![0u8; size];
+            let n = r.read(buf.as_mut_ptr(), size as c_int);
+            buf.truncate(n.max(0) as usize);
+            (n, buf)
+        };
+        // Twice: the first reads the file, the second the copy it kept.
+        for _ in 0..2 {
+            let mut r = reader();
+            assert_eq!(r.seek(0, AVSEEK_SIZE), len as i64);
+            let mut got = Vec::new();
+            loop {
+                let (n, buf) = read(&mut r, 32768 + 17);
+                if n == ff::ffi::AVERROR_EOF {
+                    break;
+                }
+                assert!(n > 0);
+                got.extend_from_slice(&buf);
+            }
+            assert!(got == bytes);
+            // Seeks to across a block's end, past the kept part, and back.
+            for at in [HEAD_BLOCK as i64 - 5, HEAD_HELD as i64 - 3, 17, len as i64 - 4] {
+                assert_eq!(r.seek(at, SEEK_SET), at);
+                let (_, buf) = read(&mut r, 100);
+                assert!(!buf.is_empty());
+                assert_eq!(&buf[..], &bytes[at as usize..at as usize + buf.len()]);
+            }
+            assert_eq!(r.seek(-10, 2), len as i64 - 10);
+            assert_eq!(r.seek(-1, SEEK_SET), -22);
+        }
+        // Kept whole blocks only: the head is full, none was short.
+        let head = kept_head(&path, identity);
+        assert!(head.blocks.lock().unwrap().iter().all(|b| b.as_ref().is_some_and(|b| b.len() == HEAD_BLOCK)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

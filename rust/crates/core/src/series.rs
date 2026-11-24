@@ -52,6 +52,14 @@ const EPISODE: [char; 10] = ['話', '回', '幕', '夜', '章', '篇', '編', '�
 /// nothing but separators (`▼`), which names no series and leaves the disc to
 /// [`shared`]'s caller: a name this can find nothing to cut is its own answer.
 pub fn of(name: &str) -> String {
+    read(name, false)
+}
+
+/// [`of`], or with `keep_bracket` the same name read with a closing `「…」`
+/// kept where nothing numbered the episode -- the other reading of a name
+/// such as `枠「X」`, which is a block and its series as often as a series
+/// and an episode's title. See [`shared`] for when that one is taken.
+fn read(name: &str, keep_bracket: bool) -> String {
     let text = without_marks(name);
     let text = without_block(&text);
     // The episode's own title in brackets only where nothing numbered the
@@ -59,7 +67,11 @@ pub fn of(name: &str) -> String {
     // with it, and brackets in front of the number are the series' own
     // (`アニメ枠「X」 #04` is X, not `アニメ枠`).
     let cut = before_episode(&text);
-    let text = if cut == text { without_subtitle(&cut) } else { cut };
+    let text = if cut == text && !keep_bracket {
+        without_subtitle(&cut)
+    } else {
+        cut
+    };
     let text = without_trailing_labels(&text);
     if text.is_empty() {
         tidy(name)
@@ -90,25 +102,52 @@ pub fn of(name: &str) -> String {
 /// ([`before_bare_number`]): only then, because a number on its own is a
 /// title's as often as an episode's, and it is the names differing at that
 /// number and nowhere else that says which it is here.
+///
+/// And last, a name with nothing numbering it that ends in `「…」` read the
+/// other way, with the bracket kept, where that reading is what another
+/// recording on the disc is called: `枠「X」` beside `枠「X」 #43「…」` is a
+/// block and its series and not `枠` -- the numbered one says so. Only
+/// then: on its own, or beside names that say nothing about it, `X「Y」` is
+/// a series and an episode's title as often, and is read as [`of`] reads it.
 pub fn shared<S: AsRef<str>>(names: &[S]) -> Option<String> {
+    let key = |t: &str| t.chars().map(fold).collect::<String>();
     let alike = |titles: &[String]| {
         let first = titles.first()?;
-        let key = |t: &String| t.chars().map(fold).collect::<String>();
         titles.iter().all(|t| key(t) == key(first)).then(|| first.clone())
     };
-    let titles: Vec<String> = names
+    let looser = |titles: &[String]| {
+        if titles.len() < 2 {
+            return None;
+        }
+        let looser: Vec<String> = titles.iter().map(|t| before_bare_number(t)).collect();
+        alike(&looser).filter(|t| !t.is_empty())
+    };
+    let readings: Vec<(String, String)> = names
         .iter()
-        .map(|n| of(n.as_ref()))
-        .filter(|t| !t.is_empty())
+        .map(|n| (of(n.as_ref()), read(n.as_ref(), true)))
+        .filter(|(t, _)| !t.is_empty())
         .collect();
-    if let Some(one) = alike(&titles) {
+    let titles: Vec<String> = readings.iter().map(|(t, _)| t.clone()).collect();
+    if let Some(one) = alike(&titles).or_else(|| looser(&titles)) {
         return Some(one);
     }
-    if titles.len() < 2 {
+    // The other reading, for a name only where another name reads that way.
+    let kept: Vec<String> = readings
+        .iter()
+        .enumerate()
+        .map(|(i, (t, other))| {
+            let named = key(other) != key(t)
+                && titles
+                    .iter()
+                    .enumerate()
+                    .any(|(j, u)| j != i && key(u) == key(other));
+            if named { other.clone() } else { t.clone() }
+        })
+        .collect();
+    if kept == titles {
         return None;
     }
-    let looser: Vec<String> = titles.iter().map(|t| before_bare_number(t)).collect();
-    alike(&looser).filter(|t| !t.is_empty())
+    alike(&kept).or_else(|| looser(&kept))
 }
 
 /// The name up to a number standing on its own between spaces, and the one
@@ -575,6 +614,32 @@ mod tests {
         // A bare number is a title's own where it does not differ.
         assert_eq!(shared(&["硝子の塔 13 #1", "硝子の塔 13 #2"]).as_deref(), Some("硝子の塔 13"));
         assert_eq!(shared(&["硝子の塔 13", "名もなき午後 13"]), None);
+    }
+
+    /// A block and its series with nothing numbering it, beside a numbered
+    /// one of the same: the numbered one says the bracket is the series'.
+    /// On its own, or beside names that say nothing about it, it is read as
+    /// a series and an episode's title, as before.
+    #[test]
+    fn a_block_and_its_series_beside_a_numbered_one() {
+        let disc = ["日曜枠「灯台守の休日」　＃４３「霧の朝」[字]", "日曜枠「灯台守の休日」[字]"];
+        assert_eq!(shared(&disc).as_deref(), Some("日曜枠「灯台守の休日」"));
+        let disc = ["日曜枠「灯台守の休日」[字]", "日曜枠「灯台守の休日」 #44", "日曜枠「灯台守の休日」 #45"];
+        assert_eq!(shared(&disc).as_deref(), Some("日曜枠「灯台守の休日」"));
+        // Alone, or with only others like it: as `of` reads it.
+        assert_eq!(shared(&["日曜枠「灯台守の休日」"]).as_deref(), Some("日曜枠"));
+        assert_eq!(
+            shared(&["灯台守の休日「霧の朝」", "灯台守の休日「凪の夜」"]).as_deref(),
+            Some("灯台守の休日")
+        );
+        assert_eq!(
+            shared(&["灯台守の休日「霧の朝」", "灯台守の休日 #3「凪の夜」"]).as_deref(),
+            Some("灯台守の休日")
+        );
+        // Another series in the same block is still another series.
+        assert_eq!(shared(&["日曜枠「灯台守の休日」 #43", "日曜枠「硝子の塔」"]), None);
+        // And a name read the other way must match another name, not itself.
+        assert_eq!(shared(&["日曜枠「灯台守の休日」", "日曜枠「硝子の塔」"]).as_deref(), Some("日曜枠"));
     }
 
     /// The shapes a listing writes that the rules above did not cut: a

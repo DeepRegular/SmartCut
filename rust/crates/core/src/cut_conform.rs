@@ -225,6 +225,8 @@ fn pictures_afresh(
     into: &Shaped,
     writer: &mut Writer,
 ) -> Result<Span> {
+    // See [`super::Mpeg4Delay`].
+    writer.next_segment();
     let first_segment = ctx.first;
     let (mut ictx, ist_index) = open_input(&src.input.url)?;
     let stream = ictx

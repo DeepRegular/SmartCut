@@ -3800,7 +3800,7 @@ fn make_proxy(
     generation: u64,
 ) -> Result<Option<PrepareInfo>, String> {
     let dir = cache_kind(app, "proxy")?;
-    let path = proxy::cache_path(&dir, &src.path, opts).map_err(|e| e.to_string())?;
+    let path = proxy::cache_path_of(&dir, src, opts).map_err(|e| e.to_string())?;
     let began = std::time::Instant::now();
 
     let held = proxy::ready(&path).then(|| load_cached(app, &path, thumb_opts, generation));
@@ -4672,7 +4672,16 @@ async fn divide_clip(
     let mine = DIVIDE_ASKED.fetch_add(1, Ordering::SeqCst) + 1;
     off_thread(move || {
         let overtaken = || DIVIDE_ASKED.load(Ordering::SeqCst) != mine;
+        // And every open on the way to the walk: where the pictures begin far
+        // in, the open reads a hundred megabytes looking for them, twice, and
+        // the box closed during it went on reading all of that.
+        let _reads = smartcut_core::input::stop_reads_when(move || DIVIDE_ASKED.load(Ordering::SeqCst) != mine);
         let (src, _, _) = scan_cached_reporting(&app, &path, None, Some(&overtaken))?;
+        // A read stopped that way ends as at a failure, with part of an
+        // answer, which is nobody's.
+        if smartcut_core::input::reads_stopped() {
+            return Err("abandoned".into());
+        }
         let rule = match rule.as_str() {
             "parts" if value.is_finite() && value >= 0.0 => Rule::Parts(value.round() as usize),
             "every" => Rule::Every(value),
@@ -6696,8 +6705,12 @@ async fn export(
             // and is what the stage follows. Only the first pass has
             // pictures being written; see `followWrite`.
             Some(Box::new(move |pass, done, within| {
-                let tables = pass == smartcut_core::cut::Pass::Tables;
-                let _ = reporter.emit("export-progress", (whose.clone(), tables, done, within));
+                // Every pass after the writing one is over the finished
+                // file; the last says which of the two it is, since a `.m2ts`
+                // of its own has its arrival times written last of all.
+                let tables = pass != smartcut_core::cut::Pass::Writing;
+                let arrivals = pass == smartcut_core::cut::Pass::Arrivals;
+                let _ = reporter.emit("export-progress", (whose.clone(), tables, done, within, arrivals));
             })),
         )
         // With its causes: the engine says what it was doing when it failed,
@@ -6770,6 +6783,10 @@ struct Checked {
     /// The sound tracks that do not run as long as the pictures: the
     /// output's stream index, and by how much (positive for longer).
     sound_off: Vec<(usize, f64)>,
+    /// Those of them that are off by where they are laid rather than by
+    /// how long they run: the index, and how far out of step with the
+    /// pictures (positive for late; `verify::Sound::step`).
+    sound_step: Vec<(usize, f64)>,
     /// Whether the pictures run as long as the sources' own do in the kept
     /// ranges and leave no stretch of them out: `verify::Report::runs_as_kept`,
     /// which `pictures_ok` holds them to. Said on its own, so that a file
@@ -7012,6 +7029,15 @@ async fn verify_output(
             damaged_in_source: report.damaged_in_source,
             seconds: report.seconds,
             sound_off: report.sound_off(),
+            sound_step: {
+                let off = report.sound_off();
+                report
+                    .sounds
+                    .iter()
+                    .filter_map(|s| s.step.map(|step| (s.index, step)))
+                    .filter(|x| off.contains(x))
+                    .collect()
+            },
             runs_as_kept: report.runs_as_kept(),
             kept_from: report.kept.map(|k| k.from),
             kept_to: report.kept.map(|k| k.to),
@@ -7328,8 +7354,12 @@ async fn export_joined(
             &output,
             &opts,
             Some(Box::new(move |pass, done, within| {
-                let tables = pass == smartcut_core::cut::Pass::Tables;
-                let _ = reporter.emit("export-progress", (whose.clone(), tables, done, within));
+                // Every pass after the writing one is over the finished
+                // file; the last says which of the two it is, since a `.m2ts`
+                // of its own has its arrival times written last of all.
+                let tables = pass != smartcut_core::cut::Pass::Writing;
+                let arrivals = pass == smartcut_core::cut::Pass::Arrivals;
+                let _ = reporter.emit("export-progress", (whose.clone(), tables, done, within, arrivals));
             })),
         )
         // With its causes, as `export` gives them.

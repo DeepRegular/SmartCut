@@ -86,8 +86,8 @@ These are containers. A bare video stream with no container around it has no
 times of its own to cut by. Under its own extension — `.m1v`, `.m2v`, `.h264`,
 `.hevc` — it is not on the list above and is ignored like anything else. Saved
 under one that is — an MPEG-1 stream as `.mpg`, an MPEG-4 Part 2 stream as
-`.m4v` — it comes in as a row and is refused when it is opened, with
-`no random access points found`.
+`.m4v` — it comes in as a row and is refused when it is opened, with a
+message that says it is a bare stream and how to put it into a container.
 
 **VC-1 in an `.mkv` is refused as well**, with a message saying why: libavformat
 reads only decoding times for it there, so no picture can be found to start a

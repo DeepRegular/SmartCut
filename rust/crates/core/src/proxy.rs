@@ -284,6 +284,28 @@ pub struct Built {
 /// width and the quality are in the key too: changing either changes what
 /// the file is, and the old one must not be picked up in its place.
 pub fn cache_path(dir: &Path, src_path: &str, opts: &ProxyOptions) -> Result<PathBuf> {
+    cache_path_with(dir, src_path, opts, None)
+}
+
+/// **A proxy of H.264 in a program stream is keyed apart from the others**,
+/// and made again once: one made by 0.8.49 or earlier left out every picture
+/// whose packet carries no time (an H.264 `.mpg` or `.vob` packs small
+/// pictures several to a PES, one time between them), and was found again
+/// and shown, stills, playback and thumbnails short of those pictures, until
+/// the recording changed or the scratch files were deleted. Raising
+/// [`VERSION`] would make every proxy again; this makes those alone. Every
+/// other recording keeps the key [`cache_path`] gives it.
+const PS_H264_VERSION: u32 = 1;
+
+/// [`cache_path`] for the opened recording `src`, as the GUI asks it.
+pub fn cache_path_of(dir: &Path, src: &Source, opts: &ProxyOptions) -> Result<PathBuf> {
+    let shape = crate::preview::Untimed::reads_back(src).then_some(PS_H264_VERSION);
+    cache_path_with(dir, &src.path, opts, shape)
+}
+
+/// [`cache_path`], with `shape` in the key where the recording's shape has
+/// its own version.
+fn cache_path_with(dir: &Path, src_path: &str, opts: &ProxyOptions, shape: Option<u32>) -> Result<PathBuf> {
     // What is asked about is the file the bytes are in, which for a clip
     // inside a disc image is the image: a path into an image is not a path
     // the operating system knows. What is *keyed* on is still the name the
@@ -312,6 +334,10 @@ pub fn cache_path(dir: &Path, src_path: &str, opts: &ProxyOptions) -> Result<Pat
     eat(&opts.width.to_le_bytes());
     eat(&opts.quality.to_bits().to_le_bytes());
     eat(&VERSION.to_le_bytes());
+    if let Some(shape) = shape {
+        eat(b"ps-h264");
+        eat(&shape.to_le_bytes());
+    }
 
     let stem: String = Path::new(src_path)
         .file_stem()

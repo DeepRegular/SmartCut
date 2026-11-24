@@ -747,6 +747,15 @@ pub struct Source {
     /// be quietly ignored -- and they carry a real seek table anyway, which
     /// is exact already.
     pub byte_seekable: bool,
+    /// The H.264 parameter sets restated in band, where the walk met and
+    /// kept them: each SPS and PPS that is not the last of its kind and
+    /// number before it, with the byte its packet starts at, in file order
+    /// (see [`cut::SetsMet`]). What a key picture carrying none is decoded
+    /// by is worked out from these without reading the recording again
+    /// ([`cut::sets_in_force`]). `None` where they are not known -- another
+    /// codec, an index off a table, one held from before there was this --
+    /// and the recording is read back for them as before.
+    pub sets_restated: Option<Vec<(u64, Vec<u8>)>>,
 }
 
 impl Source {
@@ -1108,10 +1117,24 @@ pub(crate) fn video_context(
     params: ff::codec::Parameters,
 ) -> Result<ff::codec::context::Context> {
     let xvid = cut::xvid_mpeg_quant(&params);
+    let fields_and_b = cut::mpeg4_interlaced_with_b(&params);
     let mut ctx = ff::codec::context::Context::from_parameters(params)?;
     if xvid {
         unsafe {
             (*ctx.as_mut_ptr()).idct_algo = ff::ffi::FF_IDCT_XVID;
+        }
+    }
+    // **Interlaced MPEG-4 Part 2 with B-VOPs, on one thread.** libavcodec's
+    // frame-threaded decoder gets the field-direct B-VOPs of such a stream
+    // wrong: on libavcodec's own `-flags +ildct+ilme -bf 2` encode, 174 of
+    // 300 pictures came out other than one thread decodes them, 36.5 dB from
+    // the encoder's input against one thread's 42.2. Every reader here saw
+    // its own wrong pictures, and `--verify` called copies that one thread
+    // decodes bit for bit like the recording "re-encoded". A recording of
+    // any other shape keeps every core.
+    if fields_and_b {
+        unsafe {
+            (*ctx.as_mut_ptr()).thread_type = ff::ffi::FF_THREAD_SLICE as i32;
         }
     }
     Ok(ctx)
@@ -1237,6 +1260,88 @@ const BYTE_SEEKABLE: [&str; 5] = ["mpegts", "mpeg", "h264", "hevc", "mpegvideo"]
 /// nothing to time them by. See [`outline_of`].
 const RAW_VIDEO: [&str; 8] =
     ["mpegvideo", "h264", "hevc", "m4v", "cavsvideo", "vc1", "h261", "h263"];
+
+/// **The AVIs whose pictures' times cannot be worked out**, said as such.
+///
+/// An AVI keeps one time per chunk, in stored order. MPEG-1, MPEG-2 and
+/// MPEG-4 Part 2 with B pictures are opened asking libavformat to work the
+/// presentation times out of that order (see `avi_untimed` in
+/// [`crate::input`]). Two shapes it cannot be asked for were refused with
+/// "no random access points found" and nothing more; they are refused here,
+/// before anything is read, with what they are and the way out:
+///
+/// - H.264, with B pictures or without: libavformat gives it no
+///   presentation time in an AVI, and asked to work them out it puts a
+///   B-less encode a frame behind its sound and a reordered one out of
+///   order (the order is in the slices, which it does not read).
+/// - MPEG-4 Part 2 with "packed" B pictures (DivX's and Xvid's default in an
+///   AVI: the B picture rides in the chunk of the picture before it, and an
+///   empty placeholder takes its slot), which its user data names with a
+///   `p` after the build (`DivX503b1393p`). Only where it has B pictures at
+///   all: an encode without, which opened before, opens as it did.
+fn avi_refusal(ictx: &ff::format::context::Input) -> Option<String> {
+    use ff::codec::Id;
+    if !input::is_avi(ictx) {
+        return None;
+    }
+    let s = ictx.streams().best(ff::media::Type::Video)?;
+    let params = s.parameters();
+    let extradata = unsafe {
+        let p = params.as_ptr();
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+        }
+    };
+    match params.id() {
+        Id::H264 => Some(
+            "H.264 in an AVI comes with no presentation times (an AVI keeps none, and \
+             libavformat does not work them out for H.264), so no picture can be found to \
+             start a cut from. Remux it to .mkv with a tool that works the times out of the \
+             stream, such as mkvmerge: mkvmerge -o out.mkv in.avi"
+                .to_string(),
+        ),
+        Id::MPEG4 if unsafe { (*params.as_ptr()).video_delay } > 0 && packed_b(&extradata) => Some(
+            "this AVI stores its MPEG-4 B pictures packed into the chunk of the picture before \
+             them (\"packed bitstream\", as DivX and Xvid write it), so the times they are \
+             shown at cannot be told from the file. Unpack them first, which changes no \
+             picture: ffmpeg -i in.avi -c copy -bsf:v mpeg4_unpack_bframes out.avi"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+/// Whether MPEG-4 Part 2 headers carry DivX's user data saying the B
+/// pictures are packed: `DivX<version>b<build>p` or `DivX<version>Build<build>p`,
+/// read as libavcodec reads it.
+fn packed_b(headers: &[u8]) -> bool {
+    let mut at = 0;
+    while let Some(i) = headers[at..].windows(4).position(|w| w == b"DivX") {
+        let rest = &headers[at + i + 4..];
+        let digits = |s: &[u8]| s.iter().take_while(|b| b.is_ascii_digit()).count();
+        let v = digits(rest);
+        if v > 0 {
+            let after = &rest[v..];
+            let skip = if after.starts_with(b"Build") {
+                5
+            } else if after.starts_with(b"b") {
+                1
+            } else {
+                0
+            };
+            if skip > 0 {
+                let build = digits(&after[skip..]);
+                if build > 0 && after.get(skip + build) == Some(&b'p') {
+                    return true;
+                }
+            }
+        }
+        at += i + 4;
+    }
+    false
+}
 
 /// One sound track per PID, and what that leaves out.
 ///
@@ -1617,6 +1722,7 @@ fn assemble(
         leading_known: idx.leading_known,
         index_name,
         read_whole: idx.whole,
+        sets_restated: idx.sets,
     };
     // A recording on a disc has its languages written beside it and nowhere
     // in it. Done here, once, so that a cut carries them however the
@@ -1717,11 +1823,75 @@ impl Outline {
             // mean of, and this is only ever used as a "read from a little
             // earlier" margin.
             seek_margin: 1.0,
+            sets_restated: None,
         }
     }
 }
 
 /// The container's own answer about a recording. See [`Outline`].
+/// **H.264 or HEVC in start codes is read in a program stream** (an `ffmpeg
+/// -f vob` of a `.ts` opens and cuts); what libav probes as sound, or as
+/// pictures of no codec it knows, is an `.mp4`'s pictures written in as they
+/// were, in lengths, with the parameter sets left behind in the `.mp4`'s
+/// header -- nothing can decode them. See [`ps_pictures_in_lengths`].
+fn in_lengths(path: &str) -> anyhow::Error {
+    anyhow!(
+        "no video stream in {path}: it is a program stream whose pictures were written into it \
+         as an .mp4 or .mkv holds them (NAL units with lengths, not start codes, and the \
+         parameter sets left in that file's header), so no decoder can read them. This is what \
+         `ffmpeg -c copy -f vob` (or -f mpeg) does to an .mp4's H.264 or HEVC without \
+         `-bsf:v h264_mp4toannexb` (or hevc_mp4toannexb). The recording it was made from can be \
+         cut, or the .mpg made again with that option"
+    )
+}
+
+/// Whether the first video PES of the program stream at `path` (stream id
+/// 0xE0..0xEF, in its first megabyte) carries NAL units with lengths in
+/// front of them rather than start codes: an `.mp4`'s H.264 or HEVC copied
+/// into a `.mpg` or `.vob` without being put into start codes.
+fn ps_pictures_in_lengths(path: &str) -> bool {
+    use std::io::Read;
+    let mut head = Vec::new();
+    let Ok(file) = std::fs::File::open(path) else { return false };
+    if file.take(1 << 20).read_to_end(&mut head).is_err() {
+        return false;
+    }
+    let mut i = 0;
+    while i + 9 <= head.len() {
+        if head[i..i + 3] != [0, 0, 1] || !(0xE0..=0xEF).contains(&head[i + 3]) {
+            i += 1;
+            continue;
+        }
+        // An MPEG-2 PES header (flags at +6, its length at +8), or an
+        // MPEG-1 one: stuffing, the buffer size, then the times.
+        let start = if head[i + 6] & 0xC0 == 0x80 {
+            i + 9 + usize::from(head[i + 8])
+        } else {
+            let mut at = i + 6;
+            while head.get(at) == Some(&0xFF) {
+                at += 1;
+            }
+            if head.get(at).is_some_and(|b| b & 0xC0 == 0x40) {
+                at += 2;
+            }
+            match head.get(at).map(|b| b & 0xF0) {
+                Some(0x20) => at + 5,
+                Some(0x30) => at + 10,
+                _ => at + 1,
+            }
+        };
+        let Some(payload) = head.get(start..start + 5) else { return false };
+        if payload[..3] == [0, 0, 1] || payload[..4] == [0, 0, 0, 1] {
+            return false;
+        }
+        let length = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        // A length a PES could hold, then a NAL header with its forbidden
+        // bit clear.
+        return length > 0 && length < (1 << 24) && payload[4] & 0x80 == 0;
+    }
+    false
+}
+
 pub fn outline(path: &str) -> Result<Outline> {
     outline_of(path).map(|(o, _)| o)
 }
@@ -1783,14 +1953,37 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     // every I and P picture missing, and checked as right. The others of the
     // kind (`.m2v`, `.h264`) were already refused by the walk for having no
     // entry point with a time; all of them are now, before anything is
-    // planned, in the same words.
+    // planned, saying what they are.
     if ictx
         .format()
         .name()
         .split(',')
         .any(|n| RAW_VIDEO.contains(&n.trim()))
     {
-        return Err(anyhow!("no random access points found in {path}"));
+        // Said with what it is and the way out: the words alone ("no random
+        // access points found") named no cause. Matched whole by the GUI's
+        // i18n.js `engine.bareStream`.
+        let format = ictx.format();
+        let kind = match format.name().split(',').next().unwrap_or("").trim() {
+            "mpegvideo" => "MPEG-1/MPEG-2 video",
+            "h264" => "H.264",
+            "hevc" => "HEVC",
+            "m4v" => "MPEG-4 Part 2",
+            "cavsvideo" => "AVS",
+            "vc1" => "VC-1",
+            "h261" => "H.261",
+            "h263" => "H.263",
+            other => other,
+        };
+        return Err(anyhow!(
+            "{path}: a bare {kind} stream, with no container around it, carries no times of its \
+             own, so no picture can be found to start a cut from. Put it into a container \
+             first (.mkv, .mp4 or .ts) with a tool that works the times out of the stream, \
+             such as mkvmerge: mkvmerge -o out.mkv <this file>"
+        ));
+    }
+    if let Some(why) = avi_refusal(&ictx) {
+        return Err(anyhow!("{path}: {why}"));
     }
     // The container's own chapter list, where it has one. Only the starts:
     // they become marks, and a mark is an instant.
@@ -1838,6 +2031,8 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
                 });
             if unreadable.iter().any(|(_, what)| *what == "menu") {
                 anyhow!("{path} is one of the disc's menus: it carries a menu's graphics and no pictures, so there is nothing here to cut")
+            } else if unseen && ps_pictures_in_lengths(path) {
+                in_lengths(path)
             } else if unseen {
                 anyhow!(
                     "no video stream in {path}: it is a program stream whose pictures are in a \
@@ -1849,6 +2044,14 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
                 anyhow!("no video stream in {path}")
             }
         })?;
+    // The same pictures, probed as pictures of no codec it knows (HEVC):
+    // see [`in_lengths`].
+    if ictx.format().name().split(',').any(|n| n.trim() == "mpeg")
+        && stream.parameters().id() == ff::codec::Id::None
+        && ps_pictures_in_lengths(path)
+    {
+        return Err(in_lengths(path));
+    }
     let stream_index = stream.index();
     // The PID the pictures arrive on, which is how the recording's own
     // service is told from the others its map may name.
@@ -1956,11 +2159,28 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     // and Matroska all say 29.97. The editor's grid was a fifth out, and the
     // fields were woven in pairs of the wrong length. The decoder's reading
     // of the header is kept in the stream's parameters, so it costs nothing.
+    //
+    // **But not off a header the damage made.** The decoder's reading is of
+    // the last sequence header the open met, and a damaged packet that reads
+    // as one -- with no sequence extension after it -- names an MPEG-2
+    // broadcast `mpeg1video` and can carry a frame rate code of its own: a
+    // 29.97 recording read at 20 fps, called "the pictures vary", every cut
+    // that re-encodes refused. The header the open kept (the extradata) is
+    // the recording's first, and a sequence extension in it is MPEG-2's
+    // alone, so there its rate is the one taken. A real MPEG-1 recording has
+    // no extension, and an MPEG-2 one named `mpeg2video` is read as before.
+    let damaged_mpeg1 = codec == "mpeg1video"
+        && bitstream::mpeg2_interlaced_sequence(&extradata).is_some();
+    let kept_rate = damaged_mpeg1
+        .then(|| bitstream::mpeg2_frame_rate(&extradata))
+        .flatten()
+        .map(|(num, den)| f64::from(num) / f64::from(den));
     let stated = matches!(codec.as_str(), "mpeg1video" | "mpeg2video")
         .then(|| unsafe { (*params.as_ptr()).framerate })
         .filter(|r| r.num > 0 && r.den > 0)
         .map(|r| f64::from(r.num) / f64::from(r.den))
         .filter(|r| r.is_finite() && *r > 0.0 && *r <= 1000.0);
+    let stated = kept_rate.or(stated);
     let frame_rate = match (stated, f64::from(stream.avg_frame_rate())) {
         (Some(r), _) => r,
         // Held to the same ceiling as the other two: the average is the
@@ -2885,6 +3105,19 @@ pub(crate) unsafe fn set_raw_enum<T>(field: *mut T, value: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DivX's user data says packed B pictures with a `p` after the build,
+    /// in either of the two spellings libavcodec reads; nothing else does.
+    #[test]
+    fn packed_b_pictures_are_read_off_the_user_data() {
+        let vol = b"\0\0\x01\xb0\xf5\0\0\x01\xb2";
+        assert!(packed_b(&[&vol[..], b"DivX503b1393p"].concat()));
+        assert!(packed_b(&[&vol[..], b"DivX999Build123p\0\0\x01\xb2XviD0069"].concat()));
+        assert!(!packed_b(&[&vol[..], b"DivX503b1393"].concat()));
+        assert!(!packed_b(&[&vol[..], b"DivX503b1393\0\0\x01\xb2XviD0069"].concat()));
+        assert!(!packed_b(&[&vol[..], b"XviD0069"].concat()));
+        assert!(!packed_b(b"DivXbp DivX5bp DivX"));
+    }
 
     /// A constant rate on a millisecond clock is read as that rate: 90, 144
     /// and 59.94 a second, each timestamp rounded to the millisecond as a

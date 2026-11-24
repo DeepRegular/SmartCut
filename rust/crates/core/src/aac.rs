@@ -122,6 +122,79 @@ pub fn framing(
     None
 }
 
+/// The program config element a track whose frames say `channel_config` 0
+/// gives its channels in, off the first of its frames that carries one
+/// ([`crate::adts::pce_of`]). Read from the head of the recording, and only
+/// asked of such a track: every broadcast's frames name a configuration.
+///
+/// Given up thirty seconds of pictures in, or after a few hundred of the
+/// track's frames with none.
+pub fn head_pce(url: &str, stream_index: usize) -> Option<Vec<u8>> {
+    let mut ictx = crate::input::demux(url).ok()?;
+    crate::input::keep_with_pictures(&mut ictx, &[stream_index]);
+    let mut began: Option<f64> = None;
+    let mut frames = 0;
+    for (stream, packet) in ictx.read_packets().take(16384) {
+        if stream.index() != stream_index {
+            if let Some(t) = crate::audio::read_reached(&stream, &packet, 0.0) {
+                if t > *began.get_or_insert(t) + 30.0 {
+                    return None;
+                }
+            }
+            continue;
+        }
+        let Some(data) = packet.data() else { continue };
+        if let Some(pce) = crate::adts::pce_of(data) {
+            return Some(pce);
+        }
+        frames += 1;
+        if frames > 512 {
+            return None;
+        }
+    }
+    None
+}
+
+/// `params` for a decoder of a track framed as `framing`, given the
+/// track's channels where its frames name them in a program config element
+/// carried only now and then ([`head_pce`]): opened in the middle of such a
+/// track, a decoder had nothing to read the frames against, and every one
+/// failed. Everything else comes back as it was.
+pub fn decodable(
+    params: ffmpeg_next::codec::Parameters,
+    framing: Option<Framing>,
+    url: &str,
+    stream_index: usize,
+) -> ffmpeg_next::codec::Parameters {
+    let Some(Framing::Adts(f)) = framing else { return params };
+    if f.channel_config != 0 || params.id() != ffmpeg_next::codec::Id::AAC {
+        return params;
+    }
+    // SAFETY: the parameters are read, not kept.
+    if unsafe { (*params.as_ptr()).extradata_size } > 0 {
+        return params;
+    }
+    let Some(asc) = head_pce(url, stream_index).and_then(|p| crate::adts::asc_with_pce(&f, &p)) else {
+        return params;
+    };
+    let mut params = params.clone();
+    // SAFETY: the copy is this function's own; the buffer is allocated the
+    // way libavcodec frees it, with the padding it expects.
+    unsafe {
+        let p = params.as_mut_ptr();
+        let pad = ffmpeg_next::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize;
+        let buf = ffmpeg_next::ffi::av_mallocz(asc.len() + pad) as *mut u8;
+        if buf.is_null() {
+            return params;
+        }
+        std::ptr::copy_nonoverlapping(asc.as_ptr(), buf, asc.len());
+        ffmpeg_next::ffi::av_freep(std::ptr::addr_of_mut!((*p).extradata) as *mut std::ffi::c_void);
+        (*p).extradata = buf;
+        (*p).extradata_size = asc.len() as i32;
+    }
+    params
+}
+
 /// As [`framing`], for a recording that is not open.
 pub fn of_source(src: &crate::Source) -> Option<Framing> {
     of_track(src, src.audio.as_ref()?.stream_index)

@@ -44,6 +44,28 @@ use crate::Source;
 /// between the two is wide, and this sits in the middle of it.
 pub const LIKE_DB: f64 = 25.0;
 
+/// **A re-encoded picture under [`LIKE_DB`] is still the right one where it
+/// is far closer to its own picture than to the pictures either side**, by
+/// this many dB, and no further under than [`LIKE_FLOOR`]. A low-bitrate
+/// source re-encodes at its own low rate, and noise or a fine pattern is not
+/// carried over: an H.264 `.mpg` of moving bands at 300 kbit/s came back at
+/// 23-27 dB against its own pictures and 3-11 dB against the next ones -- a
+/// correct cut, called a mismatch. A picture a frame out is as close to a
+/// neighbour as to its own, and is still counted.
+const LIKE_APART: f64 = 6.0;
+
+/// See [`LIKE_APART`]: below this, no picture is taken for its own.
+const LIKE_FLOOR: f64 = 20.0;
+
+/// Whether a re-encoded picture `db` from its own source picture, and
+/// `before`/`after` from the ones either side (where known), is that picture.
+fn alike(db: f64, before: Option<f64>, after: Option<f64>) -> bool {
+    db >= LIKE_DB
+        || (db >= LIKE_FLOOR
+            && (before.is_some() || after.is_some())
+            && [before, after].into_iter().flatten().all(|n| db >= n + LIKE_APART))
+}
+
 /// How far the sound may run short of or past the pictures before it is
 /// mentioned, in seconds. A cut carries whole audio frames, and a track may
 /// start a frame or two later than the pictures; half a second is past
@@ -110,7 +132,32 @@ pub struct Sound {
     /// so a track that drifts late is said even where nothing of it was
     /// lost.
     pub past: f64,
+    /// How much longer than the pictures this track may rightly run, and be
+    /// laid past them: what the recording's own sound runs on for past its
+    /// last picture in the output's last range, where its sound outlasts its
+    /// pictures and the range keeps some of that.
+    pub over: f64,
+    /// How far out of step with the pictures the track is laid, where that
+    /// is more than [`STEP_SLACK`] (or a frame and a half of the track) past
+    /// what the recording itself has: by where its first packet is placed
+    /// against the first picture, and its last against the last. Positive
+    /// for late.
+    ///
+    /// **A track laid a tenth of a second off holds every sample it
+    /// should**, and both of its ends are inside half a second of the
+    /// pictures': a cut whose sound was shifted by 100 ms passed. Its ends
+    /// are where the shift shows, and they are measured against the
+    /// recording's own -- where its sound begins after the first picture
+    /// kept, or ends before the last -- so a track that starts late in the
+    /// recording is late in the cut too, and not called out of step.
+    pub step: Option<f64>,
 }
+
+/// How far a track's ends may lie from where the recording's sound puts
+/// them, at the least, before it is called out of step: a cut carries whole
+/// audio frames, so an end may fall a frame from the picture's, and 50 ms
+/// is a frame and a half of everything at 48 kHz.
+pub const STEP_SLACK: f64 = 0.05;
 
 /// What reading the output back found.
 #[derive(Debug, Clone, Default)]
@@ -233,13 +280,14 @@ impl Report {
             .filter(|s| s.measured)
             .filter_map(|s| {
                 let d = s.seconds - self.seconds;
-                if d > SOUND_SLACK || d < -(s.short + SOUND_SLACK) {
+                if d > s.over + SOUND_SLACK || d < -(s.short + SOUND_SLACK) {
                     Some((s.index, d))
-                } else if s.past > SOUND_SLACK {
+                } else if s.past > s.over + SOUND_SLACK {
                     // Long by where it is laid: see [`Sound::past`].
                     Some((s.index, s.past))
                 } else {
-                    None
+                    // Out of step by where its ends are: see [`Sound::step`].
+                    s.step.map(|step| (s.index, step))
                 }
             })
             .collect()
@@ -333,10 +381,10 @@ impl Report {
                 continue;
             }
             let d = s.seconds - self.seconds;
-            let late = s.past > SOUND_SLACK;
-            let off = d > SOUND_SLACK || d < -(s.short + SOUND_SLACK) || late;
+            let late = s.past > s.over + SOUND_SLACK;
+            let off = d > s.over + SOUND_SLACK || d < -(s.short + SOUND_SLACK) || late || s.step.is_some();
             out.push(format!(
-                "sound #{}: {:.3}s against {:.3}s{}{}  {}",
+                "sound #{}: {:.3}s against {:.3}s{}{}{}{}  {}",
                 s.index,
                 s.seconds,
                 self.seconds,
@@ -346,10 +394,20 @@ impl Report {
                 } else {
                     String::new()
                 },
+                if s.over >= 0.0005 {
+                    format!(" ({:.3}s of it past the source's last picture)", s.over)
+                } else {
+                    String::new()
+                },
                 if late {
                     format!(" (laid {:.3}s past the last picture)", s.past)
                 } else {
                     String::new()
+                },
+                match s.step {
+                    Some(step) if step > 0.0 => format!(" ({step:.3}s behind the pictures)"),
+                    Some(step) => format!(" ({:.3}s ahead of the pictures)", -step),
+                    None => String::new(),
                 },
                 if off { "OFF" } else { "OK" }
             ));
@@ -615,6 +673,28 @@ pub fn check_placed(
             .and_then(|ctx| ctx.decoder().audio().ok());
         sounds.push((i, dec, 0, 0.0, None));
     }
+    // Where each track's first packet is placed, and how long a frame of it
+    // is: see [`Sound::step`].
+    let mut begins: Vec<Option<f64>> = vec![None; sounds.len()];
+    // And whether its packets' times rise packet by packet, and the last
+    // one's. An `.avi`'s AC-3 comes back with every packet at 0, and its
+    // ends say nothing about where it is laid.
+    let mut rising: Vec<(bool, Option<i64>)> = vec![(true, None); sounds.len()];
+    let frames: Vec<f64> = sounds
+        .iter()
+        .map(|s| {
+            ictx.stream(s.0)
+                .map(|st| unsafe {
+                    let q = st.parameters().as_ptr();
+                    if (*q).frame_size > 0 && (*q).sample_rate > 0 {
+                        f64::from((*q).frame_size) / f64::from((*q).sample_rate)
+                    } else {
+                        0.0
+                    }
+                })
+                .unwrap_or(0.0)
+        })
+        .collect();
     let v_tb = video.and_then(|i| ictx.stream(i)).map(|s| f64::from(s.time_base())).unwrap_or(0.0);
     // A frame of the output, by its own rate.
     let a_frame = 1.0 / frame_rate(&ictx, video, fps);
@@ -648,6 +728,8 @@ pub fn check_placed(
     });
     // Where the last picture stops being shown: see below.
     let mut pictures_end: Option<f64> = None;
+    // And where the first is shown, on the same clock.
+    let mut pictures_begin: Option<f64> = None;
     // Time between the output's pictures with none in it, as [`holes`] counts
     // it, and the last picture's time on the way.
     let mut gone = 0.0;
@@ -725,21 +807,29 @@ pub fn check_placed(
     let measured: Vec<Option<Held>> = std::thread::scope(|scope| -> Result<Vec<Option<Held>>> {
         // What the ranges hold in the recordings themselves, read beside the
         // two decodes. See [`Held`].
-        let measuring = scope.spawn(|| heard.iter().map(|p| held_in(p, stop)).collect::<Vec<_>>());
+        let measuring = scope.spawn(|| {
+            let n = heard.len();
+            heard.iter().enumerate().map(|(i, p)| held_in(p, i + 1 == n, stop)).collect::<Vec<_>>()
+        });
         let source_side = scope.spawn(move || -> Result<()> {
             for (src, ranges) in &owned {
                 // What the last range's look-back found in force, and where.
                 let mut known = None;
-                // Which ranges open on a key picture stating a VOL of its own,
-                // where the recording's keys were judged to: see
-                // [`mpeg4_entry_vols`].
-                let froms: Vec<f64> = ranges.iter().map(|r| r.0).collect();
-                let own_vols = mpeg4_entry_vols(src, &froms);
-                for (k, (a, b, head, copies)) in ranges.iter().enumerate() {
-                    // Opened where the sets the cut decoded it by are stated,
-                    // where the range's entry picture carries none: see
-                    // [`opened_by_sets_in_force`].
-                    let lent = opened_by_sets_in_force(src, *a, &mut known, own_vols.get(k).copied());
+                // **H.264 in lengths (MP4, Matroska) and MPEG-4 Part 2 are
+                // opened on the range's own entry picture, given the sets or
+                // the VOL in force there** -- as the cut gives its copy, and
+                // as a still is decoded ([`crate::preview::InForce`],
+                // [`crate::preview::VolInForce`]). Opened instead on the key
+                // picture that stated them, a range 20 minutes past the
+                // change was decoded from the change, on one thread: 6.7 s
+                // to check a 15 s range of a spliced `.mp4` the cut wrote in
+                // 0.8 s. A transport stream is still opened on the IDR that
+                // restated them: see [`opened_by_sets_in_force`].
+                let mended = src.video.codec == "mpeg4"
+                    || (src.video.codec == "h264"
+                        && matches!(src.video.framing, crate::bitstream::NalFraming::Length(_)));
+                for (a, b, head, copies) in ranges.iter() {
+                    let lent = if mended { None } else { opened_by_sets_in_force(src, *a, &mut known) };
                     let src = lent.as_ref().unwrap_or(src);
                     let mut gone = false;
                     // The grid is only read where the pictures are compared.
@@ -747,7 +837,7 @@ pub fn check_placed(
                     // Two frames either side of an edge: where uneven pictures
                     // put the plan's time a frame from the picture's.
                     let near = 2.0 * src.video.frame_duration();
-                    crate::preview::pictures_in(src, *a, *b, *head, |t, frame| {
+                    crate::preview::pictures_in(src, *a, *b, *head, mended, |t, frame| {
                         let stretch = copies.iter().find(|&&(s, e)| t >= s - 1e-4 && t < e - 1e-4);
                         let seen = Seen {
                             hash: picture_hash(frame),
@@ -776,10 +866,28 @@ pub fn check_placed(
         let mut last_pts: Option<i64> = None;
         let mut said = 0.0;
         let mut tainted = false;
+        // Whether a picture came out with no presentation time and was
+        // placed by its decode time: then where the pictures begin and end
+        // is a guess a frame or two off, and no measure of the sound's step.
+        let mut guessed = false;
+        // The source picture before the one compared, and a re-encoded
+        // picture under [`LIKE_DB`] waiting for the one after: see
+        // [`LIKE_APART`]. Its grid, its dB, its time and its dB from the one
+        // before.
+        let mut before: Option<Grid> = None;
+        let mut doubt: Option<(Grid, f64, f64, Option<f64>)> = None;
+        let judged = |doubt: (Grid, f64, f64, Option<f64>), after: Option<&Grid>, report: &mut Report| {
+            let (out, db, at, earlier) = doubt;
+            if !alike(db, earlier, after.and_then(|g| g.psnr(&out))) {
+                report.unlike += 1;
+                report.first_unlike.get_or_insert(at);
+            }
+        };
         let mut on_picture = |frame: &ff::frame::Video, report: &mut Report| {
             // The best guess where there is no presentation time: Matroska
             // holds VC-1 by its decode times alone, and every picture of one
             // comes out of the decoder without a pts.
+            guessed |= frame.pts().is_none();
             let pts = frame.pts().or_else(|| frame.timestamp());
             let at = pts.map(|p| (p as f64 * v_tb - origin).max(0.0)).unwrap_or(0.0);
             if let Some(p) = pts {
@@ -802,6 +910,9 @@ pub fn check_placed(
             }
             if report.compared {
                 if let Ok(seen) = rx.recv() {
+                    if let Some(d) = doubt.take() {
+                        judged(d, Some(&seen.grid), report);
+                    }
                     report.expected += 1;
                     if seen.damaged {
                         report.damaged_in_source += 1;
@@ -838,17 +949,19 @@ pub fn check_placed(
                         report.reencoded += 1;
                     } else {
                         report.reencoded += 1;
-                        match seen.grid.psnr(&Grid::of(frame)) {
+                        let out = Grid::of(frame);
+                        match seen.grid.psnr(&out) {
                             Some(db) => {
                                 report.worst_db = Some(report.worst_db.map_or(db, |w| w.min(db)));
                                 if db < LIKE_DB && !tainted {
-                                    report.unlike += 1;
-                                    report.first_unlike.get_or_insert(at);
+                                    let earlier = before.as_ref().and_then(|g| g.psnr(&out));
+                                    doubt = Some((out, db, at, earlier));
                                 }
                             }
                             None => report.unmatched_size += 1,
                         }
                     }
+                    before = Some(seen.grid);
                 }
             }
             let f = report.produced as f64 / estimate;
@@ -889,12 +1002,18 @@ pub fn check_placed(
                 while dec.receive_frame(&mut frame).is_ok() {
                     on_picture(&frame, &mut report);
                 }
-            } else if let Some(s) = sounds.iter_mut().find(|s| s.0 == i) {
+            } else if let Some(k) = sounds.iter().position(|s| s.0 == i) {
+                let s = &mut sounds[k];
                 s.2 += 1;
                 if let Some(p) = packet.pts() {
                     let tb = f64::from(stream.time_base());
                     let end = (p + packet.duration().max(0)) as f64 * tb - origin;
                     s.4 = Some(s.4.map_or(end, |e: f64| e.max(end)));
+                    let at = p as f64 * tb - origin;
+                    begins[k] = Some(begins[k].map_or(at, |b: f64| b.min(at)));
+                    let (up, was) = &mut rising[k];
+                    *up &= was.is_none_or(|w| p > w);
+                    *was = Some(p);
                 }
                 let Some(dec) = s.1.as_mut() else { continue };
                 if dec.send_packet(&packet).is_ok() {
@@ -926,6 +1045,10 @@ pub fn check_placed(
                     s.3 += sound.samples() as f64 / f64::from(sound.rate());
                 }
             }
+        }
+        // The last re-encoded picture in doubt has no picture after it.
+        if let Some(d) = doubt.take() {
+            judged(d, None, &mut report);
         }
         // Whatever the source still has queued is pictures the output does
         // not have. Counted, which also lets the source side finish -- but
@@ -995,6 +1118,7 @@ pub fn check_placed(
         pictures_end = last_pts.filter(|_| report.pictures).map(|l| {
             l as f64 * v_tb - origin + last_length
         });
+        pictures_begin = first_pts.filter(|_| report.pictures && !guessed).map(|f| f as f64 * v_tb - origin);
         source_side.join().map_err(|_| anyhow!("the source side of the check stopped"))??;
         measuring.join().map_err(|_| anyhow!("the source side of the check stopped"))
     })?;
@@ -1071,7 +1195,8 @@ pub fn check_placed(
         let written = sounds.iter().filter(|s| s.2 > 0).count();
         report.sounds = sounds
             .iter()
-            .map(|s| {
+            .enumerate()
+            .map(|(k, s)| {
                 let at = places.map_or(place, |p| p.get(place).copied().unwrap_or(place));
                 let order = place;
                 if s.2 > 0 {
@@ -1109,10 +1234,57 @@ pub fn check_placed(
                                 .unwrap_or(0.0)
                         })
                         .sum();
+                    // What the last piece's recording runs on for past its
+                    // last picture, as this track's own.
+                    let over = heard.last().zip(held.last()).map_or(0.0, |(p, h)| {
+                        if places.is_some() || written >= p.src.audios.len() {
+                            h.over.get(at).copied().unwrap_or(0.0)
+                        } else {
+                            h.over.iter().skip(order).take(p.src.audios.len().saturating_sub(written) + 1).copied().fold(0.0, f64::max)
+                        }
+                    });
+                    // Out of step, by where its ends are laid: see
+                    // [`Sound::step`]. Only where the output's tracks can be
+                    // told for the recordings' own.
+                    let own = |p: &Piece| places.is_some() || written >= p.src.audios.len();
+                    let slack = STEP_SLACK.max(1.5 * frames.get(k).copied().unwrap_or(0.0));
+                    let short = (pictures - sound).max(0.0);
+                    let timed = rising.get(k).is_some_and(|r| r.0);
+                    let head = heard.first().zip(held.first()).filter(|(p, _)| timed && own(p)).and_then(|(_, h)| {
+                        let (lo, hi) = h.head.get(at).copied().flatten()?;
+                        let lead = begins[k]? - pictures_begin?;
+                        if lead > hi + slack {
+                            Some(lead - hi)
+                        } else if lead < lo - slack {
+                            Some(lead - lo)
+                        } else {
+                            None
+                        }
+                    });
+                    // The tail by the last picture's end, which says nothing
+                    // where the pictures vary (see `last_length`). Early by
+                    // what the track lacks elsewhere is allowed, as its
+                    // length is.
+                    let tail = || {
+                        let (_, h) = heard.last().zip(held.last()).filter(|(p, _)| timed && own(p) && !varies)?;
+                        let e = h.tail.get(at).copied().flatten()?;
+                        pictures_begin?;
+                        let lag = s.4? - pictures_end?;
+                        if lag > e + slack {
+                            Some(lag - e)
+                        } else if lag < e - short - slack {
+                            Some(lag - e + short)
+                        } else {
+                            None
+                        }
+                    };
+                    let step = head.or_else(tail);
                     return Sound {
                         index: s.0,
                         seconds: s.3,
                         measured,
+                        over,
+                        step,
                         short: (pictures - sound).max(0.0),
                         past: match (s.4, pictures_end) {
                             (Some(e), Some(p)) => (e - p).max(0.0),
@@ -1158,6 +1330,8 @@ pub fn check_placed(
                     index: s.0,
                     seconds: s.3,
                     measured,
+                    over: 0.0,
+                    step: None,
                     short: sound_short + gap + seams + own,
                     // Only against pictures there are: a file of sound alone
                     // has its length and nothing to be laid against.
@@ -1202,6 +1376,19 @@ struct Held {
     sound: Vec<f64>,
     /// How many ranges held a picture.
     ranges: usize,
+    /// Seconds of each track past the last picture in the last range, where
+    /// the recording's sound outlasts its pictures and the range keeps some
+    /// of what it runs on for: see [`Sound::over`].
+    over: Vec<f64>,
+    /// Where each track's sound begins against the first picture of the
+    /// first range that holds one: the earliest the cut may lay it (sound
+    /// from where the range opens, ahead of a picture that comes later) and
+    /// the latest (where the recording's sound reaches the first picture),
+    /// both from the picture. `None` where the range has none of it.
+    head: Vec<Option<(f64, f64)>>,
+    /// Where each track's sound ends against the end of the last range's
+    /// pictures. `None` where the range has none of it.
+    tail: Vec<Option<f64>>,
 }
 
 /// Time with no picture in it among pictures starting at `times`, sorted:
@@ -1233,8 +1420,9 @@ fn covered(spans: &mut [(f64, f64)], from: f64, to: f64) -> f64 {
 }
 
 /// Read what `p`'s ranges hold in its recording: see [`Held`]. `None` where
-/// the recording cannot be read so, or the check was stopped.
-fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
+/// the recording cannot be read so, or the check was stopped. `last`: `p` is
+/// the last piece of the output.
+fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
     let src = p.src;
     let tracks: Vec<usize> = src.audios.iter().map(|a| a.stream_index).collect();
     let video = src.video.stream_index;
@@ -1244,9 +1432,21 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
         _ => fd,
     };
     let start = src.start_time;
-    let mut held = Held { pictures: 0.0, last_held: 0.0, holes: 0.0, sound: vec![0.0; tracks.len()], ranges: 0 };
+    let mut held = Held {
+        pictures: 0.0,
+        last_held: 0.0,
+        holes: 0.0,
+        sound: vec![0.0; tracks.len()],
+        ranges: 0,
+        over: vec![0.0; tracks.len()],
+        head: vec![None; tracks.len()],
+        tail: vec![None; tracks.len()],
+    };
+    // The last range that asks for anything, which is where the output ends
+    // when `p` is its last piece.
+    let final_range = p.ranges.iter().rposition(|&(a, b)| b.partial_cmp(&a.max(0.0)) == Some(std::cmp::Ordering::Greater));
     let mut sought: Option<crate::input::Demux> = None;
-    for &(a, b) in p.ranges {
+    for (r, &(a, b)) in p.ranges.iter().enumerate() {
         let a = a.max(0.0);
         // Also a range whose end is not a number.
         if b.partial_cmp(&a) != Some(std::cmp::Ordering::Greater) {
@@ -1318,6 +1518,8 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
             None => crate::preview::Untimed::new(&src.video),
         };
         let mut packets = untimed.paired(ictx.read_packets(), video);
+        // See [`crate::cut::Mpeg4Untimed`].
+        let mut vol_untimed = crate::cut::Mpeg4Untimed::default();
         while let Some((stream, packet, doubted)) = packets.read() {
             if stop.load(Ordering::Relaxed) {
                 return None;
@@ -1341,7 +1543,10 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
                     to_the_end = false;
                     break;
                 }
-                let Some(t) = untimed.pts_of(&packet, doubted).map(|q| q as f64 * tb - start) else { continue };
+                let own = untimed.pts_of(&packet, doubted);
+                let by_vol = vol_untimed.pts_of(src, &packet, tb, || mpeg4_record(src).map(|(r, _)| r));
+                let pts = own.or(by_vol);
+                let Some(t) = pts.map(|q| q as f64 * tb - start) else { continue };
                 let d = packet.duration();
                 shown.push((t, t + if d > 0 { d as f64 * tb } else { fd }));
             } else if let Some(k) = tracks.iter().position(|&i| i == stream.index()) {
@@ -1426,15 +1631,63 @@ fn held_in(p: &Piece, stop: &AtomicBool) -> Option<Held> {
                 times.push(a);
                 (a, a, until(i))
             }
-            _ => continue,
+            _ => {
+                // A last range wholly past the last picture keeps the sound
+                // there all the same (see below).
+                if last && Some(r) == final_range && to_the_end {
+                    for (k, spans) in sound.iter_mut().enumerate() {
+                        held.over[k] = covered(spans, a, reach);
+                    }
+                }
+                continue;
+            }
         };
         // A last picture held past the range is kept to the range's end.
-        let end = last_end.min(b.max(last_at + least));
+        let mut end = last_end.min(b.max(last_at + least));
+        // **Where the recording's sound outlasts its pictures**, a range kept
+        // past its last picture keeps the sound there as well. At the end of
+        // the output it runs on past the last picture, as long as the
+        // recording's does, and that is what was asked for: a recording with
+        // 12 s of sound under 10 s of pictures, `--cut 3-4`, was called
+        // "11.006s against 9.000s (laid 2.000s past the last picture) OFF".
+        // Anywhere else -- a clip a join goes on from -- the cut holds the
+        // last picture over it, to the range's end or the file's
+        // (`held_to_the_end` in [`crate::cut`]), so that what follows is not
+        // out of step with its sound.
+        let tail = to_the_end && inside.last().copied().or(up).is_some_and(|l| l + 1 == shown.len()) && reach > end + fd;
+        if tail {
+            if last && Some(r) == final_range {
+                for (k, spans) in sound.iter_mut().enumerate() {
+                    held.over[k] = covered(spans, end, reach);
+                }
+            } else {
+                end = reach;
+                // Held as one picture up until the next clip's first, which
+                // the output's pictures show as time with none in it.
+                times.push(reach);
+            }
+        }
         held.pictures += end - first;
         held.last_held = (end - last_at - least).max(0.0);
         held.holes += holes(&times, fd);
         for (k, spans) in sound.iter_mut().enumerate() {
             held.sound[k] += covered(spans, first, end);
+        }
+        // Where the sound begins and ends against the pictures, for
+        // [`Sound::step`]: the first range's head, the last range's tail.
+        if held.ranges == 0 {
+            for (k, spans) in sound.iter().enumerate() {
+                let from = |t: f64| {
+                    spans.iter().filter(|s| s.1 > t && s.0 < end).map(|s| s.0.max(t)).reduce(f64::min)
+                };
+                held.head[k] = from(first).map(|hi| (from(a - fd).unwrap_or(hi).min(first) - first, hi - first));
+            }
+        }
+        if Some(r) == final_range {
+            for (k, spans) in sound.iter().enumerate() {
+                let to = reach.max(end);
+                held.tail[k] = spans.iter().filter(|s| s.0 < to && s.1 > first).map(|s| s.1.min(to)).reduce(f64::max).map(|e| e - end);
+            }
         }
         held.ranges += 1;
     }
@@ -1528,45 +1781,6 @@ fn mpeg4_record(src: &Source) -> Option<(Vec<u8>, bool)> {
     record
 }
 
-/// For an MPEG-4 Part 2 recording whose keys [`mpeg4_record`] judged to state
-/// a VOL each, by its second and its last: whether the key picture each range
-/// opening at `froms` is read from does. **Judged by those two alone, a
-/// recording joined from three encodes** -- libavcodec's, a VOL at every key;
-/// Xvid's, its VOL in its first picture only; libavcodec's again -- had a
-/// range inside the middle one decoded by the record's VOL, and a copy of 50
-/// bit-identical pictures called "50 re-encoded, lowest 16.3 dB" and "50
-/// damaged". One open for the whole check, a seek and a packet or two a
-/// range: opened once a range, as before [`mpeg4_record`] kept the record, an
-/// hour's `.avi` in 10 ranges took 4 % longer. Empty wherever the question
-/// is not asked, or nothing can be read; a range it cannot answer for is
-/// taken to state its own, as before.
-fn mpeg4_entry_vols(src: &Source, froms: &[f64]) -> Vec<bool> {
-    if src.video.codec != "mpeg4" || froms.is_empty() || !mpeg4_record(src).is_some_and(|(_, every)| every) {
-        return Vec::new();
-    }
-    let Ok(mut ictx) = crate::input::demux(&src.input.url) else { return Vec::new() };
-    let video = src.video.stream_index;
-    crate::input::keep_only(&mut ictx, &[video]);
-    let quarter = src.video.frame_duration() / 4.0;
-    froms
-        .iter()
-        .map(|&from| {
-            // The entry point the read opens on, as `opened_by_sets_in_force`
-            // picks it; sought a quarter of a frame past its time, so that
-            // the key picture at or before is that one and not the one before.
-            let Some(entry) = src.points.iter().rev().find(|p| p.time <= from + 1e-6) else { return true };
-            let ts = ((entry.time + quarter + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
-            if ictx.seek(ts, ..ts).is_err() {
-                return true;
-            }
-            ictx.read_packets()
-                .take(4096)
-                .find(|(s, p)| s.index() == video && p.is_key())
-                .is_none_or(|(_, p)| crate::cut::mpeg4_has_vol(p.data().unwrap_or(&[])))
-        })
-        .collect()
-}
-
 /// `src` as the source side is to decode the range opening at `from`, where
 /// that is not `src` itself: the same recording with its entry points between
 /// the last restatement of the H.264 parameter sets and `from` left out, so
@@ -1596,61 +1810,19 @@ fn mpeg4_entry_vols(src: &Source, froms: &[f64]) -> Vec<bool> {
 /// look-back once more -- 600 MB more than 0.8.45 read for an hour's
 /// recording cut in 20 ranges.
 ///
-/// H.264 in lengths (MP4, Matroska) and MPEG-4 Part 2 are answered too, by
-/// the cut's own memos: see the two branches below.
-///
-/// `own_vol` is whether the range's entry picture states a VOL of its own, on
-/// an MPEG-4 Part 2 recording whose keys were judged to ([`mpeg4_entry_vols`]).
+/// H.264 in lengths (MP4, Matroska) and MPEG-4 Part 2 are not opened here:
+/// their entry picture is given what is in force instead (see the source side
+/// in [`check_placed`]).
 fn opened_by_sets_in_force(
     src: &Source,
     from: f64,
     known: &mut Option<(u64, Vec<Vec<u8>>)>,
-    own_vol: Option<bool>,
 ) -> Option<Source> {
     use crate::bitstream::NalFraming;
     // Kept only where this range's own look-back follows from it: a range
     // that leaves early (a key picture with its own sets) forgets it, and the
     // next reads back as far as ever.
     let was = known.take();
-    // In lengths (MP4, Matroska): opened on the key picture the cut's own
-    // look-back stopped at. See [`crate::cut::length_sets_at`].
-    //
-    // **Asked of what the process already knows, by the record the first key
-    // picture's read found.** Opened and probed here once a range, with a
-    // fresh look-back each time, `--verify` of an hour's set-less x264 `.mp4`
-    // in 10 ranges took 10 % longer; the cut has asked the same question of
-    // the same recording, and a file whose first key picture carries no sets
-    // is answered without a read.
-    if src.video.codec == "h264" && matches!(src.video.framing, NalFraming::Length(_)) {
-        let entry = src.points.iter().rev().find(|p| p.time <= from + 1e-6)?;
-        let (_, opens) = crate::cut::length_sets_known(src, entry.time, None)?;
-        let (t0, t1) = (opens, entry.time);
-        let mut lent = src.clone();
-        lent.points.retain(|p| p.time <= t0 + 1e-6 || p.time > t1 + 1e-6);
-        return Some(lent);
-    }
-    // **MPEG-4 Part 2 the same way, by the VOL in force.** Two encodes joined,
-    // each stating its VOL in its first picture only, were read from a range's
-    // entry picture by the record's -- the first encode's -- and the check
-    // called 50 broken pictures right and a right copy "re-encoded, 16 dB".
-    // Opened on the key picture that stated the VOL in force, as the cut's
-    // head decoder is given it. See [`crate::cut::mpeg4_vol_stated_at`].
-    // The record is read once per recording ([`mpeg4_record`]), and what the
-    // key pictures state once per process ([`crate::cut::mpeg4_vol_in_force`]).
-    if src.video.codec == "mpeg4" {
-        let entry = src.points.iter().rev().find(|p| p.time <= from + 1e-6)?;
-        let (record, every_key) = mpeg4_record(src)?;
-        if every_key && own_vol != Some(false) {
-            return None;
-        }
-        let (t0, t1) = (crate::cut::mpeg4_vol_stated_at(src, entry.time, &record)?, entry.time);
-        if t0 >= t1 - 1e-6 {
-            return None;
-        }
-        let mut lent = src.clone();
-        lent.points.retain(|p| p.time <= t0 + 1e-6 || p.time > t1 + 1e-6);
-        return Some(lent);
-    }
     if src.video.codec != "h264" || src.video.framing != NalFraming::AnnexB || !src.byte_seekable {
         return None;
     }
@@ -1685,12 +1857,32 @@ fn opened_by_sets_in_force(
     if in_force == record {
         return None;
     }
+    // **No further back than where the walk met what is in force**, where
+    // it kept that: the earliest of the last restatements, in front of `at`,
+    // of the sets that are not the record's. That is a byte that restates
+    // them, however far back: read back no further than 32 MiB, a splice
+    // whose second encode's IDR lies further than that was checked by the
+    // first encode's sets, as the cut then copied it, and passed.
+    let floor = src.sets_restated.as_ref().and_then(|met| {
+        // The last of each kind and number, by where it is in `met`.
+        let mut last: Vec<usize> = Vec::new();
+        for (i, (_, nal)) in met.iter().enumerate().filter(|(_, (p, _))| *p < at) {
+            let key = crate::preview::set_key(nal);
+            last.retain(|&j| crate::preview::set_key(&met[j].1) != key);
+            last.push(i);
+        }
+        last.iter()
+            .map(|&i| &met[i])
+            .filter(|(_, nal)| !record.iter().any(|r| r == nal))
+            .map(|(pos, _)| *pos)
+            .min()
+    });
     // Where they were last restated in front of it, read back as far as the
     // cut reads.
     let mut end = at;
     let mut stated: Option<u64> = None;
     for back in [2u64 << 20, 8 << 20, 32 << 20] {
-        let start = at.saturating_sub(back);
+        let start = at.saturating_sub(back).max(floor.unwrap_or(0));
         if start >= end {
             continue;
         }
@@ -1709,12 +1901,12 @@ fn opened_by_sets_in_force(
                 stated = Some(pos);
             }
         }
-        if stated.is_some() || start == 0 {
+        if stated.is_some() || start == floor.unwrap_or(0) {
             break;
         }
         end = start;
     }
-    let stated = stated?;
+    let stated = stated.or(floor)?;
     // The entry point the restatement arrives with, or the last before it.
     let opens = src.points.iter().rev().find(|p| p.pos >= 0 && (p.pos as u64) <= stated && p.time < entry.time)?;
     if src.joins.iter().any(|j| j.at > opens.pos as u64 && j.at <= at) {
@@ -2344,12 +2536,26 @@ fn frame_rate(ictx: &crate::input::Demux, video: Option<usize>, fallback: f64) -
 mod tests {
     use super::{covered, hole_in, holes, Kept, Report, Sound};
 
+    /// A low re-encode of the right picture -- far closer to it than to the
+    /// pictures either side -- is that picture; one as close to a neighbour,
+    /// one with no neighbour to tell by, and one under the floor are not.
+    #[test]
+    fn a_low_re_encode_of_the_right_picture_is_alike() {
+        use super::alike;
+        assert!(alike(30.0, None, None));
+        assert!(alike(23.0, Some(8.1), Some(10.7)));
+        assert!(alike(23.0, Some(8.1), None));
+        assert!(!alike(23.0, Some(21.0), Some(10.7)));
+        assert!(!alike(23.0, None, None));
+        assert!(!alike(18.0, Some(5.0), Some(5.0)));
+    }
+
     /// A track that holds as much sound as the pictures and is laid well
     /// past them -- frames stamped too far apart -- is off; one that ends
     /// within a frame or two of the last picture is not.
     #[test]
     fn sound_laid_past_the_pictures_is_off() {
-        let sound = |past: f64| Sound { index: 1, seconds: 59.902, measured: true, short: 0.0, past };
+        let sound = |past: f64| Sound { index: 1, seconds: 59.902, measured: true, short: 0.0, past, over: 0.0, step: None };
         let report = |past: f64| Report {
             pictures: true,
             produced: 1798,
@@ -2360,6 +2566,39 @@ mod tests {
         assert_eq!(report(21.032).sound_off(), vec![(1, 21.032)]);
         assert!(report(0.051).sound_off().is_empty());
         assert!(report(0.0).passed());
+    }
+
+    /// A recording with 12 s of sound under 10 s of pictures, `--cut 3-4`:
+    /// the sound runs 2 s past the last picture, as the recording's does.
+    #[test]
+    fn sound_the_recording_runs_on_with_is_not_off() {
+        let report = |over: f64| Report {
+            pictures: true,
+            produced: 225,
+            seconds: 9.0,
+            sounds: vec![Sound { index: 1, seconds: 11.006, measured: true, short: 0.0, past: 2.0, over, step: None }],
+            ..Default::default()
+        };
+        assert!(report(2.0).passed());
+        assert_eq!(report(0.0).sound_off().len(), 1);
+        // Allowed what the recording runs on for, and no more.
+        assert!(!report(1.0).passed());
+    }
+
+    /// A track laid 100 ms late holds all its samples and ends inside half a
+    /// second of the pictures: only its step says so.
+    #[test]
+    fn sound_out_of_step_is_off() {
+        let report = |step: Option<f64>| Report {
+            pictures: true,
+            produced: 235,
+            seconds: 9.4,
+            sounds: vec![Sound { index: 1, seconds: 9.408, measured: true, short: 0.0, past: 0.1, over: 0.0, step }],
+            ..Default::default()
+        };
+        assert!(report(None).passed());
+        assert_eq!(report(Some(0.1)).sound_off(), vec![(1, 0.1)]);
+        assert!(report(Some(-0.1)).lines().iter().any(|l| l.contains("0.100s ahead of the pictures") && l.ends_with("OFF")));
     }
 
     /// A track that stops 3.2 s before a seam the pictures run straight

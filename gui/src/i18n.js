@@ -981,6 +981,7 @@ const CATALOG = {
     "out.joinConform":
       "\"{name}\" を出力中: {clip} は基準クリップの形式に合わせて全編を書き直しています…",
     "out.writingTables": "\"{name}\" を仕上げ中: 放送の番組情報を書き戻しています…",
+    "out.writingArrivals": "\"{name}\" を仕上げ中: パケットの到着時刻を付け直しています…",
     "out.done": "完了{extra}",
     "out.doneKeyframes": " / キーフレーム {n} 個",
     "out.joined": "{n} 本を \"{name}\" にまとめました",
@@ -1004,6 +1005,8 @@ const CATALOG = {
     "out.verifyMind": "（注意: {what}）",
     "out.verifySoundShort": "音声 #{i} が映像より {secs} 秒短い",
     "out.verifySoundLong": "音声 #{i} が映像より {secs} 秒長い",
+    "out.verifySoundLate": "音声 #{i} が映像より {secs} 秒遅れている",
+    "out.verifySoundEarly": "音声 #{i} が映像より {secs} 秒進んでいる",
     "out.verifyCount": "ベリファイで不一致: フレームが {got} 枚あります（{want} 枚のはずです）",
     "out.verifyUnlike": "ベリファイで不一致: 元の録画と違うフレームが {n} 枚あります（最初は {at}）",
     "out.verifyCopies":
@@ -1432,6 +1435,16 @@ const CATALOG = {
     "engine.vc1Matroska":
       "{path}: Matroska に収められた VC-1 には表示時刻が記録されていないので、カットを始められるピクチャを決められません。" +
       "先に FFmpeg で時刻を付けて .m2ts に入れ直してください（例: ffmpeg -fflags +genpts -i 入力.mkv -c copy 出力.m2ts）。",
+    "engine.bareStream":
+      "{path}: コンテナに入っていない {kind} の生のストリームです。ピクチャに時刻が付いていないので、カットを始められるピクチャを決められません。" +
+      "ストリームから時刻を割り出せるツール（mkvmerge など）で、先に .mkv・.mp4・.ts のどれかに入れてください（例: mkvmerge -o 出力.mkv 入力ファイル）。",
+    "engine.aviH264":
+      "{path}: AVI に入った H.264 には表示時刻がありません。AVI は表示時刻を持たず、libavformat も H.264 については補わないので、カットを始められるピクチャを決められません。" +
+      "ストリームから時刻を割り出せるツールで .mkv に入れ直してください（例: mkvmerge -o 出力.mkv 入力.avi）。",
+    "engine.aviPacked":
+      "{path}: この AVI は、MPEG-4 の B ピクチャを直前のピクチャと同じチャンクにまとめて格納しています（DivX や Xvid の packed bitstream）。" +
+      "B ピクチャをいつ表示するかがファイルから分からないので、先に分けて格納し直してください。ピクチャの中身は変わりません" +
+      "（例: ffmpeg -i 入力.avi -c copy -bsf:v mpeg4_unpack_bframes 出力.avi）。",
   },
 
   en: {
@@ -2338,6 +2351,7 @@ const CATALOG = {
       "Writing \"{name}\": {clip} — transcoding the pictures to {share}% to fit the disc…",
     "out.joinConform": "Writing \"{name}\": {clip} — written afresh at the master's shape…",
     "out.writingTables": "Finishing \"{name}\": putting the broadcast's own tables back…",
+    "out.writingArrivals": "Finishing \"{name}\": writing the packets' arrival times again…",
     "out.done": "Done{extra}",
     "out.doneKeyframes": " / {n} keyframe{n?s}",
     "out.joined": "{n} clips written into \"{name}\"",
@@ -2356,6 +2370,8 @@ const CATALOG = {
     "out.verifyMind": " (note: {what})",
     "out.verifySoundShort": "sound #{i} is {secs}s shorter than the pictures",
     "out.verifySoundLong": "sound #{i} is {secs}s longer than the pictures",
+    "out.verifySoundLate": "sound #{i} is {secs}s behind the pictures",
+    "out.verifySoundEarly": "sound #{i} is {secs}s ahead of the pictures",
     "out.verifyCount": "Check failed: {got} frame{got?s} written, {want} expected",
     "out.verifyUnlike": "Check failed: {n} frame{n?s} unlike the recording (first at {at})",
     "out.verifyCopies": "Check failed: {n} of the {planned} frames meant to be copied differ from the recording",
@@ -2784,6 +2800,19 @@ const CATALOG = {
       "{path}: VC-1 in a Matroska file carries no presentation times (libavformat reads only decoding times " +
       "for it), so no picture can be found to start a cut from. Remux it to .m2ts first, letting ffmpeg make " +
       "the times up: ffmpeg -fflags +genpts -i in.mkv -c copy out.m2ts",
+    "engine.bareStream":
+      "{path}: a bare {kind} stream, with no container around it, carries no times of its own, so no picture " +
+      "can be found to start a cut from. Put it into a container first (.mkv, .mp4 or .ts) with a tool that " +
+      "works the times out of the stream, such as mkvmerge: mkvmerge -o out.mkv <this file>",
+    "engine.aviH264":
+      "{path}: H.264 in an AVI comes with no presentation times (an AVI keeps none, and libavformat does not " +
+      "work them out for H.264), so no picture can be found to start a cut from. Remux it to .mkv with a tool " +
+      "that works the times out of the stream, such as mkvmerge: mkvmerge -o out.mkv in.avi",
+    "engine.aviPacked":
+      "{path}: this AVI stores its MPEG-4 B pictures packed into the chunk of the picture before them " +
+      "(\"packed bitstream\", as DivX and Xvid write it), so the times they are shown at cannot be told from " +
+      "the file. Unpack them first, which changes no picture: ffmpeg -i in.avi -c copy -bsf:v " +
+      "mpeg4_unpack_bframes out.avi",
   },
 };
 
@@ -2903,6 +2932,21 @@ const ENGINE = [
     (m) => ({ path: m[1] }),
   ],
   [/^no random access points found in ([\s\S]+)$/, "engine.noEntry", (m) => ({ path: m[1] })],
+  [
+    /^([\s\S]*): a bare ([\s\S]+?) stream, with no container around it, carries no times of its own, [\s\S]*mkvmerge -o out\.mkv <this file>$/,
+    "engine.bareStream",
+    (m) => ({ path: m[1], kind: m[2] }),
+  ],
+  [
+    /^([\s\S]*): H\.264 in an AVI comes with no presentation times [\s\S]*mkvmerge -o out\.mkv in\.avi$/,
+    "engine.aviH264",
+    (m) => ({ path: m[1] }),
+  ],
+  [
+    /^([\s\S]*): this AVI stores its MPEG-4 B pictures packed [\s\S]*mpeg4_unpack_bframes out\.avi$/,
+    "engine.aviPacked",
+    (m) => ({ path: m[1] }),
+  ],
   [
     /^note: the arrival times in ([\s\S]*) were left as written: ([\s\S]*)$/,
     "engine.restampLeft",

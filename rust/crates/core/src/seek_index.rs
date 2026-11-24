@@ -222,6 +222,11 @@ pub struct SeekIndex {
     /// Whether the pass behind this read the recording to its end. Not
     /// written to the file: one that did not is never written at all.
     whole: bool,
+    /// The H.264 sets the walk met in band, where it kept them. See
+    /// [`crate::Source::sets_restated`]. Written after the identity, so that
+    /// an index from before there was such a list still loads, with none:
+    /// a recording opened from it reads back for its sets as it always did.
+    pub sets: Option<Vec<(u64, Vec<u8>)>>,
 }
 
 /// How many of a recording's first bytes go into its [`identity`]: the
@@ -358,6 +363,7 @@ impl index::IndexSource for SeekIndex {
             bit_rate: self.bit_rate,
             end: self.end,
             whole: true,
+            sets: self.sets.clone(),
         })
     }
 }
@@ -382,6 +388,7 @@ impl SeekIndex {
             // changed while it was read.
             identity: as_opened(&src.path).unwrap_or_else(|| identity(&src.path)),
             whole: src.read_whole,
+            sets: src.sets_restated.clone(),
         }
     }
 
@@ -463,6 +470,19 @@ impl SeekIndex {
         let (len, head) = self.identity.unwrap_or((0, 0));
         w.u64(len);
         w.u64(head);
+        // And after that the sets the walk met in band: a one, their count
+        // and each one's byte and bytes; a zero where none were kept.
+        match &self.sets {
+            Some(sets) => {
+                w.u8(1);
+                w.u64(sets.len() as u64);
+                for (at, nal) in sets {
+                    w.u64(*at);
+                    w.bytes(nal);
+                }
+            }
+            None => w.u8(0),
+        }
 
         // Through a temporary and renamed into place. This runs to tens of
         // megabytes and the process can be closed while it is writing; a
@@ -616,8 +636,25 @@ impl SeekIndex {
             closest: r.f64().ok().filter(|g| g.is_finite() && *g > 0.0),
             identity: r.u64().ok().zip(r.u64().ok()).filter(|&(len, head)| (len, head) != (0, 0)),
             whole: true,
+            sets: sets_met(&mut r),
         })
     }
+}
+
+/// The sets [`SeekIndex::save`] writes after the identity, where it wrote
+/// any: `None` for an index from before, and for one cut short.
+fn sets_met(r: &mut Reader) -> Option<Vec<(u64, Vec<u8>)>> {
+    if r.u8().ok()? != 1 {
+        return None;
+    }
+    let n = r.u64().ok()? as usize;
+    let n = r.fits(n, 8 + 4).ok()?;
+    let mut sets = Vec::with_capacity(n);
+    for _ in 0..n {
+        let at = r.u64().ok()?;
+        sets.push((at, r.bytes().ok()?.to_vec()));
+    }
+    Some(sets)
 }
 
 /// Whether the index at `path` is one of this version that holds a thumbnail
@@ -1031,6 +1068,7 @@ mod tests {
             track: None,
             identity: None,
             whole: true,
+            sets: None,
         };
         let at = std::env::temp_dir().join(format!("smartcut-scix-read-{}.scix", std::process::id()));
         ix.save(&at).unwrap();
@@ -1080,6 +1118,7 @@ mod tests {
             track: None,
             identity,
             whole: true,
+            sets: None,
         };
         let at = dir.join("x.scix");
         ix(Some(of(&a))).save(&at).unwrap();
@@ -1088,12 +1127,47 @@ mod tests {
         ix(None).save(&at).unwrap();
         let back = SeekIndex::load(&at).unwrap();
         assert_eq!((back.identity, back.closest), (None, Some(0.04)));
-        // One of version 20 as it was written before: it ends at `closest`.
+        // One of version 20 as it was written before: it ends at `closest`
+        // (the identity's 16 bytes and the sets' one).
         let raw = std::fs::read(&at).unwrap();
-        std::fs::write(&at, &raw[..raw.len() - 16]).unwrap();
+        std::fs::write(&at, &raw[..raw.len() - 17]).unwrap();
         let back = SeekIndex::load(&at).unwrap();
         assert_eq!((back.identity, back.closest, back.bit_rate), (None, Some(0.04), Some(1e6)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The sets a walk met in band go with the index, and one written
+    /// before there was such a list -- it ends at the identity -- reads with
+    /// none, so that its recording is read back for them as before.
+    #[test]
+    fn the_sets_met_in_band() {
+        let met = vec![(0u64, vec![0x67, 0x64, 0, 0x1f]), (0, vec![0x68, 0xee]), (7_520_000, vec![0x67, 0x4d, 0, 0x1f])];
+        let ix = |sets| SeekIndex {
+            points: Vec::new(),
+            leading_known: true,
+            end: Some(1.0),
+            pulldown: None,
+            variable: None,
+            bit_rate: None,
+            closest: None,
+            track: None,
+            identity: Some((5, 6)),
+            whole: true,
+            sets,
+        };
+        let at = std::env::temp_dir().join(format!("smartcut-scix-sets-{}.scix", std::process::id()));
+        ix(Some(met.clone())).save(&at).unwrap();
+        let back = SeekIndex::load(&at).unwrap();
+        assert_eq!((back.sets, back.identity), (Some(met), Some((5, 6))));
+        ix(Some(Vec::new())).save(&at).unwrap();
+        assert_eq!(SeekIndex::load(&at).unwrap().sets, Some(Vec::new()));
+        ix(None).save(&at).unwrap();
+        let raw = std::fs::read(&at).unwrap();
+        assert_eq!(SeekIndex::load(&at).unwrap().sets, None);
+        std::fs::write(&at, &raw[..raw.len() - 1]).unwrap();
+        let back = SeekIndex::load(&at).unwrap();
+        assert_eq!((back.sets, back.identity), (None, Some((5, 6))));
+        let _ = std::fs::remove_file(&at);
     }
 
     /// And one that says it holds none, which is a file that reads.

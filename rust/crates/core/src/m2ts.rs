@@ -59,10 +59,33 @@ pub fn standalone(path: &str, disc_clip: bool) -> bool {
 /// Where the stream has nothing to stamp from, leaves it alone and answers
 /// why. An error is a file that could not be read or written.
 pub fn restamp(path: &str) -> Result<Option<String>> {
-    match plan(path)? {
-        Ok(anchors) => write(path, &anchors).map(|()| None),
-        Err(why) => Ok(Some(why.to_string())),
-    }
+    restamp_reporting(path, None)
+}
+
+/// [`restamp`], saying how far through it is as a share of the whole pass.
+///
+/// The pass reads the file twice and writes it once -- the clock references
+/// first, then each packet's four bytes -- so on a large `.m2ts` it is a
+/// stretch of the run as long as the tables' pass, and a bar that stood
+/// still through it looked like a run that had stopped. The first read is
+/// counted as a third of it and the read and write after as the rest.
+pub fn restamp_reporting(path: &str, report: Option<&(dyn Fn(f64) + Sync)>) -> Result<Option<String>> {
+    let say = |f: f64| {
+        if let Some(report) = report {
+            report(f.clamp(0.0, 1.0));
+        }
+    };
+    say(0.0);
+    let anchors = match plan(path, &|f| say(f / 3.0))? {
+        Ok(anchors) => anchors,
+        Err(why) => {
+            say(1.0);
+            return Ok(Some(why.to_string()));
+        }
+    };
+    write(path, &anchors, &|f| say((1.0 + 2.0 * f) / 3.0))?;
+    say(1.0);
+    Ok(None)
 }
 
 /// [`restamp`] at the end of a run, where a file that could not be stamped
@@ -73,7 +96,17 @@ pub fn restamp(path: &str) -> Result<Option<String>> {
 /// `CutOptions::notes`): said alone it reached the terminal and the run's
 /// log, and the window's row said only that the run was done.
 pub(crate) fn restamp_or_say(path: &str, notes: Option<&std::sync::Mutex<Vec<String>>>) {
-    let why = match restamp(path) {
+    restamp_or_say_reporting(path, notes, None);
+}
+
+/// [`restamp_or_say`], saying how far through it is: see
+/// [`restamp_reporting`].
+pub(crate) fn restamp_or_say_reporting(
+    path: &str,
+    notes: Option<&std::sync::Mutex<Vec<String>>>,
+    report: Option<&(dyn Fn(f64) + Sync)>,
+) {
+    let why = match restamp_reporting(path, report) {
         Ok(None) => return,
         Ok(Some(why)) => why,
         Err(e) => format!("{e:#}"),
@@ -89,7 +122,7 @@ pub(crate) fn restamp_or_say(path: &str, notes: Option<&std::sync::Mutex<Vec<Str
 
 /// Every clock reference on the stream's clock PID, as (packet, 27 MHz
 /// time) with the wrap taken out, or why there is nothing to stamp from.
-fn plan(path: &str) -> Result<std::result::Result<Vec<(u64, u64)>, String>> {
+fn plan(path: &str, report: &dyn Fn(f64)) -> Result<std::result::Result<Vec<(u64, u64)>, String>> {
     let size = std::fs::metadata(path)
         .with_context(|| format!("reading {path}"))?
         .len();
@@ -101,7 +134,12 @@ fn plan(path: &str) -> Result<std::result::Result<Vec<(u64, u64)>, String>> {
     let mut anchors: Vec<(u64, u64)> = Vec::new();
     let mut clock_pid: Option<u16> = None;
     let (mut base, mut was) = (0u64, None::<u64>);
-    for i in 0..size / SOURCE_PACKET as u64 {
+    let packets = size / SOURCE_PACKET as u64;
+    for i in 0..packets {
+        // Every 4096 packets, the size of one of `write`'s blocks.
+        if i % 4096 == 0 {
+            report(i as f64 / packets as f64);
+        }
         src.read_exact(&mut frame)
             .with_context(|| format!("reading {path}"))?;
         let p = &frame[4..];
@@ -166,7 +204,7 @@ fn arrival(anchors: &[(u64, u64)], at: usize, i: u64) -> u64 {
 
 /// Write each packet's four leading bytes again, in place.
 #[allow(clippy::chunks_exact_to_as_chunks)] // `as_chunks_mut` needs Rust 1.88.
-fn write(path: &str, anchors: &[(u64, u64)]) -> Result<()> {
+fn write(path: &str, anchors: &[(u64, u64)], report: &dyn Fn(f64)) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -176,6 +214,7 @@ fn write(path: &str, anchors: &[(u64, u64)]) -> Result<()> {
     let mut block = vec![0u8; SOURCE_PACKET * 4096];
     let (mut offset, mut next) = (0u64, 0usize);
     while offset < size {
+        report(offset as f64 / size as f64);
         let take = (size - offset).min(block.len() as u64) as usize;
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(&mut block[..take])
@@ -309,6 +348,35 @@ mod tests {
             packet(0x100, Some(80_000), 3),
         ];
         assert_eq!(run("e.m2ts", &back), back.concat());
+    }
+
+    #[test]
+    fn the_pass_says_how_far_it_has_got() {
+        // Enough packets for several of `write`'s blocks.
+        let frames: Vec<_> = (0..10_000u64)
+            .map(|i| packet(0x100, (i % 50 == 0).then_some(i * 1000), 0))
+            .collect();
+        let dir = std::env::temp_dir().join(format!("smartcut-m2ts-p-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.m2ts");
+        std::fs::write(&path, frames.concat()).unwrap();
+        let said = std::sync::Mutex::new(Vec::new());
+        let report = |f: f64| said.lock().unwrap().push(f);
+        restamp_reporting(path.to_str().unwrap(), Some(&report)).unwrap();
+        let quiet = std::fs::read(&path).unwrap();
+        std::fs::write(&path, frames.concat()).unwrap();
+        restamp(path.to_str().unwrap()).unwrap();
+        // The same file either way.
+        assert_eq!(std::fs::read(&path).unwrap(), quiet);
+        std::fs::remove_file(&path).unwrap();
+        let said = said.into_inner().unwrap();
+        assert!(said.len() > 4, "{said:?}");
+        assert_eq!(said.first(), Some(&0.0));
+        assert_eq!(said.last(), Some(&1.0));
+        assert!(said.windows(2).all(|w| w[0] <= w[1]), "{said:?}");
+        // Through the first read and on into the write.
+        assert!(said.iter().any(|&f| f > 0.0 && f < 1.0 / 3.0));
+        assert!(said.iter().any(|&f| f > 1.0 / 3.0 && f < 1.0));
     }
 
     #[test]

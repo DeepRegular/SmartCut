@@ -288,6 +288,7 @@ fn run(
         shape.src.on_a_ts,
         many,
         Some(&crate::cut::SoundFile { pcm: file_pcm(output), holds: &holds }),
+        None,
     )?;
     // A recording joined on whose sound is written another way cannot be
     // copied into a stream declared as the master's. The picture writer
@@ -528,7 +529,8 @@ fn run(
 
     let mut recoder = if setup.mode == AudioMode::Reencode {
         Some(Reencoder::new(
-            params.clone(),
+            // See [`crate::aac::decodable`].
+            crate::aac::decodable(params.clone(), setup.source_framing, &shape.src.input.url, info.stream_index),
             setup.target,
             setup.like,
             &setup.info,
@@ -540,6 +542,12 @@ fn run(
     } else {
         None
     };
+    // The element a track that names its channels in a program config
+    // element gives them in, for the file's first frame. See `opening_pce`
+    // in [`crate::cut`].
+    OPENING_PCE.with(|p| {
+        *p.borrow_mut() = crate::cut::opening_pce(&setup, recoder.as_ref(), &shape.src.input.url);
+    });
 
     {
         let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None))?;
@@ -775,6 +783,36 @@ fn run(
         }
     }
 
+    // Copied by request, the track is the shape of the first frame the file
+    // keeps, as the cut with pictures has it. See
+    // [`crate::audio::first_kept_shape`].
+    if let Some(m) = mender.as_mut().filter(|_| !mends) {
+        let first = pieces.iter().zip(&prepared).find_map(|(piece, prepared)| {
+            let (track, _, windows, _) = prepared.as_ref()?;
+            Some((piece, track, *windows.first()?))
+        });
+        if let Some((piece, track, window)) = first {
+            if let Some(config) = crate::audio::first_kept_shape(piece.src, track, window)? {
+                m.settle(config);
+                let channels = match config {
+                    _ if Some(config) == crate::adts::channel_config(setup.info.channels) => None,
+                    c @ 1..=6 => Some(i32::from(c)),
+                    7 => Some(8),
+                    _ => None,
+                };
+                if let (Some(channels), Some(ost)) = (channels, octx.stream_mut(0)) {
+                    unsafe {
+                        let p = ost.parameters().as_mut_ptr();
+                        if (*p).ch_layout.nb_channels != channels {
+                            ff::ffi::av_channel_layout_uninit(&mut (*p).ch_layout);
+                            ff::ffi::av_channel_layout_default(&mut (*p).ch_layout, channels);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Written once the track's shape is settled (above).
     crate::cut::open_file(&mut octx, output)?;
     octx.write_header_with(muxer_opts)?;
@@ -817,6 +855,9 @@ fn run(
                     .ok_or_else(|| anyhow!("audio stream {} vanished", track.stream_index))?
                     .parameters();
                 drop(probe);
+                // See [`crate::aac::decodable`].
+                let theirs =
+                    crate::aac::decodable(theirs, setup.source_framing, &piece.src.input.url, track.stream_index);
                 re.retune(theirs, &track)?;
             }
         }
@@ -852,7 +893,17 @@ fn run(
             if !opened {
                 laid = 0.0;
             }
+            // **But the silence it leaves is kept where the file can keep
+            // it**, as a hole inside a range is (see [`Gap`]): the picture
+            // writer puts this range's frames at their own instants, after
+            // the silence. Closed up, everything after it was early by the
+            // silence -- a recorder's stretch whose sound breaks off a
+            // second before the seam, kept across it: the rest of the file
+            // 1.05 s early against the cut. Laid in front of the range's
+            // first frame, in its shape (see `take_range`).
+            let short = if opened { laid - written } else { 0.0 };
             let drift = drift_from(written, &mut laid);
+            let owed = if drift == 0.0 && short > 0.5 { short } else { 0.0 };
             let ramp = fades_for(
                 fades.get(at).copied().unwrap_or((0.0, 0.0)),
                 track.sample_rate,
@@ -876,7 +927,7 @@ fn run(
             // an overlapping crossing, whose stretch sound-only lays its own
             // way.
             let at_out = (k == 0 && n > 0 && !pieces[n - 1].after.kind.overlaps()).then_some(placed);
-            let (reached, first, holes) = take_range(
+            let (reached, first, holes, kept) = take_range(
                 piece.src,
                 &track,
                 range,
@@ -893,8 +944,13 @@ fn run(
                 at_out,
                 mender.as_mut(),
                 &mut gap,
+                owed,
             )?;
             written = reached;
+            // The silence kept is where the ranges before put this one.
+            if kept {
+                laid += owed;
+            }
             if std::env::var("SMARTCUT_DEBUG").is_ok() {
                 crate::say!(
                     "  sound range {:.4}-{:.4} laid={:.4} written={:.4} drift={:+.4} holes={:.4}",
@@ -1034,8 +1090,18 @@ fn on_its_pictures(
         let by = (now - was).abs();
         by > slack && by < least
     };
+    // **Or a start moved on to the picture after it, however far that is.**
+    // The cut starts a range there where the picture on screen at its start
+    // is no longer than a held one ([`crate::cut::sound_span`]): a 2:3
+    // pulldown's picture of three fields, the next one 46 ms after a start
+    // of 95.0 on a 29.97 broadcast, past the closest two pictures come.
+    // Taken from 95.0, that range's sound was 51 ms early against the cut.
+    let onto_the_next = |was: f64, now: f64| {
+        now > was + slack
+            && crate::plan::picture_after(src, was, slack).is_some_and(|p| (p - now).abs() <= slack)
+    };
     let first = src.points.first().map_or(0.0, |p| p.time);
-    let from = if a > first + slack && moved(a, from) { from } else { a };
+    let from = if a > first + slack && (moved(a, from) || onto_the_next(a, from)) { from } else { a };
     let to = if moved(b, to) && to > from { to } else { b };
     (from, to)
 }
@@ -1078,17 +1144,30 @@ fn shown_to(src: &Source, b: f64) -> f64 {
     if src.joins.iter().any(|s| s.ends.min(s.time) - 2.25 * fd < b && b < s.time + 2.0 * fd) {
         return b;
     }
-    // Only the last picture: anywhere else the next picture's start is the
-    // end, and `on_its_pictures` has that already. Told by the pictures, not
-    // by the duration: a recording whose sound runs on past its pictures
-    // (half a second of it after the last) is longer than they are, and a
-    // range ending inside the last picture was still laid to its own end,
-    // 10-20 ms off the cut after a join.
-    if crate::plan::picture_after(src, b, slack).is_some() {
-        return b;
-    }
-    match crate::plan::picture_on_screen(src, b) {
-        Some(s) if s < b - slack && s + fd > b + slack => (s + fd).min(src.duration),
+    // Told by the pictures, not by the duration: a recording whose sound
+    // runs on past its pictures (half a second of it after the last) is
+    // longer than they are, and a range ending inside the last picture was
+    // still laid to its own end, 10-20 ms off the cut after a join.
+    let on = crate::plan::picture_on_screen(src, b).filter(|&s| s < b - slack);
+    match (on, crate::plan::picture_after(src, b, slack)) {
+        // **Inside a picture longer than any two come**, which
+        // `on_its_pictures` leaves alone: the cut writes that picture for its
+        // own length, past `b` (a 2:3 pulldown's picture of three fields, 50
+        // ms of a 29.97 broadcast), and lays what follows there. Laid from
+        // `b`, the next range of `--keep 84-95 --keep 100-120` -- 95.0 four
+        // milliseconds into such a picture -- was 54 ms early against the
+        // cut. Its own length is the next picture's start, up to three fields
+        // where fields are repeated and a frame elsewhere; past that (a hole
+        // in the pictures) the cut holds it to `b`, as here.
+        (Some(s), Some(p)) => {
+            let coded = if src.video.pulldown { 1.5 * fd } else { fd };
+            b.max(p.min(s + coded))
+        }
+        // Anywhere else the next picture's start is the end, and
+        // `on_its_pictures` has that already.
+        (None, Some(_)) => b,
+        // The last picture, which the cut shows whole.
+        (Some(s), None) if s + fd > b + slack => (s + fd).min(src.duration),
         _ => b,
     }
 }
@@ -1734,7 +1813,10 @@ fn take_range(
     mut mender: Option<&mut crate::audio::Mender<(f64, f64, i64)>>,
     // What a hole between two of the range's frames is laid as.
     gap: &mut Gap,
-) -> Result<(f64, Option<Opening>, f64)> {
+    // Silence the range before ran out of sound for, laid (as `gap` lays a
+    // hole) in front of this range's first frame; see `owed` in `run`.
+    owed: f64,
+) -> Result<(f64, Option<Opening>, f64, bool)> {
     let mut ictx = crate::input::demux(&src.input.url)?;
     // Half a second before the range, so the frame it opens on has been
     // decoded up to rather than seeked into: a seek in a transport stream
@@ -1775,6 +1857,8 @@ fn take_range(
     let mut reached: Option<f64> = None;
     let mut latest: Option<f64> = None;
     let mut holes = 0.0f64;
+    // Whether `owed` was laid.
+    let mut kept_owed = false;
     // How much longer than itself the container says the frame laid last
     // lasts, in a file with no clock. See `longer` below.
     let mut longer = 0.0f64;
@@ -1852,6 +1936,14 @@ fn take_range(
             // A frame with no length is a frame there is nowhere to put:
             // what follows would land on top of it.
             continue;
+        }
+        if first.is_none() && owed > 0.0 {
+            let next = packet.data().unwrap_or(&[]);
+            let rewritten = mender.as_deref().is_some_and(|m| m.off_shape(next));
+            if let Some(kept) = gap.lay(octx, owed, next, rewritten, track, written, clock)? {
+                written += kept;
+                kept_owed = true;
+            }
         }
         first.get_or_insert((t, dur, before));
         // A frame that starts before one the range has laid already: the
@@ -1989,7 +2081,7 @@ fn take_range(
         written += dur;
     }
     packets.finished()?;
-    Ok((written, first, holes))
+    Ok((written, first, holes, kept_owed))
 }
 
 /// One step of [`take_range`]'s read: the next packet read, a frame of the
@@ -2452,6 +2544,30 @@ fn opens_on_sync(data: Option<&[u8]>) -> bool {
     data.is_some_and(|d| d.len() >= 8 && d[4..7] == [0xF8, 0x72, 0x6F] && matches!(d[7], 0xBA | 0xBB))
 }
 
+thread_local! {
+    /// The program config element the first frame written to the file is
+    /// to carry, until it has been written: see [`opening`].
+    static OPENING_PCE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The file's first frame, given the program config element its track names
+/// its channels in ([`OPENING_PCE`]) where it does not carry one itself: the
+/// .m4a and .mka muxers turned every frame away without it. As
+/// `AudioTrack::opening` in [`crate::cut`].
+fn opening(packet: ff::Packet) -> ff::Packet {
+    let Some(pce) = OPENING_PCE.with(|p| p.borrow_mut().take()) else { return packet };
+    let Some(body) = packet.data().and_then(|d| crate::adts::with_pce(d, &pce)) else {
+        return packet;
+    };
+    let mut out = ff::Packet::copy(&body);
+    out.set_flags(packet.flags());
+    out.set_stream(packet.stream());
+    out.set_duration(packet.duration());
+    out.set_pts(packet.pts());
+    out.set_dts(packet.dts());
+    out
+}
+
 /// Write one of the recording's own frames where the sound has reached.
 fn write_copied(
     octx: &mut ff::format::context::Output,
@@ -2466,6 +2582,7 @@ fn write_copied(
     packet.set_dts(Some(pts));
     packet.set_duration((dur / clock.tb).round() as i64);
     packet.set_position(-1);
+    let packet = opening(packet);
     match packet.write_interleaved(octx) {
         // A frame whose ADTS header is damaged, which the MP4 and Matroska
         // muxers' aac_adtstoasc turns away. One such frame used to fail the
@@ -2519,6 +2636,7 @@ fn write_encoded(
         packet.set_duration((secs / clock.tb).round() as i64);
     }
     packet.set_position(-1);
+    let packet = opening(packet);
     packet.write_interleaved(octx)?;
     Ok(seconds)
 }

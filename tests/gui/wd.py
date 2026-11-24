@@ -34,6 +34,7 @@ KEY = {
     "End": "\ue010",
     "Left": "\ue012",
     "Right": "\ue014",
+    "Insert": "\ue016",
 }
 
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"

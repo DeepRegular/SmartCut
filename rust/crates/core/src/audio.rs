@@ -786,6 +786,18 @@ struct Wide {
 /// re-encoded from its head (to .wav, or joined onto an AAC recording) ran
 /// 6.5 ms ahead of its pictures. The packets are read in the stream's own
 /// time base, which is what `audio.time_base` is.
+/// Whether an AAC encoder describes its frames by a program config element
+/// (its AudioSpecificConfig says `channel_config` 0 and carries one).
+fn encoder_names_by_pce(encoder: &ff::encoder::Audio) -> bool {
+    // SAFETY: the encoder is open; its context is read, not kept.
+    unsafe {
+        let c = encoder.as_ptr();
+        (*c).extradata_size > 0
+            && crate::adts::pce_in_asc(std::slice::from_raw_parts((*c).extradata, (*c).extradata_size as usize))
+                .is_some()
+    }
+}
+
 fn track_decoder(params: ff::codec::Parameters, audio: &AudioInfo) -> Result<ff::decoder::Audio> {
     let mut decoder = ff::codec::context::Context::from_parameters(params)?.decoder();
     if audio.time_base > 0.0 && audio.time_base.is_finite() {
@@ -937,6 +949,17 @@ impl Reencoder {
         // goes to the plain one for the count it folds to.
         let keep = layout_of(&params).filter(|l| l.channels() == channels as i32);
         let encoder = open_encoder(target, like, rate, channels, keep.as_ref(), bit_rate, false)?;
+        // A header saying `channel_config` 0 says the frames name their
+        // channels in a program config element. Where the encoder writes
+        // none -- a layout with a configuration of its own -- the header
+        // names that configuration, or the frames are read against nothing.
+        // See `frame_as` in [`crate::cut`].
+        let framing = match framing {
+            Some(Framing::Adts(f)) if f.channel_config == 0 && !encoder_names_by_pce(&encoder) => {
+                Some(Framing::Adts(f.with_channels(channels)))
+            }
+            other => other,
+        };
         let frame_size = frame_size_of(&encoder);
         let enc_format = encoder.format();
         let fixed = encoder.frame_size() > 0;
@@ -2018,8 +2041,16 @@ impl<T> Mender<T> {
     /// -- the track's own shape among them -- is written again in it: a 5.1
     /// film kept with a few seconds of stereo either side was folded to
     /// stereo whole for the few seconds' sake.
+    ///
+    /// Copied by request (`--audio-mode copy`), `config` is the shape of the
+    /// first frame the cut keeps instead ([`first_kept_shape`]): what the
+    /// file's track is described by, so what the frames counted for the note
+    /// are counted against.
     pub(crate) fn settle(&mut self, config: u8) {
         if !self.mend {
+            if config != self.own.0 {
+                self.retarget_to(config);
+            }
             return;
         }
         if config == self.own.0 {
@@ -2708,7 +2739,10 @@ pub fn boundary_patches(
     let stream = ictx
         .stream(audio.stream_index)
         .ok_or_else(|| anyhow!("audio stream {} vanished", audio.stream_index))?;
-    let params = stream.parameters();
+    // With the track's channels where its frames name them only now and
+    // then: decoded from the middle, every frame failed and nothing at the
+    // edges was written again. See [`crate::aac::decodable`].
+    let params = crate::aac::decodable(stream.parameters(), framing, &src.input.url, audio.stream_index);
     let rate = audio.sample_rate as f64;
 
     // Two ways a track can turn out not to be one whose frames this
@@ -2784,6 +2818,37 @@ pub fn boundary_patches(
             return Ok(out);
         }
     };
+    // A track whose frames name their channels in a program config element
+    // is decoded against the recording's element, and a frame written here
+    // has to be read against it too: its elements numbered as the
+    // recording's are. Where the encoder numbers them otherwise -- it writes
+    // a configuration of its own for a layout that has one -- its frames at
+    // the edges did not decode among the recording's ("channel element 3.0
+    // is not allocated"), and the edges are copied instead.
+    if matches!(framing, Some(Framing::Adts(f)) if f.channel_config == 0) {
+        let element = |p: *const ff::ffi::AVCodecParameters| unsafe {
+            ((*p).extradata_size > 0)
+                .then(|| std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize))
+                .and_then(crate::adts::pce_in_asc)
+        };
+        // SAFETY: the parameters are this function's, read here.
+        let theirs = element(unsafe { params.as_ptr() });
+        // SAFETY: the encoder is open and its context is read, not kept.
+        let ours = unsafe {
+            let c = probe.as_ptr();
+            ((*c).extradata_size > 0)
+                .then(|| std::slice::from_raw_parts((*c).extradata, (*c).extradata_size as usize))
+                .and_then(crate::adts::pce_in_asc)
+        };
+        let same = matches!((&theirs, &ours), (Some(a), Some(b)) if crate::adts::same_pce(a, b));
+        if !same {
+            crate::say!(
+                "note: this AAC names its channels in a program config element that the encoder \
+                 here does not write as it does, so its frames are copied, boundaries and all."
+            );
+            return Ok(out);
+        }
+    }
     drop(probe);
 
     // How far a range may open on the programme before it and still be put
@@ -3043,6 +3108,24 @@ pub(crate) fn kept_shapes_of(src: &Source, tracks: &mut [Counted<'_>]) -> Result
         }
     }
     Ok(())
+}
+
+/// The `channel_config` of the first frame of the track `window` keeps (in
+/// the track's samples), off its header: the frame whose middle is the
+/// first past the window's start, as the writers take frames into a range.
+///
+/// **What a track copied by request is described by.** The MP4 and Matroska
+/// muxers build the file's AudioSpecificConfig from the first frame they are
+/// handed, and the stream's channel count was the track's head's: a range
+/// kept from the 5.1 stretch of a recording that opens in stereo came out
+/// with an MP4 channelcount (or a Matroska Channels) of 2 over a
+/// configuration of 6. `None` where nothing is read at the track's rate.
+pub(crate) fn first_kept_shape(src: &Source, audio: &AudioInfo, window: (i64, i64)) -> Result<Option<u8>> {
+    let mut tally = HashMap::new();
+    // Half a frame: only the one frame whose middle lies in it is counted.
+    let window = (window.0, window.1.min(window.0 + 512));
+    kept_shapes(src, audio, &[window], &mut tally)?;
+    Ok(tally.into_iter().max_by_key(|&(c, n)| (n, std::cmp::Reverse(c))).map(|(c, _)| c))
 }
 
 /// The `channel_config` most of the counted frames have ([`kept_shapes`]);

@@ -1307,12 +1307,33 @@ function toKeyframe(dir) {
 /// one, so a key that only ever added would look broken there.
 function toggleKeyframe() {
   if (!src) return;
-  const on = keyframes.find((t) => Math.abs(t - playhead) < endHalf());
+  const on = markOnPlayhead();
   if (on === undefined) {
     addKeyframes([playhead], playhead);
     return;
   }
   dropKeyframes([on]);
+}
+
+/// The mark on the picture the playhead stands on, or undefined: one within
+/// half a picture of it (`endHalf`), or, on a variable recording whose
+/// picture is on the stage, one inside that picture's own span.
+///
+/// **A mark need not be on a picture's start.** A quiet stretch's edge is an
+/// instant of the sound, and on a variable recording half a picture is half
+/// the closest the pictures come, not half the average: K on the picture
+/// such a mark falls in put down a second mark a few milliseconds from it,
+/// and Insert there added one rather than taking it away. The picture on the
+/// stage starts at the playhead (`showFrame` puts the playhead on it) and
+/// lasts at least the closest gap the pictures were measured to come at, so
+/// a mark less than that after the playhead is in it.
+function markOnPlayhead() {
+  const near = keyframes.find((t) => Math.abs(t - playhead) < endHalf());
+  if (near !== undefined) return near;
+  if (!src || !src.variable || src.pulldown || !walked() || shownTime !== playhead) return undefined;
+  const gap = src.closest > 0 ? Math.min(src.closest, frame()) : 0;
+  if (!(gap > 0)) return undefined;
+  return keyframes.find((t) => t > playhead && t - playhead < gap - 1e-4);
 }
 
 // --- access points and scenes -------------------------------------------
@@ -5883,10 +5904,45 @@ function onePicture(o) {
 /// rounding of the ticks and not the pictures', and the cutter's two ticks
 /// already take a bound a frame of the average past OUT's picture as the
 /// picture after it.
+///
+/// **Except where the entry points say the gap is the pictures' own.** Two
+/// encodes spliced with a long gap in a short recording average more than
+/// 0.8 % below their pictures' rate, and a frame of that average past OUT's
+/// picture was past the picture after it: ✂ took that one too. What tells it
+/// from a gap that is one picture stamped early is where the entry points
+/// stand: a whole number of the gap measured apart, and not of the average,
+/// they are pictures that come at that gap (`pointsOnGap`).
 function rateStep() {
   const f = frame();
   const c = src ? src.closest : 0;
-  return !src || src.pulldown || coarseTick() > 0 || !(c > f * 0.992 && c < f * (1 - 5e-4)) ? f : c;
+  if (!src || src.pulldown || coarseTick() > 0) return f;
+  if (c > f * 0.992 && c < f * (1 - 5e-4)) return c;
+  return c > f * 0.9 && c <= f * 0.992 && pointsOnGap(c, f) ? c : f;
+}
+
+/// Whether the gaps between the entry points are, two in three or more,
+/// whole numbers of `c` to within a two-hundredth of it, and fewer of them
+/// whole numbers of `f`. A fine clock puts pictures that come at one gap on
+/// its multiples exactly; a picture stamped early leaves the entry points on
+/// the average's. Too few points to tell is no.
+let gapGrid = { points: null, n: -1, c: 0, f: 0, on: false };
+function pointsOnGap(c, f) {
+  const pts = src.points;
+  if (gapGrid.points === pts && gapGrid.n === pts.length && gapGrid.c === c && gapGrid.f === f) return gapGrid.on;
+  let n = 0;
+  let onC = 0;
+  let onF = 0;
+  const off = (g, step) => Math.abs(g / step - Math.round(g / step));
+  for (let i = 1; i < pts.length; i++) {
+    const g = pts[i] - pts[i - 1];
+    if (!(g > c / 2)) continue;
+    n++;
+    if (off(g, c) < 0.005) onC++;
+    if (off(g, f) < 0.005) onF++;
+  }
+  const on = n >= 2 && onC * 3 >= n * 2 && onF < onC;
+  gapGrid = { points: pts, n: pts.length, c, f, on };
+  return on;
 }
 
 /// The video clock's tick where it is coarse against a frame, as the cutter
@@ -8687,7 +8743,12 @@ window.addEventListener("keydown", (ev) => {
   // the keys the hand finds without looking.
   if (key === "i" || key === "[") setIn(playOut());
   if (key === "o" || key === "]") setOut(playOut());
-  if (key === "k") addKeyframes([playhead], playhead);
+  if (key === "k") {
+    // Beside a mark already on this picture, that mark rather than another.
+    const on = markOnPlayhead();
+    if (on !== undefined && Math.abs(on - playhead) >= endHalf()) addKeyframes([], on);
+    else addKeyframes([playhead], playhead);
+  }
   // Shift+P saves the frame as a picture file; P alone makes it the cover.
   if (key === "p" && src) {
     if (ev.shiftKey) saveStill();

@@ -1028,6 +1028,10 @@ struct Writer {
     /// The H.264 parameter sets in force in a recording, and those the
     /// output last stated. See [`H264Sets`].
     h264_sets: Option<H264Sets>,
+    /// Whether an MPEG-4 Part 2 output's decoder has been told it is
+    /// delayed; `None` until the first picture, `Some(None)` for any other
+    /// output. See [`Mpeg4Delay`].
+    mpeg4_delay: Option<Option<Mpeg4Delay>>,
 }
 
 /// What [`Writer::h264_sets`] keeps.
@@ -1204,6 +1208,40 @@ struct AudioTrack {
     /// channel count again in the track's shape. See
     /// [`crate::audio::Mender`].
     mender: Option<crate::audio::Mender<Mended>>,
+    /// The program config element the track's first frame is to carry,
+    /// where its frames name their channels in one and the first written
+    /// may not: taken once that frame is written. See
+    /// [`crate::adts::pce_of`] and [`AudioTrack::opening`].
+    pce: Option<Vec<u8>>,
+}
+
+/// The program config element a track's first written frame is to carry
+/// ([`AudioTrack::pce`]): where the frames written are ADTS that say
+/// `channel_config` 0, the recording's own element off its head, or where a
+/// re-encoder frames them, the one its encoder describes them by. `None`
+/// for every track that names a configuration, which is every broadcast's.
+pub(crate) fn opening_pce(setup: &AudioSetup, reencoder: Option<&crate::audio::Reencoder>, url: &str) -> Option<Vec<u8>> {
+    let Some(crate::aac::Framing::Adts(f)) = setup.frame_as.or(setup.source_framing) else {
+        return None;
+    };
+    if f.channel_config != 0 {
+        return None;
+    }
+    match reencoder {
+        Some(re) => {
+            let params = re.parameters();
+            // SAFETY: the parameters are the re-encoder's copy, read here.
+            let asc = unsafe {
+                let p = params.as_ptr();
+                if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                    return None;
+                }
+                std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+            };
+            crate::adts::pce_in_asc(&asc)
+        }
+        None => crate::aac::head_pce(url, setup.info.stream_index),
+    }
 }
 
 /// Where a frame handed to the [`crate::audio::Mender`] goes, for when what
@@ -1216,6 +1254,30 @@ struct Mended {
 }
 
 impl AudioTrack {
+    /// The track's first frame, given the program config element it names
+    /// its channels in where it has none of its own ([`Self::pce`]): the
+    /// MP4 and Matroska muxers turned every frame of a cut away without one
+    /// in the first, and a decoder opening a transport stream at its first
+    /// frame read nothing. Every later frame, and every frame of a track
+    /// that names a configuration, goes as it came.
+    fn opening(&mut self, packet: ff::Packet) -> ff::Packet {
+        if self.written > 0 {
+            return packet;
+        }
+        let Some(pce) = self.pce.take() else { return packet };
+        let Some(body) = packet.data().and_then(|d| crate::adts::with_pce(d, &pce)) else {
+            return packet;
+        };
+        let mut out = ff::Packet::copy(&body);
+        out.set_flags(packet.flags());
+        out.set_stream(packet.stream());
+        out.set_duration(packet.duration());
+        out.set_pts(packet.pts());
+        out.set_dts(packet.dts());
+        out.set_position(packet.position());
+        out
+    }
+
     /// A copied frame in the framing the track is written in. See
     /// [`Self::adts`].
     fn framed(&self, packet: ff::Packet) -> ff::Packet {
@@ -1571,9 +1633,32 @@ impl Writer {
     /// each picture's own length: under pulldown the lengths differ, and a
     /// decode-order sum overtakes the presentation time it is supposed to
     /// precede. The muxer rejects that outright -- `pts < dts`.
+    /// A segment of the plan begins. See [`Mpeg4Delay::next_segment`].
+    fn next_segment(&mut self) {
+        if let Some(Some(delay)) = self.mpeg4_delay.as_mut() {
+            delay.next_segment();
+        }
+    }
+
     fn push(&mut self, kind: SegmentKind, mut e: Emitted) -> Result<()> {
         if let Some(config) = self.av1_mp4.as_mut() {
             config.packet(&mut e.packet, kind)?;
+        }
+        let octx = &self.octx;
+        let delay = self.mpeg4_delay.get_or_insert_with(|| {
+            let params = octx.stream(0)?.parameters();
+            (params.id() == ff::codec::Id::MPEG4)
+                .then(|| Mpeg4Delay::record(&mpeg4_config(&params).unwrap_or_default()))
+        });
+        if let Some(data) = delay.as_mut().and_then(|d| d.pass(e.packet.data().unwrap_or(&[]))) {
+            let mut out = ff::Packet::copy(&data);
+            out.set_flags(e.packet.flags());
+            out.set_stream(e.packet.stream());
+            out.set_pts(e.packet.pts());
+            out.set_dts(e.packet.dts());
+            out.set_duration(e.packet.duration());
+            out.set_position(e.packet.position());
+            e.packet = out;
         }
         // A copy after a re-encoded picture opens on a splice as well: its
         // first picture follows the encoder's, not the recording's own. See
@@ -1992,6 +2077,7 @@ impl Writer {
             packet.set_duration(((packet.duration() as f64 / rate.max(1) as f64) / tb).round() as i64);
         }
         packet.set_position(-1);
+        let packet = self.audio[track].opening(packet);
         self.write(packet, None)??;
         self.audio[track].written += 1;
         Ok(())
@@ -2203,6 +2289,7 @@ impl Writer {
             crate::track_name(self.on_a_ts, t.pid, t.stream_index)
         };
         let tolerated = (!self.into_ts && self.audio[track].adts.is_some()).then_some(track);
+        let packet = self.audio[track].opening(packet);
         match self.write(packet, tolerated)? {
             // An MP4 or Matroska muxer runs AAC through aac_adtstoasc, which
             // turns away a frame whose ADTS header is damaged -- one bad
@@ -2574,8 +2661,6 @@ pub(crate) mod poc_seam {
         bottom: i64,
         /// `max_num_ref_frames` of the sequence it belongs to.
         refs: i64,
-        /// Whether it is a field picture.
-        field: bool,
     }
 
     enum Unit {
@@ -2870,7 +2955,6 @@ pub(crate) mod poc_seam {
             lsb,
             bottom,
             refs: sps.refs,
-            field,
         })
     }
 
@@ -2923,8 +3007,9 @@ pub(crate) mod poc_seam {
     /// order field against the last picture read that had a time. See where
     /// [`super::copy_segment`] reads a packet's time.
     ///
-    /// Only frames of a sequence that writes the order into each slice
-    /// (`pic_order_cnt_type` 0), or that shows its pictures in the order they
+    /// Only pictures of a sequence that writes the order into each slice
+    /// (`pic_order_cnt_type` 0; frames and fields alike), or frames of one
+    /// that shows its pictures in the order they
     /// are decoded (2: no B pictures, so the next picture decoded is the
     /// next one shown), and only once two pictures with times have said how
     /// far apart one step of the order is (or, for the second kind, the
@@ -2944,6 +3029,9 @@ pub(crate) mod poc_seam {
         measured: Option<(i64, i64)>,
         /// Ticks per step of the order, measured between pictures with times.
         step: Option<f64>,
+        /// The last few measures of [`Self::step`]: ticks and steps of the
+        /// order between two pictures with times. See [`Self::settled`].
+        spans: std::collections::VecDeque<(f64, f64)>,
         /// The fewest steps of the order seen between two pictures, which is
         /// one picture's.
         gap: Option<i64>,
@@ -2964,6 +3052,11 @@ pub(crate) mod poc_seam {
     /// encode with B pictures has only its first picture timed among some
     /// forty: a cut of the whole lost all of them (261 of 300 written).
     const ORDER_PER_FRAME: f64 = 2.0;
+
+    /// How many times the flattest of the last steps measured a step may be
+    /// and still be one: 2:3 pulldown's are one and a half. See
+    /// [`Order::settled`].
+    const HELD: f64 = 1.75;
 
     /// How a picture says where it is shown.
     #[derive(Clone, Copy)]
@@ -3205,8 +3298,17 @@ pub(crate) mod poc_seam {
         }
 
         /// How a packet's first slice says where it is shown, and whether it
-        /// is an IDR; `None` for a field, or where it cannot be read. The
-        /// packet's own sets are learnt first.
+        /// is an IDR; `None` where it cannot be read. The packet's own sets
+        /// are learnt first.
+        ///
+        /// **A field is counted as a frame is**: its order field is its own,
+        /// one step from its pair's, and a frame's is its top field's, so the
+        /// steps are the same ones. Answered with nothing, a field whose
+        /// packet carries no time -- a field-coded H.264 recording remuxed
+        /// into a `.mpg` packs small fields several to a PES -- was passed
+        /// over: a whole copy of a recorder's 1080i clip lost the key field
+        /// near its end and the five frames after it. A copy places a second
+        /// field after its first, whatever time it is given.
         ///
         /// Read up to the first slice's header and no further: an access
         /// unit's sets come before its slices, and every H.264 packet of a
@@ -3221,7 +3323,7 @@ pub(crate) mod poc_seam {
                     Some(1 | 5) => {
                         let rbsp = unescape(&data[s..next_nal(data, s, 64).0]);
                         return match read_slice(&rbsp, &self.sets) {
-                            Some(s) => (!s.field).then_some((Told::Lsb(s.lsb, s.bits), s.idr)),
+                            Some(s) => Some((Told::Lsb(s.lsb, s.bits), s.idr)),
                             None => in_decode_order(&rbsp, &self.sets).map(|idr| (Told::Next, idr)),
                         };
                     }
@@ -3270,7 +3372,7 @@ pub(crate) mod poc_seam {
                 if order != from {
                     let step = (pts - then) as f64 / (order - from) as f64;
                     if step > 0.0 {
-                        self.step = Some(step);
+                        self.step = Some(self.settled((pts - then).abs() as f64, (order - from).abs() as f64));
                         let gap = (order - from).abs();
                         self.gap = Some(self.gap.map_or(gap, |g| g.min(gap)));
                     }
@@ -3333,6 +3435,43 @@ pub(crate) mod poc_seam {
                 None => {}
             }
             pts
+        }
+
+        /// The step to count by, now that two pictures with times have been
+        /// `ticks` and `steps` of the order apart. **Where the pictures are
+        /// not evenly spaced -- 2:3 pulldown laid on a field grid, three
+        /// fields and two in turn -- one such measure is a step and a half or
+        /// one field where the pictures average a field and a quarter**, and
+        /// a run of pictures with no time counted on by it (a black stretch
+        /// of an H.264 `.vob`) was laid a field too far or too near every
+        /// two steps: a whole copy left 9 of 288 out, and a range over the
+        /// black wrote pictures that would not decode. So where the last few
+        /// measures differ by more than 5 %, the step is their average --
+        /// leaving out any more than [`HELD`] times the flattest: a picture
+        /// held, or a clock that jumps, is not a step (one such measure, taken
+        /// as the step, laid the run after it seconds late). Otherwise, as on
+        /// every evenly spaced recording, the last measure as it is.
+        fn settled(&mut self, ticks: f64, steps: f64) -> f64 {
+            const KEPT: usize = 8;
+            const UNEVEN: f64 = 1.05;
+            self.spans.push_back((ticks, steps));
+            if self.spans.len() > KEPT {
+                self.spans.pop_front();
+            }
+            let last = ticks / steps;
+            let each = || self.spans.iter().map(|&(t, s)| t / s);
+            let low = each().fold(f64::INFINITY, f64::min);
+            if self.spans.len() < 4 || each().fold(0.0, f64::max) <= low * UNEVEN {
+                return last;
+            }
+            let steps: Vec<&(f64, f64)> = self.spans.iter().filter(|&&(t, s)| t / s <= low * HELD).collect();
+            // Held pictures are the few; where most are "held", the flattest
+            // is the odd one out, and the last measure stands.
+            if steps.len() * 2 < self.spans.len() {
+                return last;
+            }
+            let (t, s) = steps.into_iter().fold((0.0, 0.0), |(t, s), &(a, b)| (t + a, s + b));
+            t / s
         }
 
         /// How long one picture lasts, in ticks, where the order is read from
@@ -4533,6 +4672,71 @@ fn open_input(path: &str) -> Result<(crate::input::Demux, usize)> {
     Ok((ictx, index))
 }
 
+/// **A palette recording's palette, which only its first packet carries.**
+/// QuickTime's and AVI's palette pictures (`raw ` or `qtrle` at 8 bits or
+/// fewer, an 8-bit `.avi`) keep their palette in the stream's header, and
+/// libavformat hands it on once, as `AV_PKT_DATA_PALETTE` on the first
+/// packet read after the open. The muxers take it from there. A copy that
+/// opens anywhere but the head seeks past that packet, so the output was
+/// written with no palette and played in colours the recording never had.
+///
+/// Read off an opening of its own (the copy's own read may not seek at all
+/// from the head, and must not lose its first packets to this one), and
+/// only where there can be one: a stream of eight bits a pixel or fewer (33
+/// to 40 are QuickTime's greys), or one libav already calls a palette.
+/// Every other recording opens and reads nothing more.
+fn head_palette(ictx: &ff::format::context::Input, path: &str, video: usize) -> Option<Vec<u8>> {
+    let par = ictx.stream(video)?.parameters();
+    // SAFETY: the parameters belong to a stream of the open context.
+    let (bits, format) = unsafe { ((*par.as_ptr()).bits_per_coded_sample, (*par.as_ptr()).format) };
+    drop(par);
+    if !(matches!(bits, 1..=8 | 33..=40) || format == ff::ffi::AVPixelFormat::AV_PIX_FMT_PAL8 as i32) {
+        return None;
+    }
+    let mut head = crate::input::demux(path).ok()?;
+    // The first picture, which is at most a few packets in.
+    for (stream, packet) in head.read_packets().take(64) {
+        if stream.index() == video {
+            return packet_palette(&packet);
+        }
+    }
+    None
+}
+
+/// A packet's `AV_PKT_DATA_PALETTE`, where it has one.
+fn packet_palette(packet: &ff::Packet) -> Option<Vec<u8>> {
+    let mut size = 0;
+    // SAFETY: a lookup in the packet's own side data; the bytes are copied
+    // out before the packet can go.
+    unsafe {
+        let p = ff::ffi::av_packet_get_side_data(
+            ff::packet::Ref::as_ptr(packet),
+            ff::ffi::AVPacketSideDataType::AV_PKT_DATA_PALETTE,
+            &mut size,
+        );
+        (!p.is_null() && size > 0).then(|| std::slice::from_raw_parts(p, size).to_vec())
+    }
+}
+
+/// Puts the recording's palette on a copied picture that came without one;
+/// one that has its own keeps it. See [`head_palette`].
+fn give_palette(packet: &mut ff::Packet, palette: &[u8]) {
+    if packet_palette(packet).is_some() {
+        return;
+    }
+    // SAFETY: new side data of the size asked for, filled at once.
+    unsafe {
+        let p = ff::ffi::av_packet_new_side_data(
+            ff::packet::Mut::as_mut_ptr(packet),
+            ff::ffi::AVPacketSideDataType::AV_PKT_DATA_PALETTE,
+            palette.len(),
+        );
+        if !p.is_null() {
+            std::ptr::copy_nonoverlapping(palette.as_ptr(), p, palette.len());
+        }
+    }
+}
+
 /// The streams a segment's read takes anything from: the pictures, the sound,
 /// the captions, the graphics and a DVD's subpictures. See
 /// [`crate::input::keep_only`] for what is gained by switching the rest off.
@@ -5721,6 +5925,7 @@ fn copy_segment(
     ctx: &SegmentCtx,
     writer: &mut Writer,
 ) -> Result<Span> {
+    writer.next_segment();
     let (display_base, reframe, first_segment) = (ctx.display_base, ctx.reframe, ctx.first);
     let (mut ictx, ist_index) = open_input(&src.input.url)?;
     let in_tb = f64::from(ictx.stream(ist_index).unwrap().time_base());
@@ -5756,6 +5961,8 @@ fn copy_segment(
     // [`stretch_bytes`].
     let (floor, wall) = stretch_bytes(src, seg, fd / 2.0);
     let mut read_at: Option<u64> = None;
+    // Owed to the copy's first picture: see [`head_palette`].
+    let mut palette_owed = head_palette(&ictx, &src.input.url, ist_index);
     seek_into(&mut ictx, src, seg.start, floor)?;
     // After the seek, for the reason [`crate::input::keep_only`] gives.
     let keep = segment_streams(&ictx, ctx, ist_index);
@@ -6061,6 +6268,32 @@ fn copy_segment(
         // 98 of 100 pictures, 7 of them wrong. Every picture that has a time
         // is placed by it as before.
         // So is one whose time is the next picture's: see [`poc_seam::Pairs`].
+        //
+        // **A first key picture with no time is placed by the sets in force
+        // where it is, so they are looked back for before it is placed**, not
+        // after (below). Two encodes spliced into one `.mpg`, each stating
+        // its sets at its head only, had such a key in the second encode
+        // read by the first one's sequence set and placed wrong: a range
+        // starting there was refused, "the entry point ... was passed
+        // without being met". A key with a time, or one that states its own
+        // sets, is looked back for where it always was; this one has no byte
+        // of its own as often as not, and the last picture's that had one
+        // stands in for it, as in [`reencode_segment`].
+        if !settled && packet.is_key() && packet.pts().is_none() {
+            let data = packet.data().unwrap_or(&[]);
+            let at = u64::try_from(packet.position()).ok().or(read_at);
+            if let (Some(sets), Some(order), Some(at)) = (record_sets.as_mut(), order.as_mut(), at) {
+                if !crate::bitstream::nal_payloads(data, NalFraming::AnnexB)
+                    .iter()
+                    .any(|n| n.first().is_some_and(|b| matches!(b & 0x1F, 7 | 8)))
+                {
+                    settled = true;
+                    *sets = sets_at_key(src, writer, at, sets);
+                    known_from = Some(at);
+                    order.learn(sets);
+                }
+            }
+        }
         let pts = match (packet.pts(), order.as_mut()) {
             (Some(pts), Some(order)) if doubted => order.doubted(packet.data().unwrap_or(&[]), pts),
             (Some(pts), Some(order)) => {
@@ -6081,9 +6314,24 @@ fn copy_segment(
             writer.converted_due(t + ctx.offset)?;
         }
 
+        // **An entry point libavformat does not flag**: an AVCHD disc's map
+        // enters on I pictures that are not IDR and carry no recovery point,
+        // which libavformat does not call key, and every copy there was
+        // refused, "could not find the entry point". Such a picture is taken
+        // as a key where an entry point is looked for -- at the time the
+        // index gave, and nowhere else -- and the decoder of a re-encoded
+        // stretch is told to show from it (see `reencode_segment`). An
+        // index read off the key flags has a flagged picture there, so for
+        // it nothing changes.
+        // Asked only at those times: it reads the packet's NAL units.
+        let entry_like = |p: &ff::Packet| {
+            p.is_key()
+                || (src.video.codec == "h264"
+                    && crate::bitstream::h264_unmarked_intra(p.data().unwrap_or(&[]), src.video.framing))
+        };
         if !started {
             // Roll forward to the entry point.
-            if !(packet.is_key() && (t - seg.start).abs() < fd / 2.0) {
+            if !((t - seg.start).abs() < fd / 2.0 && entry_like(&packet)) {
                 // A keyframe beyond the target means the entry point is
                 // already behind us, and this is the first picture a copy
                 // could have started on instead.
@@ -6104,7 +6352,7 @@ fn copy_segment(
         // frame, and the access point that ends a copy opens one, so a pair
         // left open here can only be one the fallback below caught partway.
         if let Some(until) = seg.copy_until.filter(|_| first_field.is_none()) {
-            if (packet.is_key() && (t - until).abs() < fd / 2.0) || t > until + fd {
+            if ((t - until).abs() < fd / 2.0 && entry_like(&packet)) || t > until + fd {
                 video_done = true;
                 if audio_done.iter().all(|&d| d)
                     && caption_done.iter().all(|&d| d)
@@ -6404,6 +6652,10 @@ fn copy_segment(
             }
             _ => packet,
         };
+        let mut packet = packet;
+        if let Some(palette) = palette_owed.take() {
+            give_palette(&mut packet, &palette);
+        }
         writer.push(SegmentKind::Copy, Emitted {
             packet,
             display,
@@ -6960,15 +7212,116 @@ fn sets_at_key(src: &Source, writer: &mut Writer, at: u64, record: &[Vec<u8>]) -
     sets
 }
 
+/// What a walk of an H.264 recording in start codes meets of its parameter
+/// sets in band: every SPS and PPS whose bytes are not those of the last set
+/// of its kind and number met before it, with the byte its packet starts at,
+/// in file order. See [`Source::sets_restated`], which is where it ends up,
+/// and [`sets_in_force`], which answers from it without reading.
+///
+/// A recording that restates the same sets at every IDR keeps the first of
+/// them and nothing more; a splice of two encodes keeps the second's where
+/// its IDR is, however far that is from the range that needs them.
+#[derive(Default)]
+pub(crate) struct SetsMet {
+    now: Vec<Vec<u8>>,
+    changes: Vec<(u64, Vec<u8>)>,
+    /// A change met in a packet with no byte, or more of them than a
+    /// recording has any business making: nothing is kept, and the look-back
+    /// answers as it did before there was this.
+    lost: bool,
+}
+
+/// More changes than this and [`SetsMet`] keeps none.
+const SETS_MET_MOST: usize = 1 << 16;
+
+impl SetsMet {
+    /// One packet of the pictures, in file order.
+    pub(crate) fn see(&mut self, position: i64, data: &[u8]) {
+        if self.lost {
+            return;
+        }
+        for nal in crate::preview::restated(data, NalFraming::AnnexB) {
+            if self.now.iter().any(|s| s.as_slice() == nal) {
+                continue;
+            }
+            match u64::try_from(position) {
+                Ok(at) if self.changes.len() < SETS_MET_MOST => self.changes.push((at, nal.to_vec())),
+                _ => {
+                    self.lost = true;
+                    self.changes = Vec::new();
+                    return;
+                }
+            }
+            put_set(&mut self.now, nal);
+        }
+    }
+
+    /// What was met, where all of it could be kept.
+    pub(crate) fn finish(self) -> Option<Vec<(u64, Vec<u8>)>> {
+        (!self.lost).then_some(self.changes)
+    }
+}
+
+#[cfg(test)]
+mod sets_met_tests {
+    use super::SetsMet;
+
+    /// An access unit in start codes: a delimiter, `sets`, then a slice.
+    fn unit(sets: &[&[u8]], slice: u8) -> Vec<u8> {
+        let mut out = vec![0, 0, 0, 1, 0x09, 0xf0];
+        for s in sets {
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(s);
+        }
+        out.extend_from_slice(&[0, 0, 1, slice, 0x88, 0x84, 0x21]);
+        out
+    }
+
+    #[test]
+    fn a_splice_keeps_the_second_encodes_sets_and_a_restatement_keeps_nothing() {
+        // Both numbered 0: the first encode's, then the second's.
+        let (sps_a, pps_a): (&[u8], &[u8]) = (&[0x67, 0x64, 0x00, 0x1e, 0xac, 0xd9], &[0x68, 0xeb, 0xe3, 0xcb]);
+        let (sps_b, pps_b): (&[u8], &[u8]) = (&[0x67, 0x4d, 0x00, 0x1f, 0xac, 0xd8], &[0x68, 0xea, 0xe3, 0xc9]);
+        let mut met = SetsMet::default();
+        met.see(0, &unit(&[sps_a, pps_a], 0x65));
+        met.see(9_000, &unit(&[], 0x41));
+        met.see(20_000, &unit(&[sps_a, pps_a], 0x65));
+        met.see(40_000_000, &unit(&[sps_b, pps_b], 0x65));
+        met.see(90_000_000, &unit(&[], 0x01));
+        met.see(95_000_000, &unit(&[sps_b], 0x65));
+        assert_eq!(
+            met.finish(),
+            Some(vec![
+                (0, sps_a.to_vec()),
+                (0, pps_a.to_vec()),
+                (40_000_000, sps_b.to_vec()),
+                (40_000_000, pps_b.to_vec()),
+            ])
+        );
+        // A change that cannot be placed: nothing is kept.
+        let mut met = SetsMet::default();
+        met.see(0, &unit(&[sps_a, pps_a], 0x65));
+        met.see(-1, &unit(&[sps_b], 0x65));
+        assert_eq!(met.finish(), None);
+        // One that restates what is in force, without a byte, loses nothing.
+        let mut met = SetsMet::default();
+        met.see(0, &unit(&[sps_a, pps_a], 0x65));
+        met.see(-1, &unit(&[sps_a, pps_a], 0x65));
+        assert_eq!(met.finish().map(|m| m.len()), Some(2));
+    }
+}
+
 /// How far in front of a copy's first key picture [`sets_in_force`] reads,
 /// nearest first: 32 MiB in all.
 const SETS_LOOK_BACK: [u64; 3] = [2 << 20, 8 << 20, 32 << 20];
 
 /// The H.264 parameter sets in force at byte `at` of a recording whose key
 /// picture there carries none: `known` (what is in force at byte `floor`)
-/// with what the pictures between restate, the nearest restatement found
-/// reading back from `at` (see [`SETS_LOOK_BACK`]); `known` where none is
-/// found that far back, or the recording cannot be read by bytes.
+/// with what the pictures between restate: what the walk met there, where it
+/// kept that ([`Source::sets_restated`]), and nothing is read; else the
+/// nearest restatement found reading back from `at` (see
+/// [`SETS_LOOK_BACK`]); `known` where none is found that far back, or the
+/// recording cannot be read by bytes.
 ///
 /// **What a copy's own read meets is not enough.** Two encodes put one after
 /// the other into a transport stream (`ffmpeg -f concat -c copy`) restate
@@ -6984,6 +7337,18 @@ const SETS_LOOK_BACK: [u64; 3] = [2 << 20, 8 << 20, 32 << 20];
 pub(crate) fn sets_in_force(src: &Source, at: u64, floor: u64, known: &[Vec<u8>]) -> Vec<Vec<u8>> {
     if !src.byte_seekable || at <= floor {
         return known.to_vec();
+    }
+    // **What the walk met, where it was kept: nothing is read.** The
+    // look-back below reads up to 32 MiB a range on a remux whose sets are
+    // stated at its head alone, finding nothing, and it stops there: a
+    // splice whose second encode's IDR lies further back than that was
+    // copied, previewed and checked by the first encode's sets.
+    if let Some(met) = &src.sets_restated {
+        let mut sets = known.to_vec();
+        for (_, s) in met.iter().filter(|(p, _)| (floor..at).contains(p)) {
+            put_set(&mut sets, s);
+        }
+        return sets;
     }
     let Ok((mut ictx, ist_index)) = open_input(&src.input.url) else {
         return known.to_vec();
@@ -7980,6 +8345,67 @@ fn xvid_mpeg_quant_record(record: &[u8], tag: u32) -> bool {
     (xvid || (fourcc && !other)) && mpeg4_vol(record).is_some_and(|v| v.mpeg_quant)
 }
 
+/// Whether an MPEG-4 Part 2 stream's record states an interlaced VOL whose
+/// pictures may come out of order (B-VOPs). See [`crate::video_context`].
+pub(crate) fn mpeg4_interlaced_with_b(params: &ff::codec::Parameters) -> bool {
+    params.id() == ff::codec::Id::MPEG4
+        && mpeg4_config(params)
+            .and_then(|record| mpeg4_vol(&record))
+            .is_some_and(|vol| vol.interlaced && vol.low_delay != Some(true))
+}
+
+/// **The B-VOPs that lead an interlaced MPEG-4 Part 2 decode off are not
+/// decoded.** A decoder opened on an open-GOP key picture meets B-VOPs
+/// before it has their earlier reference, and libavcodec takes the frame
+/// time of a field-direct B from the first B-VOP it ever decodes: from one of
+/// those, the time is the key's distance from nothing, and every B-VOP after
+/// it is dropped as out of order -- read from a seek to such a key, `--verify`
+/// found 24 of a range's 70 pictures in the recording, and every B-VOP was
+/// missing from the pictures shown. They are shown before the key and their
+/// earlier reference is not there, so nothing that could be right is lost;
+/// the cut never copies them either. Only where
+/// [`mpeg4_interlaced_with_b`]; every other stream is fed as it was.
+pub(crate) struct Mpeg4LeadingB {
+    /// Off; or whether the first key picture has gone in, and whether a
+    /// reference has followed it.
+    on: bool,
+    keyed: bool,
+    done: bool,
+}
+
+impl Mpeg4LeadingB {
+    pub(crate) fn new(params: &ff::codec::Parameters) -> Self {
+        Mpeg4LeadingB { on: mpeg4_interlaced_with_b(params), keyed: false, done: false }
+    }
+
+    /// Whether `packet`, about to be decoded, is to be left out.
+    pub(crate) fn skip(&mut self, packet: &ff::Packet) -> bool {
+        if !self.on || self.done {
+            return false;
+        }
+        let data = packet.data().unwrap_or(&[]);
+        let mut types = Vec::new();
+        let mut i = 0;
+        while i + 4 < data.len() {
+            if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && data[i + 3] == 0xB6 {
+                types.push(data[i + 4] >> 6);
+                i += 4;
+            } else {
+                i += 1;
+            }
+        }
+        if !self.keyed {
+            self.keyed = packet.is_key() || types.first() == Some(&0);
+            return false;
+        }
+        if !types.is_empty() && types.iter().all(|&t| t == 2) {
+            return true;
+        }
+        self.done = !types.is_empty();
+        false
+    }
+}
+
 /// Whether an MPEG-4 Part 2 packet states a video object layer before its
 /// first picture.
 pub(crate) fn mpeg4_has_vol(data: &[u8]) -> bool {
@@ -7997,6 +8423,182 @@ pub(crate) fn mpeg4_has_vol(data: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// Where a VOL's `low_delay` flag is, for a VOL whose start code's last byte
+/// is at `code` in `data`: its byte, its bit's mask, and what it says. `None`
+/// where the VOL has no `vol_control_parameters`, and so states none.
+fn mpeg4_low_delay_at(data: &[u8], code: usize) -> Option<(usize, u8, bool)> {
+    let base = (code + 1) * 8;
+    let bit = |pos: usize| -> Option<bool> {
+        let byte = *data.get(pos >> 3)?;
+        Some((byte >> (7 - (pos & 7))) & 1 == 1)
+    };
+    // random_accessible_vol (1), video_object_type_indication (8)
+    let mut pos = base + 9;
+    if bit(pos)? {
+        pos += 1 + 4 + 3; // is_object_layer_identifier, verid, priority
+    } else {
+        pos += 1;
+    }
+    let mut ar = 0u8;
+    for _ in 0..4 {
+        ar = (ar << 1) | u8::from(bit(pos)?);
+        pos += 1;
+    }
+    if ar == 15 {
+        pos += 16; // extended PAR
+    }
+    if !bit(pos)? {
+        return None; // no vol_control_parameters
+    }
+    pos += 1 + 2; // the flag, then chroma_format
+    Some((pos >> 3, 0x80 >> (pos & 7), bit(pos)?))
+}
+
+/// What the first VOL in `headers` says of `low_delay`, where it says.
+pub(crate) fn mpeg4_low_delay(headers: &[u8]) -> Option<bool> {
+    let at = (0..headers.len().saturating_sub(3)).find(|&i| {
+        headers[i] == 0 && headers[i + 1] == 0 && headers[i + 2] == 1 && (0x20..=0x2F).contains(&headers[i + 3])
+    })?;
+    mpeg4_low_delay_at(headers, at + 3).map(|(_, _, low)| low)
+}
+
+/// **An MPEG-4 Part 2 picture with no time, in a stretch of no B-VOPs, is
+/// shown when it is decoded.** libavformat times an I or P picture of a
+/// stream it takes to reorder only once it knows better, and it knows from
+/// the VOLs it has read: an `.avi` of two encodes joined, the first with
+/// B-VOPs, read from a seek inside the second -- past the one VOL that says
+/// it has none -- had every picture handed over untimed. `--verify` found
+/// none of a right cut's pictures in the source ("0.000s in the source").
+/// The VOL in force is read as the cut reads it ([`mpeg4_vol_in_force`]),
+/// then from the pictures' own; only where it says low delay is a picture
+/// with no time given its decode time. Every picture that has a time keeps
+/// it, and nothing but MPEG-4 Part 2 is looked at.
+#[derive(Default)]
+pub(crate) struct Mpeg4Untimed {
+    /// What the VOL in force says of `low_delay`, once asked.
+    low: Option<Option<bool>>,
+}
+
+impl Mpeg4Untimed {
+    /// The time of `packet`, of `src`'s pictures, in its stream's ticks (`tb`
+    /// seconds each): its own, or its decode time as above. Every packet read
+    /// goes through this in file order. `record` is the stream record's
+    /// headers ([`mpeg4_config`]), asked for only where a picture has no time
+    /// and no VOL has been read.
+    pub(crate) fn pts_of(
+        &mut self,
+        src: &Source,
+        packet: &ff::Packet,
+        tb: f64,
+        record: impl FnOnce() -> Option<Vec<u8>>,
+    ) -> Option<i64> {
+        if src.video.codec != "mpeg4" {
+            return packet.pts();
+        }
+        let data = packet.data().unwrap_or(&[]);
+        if mpeg4_has_vol(data) {
+            if let Some(low) = mpeg4_low_delay(data) {
+                self.low = Some(Some(low));
+            }
+        }
+        if packet.pts().is_some() {
+            return packet.pts();
+        }
+        let dts = packet.dts()?;
+        let low = *self.low.get_or_insert_with(|| {
+            let record = record()?;
+            let at = dts as f64 * tb - src.start_time;
+            mpeg4_low_delay(&mpeg4_vol_in_force(src, at, &record).unwrap_or(record))
+        });
+        (low == Some(true)).then_some(dts)
+    }
+}
+
+/// **An MPEG-4 Part 2 output delayed where two segments meet stays delayed.**
+/// A VOL's `low_delay` says whether its pictures come in the order they are
+/// shown; where it says not, libavcodec holds each I or P picture back until
+/// the next one arrives. A VOL that says low delay after that is obeyed at
+/// once, and the picture held back is never shown: a cut keeping a range in
+/// each of two encodes joined in one file, the first with B-VOPs and the
+/// second without, lost the last picture of the first range's re-encoded
+/// tail where the second range's head stated its low-delay VOL (73 pictures
+/// of 74). Stated delayed instead, the pictures after it are decoded as they
+/// were, one later -- a low-delay stream may always be read as a delayed
+/// one -- and every one is shown. Only the one bit is rewritten: in a VOL
+/// that opens a segment after a picture went out under a delayed one, and
+/// in every low-delay VOL after it until the stream is delayed of its own
+/// accord. A switch the recording makes inside one copied stretch is left as
+/// it is, to be decoded as the recording's own is; an output whose VOLs all
+/// say the same is written as it was.
+#[derive(Default)]
+struct Mpeg4Delay {
+    /// What the decoder of the output takes the delay to be, where it has
+    /// been told; `None` until then.
+    delayed: Option<bool>,
+    /// Whether a picture has gone out.
+    pictures: bool,
+    /// No picture of the segment being written has gone out yet. See
+    /// [`Mpeg4Delay::next_segment`].
+    opening: bool,
+    /// The delay is there because a VOL was rewritten.
+    kept: bool,
+}
+
+impl Mpeg4Delay {
+    /// Read the output's record, before any packet.
+    fn record(record: &[u8]) -> Self {
+        let mut delay = Self::default();
+        delay.pass(record);
+        delay
+    }
+
+    /// A segment of the plan begins: the next packets do not carry on from
+    /// the last ones in the recording.
+    fn next_segment(&mut self) {
+        self.opening = true;
+    }
+
+    /// Read one packet of the output, in the order written; the packet
+    /// rewritten where it has to be (see [`Mpeg4Delay`]), `None` where it
+    /// goes as it is.
+    fn pass(&mut self, data: &[u8]) -> Option<Vec<u8>> {
+        let mut out: Option<Vec<u8>> = None;
+        let mut i = 0;
+        while i + 4 <= data.len() {
+            if data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1 {
+                i += 1;
+                continue;
+            }
+            match data[i + 3] {
+                0x20..=0x2F => {
+                    if let Some((byte, mask, low)) = mpeg4_low_delay_at(data, i + 3) {
+                        if low && self.delayed == Some(true) && self.pictures && (self.opening || self.kept) {
+                            out.get_or_insert_with(|| data.to_vec())[byte] &= !mask;
+                            self.kept = true;
+                        } else {
+                            self.delayed = Some(!low);
+                            self.kept = false;
+                        }
+                    }
+                }
+                0xB6 => {
+                    // A B-VOP is delayed whatever the VOL said (libavcodec
+                    // clears a low delay it is told wrongly).
+                    if data.get(i + 4).is_some_and(|b| b >> 6 == 2) {
+                        self.delayed = Some(true);
+                        self.kept = false;
+                    }
+                    self.pictures = true;
+                    self.opening = false;
+                }
+                _ => {}
+            }
+            i += 3;
+        }
+        out
+    }
 }
 
 /// The headers in front of an MPEG-4 Part 2 packet's first picture, up to
@@ -8107,24 +8709,6 @@ pub(crate) fn mpeg4_vol_in_force(src: &Source, at: f64, record: &[u8]) -> Option
     }
     let (_, header) = met.changes.iter().rev().find(|(t, _)| *t < reach)?;
     (mpeg4_vol_unit(header)? != own.as_slice()).then(|| header.clone())
-}
-
-/// Where the headers [`mpeg4_vol_in_force`] finds in force at `at` were
-/// stated: the time of the key picture that stated them, for a reader that
-/// decodes from there rather than putting them in front of its own first key
-/// picture (`--verify`'s source side). `None` wherever that finds none.
-/// `record` is the stream record's headers ([`mpeg4_config`]), which the
-/// caller keeps for the recording rather than opening it once a range.
-pub(crate) fn mpeg4_vol_stated_at(src: &Source, at: f64, record: &[u8]) -> Option<f64> {
-    mpeg4_vol_in_force(src, at, record)?;
-    let own = mpeg4_vol_unit(record)?;
-    let (length, modified) = vols_met_of(src);
-    let all = VOLS_MET.lock().unwrap_or_else(|e| e.into_inner());
-    let met = all.iter().find(|m| {
-        m.url == src.input.url && m.length == length && m.modified == modified && m.record == own
-    })?;
-    let reach = at + src.video.frame_duration() / 2.0;
-    met.changes.iter().rev().find(|(t, _)| *t < reach).map(|(t, _)| *t)
 }
 
 /// Read the key pictures of `src` from where `met` stopped up to `to`
@@ -8476,6 +9060,71 @@ mod mpeg4_vol_tests {
         assert!(!xvid_mpeg_quant_record(bare, 0));
         assert!(xvid_mpeg_quant_record(bare, u32::from_le_bytes(*b"xvid")));
         assert!(!xvid_mpeg_quant_record(&[], u32::from_le_bytes(*b"XVID")));
+    }
+
+    /// A low-delay VOL after a delayed picture is stated delayed; the first
+    /// one, and every one of an output that never was, go as they are.
+    #[test]
+    fn an_output_once_delayed_stays_delayed() {
+        use super::{mpeg4_low_delay, mpeg4_vol, Mpeg4Delay};
+        // libavcodec's VOLs: with B-VOPs (low_delay 0), and without (1).
+        let cm = hex(
+            "000001b0f1000001b5a913000001000000012008d48d0800cd14043c1461012121414141616161618181\
+             818181a1a1a1a1a1a1c1c1c1c1c1c1c1e1e1e1e1e1e1e1e202020202020202222222222222424242424\
+             262626262828282a2a2d101111121212131313131414141414151515151515161616161616161717171\
+             717171717181818181818181919191919191a1a1a1a1a1b1b1b1b1c1c1c1d1d1e40f000001b24c617663\
+             36312e31392e313031"
+        );
+        let ud = cm.windows(4).position(|w| w == [0, 0, 1, 0xb2]).unwrap();
+        let delayed = cm[..ud].to_vec();
+        let low = hex("000001b001000001b58913000001000000012000c48d8800cd14043c1c43");
+        assert_eq!((mpeg4_low_delay(&delayed), mpeg4_low_delay(&low)), (Some(false), Some(true)));
+        let with = |head: &[u8], vop: &str| [head, &hex(vop)[..]].concat();
+        let (i, p, b) = ("000001b610", "000001b650", "000001b690");
+
+        // Delayed, then a range of the low-delay encode: its VOL is restated.
+        let mut d = Mpeg4Delay::record(&delayed);
+        assert_eq!(d.pass(&with(&delayed, i)), None);
+        assert_eq!(d.pass(&hex(b)), None);
+        d.next_segment();
+        let out = d.pass(&with(&low, i)).expect("rewritten");
+        assert_eq!(out.len(), low.len() + 5);
+        assert_eq!(mpeg4_low_delay(&out), Some(false));
+        assert!(mpeg4_vol(&out).unwrap().interlaced);
+        // Only that one bit.
+        let differ: Vec<usize> = (0..low.len()).filter(|&k| out[k] != low[k]).collect();
+        assert_eq!(differ.len(), 1);
+        assert_eq!((low[differ[0]] ^ out[differ[0]]).count_ones(), 1);
+        assert!(d.pass(&with(&low, p)).is_some());
+        // And every low-delay VOL after it, in the same segment or not.
+        assert_eq!(d.pass(&hex(p)), None);
+        assert!(d.pass(&with(&low, i)).is_some());
+        d.next_segment();
+        assert!(d.pass(&with(&low, i)).is_some());
+
+        // The recording's own switch, inside one copied stretch: as it is.
+        let mut d = Mpeg4Delay::record(&delayed);
+        d.next_segment();
+        assert_eq!(d.pass(&with(&delayed, i)), None);
+        assert_eq!(d.pass(&hex(b)), None);
+        assert_eq!(d.pass(&with(&low, i)), None);
+        assert_eq!(d.pass(&with(&low, i)), None);
+
+        // A record that says delayed, but no picture yet: the first VOL rules.
+        let mut d = Mpeg4Delay::record(&delayed);
+        assert_eq!(d.pass(&with(&low, i)), None);
+        assert_eq!(d.pass(&hex(p)), None);
+        assert_eq!(d.pass(&with(&low, i)), None);
+        // An output of the low-delay encode alone.
+        let mut d = Mpeg4Delay::record(&low);
+        for _ in 0..3 {
+            assert_eq!(d.pass(&with(&low, i)), None);
+            assert_eq!(d.pass(&hex(p)), None);
+        }
+        // A B-VOP makes it delayed whatever the VOL said.
+        assert_eq!(d.pass(&hex(b)), None);
+        d.next_segment();
+        assert!(d.pass(&with(&low, i)).is_some());
     }
 }
 
@@ -9633,6 +10282,7 @@ fn reencode_segment(
     opts: &CutOptions,
     writer: &mut Writer,
 ) -> Result<Span> {
+    writer.next_segment();
     let (display_base, reframe, first_segment) = (ctx.display_base, ctx.reframe, ctx.first);
     let (mut ictx, ist_index) = open_input(&src.input.url)?;
     let stream = ictx.stream(ist_index).unwrap();
@@ -9646,6 +10296,8 @@ fn reencode_segment(
     let tol = fd * 1e-3;
 
     let mut decoder = crate::video_context(params.clone())?.decoder().video()?;
+    // See [`Mpeg4LeadingB`].
+    let mut leading_b = Mpeg4LeadingB::new(&params);
     // MPEG-2 is told how its pictures are shown after it has written them;
     // see [`Mpeg2Display`]. A segment that repeats a field is written as
     // whole frames, which is the only way a picture may repeat one.
@@ -10231,6 +10883,32 @@ fn reencode_segment(
             None
         };
         let packet = restated.unwrap_or(packet);
+        // **An AVCHD disc's map enters on I pictures that are not IDR and
+        // carry no recovery point**, which libavformat does not flag as key
+        // and libavcodec's H.264 decoder never starts showing from: every
+        // segment there ended "no pictures decoded" (see [`NOTHING_SHOWN`]),
+        // and such a disc could not be cut at all. The map's entries are
+        // places to start from by the format's own rule, so where the
+        // decoder is given one before any key picture and before it has
+        // shown anything, it is told to show what it decodes. Pictures shown
+        // before that I picture -- leading ones that lean on the GOP before
+        // -- are before the entry and so before the segment, and are left
+        // out by the window as any picture there is. Nothing else is told:
+        // a key picture, an IDR, one with a recovery point, or a read that
+        // has shown a picture already.
+        if !keyed
+            && !shown_any
+            && !packet.is_key()
+            && src.video.codec == "h264"
+            && crate::bitstream::h264_unmarked_intra(packet.data().unwrap_or(&[]), src.video.framing)
+        {
+            unsafe {
+                (*decoder.as_mut_ptr()).flags2 |= ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+            }
+        }
+        if leading_b.skip(&packet) {
+            continue;
+        }
         if decoder.send_packet(&packet).is_err() {
             let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
             if keyed || at.is_none_or(|t| t >= seg.start - tol) {
@@ -10948,6 +11626,13 @@ pub(crate) struct SoundFile<'a> {
 ///
 /// `file` is for [`crate::sound`] alone: the file of sound it writes. See
 /// [`SoundFile`]. Only the notes read it; what is settled is the same.
+///
+/// `into` is the other way in: the [`crate::carry::family`] of the file with
+/// pictures a cut writes, so that a note about the box the container has
+/// for a track is not said of a container that has none and is about to be
+/// refused for it (a disc's linear PCM into an `.avi`). Only the notes read
+/// it either.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_audio(
     path: &str,
     info: &crate::AudioInfo,
@@ -10956,6 +11641,7 @@ pub(crate) fn plan_audio(
     on_a_ts: bool,
     many: bool,
     file: Option<&SoundFile>,
+    into: Option<&str>,
 ) -> Result<AudioSetup> {
     let pcm_file = file.and_then(|f| f.pcm);
     // Which track these notes are about, said the way the recording names its
@@ -11245,7 +11931,11 @@ pub(crate) fn plan_audio(
             // all (a `.flac`, an `.m4a`): [`crate::sound`] refuses that one,
             // and "the box this container has" said just before the refusal
             // was the one thing the two messages disagreed on.
-            if file.is_none_or(|f| (f.holds)(written)) {
+            if file.is_none_or(|f| (f.holds)(written))
+                && into.is_none_or(|family| {
+                    crate::carry::holds(family, &crate::carry::name_of(written))
+                })
+            {
                 crate::say!(
                     "note: {source_id:?}{named} is written as {written:?}, which is the box \
                      this container has for linear PCM. The samples are the recording's own; \
@@ -11313,11 +12003,20 @@ pub(crate) fn plan_audio(
             // opens on the programme before it can have had either wrong
             // from the start -- see [`crate::audio::settled_shape`]. Where
             // nothing has moved, restating them writes the same header.
-            Some(
-                f.as_version(aac)
-                    .with_channels(channels)
-                    .with_rate(sample_rate),
-            )
+            //
+            // Except the channels of a track that names them in a program
+            // config element (`channel_config` 0): kept at their own count,
+            // its frames are still described that way, and the count's
+            // configuration called FFmpeg's 2.1 3.0 -- a centre and a pair
+            // where the frames hold a pair and an LFE. See
+            // [`crate::adts::pce_of`].
+            let names_its_own = matches!(f, crate::aac::Framing::Adts(a) if a.channel_config == 0);
+            let f = if names_its_own && channels == info.channels {
+                f
+            } else {
+                f.with_channels(channels)
+            };
+            Some(f.as_version(aac).with_rate(sample_rate))
         }
         _ => None,
     };
@@ -13654,7 +14353,20 @@ pub enum Pass {
     Writing,
     /// Putting the recording's own tables back over the muxer's.
     Tables,
+    /// Writing a standalone `.m2ts`'s arrival times again, last of all: see
+    /// [`crate::m2ts`]. Two reads and a write of the finished file, with no
+    /// writing head to follow either.
+    Arrivals,
 }
+
+/// How much of the whole the arrival times of a standalone `.m2ts` are,
+/// taken off the end of the bar before the other passes share the rest.
+/// Given none, a large `.m2ts` stood at the end of the bar for as long as
+/// the pass took. Measured on a 1.4 GB `.m2ts` cut from a broadcast, the file
+/// in the page cache: 1.3 s of a 12-15 s run; read off a disk it is two
+/// reads and a write of the file against the tables' one of each, so a little
+/// more than that is given to it.
+const ARRIVALS_SHARE: f64 = 0.15;
 
 /// How much of the whole the writing pass is, where the tables are going back
 /// in as well.
@@ -14095,6 +14807,7 @@ fn cut_into(
                 src.on_a_ts,
                 audios.len() > 1,
                 None,
+                Some(crate::carry::family(output)),
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -14812,8 +15525,10 @@ fn cut_into(
         // Built before the stream is declared, because when it exists the
         // stream must describe *it* rather than the source.
         let reencoder = match setup.mode {
+            // Given the track's channels where its frames name them only
+            // now and then. See [`crate::aac::decodable`].
             AudioMode::Reencode => Some(crate::audio::Reencoder::new(
-                params.clone(),
+                crate::aac::decodable(params.clone(), setup.source_framing, &src.input.url, setup.info.stream_index),
                 setup.target,
                 setup.like,
                 &setup.info,
@@ -15185,6 +15900,27 @@ fn cut_into(
             settled[k] = crate::audio::kept_majority(&tallies[k], &setup.info);
         }
     }
+    // Copied by request, the file's track is the shape of the first frame
+    // it keeps, which is what the muxer describes it by; and the stream
+    // says that. See [`crate::audio::first_kept_shape`].
+    for (k, setup) in setups.iter().enumerate() {
+        let copied = one_shape
+            && setup.mode == AudioMode::Copy
+            && setup.target == ff::codec::Id::AAC
+            && matches!(setup.source_framing, Some(crate::aac::Framing::Adts(_)));
+        if !copied {
+            continue;
+        }
+        let first = (0..reels.len()).find_map(|n| {
+            let a = threads[n].audio[k].as_ref()?;
+            let &(from, to) = sound_spans[n].first()?;
+            let rate = a.sample_rate as f64;
+            Some((n, a, ((from * rate).round() as i64, (to * rate).round() as i64)))
+        });
+        if let Some((n, a, window)) = first {
+            settled[k] = crate::audio::first_kept_shape(reels[n].src, a, window)?;
+        }
+    }
     // And the stream says it. Only where the mender is moved off the track's
     // own shape (see [`crate::audio::Mender::settle`]): everywhere else the
     // count agrees with what was declared and the header is as it was.
@@ -15364,6 +16100,9 @@ fn cut_into(
             prev: None,
             end: None,
             head: None,
+            // Before the re-encoder is moved in: its own element, where it
+            // writes the frames. See [`opening_pce`].
+            pce: opening_pce(setup, reencoder.as_ref(), &src.input.url),
             reencoder,
             // Filled in at the head of each reel, from the frames prepared
             // for that reel's own boundaries.
@@ -15570,7 +16309,11 @@ fn cut_into(
     // written in, and throttled once for both of them: what a caller is shown
     // is a single bar over the whole job, so it has to be a single sequence.
     // See [`Pass`] and [`WRITING_SHARE`].
-    let share = if wants_tables { WRITING_SHARE } else { 1.0 };
+    // A standalone `.m2ts` keeps the last part of the bar for its arrival
+    // times, and the passes before share what is left. See [`Pass::Arrivals`].
+    let arrivals = crate::m2ts::standalone(output, opts.disc_clip);
+    let rest = if arrivals { 1.0 - ARRIVALS_SHARE } else { 1.0 };
+    let share = rest * if wants_tables { WRITING_SHARE } else { 1.0 };
     let progress = progress.map(std::sync::Arc::new);
     let told = std::sync::Arc::new(std::sync::Mutex::new(crate::Told::new()));
     let say = |pass: Pass, base: f64, span: f64| {
@@ -15600,7 +16343,8 @@ fn cut_into(
         })
     };
     let writing_report = say(Pass::Writing, 0.0, share);
-    let tables_report = say(Pass::Tables, share, 1.0 - share);
+    let tables_report = say(Pass::Tables, share, rest - share);
+    let arrivals_report = say(Pass::Arrivals, rest, 1.0 - rest);
 
     let wanted = (!subpictures.is_empty() && converted.is_empty()) || !aside_streams.is_empty();
     let subpictures = wanted.then(|| {
@@ -15684,6 +16428,7 @@ fn cut_into(
         ends: None,
         top_written: None,
         h264_sets: None,
+        mpeg4_delay: None,
     };
 
     // What a reel that does not match is written into: the master's own
@@ -15792,6 +16537,9 @@ fn cut_into(
                         anyhow!("audio stream {} vanished from {}", info.stream_index, rsrc.path)
                     })?
                     .parameters();
+                // See [`crate::aac::decodable`].
+                let framing = setups.get(k).and_then(|s| s.source_framing);
+                let params = crate::aac::decodable(params, framing, &rsrc.input.url, info.stream_index);
                 if let Some(re) = writer.audio[k].reencoder.as_mut() {
                     re.retune(params, &info)?;
                 }
@@ -16957,15 +17705,25 @@ fn cut_into(
     // The cut is all written by now, and a pass over its arrival times that
     // fails part way leaves every 188-byte packet as it was: a note, not a
     // failure that removes the file (as in `crate::sound`).
-    if crate::m2ts::standalone(output, opts.disc_clip) {
-        crate::m2ts::restamp_or_say(output, opts.notes.as_deref());
+    if arrivals {
+        crate::m2ts::restamp_or_say_reporting(
+            output,
+            opts.notes.as_deref(),
+            arrivals_report.as_ref().map(|f| &**f as &(dyn Fn(f64) + Sync)),
+        );
     }
 
     // Whichever pass was the last one, ending on the end of it. A cut whose
     // tables were not going back in never left the first.
     if let Some(report) = &progress {
         report(
-            if share < 1.0 { Pass::Tables } else { Pass::Writing },
+            if arrivals {
+                Pass::Arrivals
+            } else if wants_tables {
+                Pass::Tables
+            } else {
+                Pass::Writing
+            },
             1.0,
             1.0,
         );
@@ -16976,6 +17734,22 @@ fn cut_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A copied picture with no palette is given the recording's; one with
+    /// its own keeps it. See [`head_palette`].
+    #[test]
+    fn a_copied_picture_is_given_the_palette() {
+        let theirs: Vec<u8> = (0..1024u32).map(|i| i as u8).collect();
+        let mut bare = ff::Packet::copy(&[1, 2, 3]);
+        assert!(packet_palette(&bare).is_none());
+        give_palette(&mut bare, &theirs);
+        assert_eq!(packet_palette(&bare).as_deref(), Some(&theirs[..]));
+        let own = vec![7u8; 1024];
+        let mut kept = ff::Packet::copy(&[1, 2, 3]);
+        give_palette(&mut kept, &own);
+        give_palette(&mut kept, &theirs);
+        assert_eq!(packet_palette(&kept).as_deref(), Some(&own[..]));
+    }
 
     #[test]
     fn container_ticks_survive_a_rate_derived_grid() {
@@ -17049,6 +17823,7 @@ mod tests {
             graphics: Vec::new(), subpictures: None, converted: Vec::new(),
             progress: None, expected: 0, shrink: None, held: None, opening: false,
             keep_last: true, hold_latest: true, ends: None, top_written: None, h264_sets: None,
+            mpeg4_delay: None,
         };
         // Exercise the real 256 MiB threshold without allocating that much.
         // These packets share one refcounted payload; queue counts their
@@ -17614,6 +18389,64 @@ mod tests {
         }
         assert_eq!(order.untimed(&picture_with(4, true, true, 0, 0)), Some(14 * frame));
         assert_eq!(order.untimed(&picture_with(4, false, true, 1, 2)), Some(15 * frame));
+    }
+
+    /// Pictures laid on a field grid three fields and two in turn (2:3
+    /// pulldown timing), then a run with no times: counted on by the
+    /// average step, each lands within half a field of where it is shown
+    /// and after the one before -- by the last measure alone (a step and a
+    /// half per step of the order) the run drifted a field further every
+    /// two pictures. Evenly spaced pictures keep the last measure exactly.
+    #[test]
+    fn uneven_steps_are_counted_on_by_their_average() {
+        // A field is 4 ticks; frames last 12 and 8 in turn.
+        let shown = |k: u32| i64::from(k / 2 * 20 + if k % 2 == 1 { 12 } else { 0 });
+        let pic = |k: u32| picture_with(6, k == 0, true, k % 16, (2 * k) % 64);
+        let mut order = poc_seam::Order::default();
+        order.timed(&[sets_with(6), pic(0)].concat(), 0);
+        for k in 1..9 {
+            order.timed(&pic(k), shown(k));
+        }
+        let mut last = shown(8);
+        for k in 9..21 {
+            let placed = order.untimed(&pic(k)).expect("placed");
+            assert!((placed - shown(k)).abs() <= 2, "picture {k}: {placed} for {}", shown(k));
+            assert!(placed > last, "picture {k}");
+            last = placed;
+        }
+        // Evenly spaced, 3003 ticks a frame: the step is the last measure.
+        let mut order = poc_seam::Order::default();
+        order.timed(&[sets_with(6), pic(0)].concat(), 0);
+        for k in 1..8 {
+            order.timed(&pic(k), i64::from(k) * 3003);
+        }
+        assert_eq!(order.untimed(&pic(8)), Some(8 * 3003));
+    }
+
+    /// A field-coded sequence (a recorder's 1080i): a field whose packet
+    /// has no time is placed by its order field, a field after its pair,
+    /// where it was passed over.
+    #[test]
+    fn a_field_with_no_time_is_placed() {
+        let sps = Nal::new(0x67).u(8, 77).u(16, 40).ue(0).ue(0).ue(0).ue(2).ue(4).u(1, 0);
+        // frame_mbs_only 0, mb_adaptive_frame_field 0.
+        let sps = sps.ue(119).ue(33).u(1, 0).u(1, 0).u(1, 1).u(1, 0).u(1, 0).done();
+        let pps = Nal::new(0x68).ue(0).ue(0).done();
+        let sets = [&[0, 0, 0, 1][..], &sps, &[0, 0, 0, 1], &pps].concat();
+        let field = |idr: bool, n: u32, bottom: bool, lsb: u32| {
+            let header = if idr { 0x65 } else { 0x41 };
+            let slice = Nal::new(header).ue(0).ue(if idr { 7 } else { 5 }).ue(0).u(4, n).u(1, 1).u(1, u32::from(bottom));
+            let slice = if idr { slice.ue(0) } else { slice };
+            [&[0, 0, 0, 1][..], &slice.u(6, lsb).u(8, 0x80).done()].concat()
+        };
+        let half = 1501;
+        let mut order = poc_seam::Order::default();
+        order.timed(&[sets, field(true, 0, false, 0)].concat(), 0);
+        order.timed(&field(false, 0, true, 1), half);
+        order.timed(&field(false, 1, false, 2), 2 * half);
+        order.timed(&field(false, 1, true, 3), 3 * half);
+        assert_eq!(order.untimed(&field(false, 2, false, 4)), Some(4 * half));
+        assert_eq!(order.untimed(&field(false, 2, true, 5)), Some(5 * half));
     }
 
     /// With B pictures, a read whose first picture alone has a time among

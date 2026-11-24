@@ -2206,14 +2206,20 @@ fn walk(
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
         .parameters();
     // The sets in force where the read opens, for a key picture that carries
-    // none (see [`InForce`]); `sets` is false for [`pictures_in`], whose
-    // caller ([`crate::verify`]) opens such a read on the IDR that restated
-    // them instead.
+    // none (see [`InForce`]); `sets` is false for [`pictures_in`] on a
+    // transport stream, whose caller ([`crate::verify`]) opens such a read on
+    // the IDR that restated them instead.
     let mut in_force = if sets { InForce::single(&params, &src.video) } else { InForce::off() };
     // And the MPEG-4 Part 2 VOL in force: see [`VolInForce`].
     let mut vols = if sets { VolInForce::single(&params) } else { VolInForce::off() };
     // Before the record goes to the decoder; used below.
     let mut untimed = Untimed::knowing(&src.video, &params);
+    // And an MPEG-4 Part 2 picture with no time: see
+    // [`crate::cut::Mpeg4Untimed`].
+    let mut vol_untimed = crate::cut::Mpeg4Untimed::default();
+    let record = params.clone();
+    // See [`crate::cut::Mpeg4LeadingB`].
+    let mut leading_b = crate::cut::Mpeg4LeadingB::new(&params);
     // What `place` read ahead of the entry point, for the order alone: see
     // [`Ahead`]. Not where the caller asked for a margin of its own.
     let mut ahead = if margin == 0.0 { Ahead::new(src, from) } else { None };
@@ -2225,6 +2231,9 @@ fn walk(
 
     let mut frame = ff::frame::Video::empty();
     let mut first = None;
+    // Whether a key picture has gone into the decoder: see where an entry
+    // point libavformat does not flag is fed.
+    let mut keyed_in = false;
     let mut stopped = false;
     let mut entries = crate::EntryPictures::new(&src.video);
     // A recording that repeats fields is shown frame by frame, as a screen
@@ -2296,6 +2305,9 @@ fn walk(
         }
         Landed::mend(&mut landed, &mut packet, src);
         untimed.place(&mut packet, doubted);
+        if let Some(pts) = vol_untimed.pts_of(src, &packet, in_tb, || crate::cut::mpeg4_config(&record)) {
+            packet.set_pts(Some(pts));
+        }
         in_force.see(&packet);
         if Ahead::before(&mut ahead, &packet, src) {
             continue;
@@ -2355,8 +2367,28 @@ fn walk(
         if step == crate::Step::Skip {
             continue;
         }
+        if leading_b.skip(&packet) {
+            continue;
+        }
         in_force.mend(&mut packet, &mut |at, record| Some(sets_before(src, at, record)));
         vols.mend(&mut packet, src, in_tb);
+        // An entry point of an AVCHD disc's map that is an I picture with no
+        // IDR and no recovery point, which libavcodec would never show from:
+        // shown from, as the cut's re-encode is (see `reencode_segment` in
+        // [`crate::cut`]), so that `--verify`, a still and the editor see
+        // the pictures the cut writes. Only before any key picture has gone
+        // in and anything has come out.
+        if !keyed_in
+            && first.is_none()
+            && !packet.is_key()
+            && src.video.codec == "h264"
+            && crate::bitstream::h264_unmarked_intra(packet.data().unwrap_or(&[]), src.video.framing)
+        {
+            unsafe {
+                (*decoder.as_mut_ptr()).flags2 |= ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+            }
+        }
+        keyed_in |= packet.is_key();
         if decoder.send_packet(&packet).is_err() {
             entries.broke();
             continue;
@@ -2568,11 +2600,16 @@ impl<'a> Stretches<'a> {
 /// `head` is where the re-encode that opens the range ends, when one does.
 /// The picture already up at `from` is handed on too where the cut writes
 /// it: see below.
+///
+/// `sets`: the entry picture is given the H.264 sets or the MPEG-4 Part 2
+/// VOL in force where it carries none ([`InForce`], [`VolInForce`]), as the
+/// cut gives its copy.
 pub(crate) fn pictures_in(
     src: &Source,
     from: f64,
     to: f64,
     head: Option<f64>,
+    sets: bool,
     mut visit: impl FnMut(f64, &ff::frame::Video) -> bool,
 ) -> Result<()> {
     crate::init()?;
@@ -2646,7 +2683,7 @@ pub(crate) fn pictures_in(
         let mut before: Option<(f64, ff::frame::Video)> = None;
         let mut opened = false;
         let mut going = true;
-        walk(src, entry, margin, false, false, Cores::Steady, true, wall, false, |t, frame| {
+        walk(src, entry, margin, false, false, Cores::Steady, true, wall, sets, |t, frame| {
             if !seen {
                 seen = true;
                 // Only a walk that has not yet handed anything on can be
@@ -2701,6 +2738,13 @@ pub(crate) fn pictures_in(
 /// two or three times, and on one thread never. So those decode on one
 /// thread (an MPEG-2 broadcast still checks at about 300 pictures a second a
 /// side). The codecs without concealment keep every core.
+///
+/// **Theora too, which conceals nothing and still differs.** libavcodec's
+/// frame-threaded Theora (`vp3`) decoder gives other pictures from run to run
+/// on undamaged input -- the same `.ogv` decoded six times gave five
+/// different hashes, up to 17 of 661 pictures off by a few levels -- and a
+/// right cut, its copied packets the source's to the byte, was called
+/// "5 of 230 copied frames differ". On one thread it is the same every time.
 pub(crate) fn steady_decoder(params: ff::codec::Parameters) -> Result<ff::decoder::Video> {
     let conceals = matches!(
         params.id(),
@@ -2711,6 +2755,8 @@ pub(crate) fn steady_decoder(params: ff::codec::Parameters) -> Result<ff::decode
             | ff::codec::Id::WMV3
             | ff::codec::Id::MPEG4
             | ff::codec::Id::H263
+            | ff::codec::Id::THEORA
+            | ff::codec::Id::VP3
     );
     let mut ctx = crate::video_context(params)?;
     unsafe {
@@ -3305,7 +3351,7 @@ impl InForce {
 /// In lengths, every NAL unit the packet holds, as `copy_segment`'s
 /// `length_sets` reads them ([`crate::bitstream::nal_payloads`]): a length
 /// steps over a slice without reading it.
-fn restated(data: &[u8], framing: crate::bitstream::NalFraming) -> Vec<&[u8]> {
+pub(crate) fn restated(data: &[u8], framing: crate::bitstream::NalFraming) -> Vec<&[u8]> {
     if let crate::bitstream::NalFraming::Length(_) = framing {
         let mut nals = crate::bitstream::nal_payloads(data, framing);
         nals.retain(|nal| matches!(nal.first().map(|b| b & 0x1F), Some(7 | 8)));
@@ -3390,7 +3436,7 @@ fn with_sets_in_lengths(data: &[u8], sets: &[Vec<u8>], n: usize) -> Option<Vec<u
 static LENGTH_DIVERGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The kind and number an SPS or PPS is filed under, as a decoder files it.
-fn set_key(nal: &[u8]) -> (Option<u8>, Option<u32>) {
+pub(crate) fn set_key(nal: &[u8]) -> (Option<u8>, Option<u32>) {
     let kind = nal.first().map(|b| b & 0x1F);
     let mut b = crate::bitstream::Bits::new(nal);
     let id = b.skip(8).and_then(|_| match kind {

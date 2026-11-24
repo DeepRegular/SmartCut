@@ -1166,8 +1166,96 @@ fn short_term_ref_pic_set(b: &mut Bits, idx: usize, sets: usize, deltas: &[u32])
     Some(negative + positive)
 }
 
+/// **An H.264 access unit that is an I picture libavcodec will not start
+/// showing from**: its slices are intra but not IDR, and no recovery point
+/// SEI comes with them. libavcodec's decoder treats what it decodes from
+/// such a picture as unrecovered and hands none of it back until an IDR or
+/// a recovery point -- which an AVCHD disc whose map enters on exactly these
+/// pictures may not have for the rest of the title. A disc's map names them
+/// as places to start from, and they are: see `reencode_segment` in
+/// [`crate::cut`]. `false` for anything else, an access unit that cannot be
+/// read included.
+pub fn h264_unmarked_intra(data: &[u8], framing: NalFraming) -> bool {
+    let mut intra = None;
+    for nal in nal_payloads(data, framing) {
+        match nal.first().map(|b| b & 0x1F) {
+            Some(5) => return false,
+            Some(6) if sei_has_recovery_point(nal) => return false,
+            Some(1) if intra.is_none() => {
+                let mut b = Bits::new(&nal[..nal.len().min(16)]);
+                intra = (|| {
+                    b.u(8)?; // NAL header
+                    b.ue()?; // first_mb_in_slice
+                    let kind = b.ue()? % 5;
+                    Some(kind == 2 || kind == 4) // I or SI
+                })();
+                if intra != Some(true) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    intra == Some(true)
+}
+
+/// Whether an SEI NAL carries a recovery point message (payload type 6).
+fn sei_has_recovery_point(nal: &[u8]) -> bool {
+    let b = Bits::new(nal);
+    let d = &b.data;
+    let mut i = 1;
+    // Each message: its type and size, each a run of 0xFF and a last byte;
+    // the payload; and then either another message or the stop bit.
+    while i < d.len() && d[i] != 0x80 {
+        let mut read = || {
+            let mut v = 0usize;
+            loop {
+                let x = *d.get(i)?;
+                i += 1;
+                v += usize::from(x);
+                if x != 0xFF {
+                    return Some(v);
+                }
+            }
+        };
+        let (Some(kind), Some(size)) = (read(), read()) else { return false };
+        if kind == 6 {
+            return true;
+        }
+        i = match i.checked_add(size) {
+            Some(n) => n,
+            None => return false,
+        };
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
+    /// Intra pictures that are not IDR, with and without a recovery point,
+    /// against an IDR and a P picture (Annex B, made by hand).
+    #[test]
+    fn an_unmarked_intra_picture_is_told_apart() {
+        use super::{h264_unmarked_intra, NalFraming};
+        let sc = |nals: &[&[u8]]| -> Vec<u8> {
+            nals.iter().flat_map(|n| [&[0u8, 0, 0, 1][..], n].concat()).collect()
+        };
+        // first_mb 0 (1), slice_type 7 = I (0001000) -> 1 0001000 1...
+        let i_slice: &[u8] = &[0x01, 0x88, 0x80];
+        let p_slice: &[u8] = &[0x01, 0x98, 0x80]; // slice_type 5 = P: 1 00110 ...
+        let idr: &[u8] = &[0x05, 0x88, 0x80];
+        let sei_recovery: &[u8] = &[0x06, 0x06, 0x01, 0x84, 0x80];
+        let sei_other: &[u8] = &[0x06, 0x05, 0x01, 0x00, 0x80];
+        let aud: &[u8] = &[0x09, 0xF0];
+        let b = NalFraming::AnnexB;
+        assert!(h264_unmarked_intra(&sc(&[aud, i_slice]), b));
+        assert!(h264_unmarked_intra(&sc(&[aud, sei_other, i_slice]), b));
+        assert!(!h264_unmarked_intra(&sc(&[aud, sei_recovery, i_slice]), b));
+        assert!(!h264_unmarked_intra(&sc(&[aud, idr]), b));
+        assert!(!h264_unmarked_intra(&sc(&[aud, p_slice]), b));
+        assert!(!h264_unmarked_intra(&sc(&[aud]), b));
+    }
+
     /// The sequence headers of three x264 encodes: `-qp 0` (lossless, High
     /// 4:4:4 Predictive with 4:2:0), `-qp 20` (High) and a lossy 4:4:4.
     #[test]
