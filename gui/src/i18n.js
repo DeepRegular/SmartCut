@@ -1436,10 +1436,16 @@ const CATALOG = {
       "{path}: Matroska に収められた VC-1 には表示時刻が記録されていないので、カットを始められるピクチャを決められません。" +
       "先に FFmpeg で時刻を付けて .m2ts に入れ直してください（例: ffmpeg -fflags +genpts -i 入力.mkv -c copy 出力.m2ts）。",
     "engine.bareStream":
-      "{path}: コンテナに入っていない {kind} の生のストリームです。ピクチャに時刻が付いていないので、カットを始められるピクチャを決められません。" +
+      "{path}: コンテナに入っていない {kindJa} の生のストリームです。ピクチャに時刻が付いていないので、カットを始められるピクチャを決められません。" +
       "ストリームから時刻を割り出せるツール（mkvmerge など）で、先に .mkv・.mp4・.ts のどれかに入れてください（例: mkvmerge -o 出力.mkv 入力ファイル）。",
+    "engine.bareStreamAvi":
+      "{path}: コンテナに入っていない {kindJa} の生のストリームです。ピクチャに時刻が付いていないので、カットを始められるピクチャを決められません。" +
+      "AVI なら時刻がなくても収められるので、先に FFmpeg で AVI に入れてください（例: ffmpeg -i 入力ファイル -c copy 出力.avi）。",
+    "engine.bareStreamPlain":
+      "{path}: コンテナに入っていない {kindJa} の生のストリームです。ピクチャに時刻が付いていないので、カットを始められるピクチャを決められません。" +
+      "ストリームから時刻を割り出せるツールで、先にコンテナに入れてください。",
     "engine.aviH264":
-      "{path}: AVI に入った H.264 には表示時刻がありません。AVI は表示時刻を持たず、libavformat も H.264 については補わないので、カットを始められるピクチャを決められません。" +
+      "{path}: AVI には表示時刻を記録する仕組みがなく、libavformat も H.264 については時刻を補わないので、この AVI の H.264 からはカットを始められるピクチャを決められません。" +
       "ストリームから時刻を割り出せるツールで .mkv に入れ直してください（例: mkvmerge -o 出力.mkv 入力.avi）。",
     "engine.aviPacked":
       "{path}: この AVI は、MPEG-4 の B ピクチャを直前のピクチャと同じチャンクにまとめて格納しています（DivX や Xvid の packed bitstream）。" +
@@ -2804,6 +2810,14 @@ const CATALOG = {
       "{path}: a bare {kind} stream, with no container around it, carries no times of its own, so no picture " +
       "can be found to start a cut from. Put it into a container first (.mkv, .mp4 or .ts) with a tool that " +
       "works the times out of the stream, such as mkvmerge: mkvmerge -o out.mkv <this file>",
+    "engine.bareStreamAvi":
+      "{path}: a bare {kind} stream, with no container around it, carries no times of its own, so no picture " +
+      "can be found to start a cut from. Put it into an AVI first, which needs no times: ffmpeg -i <this file> " +
+      "-c copy out.avi",
+    "engine.bareStreamPlain":
+      "{path}: a bare {kind} stream, with no container around it, carries no times of its own, so no picture " +
+      "can be found to start a cut from. Put it into a container first with a tool that works the times out " +
+      "of the stream.",
     "engine.aviH264":
       "{path}: H.264 in an AVI comes with no presentation times (an AVI keeps none, and libavformat does not " +
       "work them out for H.264), so no picture can be found to start a cut from. Remux it to .mkv with a tool " +
@@ -2935,7 +2949,21 @@ const ENGINE = [
   [
     /^([\s\S]*): a bare ([\s\S]+?) stream, with no container around it, carries no times of its own, [\s\S]*mkvmerge -o out\.mkv <this file>$/,
     "engine.bareStream",
-    (m) => ({ path: m[1], kind: m[2] }),
+    // The engine's kind is English ("MPEG-1/MPEG-2 video"): the Japanese line
+    // names the codec alone, as it does for the others.
+    (m) => ({ path: m[1], kind: m[2], kindJa: m[2].replace(/ video$/, "") }),
+  ],
+  // The same refusal with the way out for the kinds mkvmerge does not read:
+  // MPEG-4 Part 2 goes into an AVI, the rest are named no tool.
+  [
+    /^([\s\S]*): a bare ([\s\S]+?) stream, with no container around it, carries no times of its own, [\s\S]*ffmpeg -i <this file> -c copy out\.avi$/,
+    "engine.bareStreamAvi",
+    (m) => ({ path: m[1], kind: m[2], kindJa: m[2].replace(/ video$/, "") }),
+  ],
+  [
+    /^([\s\S]*): a bare ([\s\S]+?) stream, with no container around it, carries no times of its own, [\s\S]*works the times out of the stream\.$/,
+    "engine.bareStreamPlain",
+    (m) => ({ path: m[1], kind: m[2], kindJa: m[2].replace(/ video$/, "") }),
   ],
   [
     /^([\s\S]*): H\.264 in an AVI comes with no presentation times [\s\S]*mkvmerge -o out\.mkv in\.avi$/,

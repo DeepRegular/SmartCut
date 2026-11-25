@@ -14912,6 +14912,96 @@ def queue_copy_opened_by_hand_ki51(cfg, t):
 SCENARIOS += [queue_copy_opened_by_hand_ki51]
 
 
+def queue_job_picked_again_56(cfg, t):
+    """(56th pass, appjs.) #27's hold for a window that is handed, by hand,
+    the job it already holds, after that job was taken out and another list
+    registered under the name. A registers: the job queued/p.scproj. J opens
+    on it (--queued). The job is taken out (row and copy) and B registers
+    under the freed name. J is handed p.scproj by a drop (as プロジェクトを開く
+    hands it): the list now up is B's. J changes the container and presses
+    バッチを上書き: held as the job now in the queue, it writes p and the
+    queue still holds one job. Before the fix J kept the stamp it opened
+    under, let go at the press, and put B's list in a second time as a job of
+    its own."""
+    a = App(cfg, "queue_job_picked_again_56_a", [{"path": cfg.a}])
+    b = App(cfg, "queue_job_picked_again_56_b", [{"path": cfg.c}])
+    for k in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+        b.env[k] = a.env[k]
+
+    def jobs(app):
+        app.s.js("window.__q = null; window.__TAURI__.core.invoke('batch_read')"
+                 ".then((q) => window.__q = JSON.stringify(q), (e) => window.__q = 'err ' + e);")
+        got = wait_for("the queue", lambda: app.s.js("return window.__q"), 10, 0.1)
+        return [j["path"] for j in json.loads(got)["jobs"]]
+
+    def doc(path):
+        try:
+            d = json.load(open(path))
+            return ([os.path.basename(c["path"]) for c in d["clips"]], (d.get("settings") or {}).get("container"))
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def names(app):
+        return app.s.js("return [...document.querySelectorAll('#cliplist > li .nm')].map((e) => e.textContent)")
+
+    with a:
+        a.to_list()
+        a.s.js("return window.__TAURI__.core.invoke('batch_beat')")
+        beat = wait_for("batch.beat", lambda: [os.path.join(d, "batch.beat") for d, _, fs in
+                                               os.walk(a.env["XDG_CONFIG_HOME"]) if "batch.beat" in fs], 10)[0]
+        time.sleep(0.5)
+        with open(beat, "w") as f:
+            f.write(f"{a.gui_pid()} {int(time.time()) + 3600}")
+        a.s.js("document.getElementById('enlist-export').click()")
+        first = wait_for("one job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(a)), 20, 0.3)[0]
+        t.check("p56 A's list registered as a copy named p", os.path.basename(first) == "p.scproj"
+                and (doc(first) or [None])[0] == ["a.ts"], f"{first}: {doc(first)}")
+        with _QueuedJobWindow(cfg, "queue_job_picked_again_56_j", a, first) as j:
+            j.to_list()
+            a.s.js("window.__d = null; const inv = window.__TAURI__.core.invoke;"
+                   "inv('batch_write', {queue: {jobs: [], after: ''}})"
+                   ".then(() => inv('drop_temp_project', {path: arguments[0]}))"
+                   ".then((r) => window.__d = 'ok ' + r, (e) => window.__d = 'err ' + e);", first)
+            dropped = wait_for("the job taken out", lambda: a.s.js("return window.__d"), 10, 0.1)
+            with b:
+                b.to_list()
+                b.s.js("document.getElementById('enlist-export').click()")
+                got = wait_for("B's job", lambda: (lambda q: q if len(q) == 1 else None)(jobs(b)), 20, 0.3)[0]
+            bdoc = doc(got)
+            t.check("p56 ... B registers after: the freed name is B's copy, B's list in it",
+                    got == first and bdoc is not None and bdoc[0] == ["c.ts"], f"{dropped}; {got}: {bdoc}")
+            j.s.js("window.__TAURI__.event.emit('tauri://drag-drop', {paths: [arguments[0]], "
+                   "position: {x: 10, y: 10}})", first)
+            try:
+                wait_for("B's list up in J", lambda: any("c.ts" in (n or "") for n in names(j)) or None, 30, 0.3)
+            except Failure:
+                pass
+            shown = names(j)
+            theirs = "mp4" if (bdoc or [0, 0])[1] == "mkv" else "mkv"
+            j.to_list()
+            j.s.js("const s = document.getElementById('out-container'); s.value = arguments[0];"
+                   "s.dispatchEvent(new Event('input'));", theirs)
+            time.sleep(0.5)
+            label = j.s.js("return document.getElementById('enlist-export').textContent")
+            j.s.js("document.getElementById('enlist-export').click()")
+            try:
+                wait_for("the job written", lambda: (doc(first) or [0, 0])[1] == theirs or None, 20, 0.3)
+            except Failure:
+                pass
+            time.sleep(2)
+            q = jobs(j)
+            t.check("p56 ... handed its own job again after it was retaken: held as the job now queued, "
+                    "バッチを上書き writes it, one job",
+                    _overwrites(label) and doc(first) == (["c.ts"], theirs) and q == [first],
+                    f"rows {shown}; button {label!r}; copy {doc(first)}; queue "
+                    f"{[(os.path.basename(p), doc(p)) for p in q]}")
+    for n in ("j", "b"):
+        shutil.rmtree(os.path.join(cfg.work, "runs", f"queue_job_picked_again_56_{n}"), ignore_errors=True)
+
+
+SCENARIOS += [queue_job_picked_again_56]
+
+
 def divide_box_stops_open_ki51(cfg, t):
     """(known issue #4 of 0.8.51.) divide_box_stops_walk on the late-head
     recording (`make_late_head`: first key picture ~120 MB in), whose open
@@ -14966,6 +15056,58 @@ def divide_box_stops_open_ki51(cfg, t):
 
 
 SCENARIOS += [divide_box_stops_open_ki51]
+
+
+def divide_box_keeps_index_56(cfg, t):
+    """(56th pass, tauri.) divide_box_stops_open_ki51 with the row's index
+    KEPT: #4 put the box's stop into every open its question makes, the open
+    the kept index is read through among them, and scan_cached_reporting took
+    an open stopped that way for an index that no longer fits the recording
+    and deleted it (the walk, the thumbnails and the sets in force all made
+    again on the next visit). 分割 is pressed and closed at once several
+    times over: the .scix must still be there after every close."""
+    make_late_head(cfg)
+
+    def scix(app):
+        return sorted(os.path.join(dd, f) for dd, _, fs in os.walk(app.env["XDG_CACHE_HOME"])
+                      for f in fs if f.endswith(".scix"))
+
+    with App(cfg, "divide_box_keeps_index_56", [{"path": cfg.d}]) as app:
+        app.to_list()
+        wait_for("the row read", lambda: _walked(app, 1), 300, 0.5)
+        wait_for("its index kept", lambda: bool(scix(app)), 60, 0.5)
+        time.sleep(3)
+        kept = scix(app)
+        app.s.click("#cliplist > li:nth-child(1) .nm")
+        wait_for("分割 to be offered", lambda: app.s.js(
+            "return !document.getElementById('divide-clip').disabled"), 60)
+        pid = app.gui_pid()
+        lost, read = [], []
+        for wait in (0.0, 0.01, 0.02, 0.03, 0.05, 0.08, 0.1, 0.2):
+            before = scix(app)
+            r0 = _rchar(pid)
+            app.s.js("document.getElementById('divide-clip').click();")
+            time.sleep(wait)
+            app.s.js("document.getElementById('divide-cancel').click();")
+            r1 = _rchar(pid)
+            time.sleep(4)
+            read.append((wait, (r1 - r0) / 1e6))
+            if scix(app) != before:
+                lost.append(wait)
+        with open(app.log, "rb") as f:
+            log = f.read().decode("utf-8", "replace")
+        # The line the guard says where an open of the kept index was stopped
+        # (before the fix that was the deletion's "reading the recording
+        # instead").
+        stays, instead = log.count("the kept index stays"), log.count("reading the recording instead")
+        t.check("t56 closing 分割 part way leaves the row's kept index alone",
+                bool(kept) and not lost and scix(app) == kept and instead == 0,
+                ("" if stays else "NOT REACHED; ") + f"kept {len(kept)}; gone after the closes at {lost}; "
+                + f"stopped opens of the kept index {stays}, deleted {instead}; "
+                + "MB read before each close: " + ", ".join(f"{w}: {b:.0f}" for w, b in read))
+
+
+SCENARIOS += [divide_box_keeps_index_56]
 
 
 # Known issue #26 of 0.8.51: a 25p H.264 .mp4 (90 kHz) whose pictures stop for

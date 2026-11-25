@@ -1386,6 +1386,24 @@ fn scan_cached_reporting(
     // An index that the key could not tell was stale is still an index that
     // does not fit. Out it goes, and this open reads the file.
     if src.is_err() && held.is_some() {
+        // Unless it was not the index that failed. An open a stop cut short
+        // ([`smartcut_core::input::stop_reads_when`] reaches into the open
+        // itself since 0.8.52) fails as an index that does not fit does, and
+        // 解析を中止 or closing 分割 while a kept index was being read
+        // deleted it -- the walk, the thumbnails and the sets in force all
+        // made again on the next visit. A recording that is not there to be
+        // read just now (a share gone, or one whose reads kept failing) is no
+        // answer about its index either. Whether it is there, not whether it
+        // can be weighed: a file system that gives no modification time is
+        // weighed as nothing, and its index -- keyed with the time as 0 by
+        // `seek_index::cache_path` -- was then never removed when it failed.
+        let there = smartcut_core::input::Input::parse(path)
+            .is_ok_and(|input| std::fs::metadata(input.file).is_ok());
+        if smartcut_core::input::reads_stopped() || smartcut_core::input::reads_failed() || !there {
+            let why = src.unwrap_err().to_string();
+            eprintln!("index: {why} -- stopped or not there; the kept index stays");
+            return Err(why);
+        }
         eprintln!("index: {} -- reading the recording instead", src.unwrap_err());
         if let Ok(dir) = index_dir(app) {
             if let Ok(file) = seek_index::cache_path(&dir, path) {

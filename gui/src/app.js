@@ -11399,7 +11399,7 @@ async function openProject() {
     filters: [{ name: t("dialog.project"), extensions: [PROJECT_EXT] }],
   });
   if (!picked) return;
-  await loadProject(Array.isArray(picked) ? picked[0] : picked);
+  await loadProject(Array.isArray(picked) ? picked[0] : picked, null, true);
 }
 
 /// Put a project file's list up, in place of whatever is there. `false` where
@@ -11410,7 +11410,7 @@ async function openProject() {
 /// to it, in the row itself, where it can be looked at next to the ones that
 /// were fine. Refusing the whole project over one moved file would be the
 /// worse trade -- the other nineteen rows are still exactly right.
-async function loadProject(path, given = null) {
+async function loadProject(path, given = null, picked = false) {
   let doc = given;
   if (!doc) {
     try {
@@ -11430,8 +11430,14 @@ async function loadProject(path, given = null) {
   if (!(await sharesAsked(doc))) return false;
   // Asked before anything is taken down, so that the list is put up without
   // a wait in the middle of it. See where `byHand` is used below.
+  // Picked by hand (`picked`: プロジェクトを開く, a drop) it is asked even
+  // where it is the job this window already holds: the job may have been
+  // taken out and another list registered under the name since, and the list
+  // now coming up is that one's, so it is held under the stamp it has now.
   const byHand =
-    path && path !== queuedJob && !isTool() && (await queuedCopy(path)) ? { born: await bornInQueue(path) } : null;
+    path && (picked || path !== queuedJob) && !isTool() && (await queuedCopy(path))
+      ? { born: await bornInQueue(path) }
+      : null;
   // Not merely emptied: a lane reading a row has to be told to stop, and the
   // editor open on one has nothing left to be about. All of which `remove`
   // already knows how to do.
@@ -11630,7 +11636,9 @@ async function loadProject(path, given = null) {
   // registered under the name, over that list's job. A copy whose job has
   // already left is let go of at the first press (no stamp is `false`), and
   // 保存 asks for a name. Not in the batch tool, which opens its own jobs.
-  if (byHand) {
+  // A job already held and picked again keeps the stamp it was known by where
+  // the queue cannot be read this instant.
+  if (byHand && !(byHand.born === null && path === queuedJob)) {
     queuedJob = path;
     queuedBorn = byHand.born;
   }
@@ -11683,7 +11691,7 @@ if (listen) {
 /// question the picker's caller asks first.
 async function openDroppedProject(path) {
   if (!(await askReplace())) return;
-  await loadProject(path);
+  await loadProject(path, null, true);
 }
 
 // The four items the menu carries about the work rather than about the
