@@ -8454,8 +8454,13 @@ function reencodeSig(ranges) {
 async function reencodeOf(clip) {
   const ranges = rangesOf(clip);
   const sig = reencodeSig(ranges);
-  if (clip.reencode && clip.reencode.sig === sig) return clip.reencode;
-  const plan = await invoke("clip_plan", { path: clip.path, ranges });
+  const width = outStageWidth();
+  const held = clip.reencode && clip.reencode.sig === sig ? clip.reencode : null;
+  // Kept while its pictures are as wide as the stage now is. A window made
+  // bigger since asks for the pictures again, and only them: the plan is the
+  // same plan.
+  if (held && held.width >= width) return held;
+  const plan = held ? held.plan : await invoke("clip_plan", { path: clip.path, ranges });
   const segs = plan.segments.filter((g) => g.kind !== "copy");
   // The middle of the segment rather than its start: the start is the join
   // itself, and what you want to see is the picture the encoder had to make.
@@ -8463,7 +8468,7 @@ async function reencodeOf(clip) {
     ? await invoke("clip_thumbs", {
         path: clip.path,
         times: segs.map((g) => (g.start + g.end) / 2),
-        width: 480,
+        width,
       })
     : [];
   // Where each one falls in the finished file. `out` is what the stage
@@ -8493,8 +8498,59 @@ async function reencodeOf(clip) {
     const t = shots[i] && isFinite(shots[i].time) ? shots[i].time : (g.start + g.end) / 2;
     return srcToOut(keeps, t) ?? out[i];
   });
-  clip.reencode = { sig, plan, segs, shots, out, at, shown };
+  clip.reencode = { sig, width, plan, segs, shots, out, at, shown };
   return clip.reencode;
+}
+
+/// How many device pixels wide the output screen's stage is, for the
+/// pictures put up on it.
+///
+/// They were asked for at a fixed 480 and blown up by the browser to fill a
+/// stage two or three times that, which is a soft picture of exactly the
+/// frames this screen is there to show. Rounded to a step, as the editor's
+/// stage is, so that a window edge dragged a little does not ask again. The
+/// window's own width stands in while the screen is not laid out yet, which
+/// is when the first clip of a run is looked at.
+const OUT_STAGE_STEP = 64;
+function outStageWidth() {
+  const box = el("out-preview").parentElement.clientWidth || window.innerWidth - 16;
+  const want = box * (window.devicePixelRatio || 1);
+  return clamp(Math.ceil(want / OUT_STAGE_STEP) * OUT_STAGE_STEP, 480, 2560);
+}
+
+/// A picture of `clip` the size of the stage, at the instant its row's
+/// poster is taken from; null where none can be had.
+///
+/// For the screens that put the clip itself on the stage rather than a
+/// re-encoded segment of it -- nothing to re-encode, or every frame to be.
+/// The row's own poster is what stood there before, and it is a strip cell:
+/// 192 across, drawn four or five times its size. Taken where that one is (a
+/// tenth of the way into what the cuts keep -- `poster_of` on the Rust side),
+/// so the two show the same frame.
+async function stagePosterOf(clip) {
+  const ranges = rangesOf(clip);
+  const kept = ranges.reduce((n, [a, b]) => n + Math.max(0, b - a), 0);
+  if (kept <= 0) return null;
+  let want = kept * 0.1;
+  let at = ranges[0][0];
+  for (const [a, b] of ranges) {
+    const len = Math.max(0, b - a);
+    at = a + Math.min(want, len);
+    if (want < len) break;
+    want -= len;
+  }
+  const width = outStageWidth();
+  const key = JSON.stringify([at, width]);
+  if (clip.stagePoster && clip.stagePoster.key === key) return clip.stagePoster.url;
+  try {
+    const [shot] = await invoke("clip_thumbs", { path: clip.path, times: [at], width });
+    const url = (shot && shot.url) || null;
+    if (url) clip.stagePoster = { key, url };
+    return url;
+  } catch (e) {
+    jlog(`stagePosterOf: ${e}`);
+    return null;
+  }
 }
 
 /// What the stage is currently speaking for: the clip, its re-encoded
@@ -8644,7 +8700,7 @@ async function showReencode(clip, share = null) {
     // The clip's own poster, as in the lossless case below: there is no seam
     // to show, and a frame out of the middle of the clip would be standing
     // for a re-encode that covers every other frame just as much.
-    stageShot(null, t("out.conformStage"), posterOf(clip));
+    stageClip(clip, t("out.conformStage"), token);
     return;
   }
   try {
@@ -8669,10 +8725,10 @@ async function showReencode(clip, share = null) {
       // contradict what this screen is for: the line under it says there is
       // nothing to re-encode, so the picture is standing for the clip about
       // to be written and not for a frame being made again.
-      stageShot(
-        null,
+      stageClip(
+        clip,
         smaller === null ? t("out.losslessStage") : t("out.shrinkStage"),
-        posterOf(clip)
+        token
       );
       return;
     }
@@ -8810,6 +8866,19 @@ function stageShot(i, note = "", poster = null) {
   el("out-ovl-time").textContent = fmt(o);
   el("out-ovl-kind").textContent = t("out.ovlKind", { i: i + 1, n: r.segs.length });
   el("out-ovl-note").textContent = t("out.ovlNote", { n: g.frames });
+}
+
+/// Put `clip` itself on the stage, with `note` under it: the row's poster at
+/// once, and the same frame at the stage's size over it when that arrives
+/// (`stagePosterOf`) -- unless the stage has moved on to something else in
+/// the meantime, which `token` is there to tell.
+function stageClip(clip, note, token) {
+  stageShot(null, note, posterOf(clip));
+  stagePosterOf(clip).then((url) => {
+    if (!url || token !== shotsToken || !onShow || onShow.clip !== clip) return;
+    if (onShow.r.segs.length) return;
+    stageShot(null, note, url);
+  });
 }
 
 /// Where a row of a join begins in the one file, in seconds; nought for a

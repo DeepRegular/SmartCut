@@ -88,7 +88,7 @@ pub use plan::{
 };
 pub use playback_audio::{peaks_at, play_audio, play_audio_across, Fold, Heard, Levels, Start, Volume};
 pub use preview::{
-    frame_at, glance, glance_at, glance_run, glance_sweep, play_from, poster_at, save_still, shot_at,
+    frame_at, glance, glance_at, glance_run, glance_sweep, play_from, poster_at, save_still, shot_at, still_shot_at,
     shots_at, Pace, Shot, STILL_EXTENSIONS,
 };
 pub use proxy::{Marks, ProxyOptions};

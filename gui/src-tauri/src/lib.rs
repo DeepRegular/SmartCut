@@ -3359,6 +3359,11 @@ const WIDE_LANES: usize = 3;
 /// How far into a clip its poster is taken from.
 const POSTER_AT: f64 = 0.1;
 
+/// The widest picture [`clip_thumbs`] makes. A 4K stage on a HiDPI screen
+/// would otherwise ask for every pixel of a UHD recording, a megabyte of
+/// JPEG apiece for a frame that is a reminder of what is being written.
+const STILL_WIDTH_CAP: u32 = 2560;
+
 /// The picture a row shows for a clip, out of the track already built for it.
 ///
 /// A little way in rather than at the head, because broadcast recordings open
@@ -4566,6 +4571,11 @@ async fn media_info(path: String) -> Result<MediaReport, String> {
 /// One open for the lot: the seek index makes opening cheap but not free,
 /// and these are asked for in small batches -- the frames either side of
 /// each join, which is what the output screen puts on show.
+///
+/// Encoded finer than the timeline's pictures, and asked for at the stage's
+/// own width: each one stays up for as long as its segment takes to write,
+/// and a 480-wide frame blown up to fill the stage was the softest picture
+/// anywhere in the window. See [`smartcut_core::still_shot_at`].
 #[tauri::command]
 async fn clip_thumbs(
     path: String,
@@ -4578,7 +4588,7 @@ async fn clip_thumbs(
         Ok(times
             .into_iter()
             .map(|t| {
-                smartcut_core::shot_at(&src, t, width)
+                smartcut_core::still_shot_at(&src, t, width.min(STILL_WIDTH_CAP))
                     .ok()
                     .map(|s| Shot { url: as_url(&s.jpeg), time: s.time, kind: s.kind.to_string() })
             })

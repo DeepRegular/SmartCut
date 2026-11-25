@@ -718,6 +718,17 @@ pub fn shot_at(src: &Source, time: f64, width: u32) -> Result<Shot> {
     })
 }
 
+/// As [`shot_at`], encoded finer: for a picture that stays up on its own
+/// rather than one of a run. See [`JPEG_Q_FINE`].
+pub fn still_shot_at(src: &Source, time: f64, width: u32) -> Result<Shot> {
+    let (at, picture) = picture_at(src, time)?;
+    let kind = kind_of(&picture);
+    let sar = src.video.sample_aspect_ratio;
+    let native = (picture.width() as f64 * credible_sar(sar)).round() as u32;
+    let (jpeg, _, _) = encode_jpeg_within(&picture, sar, width.min(native), JPEG_Q_FINE)?;
+    Ok(Shot { jpeg, time: at, kind })
+}
+
 /// The decoded picture shown at `time`, and the instant it really stands at.
 ///
 /// What [`shot_at`] is before it encodes. Handed over undecided, because a
@@ -1520,6 +1531,17 @@ pub(crate) fn encode_jpeg(picture: &ff::frame::Video, sar: f64, width: u32) -> R
     encode_jpeg_sized(picture, sar, width).map(|(jpeg, _, _)| jpeg)
 }
 
+/// The quantiser every picture the timeline and the player show is encoded
+/// at: a strip cell, a stage frame thirty times a second. Small and quick
+/// enough for that, and soft once a picture is looked at on its own.
+const JPEG_Q: i32 = 4;
+
+/// The quantiser for a picture put up to be looked at for a while -- the
+/// output screen's view of what is being re-encoded. A handful of them, each
+/// on screen for as long as a segment takes to write, so the size a finer
+/// one comes to is nothing set against seeing the frame as it is.
+const JPEG_Q_FINE: i32 = 2;
+
 /// A pixel aspect ratio a picture can be drawn at. The container's is taken
 /// as it says, and a crafted one of 1:1000 made every still a thousand times
 /// its height -- hundreds of megabytes a picture, a strip's worth at once. No
@@ -1536,12 +1558,17 @@ fn credible_sar(sar: f64) -> f64 {
 /// As [`encode_jpeg`], with the size the JPEG came out at.
 fn encode_jpeg_sized(picture: &ff::frame::Video, sar: f64, width: u32) -> Result<(Vec<u8>, u32, u32)> {
     let native = (picture.width() as f64 * credible_sar(sar)).round() as u32;
-    encode_jpeg_within(picture, sar, width.min(native))
+    encode_jpeg_within(picture, sar, width.min(native), JPEG_Q)
 }
 
 /// `encode_jpeg_sized` with the width already settled by the caller: a field
 /// stands for a frame twice its height, and is worth the frame's width.
-fn encode_jpeg_within(picture: &ff::frame::Video, sar: f64, width: u32) -> Result<(Vec<u8>, u32, u32)> {
+fn encode_jpeg_within(
+    picture: &ff::frame::Video,
+    sar: f64,
+    width: u32,
+    q: i32,
+) -> Result<(Vec<u8>, u32, u32)> {
     let sar = credible_sar(sar);
     // What the picture is worth, in square pixels. Not its coded width: 1440
     // samples across shown at 16:9 needs 1920 to keep all 1080 of its lines,
@@ -1593,7 +1620,7 @@ fn encode_jpeg_within(picture: &ff::frame::Video, sar: f64, width: u32) -> Resul
     enc.set_time_base(ff::Rational::new(1, 25));
     unsafe {
         (*enc.as_mut_ptr()).flags |= ff::ffi::AV_CODEC_FLAG_QSCALE as i32;
-        (*enc.as_mut_ptr()).global_quality = ff::ffi::FF_QP2LAMBDA * 4;
+        (*enc.as_mut_ptr()).global_quality = ff::ffi::FF_QP2LAMBDA * q;
     }
     let mut enc = enc.open_as(codec)?;
 
@@ -1733,7 +1760,7 @@ pub fn poster_at(src: &Source, time: f64) -> Result<crate::cut::Poster> {
         // as the frame it stands for (1080i gives 1920x1080, not 960x540):
         // the field has every sample across, only the lines are halved.
         let native = (picture.width() as f64 * sar).round() as u32;
-        encode_jpeg_within(&top_field(&picture), sar / 2.0, POSTER_WIDTH.min(native))?
+        encode_jpeg_within(&top_field(&picture), sar / 2.0, POSTER_WIDTH.min(native), JPEG_Q)?
     } else {
         encode_jpeg_sized(&picture, sar, POSTER_WIDTH)?
     };
