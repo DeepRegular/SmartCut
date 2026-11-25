@@ -504,7 +504,7 @@ chosen. Then:
 | Packaging | Fetched to | Put in place |
 |---|---|---|
 | AppImage | `.smartcut-update/` beside the image | at once, by a rename over the image: the running one is a mount of the old file |
-| tar.gz | `.smartcut-update/` beside the folder | on the way out: the folder renamed aside and the new one put in its name -- unless another SmartCut runs out of it |
+| tar.gz | `.smartcut-update/` beside the folder | on the way out: the folder renamed aside and the new one put in its name. While another SmartCut runs out of the folder it is left unpacked, offered again at the next start and put in place at a later way out |
 | zip | `.update\` in the folder | on the way out: each file renamed aside first (Windows renames a running `.exe`, it does not overwrite one) |
 | installer | the app's cache folder | on 再起動して更新 only, run as `/P /R /UPDATE`: passive, then starts the program again |
 
@@ -533,9 +533,12 @@ are checked against the same key.
 
 ### What was verified
 
-On the development VM, against a local server: a tar.gz-shaped folder fetched,
-verified, swapped on the way out and started again, and the old folder removed by the
-new start; an AppImage replaced and its mode kept at 755; a signature whose comment
+On the development VM, against a local server: the release's own tar.gz (with
+WebKit's helper processes inside the folder) fetched, verified, swapped on the way out
+and started again, and the old folder removed by the new start; with a second SmartCut
+running out of the same folder, 再起動して更新 refused and the way out leaving the
+update unpacked, then offered as ready at the next start and put in place once the
+second was gone; an AppImage replaced and its mode kept at 755; a signature whose comment
 named another version, and a file changed after signing, both refused with the
 running copy left as it was. The Windows code is compiled and linted for
 `x86_64-pc-windows-msvc`, but neither Windows path has been run yet.

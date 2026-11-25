@@ -471,10 +471,18 @@ fn fetch_now(app: &tauri::AppHandle, mut progress: impl FnMut(u64, u64)) -> Resu
     let path = prepare(k, &dir, &file).inspect_err(|_| {
         let _ = std::fs::remove_file(&file);
     })?;
+    // Which version the unpacked folder is, for a start after a way out that
+    // could not put it in place (see `tidy`).
+    if matches!(k, Kind::LinuxTar { .. } | Kind::WindowsPortable { .. }) {
+        std::fs::write(dir.join(NEW_VERSION), &found.version).map_err(|e| e.to_string())?;
+    }
     with_state(|s| s.staged = Some(Staged { version: found.version.clone(), path }));
     smartcut_core::log::line(&format!("update: {} fetched and ready", found.version));
     Ok(found.version)
 }
+
+/// Beside the unpacked `new` folder: the version it holds.
+const NEW_VERSION: &str = "new.version";
 
 /// Make the fetched `file` ready to put in place, and say what is to be
 /// started on the way out.
@@ -574,6 +582,15 @@ pub fn want_restart(app: &tauri::AppHandle) -> Result<(), String> {
         )
         .into());
     }
+    if let Kind::LinuxTar { root } = kind() {
+        if tree_in_use(root) {
+            return Err(tr!(
+                "同じフォルダーからほかの SmartCut が動いています。閉じてから更新してください",
+                "Another SmartCut is running from the same folder. Close it before updating"
+            )
+            .into());
+        }
+    }
     if matches!(kind(), Kind::WindowsSetup) && others_running() {
         return Err(tr!(
             "ほかの SmartCut のウィンドウが開いています。閉じてから更新してください",
@@ -616,13 +633,18 @@ fn others_running() -> bool {
     false
 }
 
-/// Whether a process other than this one runs out of `root`. The tar.gz is
+/// Whether a SmartCut other than this one runs out of `root`. The tar.gz is
 /// put in place by renaming its folder, and a SmartCut still running out of
 /// the old one goes on starting WebKit's helper processes by the path it was
 /// given -- which would then be the new version's.
+///
+/// The program's own binary and nothing else: WebKit's helpers are in the
+/// folder too, and this one's own are still running on the way out. Counted
+/// as another SmartCut, they kept the folder from ever being replaced.
 #[cfg(target_os = "linux")]
 fn tree_in_use(root: &Path) -> bool {
     let me = std::process::id().to_string();
+    let program = root.join("app/usr/bin/smartcut");
     let Ok(procs) = std::fs::read_dir("/proc") else {
         return true;
     };
@@ -631,8 +653,13 @@ fn tree_in_use(root: &Path) -> bool {
         let name = name.to_string_lossy();
         name.bytes().all(|b| b.is_ascii_digit())
             && name != me
-            && std::fs::read_link(p.path().join("exe")).is_ok_and(|exe| exe.starts_with(root))
+            && std::fs::read_link(p.path().join("exe")).is_ok_and(|exe| exe == program)
     })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tree_in_use(_: &Path) -> bool {
+    false
 }
 
 /// On the way out: put what was fetched in place, and start the new version
@@ -660,7 +687,8 @@ pub fn on_exit() {
             run.spawn().map(drop)
         }
         Kind::LinuxTar { root } => {
-            #[cfg(target_os = "linux")]
+            // Left unpacked, for the next start to offer and the next way
+            // out to put in place (see `tidy`).
             if tree_in_use(root) {
                 smartcut_core::log::line("update: another SmartCut runs out of the folder; left for later");
                 return;
@@ -711,6 +739,7 @@ fn swap_folder(root: &Path, new: &Path) -> Result<(), String> {
         return Err(format!("{}: {e}", new.display()));
     }
     let _ = std::fs::remove_dir_all(staging.join("new"));
+    let _ = std::fs::remove_file(staging.join(NEW_VERSION));
     Ok(())
 }
 
@@ -755,6 +784,7 @@ fn swap_files(dir: &Path, new: &Path) -> Result<(), String> {
         done.push((target, was));
     }
     let _ = std::fs::remove_dir_all(staging.join("new"));
+    let _ = std::fs::remove_file(staging.join(NEW_VERSION));
     Ok(())
 }
 
@@ -767,8 +797,35 @@ pub fn tidy(app: &tauri::AppHandle) {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("old-") || name == "new" {
+        if name.starts_with("old-") {
             let _ = std::fs::remove_dir_all(&path);
+        } else if name == "new" {
+            // Unpacked by a session whose way out could not put it in place
+            // -- another SmartCut was running out of the folder. Offered
+            // again, as ready, if it is still newer than this one.
+            let version = std::fs::read_to_string(dir.join(NEW_VERSION))
+                .ok()
+                .and_then(|v| parse_version(v.trim()));
+            let top = only_folder(&path).ok();
+            match (version, top) {
+                (Some(v), Some(top))
+                    if v > current()
+                        && matches!(kind(), Kind::LinuxTar { .. } | Kind::WindowsPortable { .. }) =>
+                {
+                    with_state(|s| {
+                        s.staged = Some(Staged { version: format!("{}.{}.{}", v.0, v.1, v.2), path: top })
+                    })
+                }
+                _ => {
+                    let _ = std::fs::remove_dir_all(&path);
+                    let _ = std::fs::remove_file(dir.join(NEW_VERSION));
+                }
+            }
+        } else if name == NEW_VERSION {
+            // Read with `new`, above; gone with it when that is.
+            if !dir.join("new").is_dir() {
+                let _ = std::fs::remove_file(&path);
+            }
         } else if name.ends_with(".part") {
             let _ = std::fs::remove_file(&path);
         } else if matches!(kind(), Kind::WindowsSetup) && name.ends_with("-setup.exe") {
