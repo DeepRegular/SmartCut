@@ -323,6 +323,57 @@ const CATALOG = {
     "about.libav": "libavformat {f}　／　libavcodec {c}　／　libavutil {u}",
     "about.unknown": "不明",
     "about.close": "閉じる",
+    "prefs.groupUpdate": "更新",
+    "prefs.updateCheck": "起動時に新しいバージョンを確認する",
+    "prefs.updateCheckNote":
+      "起動して数秒後に GitHub の最新リリースを確認します。新しいバージョンがあると、" +
+      "右上の SmartCut ボタンに青い点が付き、メニューから更新できます。" +
+      "ダウンロードは更新を選んだときだけ行います。",
+    "prefs.updateNow": "今すぐ確認",
+    "update.title": "ソフトウェアの更新",
+    "update.notes": "リリースノートを開く",
+    "update.skip": "このバージョンを飛ばす",
+    "update.later": "あとで",
+    "update.close": "閉じる",
+    "update.download": "ダウンロード",
+    "update.stop": "中止",
+    "update.retry": "やり直す",
+    "update.restart": "再起動して更新",
+    "update.foundNote": "SmartCut {v} が公開されています。右上の SmartCut メニューから更新できます。",
+    "update.menuFound": "SmartCut {v} に更新…",
+    "update.menuReady": "再起動して {v} に更新…",
+    "update.foundHead": "SmartCut {v} が公開されています（使用中のバージョンは {cur}）",
+    "update.foundShort": "SmartCut {v} が公開されています。",
+    "update.latest": "最新のバージョンです（{v}）。",
+    "update.what": "{size} をダウンロードし、署名を確認してから入れ替えます。{how}",
+    "update.how.windows-setup": "インストーラーが自動で動き、終わると SmartCut が起動します。",
+    "update.how.windows-portable": "このフォルダーのファイルを、SmartCut の終了時に入れ替えます。",
+    "update.how.linux-tar": "このフォルダーの中身を、SmartCut の終了時に入れ替えます。",
+    "update.how.appimage": "この AppImage ファイルを新しいものに置き換えます。",
+    "update.fetching": "ダウンロード中: {done} / {total}（{pct}%）",
+    "update.failed": "更新できませんでした: {e}",
+    "update.readyHead": "SmartCut {v} の準備ができました",
+    "update.ready.windows-setup":
+      "再起動すると SmartCut が終了し、インストーラーが進行状況を表示しながら更新します。" +
+      "終わると SmartCut {v} が起動します。",
+    "update.ready.windows-portable":
+      "SmartCut を終了するとファイルが入れ替わり、次の起動から {v} になります。" +
+      "再起動すると、すぐに {v} で起動し直します。",
+    "update.ready.linux-tar":
+      "SmartCut を終了するとフォルダーの中身が入れ替わり、次の起動から {v} になります。" +
+      "再起動すると、すぐに {v} で起動し直します。",
+    "update.ready.appimage":
+      "AppImage ファイルはすでに {v} に置き換えてあります。再起動すると {v} で起動し直します。",
+    "update.busy": "出力中は再起動できません。出力が終わってから更新してください。",
+    "update.checking": "確認しています…",
+    "update.checkFailed": "確認できませんでした: {e}",
+    "update.kind.windows-setup": "インストーラーで入れた SmartCut です。新しいインストーラーで更新します。",
+    "update.kind.windows-portable": "ポータブル版（zip）です。展開したフォルダーのファイルを入れ替えます。",
+    "update.kind.linux-tar": "ポータブル版（tar.gz）です。展開したフォルダーの中身を入れ替えます。",
+    "update.kind.appimage": "AppImage 版です。AppImage ファイルを新しいものに置き換えます。",
+    "update.kind.deb": "deb パッケージ版は、APT リポジトリからシステムの更新と一緒に更新されます。",
+    "update.kind.flatpak": "Flatpak 版は flatpak update で更新されます。",
+    "update.kind.other": "この SmartCut は配布用のパッケージではないため、自動更新の対象外です。",
 
     // --- 入力設定画面 ----------------------------------------------------
     "input.total": "クリップ合計数: {n}　合計時間: {t}",
@@ -1743,6 +1794,57 @@ const CATALOG = {
     "about.libav": "libavformat {f} / libavcodec {c} / libavutil {u}",
     "about.unknown": "unknown",
     "about.close": "Close",
+    "prefs.groupUpdate": "Updates",
+    "prefs.updateCheck": "Check for a new version at startup",
+    "prefs.updateCheckNote":
+      "A few seconds after the start, the latest release on GitHub is looked up. When there is " +
+      "a newer one, the SmartCut button in the corner gets a blue dot and its menu offers the " +
+      "update. Nothing is downloaded until you ask for it.",
+    "prefs.updateNow": "Check now",
+    "update.title": "Software update",
+    "update.notes": "Open the release notes",
+    "update.skip": "Skip this version",
+    "update.later": "Later",
+    "update.close": "Close",
+    "update.download": "Download",
+    "update.stop": "Stop",
+    "update.retry": "Try again",
+    "update.restart": "Restart and update",
+    "update.foundNote": "SmartCut {v} is out. The SmartCut menu in the corner can update to it.",
+    "update.menuFound": "Update to SmartCut {v}…",
+    "update.menuReady": "Restart into {v}…",
+    "update.foundHead": "SmartCut {v} is out (this is {cur})",
+    "update.foundShort": "SmartCut {v} is out.",
+    "update.latest": "This is the latest version ({v}).",
+    "update.what": "{size} to download; its signature is checked before anything is replaced. {how}",
+    "update.how.windows-setup": "The installer runs by itself and starts SmartCut again when it is done.",
+    "update.how.windows-portable": "The files in this folder are replaced when SmartCut quits.",
+    "update.how.linux-tar": "What is in this folder is replaced when SmartCut quits.",
+    "update.how.appimage": "This AppImage file is replaced with the new one.",
+    "update.fetching": "Downloading: {done} of {total} ({pct}%)",
+    "update.failed": "Could not update: {e}",
+    "update.readyHead": "SmartCut {v} is ready",
+    "update.ready.windows-setup":
+      "Restarting quits SmartCut and the installer updates it, showing its progress. " +
+      "SmartCut {v} starts when it is done.",
+    "update.ready.windows-portable":
+      "The files are replaced when SmartCut quits, and the next start is {v}. " +
+      "Restart to be in {v} now.",
+    "update.ready.linux-tar":
+      "The folder is replaced when SmartCut quits, and the next start is {v}. " +
+      "Restart to be in {v} now.",
+    "update.ready.appimage":
+      "The AppImage file has already been replaced with {v}. Restart to be in {v} now.",
+    "update.busy": "Not while an export is running. Update once it has finished.",
+    "update.checking": "Checking…",
+    "update.checkFailed": "Could not check: {e}",
+    "update.kind.windows-setup": "Installed with the installer; a new installer updates it.",
+    "update.kind.windows-portable": "The portable zip; the files in its folder are replaced.",
+    "update.kind.linux-tar": "The portable tar.gz; what is in its folder is replaced.",
+    "update.kind.appimage": "The AppImage; the file is replaced with the new one.",
+    "update.kind.deb": "The .deb is updated from the APT repository along with the rest of the system.",
+    "update.kind.flatpak": "The Flatpak is updated with flatpak update.",
+    "update.kind.other": "This SmartCut is not one of the released packages, so it is not updated from here.",
 
     // --- input screen ----------------------------------------------------
     "input.total": "Clips: {n}   Total length: {t}",

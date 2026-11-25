@@ -139,6 +139,9 @@
           </div>
           <div class="menu-sep" id="menu-sep-tool"></div>
           <button class="menu-item" id="menu-prefs" data-i18n="menu.prefs">環境設定</button>
+          <!-- Shown once a newer release has been found, and only then:
+               a standing 更新を確認 lives in 環境設定. -->
+          <button class="menu-item" id="menu-update" hidden></button>
           <button class="menu-item" id="menu-about" data-i18n="menu.about">SmartCut について</button>
           <!-- Last, under a rule of its own, where a program's own menu has
                put it since there were menus. The way out that a window's
@@ -861,6 +864,9 @@
             <button class="pref-tab" role="tab" id="pref-tab-log"
                     aria-controls="pref-pane-log" aria-selected="false" tabindex="-1"
                     data-pane="log" data-i18n="prefs.groupLog">ログ</button>
+            <button class="pref-tab" role="tab" id="pref-tab-update"
+                    aria-controls="pref-pane-update" aria-selected="false" tabindex="-1"
+                    data-pane="update" data-i18n="prefs.groupUpdate">更新</button>
           </nav>
 
           <div class="pref-panes">
@@ -1213,6 +1219,22 @@
               </div>
               <p class="dim" data-i18n="prefs.logsNote"></p>
             </section>
+
+            <!-- The updater's one standing answer, and the button that asks
+                 now. The line under them says what this copy is and, for a
+                 packaging that something else updates, what that is. See
+                 `update.rs`. -->
+            <section class="pref-pane" id="pref-pane-update" role="tabpanel"
+                     aria-labelledby="pref-tab-update" hidden>
+              <label class="opt"><input id="pref-update-check" type="checkbox" />
+                <span data-i18n="prefs.updateCheck">起動時に新しいバージョンを確認する</span></label>
+              <p class="dim" data-i18n="prefs.updateCheckNote"></p>
+              <div class="row">
+                <button id="pref-update-now" class="mini" data-i18n="prefs.updateNow">今すぐ確認</button>
+                <span class="grow dim" id="pref-update-said"></span>
+              </div>
+              <p class="dim" id="pref-update-kind"></p>
+            </section>
           </div>
         </div>
         <div class="modal-foot">
@@ -1368,6 +1390,30 @@
         </div>
         <div class="modal-foot">
           <button id="about-close" class="primary" data-i18n="about.close">閉じる</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 自動更新. What was found, fetching it, and starting again into it.
+         One box for the three steps rather than three boxes: each step is
+         the next button of the same question. -->
+    <div id="update" class="modal" hidden>
+      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="update-title">
+        <div class="modal-head" id="update-title" data-i18n="update.title">ソフトウェアの更新</div>
+        <div class="modal-body">
+          <p id="update-head"></p>
+          <p class="dim" id="update-what"></p>
+          <div class="progress update-bar" id="update-bar" hidden><span id="update-fill"></span></div>
+          <p class="dim" id="update-said"></p>
+          <div class="row">
+            <button id="update-notes" class="mini" data-i18n="update.notes">リリースノートを開く</button>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button id="update-skip" class="mini" data-i18n="update.skip">このバージョンを飛ばす</button>
+          <span class="grow"></span>
+          <button id="update-later" class="mini" data-i18n="update.later">あとで</button>
+          <button id="update-go" class="primary"></button>
         </div>
       </div>
     </div>

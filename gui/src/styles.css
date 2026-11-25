@@ -327,6 +327,20 @@ button.brand:hover, button.brand.open { background: #3a3a3a; border-color: #5c5c
 .tracks label { cursor: pointer; }
 .tracks .small { font-size: 11px; line-height: 1.5; }
 
+/* --- 自動更新 ------------------------------------------------------------
+   A dot on the name once a newer release is out, which is where the menu
+   item that offers it is; nothing that moves or asks. */
+button.brand.has-update { position: relative; }
+button.brand.has-update::after {
+  content: ""; position: absolute; top: 3px; right: 3px;
+  width: 6px; height: 6px; border-radius: 50%; background: #58a6ff;
+}
+#update .modal-box { width: min(520px, 94vw); }
+#update .modal-body { display: flex; flex-direction: column; gap: 8px; }
+.update-bar { flex: none; }
+.update-bar[hidden] { display: none; }
+#update-head { font-weight: 600; }
+
 /* --- バージョン情報 ------------------------------------------------------
    The name and the number on one line and the rest as a two-column list
    under it: the number is what the panel is opened for, and a table of

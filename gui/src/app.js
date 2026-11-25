@@ -11753,6 +11753,11 @@ if (listen) {
       cancelLabel: t("project.quitCancel"),
     });
     if (go) invoke("quit");
+    // Not now after all: the next close is an ordinary one.
+    else if (restartAsked) {
+      restartAsked = false;
+      invoke("update_restart", { on: false }).catch(() => {});
+    }
   });
 }
 
@@ -13895,6 +13900,7 @@ function paintPrefs() {
   el("pref-chapters").checked = prefs.get("chapters") !== false;
   el("pref-verify").checked = prefs.get("verify") === true;
   el("pref-notify-done").checked = prefs.get("notifyDone") !== false;
+  paintUpdatePrefs();
   el("pref-keep-output").checked = !!prefs.get("keepOutput");
   el("pref-clean-joins").checked = !!prefs.get("cleanJoins");
   el("pref-proxy").checked = !!prefs.get("proxy");
@@ -14595,6 +14601,249 @@ window.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && !about.hidden) showAbout(false);
 });
 
+// --- 自動更新 ------------------------------------------------------------
+//
+// The window's half of `update.rs`. A check a few seconds after the start
+// (unless 環境設定 says not to), a dot on the name and a line in the menu
+// when something newer is out, and one box that takes it from there:
+// download, then start again into it.
+//
+// Nothing is offered by opening a box over the work. The start of a session
+// is when somebody is dropping recordings on the window, and a question put
+// in front of that is answered without being read.
+
+const updatePanel = el("update");
+/// What the backend says about this copy (`update_status`), what was found,
+/// and where the box is: `idle`, `found`, `fetching`, `ready` or `failed`.
+const upd = { status: null, found: null, phase: "idle", done: 0, total: 0, error: "", ready: "" };
+/// The packagings `update.rs` puts in place itself.
+const UPDATE_KINDS = ["windows-setup", "windows-portable", "linux-tar", "appimage"];
+/// Asked to start again into the update, and not yet answered by the close.
+let restartAsked = false;
+
+const updateable = () => !!upd.status && UPDATE_KINDS.includes(upd.status.kind) && !upd.status.blocked;
+
+async function updateStatus() {
+  if (!upd.status && invoke) upd.status = await invoke("update_status").catch(() => null);
+  if (upd.status && upd.status.ready && upd.phase !== "fetching") {
+    upd.phase = "ready";
+    upd.ready = upd.status.ready;
+  }
+  return upd.status;
+}
+
+/// Ask whether there is something newer. Throws only when `byHand`: a check
+/// nobody asked for that fails -- no network, GitHub down -- is a line in
+/// the log and nothing on screen.
+async function checkForUpdate(byHand) {
+  await updateStatus();
+  if (!updateable()) return null;
+  try {
+    const found = await invoke("update_check");
+    upd.found = found || null;
+    if (upd.phase === "idle" || upd.phase === "found" || upd.phase === "failed") {
+      upd.phase = found ? "found" : "idle";
+    }
+    paintUpdate();
+    return found;
+  } catch (e) {
+    jlog(`update_check: ${e}`);
+    if (byHand) throw e;
+    return null;
+  }
+}
+
+/// The check at the start. Not in the batch tool, which is left running
+/// unattended and is never what gets updated.
+function scheduleUpdateCheck() {
+  if (!invoke || isTool()) return;
+  setTimeout(async () => {
+    await updateStatus();
+    paintUpdate();
+    if (prefs.get("updateCheck") === false) return;
+    const found = await checkForUpdate(false);
+    if (found && prefs.get("updateSkip") !== found.version) {
+      sayNote("update.foundNote", { v: found.version });
+    }
+  }, 8000);
+}
+
+/// The dot, the menu line, and the box if it is up.
+function paintUpdate() {
+  const v = upd.phase === "ready" ? upd.ready : upd.found && upd.found.version;
+  const skipped = upd.phase === "found" && prefs.get("updateSkip") === v;
+  const offer = (upd.phase === "found" && !skipped) || upd.phase === "ready" || upd.phase === "fetching";
+  el("brand").classList.toggle("has-update", offer);
+  const item = el("menu-update");
+  item.hidden = !offer;
+  item.textContent = upd.phase === "ready" ? t("update.menuReady", { v }) : t("update.menuFound", { v });
+  if (!updatePanel.hidden) paintUpdateBox();
+}
+
+function updateKindNote() {
+  const kind = upd.status ? upd.status.kind : "other";
+  return t(`update.how.${kind}`);
+}
+
+function paintUpdateBox() {
+  const go = el("update-go");
+  const bar = el("update-bar");
+  const said = el("update-said");
+  const cur = (upd.status && upd.status.current) || "";
+  el("update-skip").hidden = upd.phase !== "found";
+  el("update-later").hidden = upd.phase === "fetching";
+  el("update-notes").hidden = !(upd.found || upd.ready);
+  bar.hidden = upd.phase !== "fetching";
+  go.disabled = false;
+  said.textContent = "";
+  if (upd.phase === "ready") {
+    el("update-head").textContent = t("update.readyHead", { v: upd.ready });
+    el("update-what").textContent = t(`update.ready.${upd.status.kind}`, { v: upd.ready });
+    go.textContent = t("update.restart");
+    return;
+  }
+  const f = upd.found;
+  if (!f) {
+    el("update-head").textContent = t("update.latest", { v: cur });
+    el("update-what").textContent = "";
+    go.textContent = t("update.close");
+    return;
+  }
+  el("update-head").textContent = t("update.foundHead", { v: f.version, cur });
+  el("update-what").textContent = t("update.what", { size: size(f.size), how: updateKindNote() });
+  if (upd.phase === "fetching") {
+    const pct = upd.total ? Math.floor((upd.done / upd.total) * 100) : 0;
+    el("update-fill").style.width = `${pct}%`;
+    said.textContent = t("update.fetching", { done: size(upd.done), total: size(upd.total), pct });
+    go.textContent = t("update.stop");
+  } else if (upd.phase === "failed") {
+    said.textContent = t("update.failed", { e: upd.error });
+    go.textContent = t("update.retry");
+  } else {
+    go.textContent = t("update.download");
+  }
+}
+
+function showUpdate(on) {
+  updatePanel.hidden = !on;
+  if (on) paintUpdateBox();
+}
+
+async function fetchUpdate() {
+  upd.phase = "fetching";
+  upd.done = 0;
+  upd.total = upd.found ? upd.found.size : 0;
+  paintUpdate();
+  try {
+    upd.ready = await invoke("update_fetch");
+    upd.phase = "ready";
+  } catch (e) {
+    upd.error = engineSays(String(e));
+    upd.phase = "failed";
+  }
+  paintUpdate();
+}
+
+async function restartIntoUpdate() {
+  // A run being written goes on writing until the window closes, and the
+  // close would end it half done.
+  if (exporting) {
+    el("update-said").textContent = t("update.busy");
+    return;
+  }
+  try {
+    await invoke("update_restart", { on: true });
+  } catch (e) {
+    el("update-said").textContent = engineSays(String(e));
+    return;
+  }
+  restartAsked = true;
+  showUpdate(false);
+  // The way 終了 goes, so unsaved work is asked about first.
+  invoke("close_main");
+}
+
+if (listen) {
+  listen("update-progress", (ev) => {
+    const [done, total] = ev.payload;
+    upd.done = done;
+    upd.total = total;
+    if (upd.phase === "fetching" && !updatePanel.hidden) paintUpdateBox();
+  });
+}
+
+el("menu-update").addEventListener("click", () => {
+  showMenu(false);
+  showUpdate(true);
+});
+el("update-go").addEventListener("click", () => {
+  if (upd.phase === "fetching") invoke("update_cancel");
+  else if (upd.phase === "ready") restartIntoUpdate();
+  else if (upd.found) fetchUpdate();
+  else showUpdate(false);
+});
+el("update-later").addEventListener("click", () => showUpdate(false));
+el("update-skip").addEventListener("click", () => {
+  if (upd.found) prefs.set("updateSkip", upd.found.version);
+  showUpdate(false);
+  paintUpdate();
+});
+el("update-notes").addEventListener("click", () => {
+  const v = upd.phase === "ready" ? upd.ready : upd.found && upd.found.version;
+  if (v) invoke("update_page", { version: v }).catch((e) => jlog(`update_page: ${e}`));
+});
+let updatePressedOut = false;
+updatePanel.addEventListener("mousedown", (ev) => {
+  updatePressedOut = ev.target === updatePanel;
+});
+updatePanel.addEventListener("click", (ev) => {
+  if (ev.target === updatePanel && updatePressedOut && upd.phase !== "fetching") showUpdate(false);
+});
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !updatePanel.hidden && upd.phase !== "fetching") showUpdate(false);
+});
+
+/// 環境設定's 更新 group: the box, the button, and what this copy is.
+async function paintUpdatePrefs() {
+  el("pref-update-check").checked = prefs.get("updateCheck") !== false;
+  await updateStatus();
+  const kind = upd.status ? upd.status.kind : "other";
+  const can = updateable();
+  el("pref-update-check").disabled = !can;
+  el("pref-update-now").disabled = !can;
+  el("pref-update-kind").textContent =
+    upd.status && upd.status.blocked ? engineSays(upd.status.blocked) : t(`update.kind.${kind}`);
+}
+
+el("pref-update-check").addEventListener("change", (ev) => {
+  prefs.set("updateCheck", ev.target.checked);
+});
+el("pref-update-now").addEventListener("click", async () => {
+  const said = el("pref-update-said");
+  const button = el("pref-update-now");
+  button.disabled = true;
+  said.textContent = t("update.checking");
+  try {
+    const found = await checkForUpdate(true);
+    said.textContent = found
+      ? t("update.foundShort", { v: found.version })
+      : t("update.latest", { v: upd.status.current });
+    if (found) {
+      showPrefs(false);
+      showUpdate(true);
+    }
+  } catch (e) {
+    said.textContent = t("update.checkFailed", { e: engineSays(String(e)) });
+  } finally {
+    button.disabled = !updateable();
+  }
+});
+
+onLangChange(() => {
+  paintUpdate();
+  if (!prefsPanel.hidden) paintUpdatePrefs();
+});
+
 // --- メディア情報 ----------------------------------------------------------
 //
 // What a recording is, as the reader that cuts it reads it: the container and
@@ -15013,7 +15262,12 @@ tellBackend(invoke)
   // would be a window that flickered into being the wrong program.
   // Handing on what `tellBackend` answered, which the step after this one
   // is about: dropped here, the folder that was refused went unsaid.
-  .then((failed) => settleRole().then(() => failed))
+  .then((failed) =>
+    settleRole().then(() => {
+      scheduleUpdateCheck();
+      return failed;
+    })
+  )
   // The one of them that can be refused is the folder for the scratch files,
   // and a folder that was there when it was chosen can be gone by the next
   // start -- an external disk, a share that is not mounted yet. Said on the

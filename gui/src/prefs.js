@@ -132,6 +132,14 @@ const DEFAULTS = {
   /// is not the one being looked at, so the run it is for is one somebody
   /// went off to do something else during.
   notifyDone: true,
+  /// Whether to ask GitHub, a few seconds after the start, whether a newer
+  /// release is out. On: the answer is a dot on the name and nothing more,
+  /// and the four packagings it is asked for have no other way to hear of
+  /// one. See `update.rs`.
+  updateCheck: true,
+  /// The release somebody said not to be told about again, as its version.
+  /// Only that one: the next is offered as usual.
+  updateSkip: "",
   /// Whether the cut editor draws the subtitles over the picture from the
   /// moment a recording opens, rather than waiting to be asked each time.
   subsOn: false,

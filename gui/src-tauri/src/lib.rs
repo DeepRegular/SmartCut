@@ -26,6 +26,7 @@ mod geometry;
 mod prefs;
 mod recovery;
 mod runlog;
+mod update;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -10189,6 +10190,83 @@ struct Versions {
     platform: String,
 }
 
+// --- 自動更新 -------------------------------------------------------------
+//
+// The window's handles on `update`: how this copy was installed, whether a
+// newer release is out, fetching it, and starting again into it. All of the
+// deciding is in that module; these only carry it across.
+
+#[tauri::command]
+fn update_status(app: tauri::AppHandle) -> update::Status {
+    update::status(&app)
+}
+
+#[tauri::command]
+async fn update_check() -> Result<Option<update::Found>, String> {
+    off_thread(update::check).await
+}
+
+/// Fetch what `update_check` found. Says how far it has got as
+/// `update-progress`, `(done, total)` in bytes, no more often than a few
+/// times a second.
+#[tauri::command]
+async fn update_fetch(app: tauri::AppHandle) -> Result<String, String> {
+    off_thread(move || {
+        let mut said = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let reporter = app.clone();
+        update::fetch(&app, move |done, total| {
+            if done == total || said.elapsed().as_millis() >= 200 {
+                said = std::time::Instant::now();
+                let _ = reporter.emit("update-progress", (done, total));
+            }
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+fn update_cancel() {
+    update::cancel();
+}
+
+/// Start again into the fetched release once the window has closed, or
+/// (`on` false) not after all. The window asks to close after this, the way
+/// 終了 does, so that unsaved work is asked about first; `false` is the
+/// answer to a close that was then called off.
+#[tauri::command]
+fn update_restart(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    if on {
+        update::want_restart(&app)
+    } else {
+        update::no_restart();
+        Ok(())
+    }
+}
+
+/// The release's page, for its notes, in the desktop's browser. Only an
+/// address `update_check` built.
+#[tauri::command]
+async fn update_page(version: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !version.bytes().all(|b| b.is_ascii_digit() || b == b'.') || version.is_empty() {
+            return Err(format!("version {version:?}"));
+        }
+        let url = format!("https://github.com/DeepRegular/SmartCut/releases/tag/v{version}");
+        let opener = if cfg!(target_os = "windows") {
+            "explorer"
+        } else if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        let mut run = desktop_command(opener);
+        run.arg(url);
+        run.spawn().map(reap).map_err(|e| format!("{opener}: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn versions() -> Versions {
     let av = smartcut_core::libav();
@@ -10380,6 +10458,13 @@ pub fn run() {
             // What the three windows were last left at, before there is a
             // window on screen to put it on. See [`geometry`].
             geometry::load(app.handle());
+            // What the last update renamed aside, and an installer fetched
+            // last time and not yet run. The list window's: the batch tool
+            // never updates, and two processes clearing one folder at once
+            // is one too many.
+            if !batch {
+                update::tidy(app.handle());
+            }
             // The tool says it is here as soon as its process is, rather than
             // once its page has come up: a webview can take a minute or more
             // to start, and a second バッチに登録 in that minute started a
@@ -10559,7 +10644,13 @@ pub fn run() {
             prefs_now,
             cache_usage,
             clear_cache,
-            versions
+            versions,
+            update_status,
+            update_check,
+            update_fetch,
+            update_cancel,
+            update_restart,
+            update_page
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -10579,6 +10670,9 @@ pub fn run() {
                 if batch {
                     batch_gone(app);
                 }
+                // Last: it may start the new version, which should find
+                // everything above already done.
+                update::on_exit();
             }
         });
 }

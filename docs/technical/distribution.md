@@ -488,3 +488,54 @@ portable zip.
 - **By default it is `gui.exe`**, because the cargo binary takes the crate name `gui`.
   `mainBinaryName` makes it `smartcut.exe`; it was set in `tauri.windows.conf.json` until
   0.2.0 moved it into `tauri.conf.json`, where it names the Linux binary as well.
+
+## The updater
+
+From 0.9.0 the four packagings nothing else updates -- the Windows installer, the
+Windows portable zip, the Linux tar.gz and the AppImage -- update themselves
+(`gui/src-tauri/src/update.rs`). The .deb and the Flatpak are left to APT and to
+`flatpak update`, and are not checked at all; nor is a build run out of a source tree.
+
+A few seconds after the start (環境設定 > 更新 can turn it off) the program reads
+`releases/latest/download/update.json`. When the version there is newer, the
+SmartCut button gets a dot and its menu an item; nothing is fetched until that is
+chosen. Then:
+
+| Packaging | Fetched to | Put in place |
+|---|---|---|
+| AppImage | `.smartcut-update/` beside the image | at once, by a rename over the image: the running one is a mount of the old file |
+| tar.gz | `.smartcut-update/` beside the folder | on the way out: the folder renamed aside and the new one put in its name -- unless another SmartCut runs out of it |
+| zip | `.update\` in the folder | on the way out: each file renamed aside first (Windows renames a running `.exe`, it does not overwrite one) |
+| installer | the app's cache folder | on 再起動して更新 only, run as `/P /R /UPDATE`: passive, then starts the program again |
+
+What was renamed aside is removed by the next start. The installer closes every
+SmartCut of the user without asking in passive mode, so it is not started while the
+batch tool or another window is open.
+
+### Signing
+
+The manifest is not signed; each file is. `gui/sign-update.sh <folder>` signs the four
+files with minisign (`rsign`, from `cargo install rsign2`) and writes `update.json`,
+and all nine files go up with the release. The trusted comment, which the signature
+covers, is `SmartCut <version> <file name>`, and the updater refuses any other: a
+manifest pointing at an older release's signed file, or at another packaging's, gets
+nothing installed. The addresses are built from the version and the name, never read
+from the manifest.
+
+The public key is `gui/src-tauri/update-key.pub`, built into the program. The secret
+key is on the development VM at `~/.smartcut-update-key/smartcut.key`, outside the
+repository and without a password. If it is lost, every installed copy has to be
+updated by hand once, to a build carrying a new public key.
+
+`SMARTCUT_UPDATE_BASE` points the updater at another server
+(`$SMARTCUT_UPDATE_BASE/update.json` and `/<file>`), for trying it out. The signatures
+are checked against the same key.
+
+### What was verified
+
+On the development VM, against a local server: a tar.gz-shaped folder fetched,
+verified, swapped on the way out and started again, and the old folder removed by the
+new start; an AppImage replaced and its mode kept at 755; a signature whose comment
+named another version, and a file changed after signing, both refused with the
+running copy left as it was. The Windows code is compiled and linted for
+`x86_64-pc-windows-msvc`, but neither Windows path has been run yet.
