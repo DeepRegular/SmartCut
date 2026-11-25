@@ -137,12 +137,12 @@ CM 自動検出で決めた 5 区間・22 分の書き出しでは、**40589 フ
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.52_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.8.52-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.52_amd64.deb` | `sudo apt install ./smartcut_0.8.52_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 30.0 MB で済みます。[APT リポジトリ](https://deepregular.github.io/smartcut-apt/)を登録すると、以後は `apt upgrade` で更新できます |
-| **Linux (Flatpak)** | `SmartCut-0.8.52-x86_64.flatpak` | `flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref` で入れると、以後は `flatpak update` で更新できます。Releases のファイルから入れても同じです。ランタイム（GNOME 50）は Flathub から入ります。コマンドライン版は `flatpak run --command=smartcut-cli dev.smartcut.app` です |
-| **Windows** | `SmartCut_0.8.52_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
-| **Windows** | `smartcut-portable-x64-0.8.52.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
+| **Linux** | `SmartCut_0.8.53_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.8.53-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.8.53_amd64.deb` | `sudo apt install ./smartcut_0.8.53_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 30.0 MB で済みます。[APT リポジトリ](https://deepregular.github.io/smartcut-apt/)を登録すると、以後は `apt upgrade` で更新できます |
+| **Linux (Flatpak)** | `SmartCut-0.8.53-x86_64.flatpak` | `flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref` で入れると、以後は `flatpak update` で更新できます。Releases のファイルから入れても同じです。ランタイム（GNOME 50）は Flathub から入ります。コマンドライン版は `flatpak run --command=smartcut-cli dev.smartcut.app` です |
+| **Windows** | `SmartCut_0.8.53_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
+| **Windows** | `smartcut-portable-x64-0.8.53.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
 
 **動作条件。** AppImage と tar.gz には glibc 2.35 以降が必要です（Ubuntu 22.04、
 Debian 12、Fedora 36 以降）。deb は Ubuntu 22.04 以降と Debian 13 以降で
