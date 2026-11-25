@@ -227,6 +227,11 @@ pub struct SeekIndex {
     /// an index from before there was such a list still loads, with none:
     /// a recording opened from it reads back for its sets as it always did.
     pub sets: Option<Vec<(u64, Vec<u8>)>>,
+    /// Whether the file this was read from went on to the list above -- a
+    /// one or a zero after the identity, which every index made since 0.8.52
+    /// has -- and true for one made now. Not written: it is the writing. See
+    /// [`Unfit::Older`].
+    sets_written: bool,
 }
 
 /// How many of a recording's first bytes go into its [`identity`]: the
@@ -304,6 +309,11 @@ pub enum Unfit {
     /// It was made from another recording than `recording` -- or from that
     /// one as it was then, still being written -- of `len` bytes.
     Another { recording: String, len: u64 },
+    /// It was written by 0.8.51 or before for H.264 in start codes outside a
+    /// transport stream (a program stream), whose pictures with no time of
+    /// their own are placed by another rule since 0.8.52; see
+    /// [`index::IndexSource::build`] below.
+    Older,
 }
 
 impl std::fmt::Display for Unfit {
@@ -314,6 +324,11 @@ impl std::fmt::Display for Unfit {
                 f,
                 "the seek index was made from another recording than {recording} (it was made \
                  from one of {len} bytes): name another file for it, or delete it"
+            ),
+            Unfit::Older => write!(
+                f,
+                "the seek index was made by SmartCut 0.8.51 or earlier, which placed this \
+                 recording's pictures with no time of their own by another rule"
             ),
         }
     }
@@ -354,6 +369,22 @@ impl index::IndexSource for SeekIndex {
                 .into());
             }
         }
+        // **One written before the sets went with it, of H.264 in a program
+        // stream, is another rule's answer.** Since 0.8.52 the walk places the
+        // pictures such a stream leaves with no time by the step two timed
+        // ones measured, counting fields ([`crate::cut::poc_seam::Order`]),
+        // and the copy places them by that rule as it reads; believed, the
+        // older walk's times sent the copy past an entry point it never met
+        // ("the entry point at ... was passed") on ranges 0.8.51 and a fresh
+        // walk both cut, and on a stream whose clock jumps it wrote the end
+        // twice. Such an index is made again, once: what is written now has
+        // the list (a zero where it is empty) and is believed from then on.
+        // Every other kind of recording placed its pictures as before and
+        // keeps its index. The shape is the one [`crate::preview::Untimed`]
+        // reads back from a margin, and the one the proxy key marks.
+        if !self.sets_written && untimed_ps(&input) {
+            return Err(Unfit::Older.into());
+        }
         Ok(index::Index {
             points: self.points.clone(),
             leading_known: self.leading_known,
@@ -366,6 +397,15 @@ impl index::IndexSource for SeekIndex {
             sets: self.sets.clone(),
         })
     }
+}
+
+/// Whether `input` is H.264 in start codes outside a transport stream: the
+/// recordings whose walk 0.8.52 changed (see [`Unfit::Older`]). As
+/// [`crate::preview::Untimed::reads_back`] asks it of a [`crate::Source`].
+fn untimed_ps(input: &index::IndexInput) -> bool {
+    input.video.codec == "h264"
+        && input.video.framing == crate::bitstream::NalFraming::AnnexB
+        && !input.ictx.format().name().split(',').any(|n| n.trim() == "mpegts")
 }
 
 impl SeekIndex {
@@ -389,6 +429,7 @@ impl SeekIndex {
             identity: as_opened(&src.path).unwrap_or_else(|| identity(&src.path)),
             whole: src.read_whole,
             sets: src.sets_restated.clone(),
+            sets_written: true,
         }
     }
 
@@ -636,6 +677,7 @@ impl SeekIndex {
             closest: r.f64().ok().filter(|g| g.is_finite() && *g > 0.0),
             identity: r.u64().ok().zip(r.u64().ok()).filter(|&(len, head)| (len, head) != (0, 0)),
             whole: true,
+            sets_written: r.at < r.raw.len(),
             sets: sets_met(&mut r),
         })
     }
@@ -1069,6 +1111,7 @@ mod tests {
             identity: None,
             whole: true,
             sets: None,
+            sets_written: true,
         };
         let at = std::env::temp_dir().join(format!("smartcut-scix-read-{}.scix", std::process::id()));
         ix.save(&at).unwrap();
@@ -1119,6 +1162,7 @@ mod tests {
             identity,
             whole: true,
             sets: None,
+            sets_written: true,
         };
         let at = dir.join("x.scix");
         ix(Some(of(&a))).save(&at).unwrap();
@@ -1154,19 +1198,25 @@ mod tests {
             identity: Some((5, 6)),
             whole: true,
             sets,
+            sets_written: true,
         };
         let at = std::env::temp_dir().join(format!("smartcut-scix-sets-{}.scix", std::process::id()));
         ix(Some(met.clone())).save(&at).unwrap();
         let back = SeekIndex::load(&at).unwrap();
         assert_eq!((back.sets, back.identity), (Some(met), Some((5, 6))));
+        assert!(back.sets_written);
         ix(Some(Vec::new())).save(&at).unwrap();
         assert_eq!(SeekIndex::load(&at).unwrap().sets, Some(Vec::new()));
         ix(None).save(&at).unwrap();
         let raw = std::fs::read(&at).unwrap();
-        assert_eq!(SeekIndex::load(&at).unwrap().sets, None);
+        let back = SeekIndex::load(&at).unwrap();
+        // A zero is a list written empty: believed for every recording.
+        assert_eq!((back.sets, back.sets_written), (None, true));
         std::fs::write(&at, &raw[..raw.len() - 1]).unwrap();
         let back = SeekIndex::load(&at).unwrap();
-        assert_eq!((back.sets, back.identity), (None, Some((5, 6))));
+        // Nothing at all is 0.8.51's: made again for H.264 in a program
+        // stream only ([`Unfit::Older`]).
+        assert_eq!((back.sets, back.identity, back.sets_written), (None, Some((5, 6)), false));
         let _ = std::fs::remove_file(&at);
     }
 

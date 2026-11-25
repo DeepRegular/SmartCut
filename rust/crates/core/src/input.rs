@@ -1750,7 +1750,7 @@ pub(crate) fn is_avi(ictx: &ff::format::context::Input) -> bool {
 ///
 /// Nothing else is asked: an MPEG-4 encode with no B pictures (an Xvid `.avi`
 /// in its usual shape) comes with its times and opens as it did.
-fn avi_untimed(ictx: &ff::format::context::Input) -> bool {
+pub(crate) fn avi_untimed(ictx: &ff::format::context::Input) -> bool {
     use ff::codec::Id;
     is_avi(ictx)
         && ictx.streams().best(ff::media::Type::Video).is_some_and(|s| {
@@ -2028,11 +2028,46 @@ fn open_with(
 
 /// What libavformat asks while it opens a file on a thread that
 /// [`stop_reads_when`] watches. See [`input_stoppable`].
+///
+/// **Only while the open is going on.** The callback stays with the context
+/// -- and with the file's own reader, which took a copy of it -- for as long
+/// as the recording is open, so every read after the open asked it too, and
+/// a stop that came during a pass's reading ended the read there as an
+/// error, sixty-four of them in a row, before [`Packets`] had asked for
+/// itself: the pass said "stopped at an error the recording kept giving",
+/// [`reads_failed`] said yes and [`reads_stopped`] no, and the editor's
+/// detection closed with half an answer as though a share had gone away.
+/// After the open a stop is [`Packets`]' to see, as it was before the open
+/// was stoppable. See [`Opening`].
 unsafe extern "C" fn open_interrupted(_: *mut c_void) -> c_int {
+    if OPENING.try_with(|o| o.get()).unwrap_or(0) == 0 {
+        return 0;
+    }
     let stop = STOP_READS
         .try_with(|s| s.try_borrow().ok().is_some_and(|f| f.as_ref().is_some_and(|f| f())))
         .unwrap_or(false);
     c_int::from(stop)
+}
+
+thread_local! {
+    /// How many opens this thread is inside. See [`open_interrupted`].
+    static OPENING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Held while a stoppable open runs: [`open_interrupted`] answers only then.
+struct Opening(());
+
+impl Opening {
+    fn new() -> Opening {
+        OPENING.with(|o| o.set(o.get().saturating_add(1)));
+        Opening(())
+    }
+}
+
+impl Drop for Opening {
+    fn drop(&mut self) {
+        OPENING.with(|o| o.set(o.get().saturating_sub(1)));
+    }
 }
 
 /// `input_with_dictionary`, stopped where [`stop_reads_when`] says so.
@@ -2069,6 +2104,7 @@ fn input_stoppable(path: &str, opts: ff::Dictionary) -> Result<ff::format::conte
             callback: Some(open_interrupted),
             opaque: ptr::null_mut(),
         };
+        let opening = Opening::new();
         let mut opts = opts.disown();
         let res = ff::ffi::avformat_open_input(&mut ps, name.as_ptr(), ptr::null_mut(), &mut opts);
         ff::Dictionary::own(opts);
@@ -2077,6 +2113,7 @@ fn input_stoppable(path: &str, opts: ff::Dictionary) -> Result<ff::format::conte
             return Err(if asked_to_stop() { stopped() } else { ff::Error::from(res) });
         }
         let res = ff::ffi::avformat_find_stream_info(ps, ptr::null_mut());
+        drop(opening);
         if res < 0 || asked_to_stop() {
             ff::ffi::avformat_close_input(&mut ps);
             return Err(if asked_to_stop() { stopped() } else { ff::Error::from(res) });
@@ -2459,6 +2496,13 @@ struct HeadReader {
     /// Whether the open was made on a thread that [`stop_reads_when`]
     /// watches, where a read is to be stopped as the file protocol's is.
     watched: bool,
+    /// The first block this reader found the file could not fill. Not
+    /// loaded again by it, nor any after it: read straight off the file.
+    /// Asked for again on every read, the last block of a recording shorter
+    /// than the head -- a 47 MB clip -- was read from its start to the end
+    /// of the file for each 32 KiB libavformat took out of it, some thirty
+    /// times over, on every open.
+    short: Option<usize>,
 }
 
 impl HeadReader {
@@ -2476,7 +2520,14 @@ impl HeadReader {
             let kept = self.head.blocks.lock().unwrap_or_else(|e| e.into_inner())[n].clone();
             let block = match kept {
                 Some(block) => Some(block),
-                None => self.load(n),
+                None if self.short.is_some_and(|s| n >= s) => None,
+                None => {
+                    let block = self.load(n);
+                    if block.is_none() {
+                        self.short = Some(n);
+                    }
+                    block
+                }
             };
             if let Some(block) = block {
                 let from = self.at as usize - n * HEAD_BLOCK;
@@ -2581,6 +2632,7 @@ fn open_through_head(path: &Path, name: &str, opts: ff::Dictionary) -> Result<De
         head: kept_head(path, identity),
         at: 0,
         watched,
+        short: None,
     }));
     let name = CString::new(name).context("that name cannot be opened")?;
     let stopped = || {
@@ -2611,6 +2663,7 @@ fn open_through_head(path: &Path, name: &str, opts: ff::Dictionary) -> Result<De
                 opaque: ptr::null_mut(),
             };
         }
+        let opening = Opening::new();
         let mut opts = opts.disown();
         let res = ff::ffi::avformat_open_input(&mut ps, name.as_ptr(), ptr::null_mut(), &mut opts);
         ff::Dictionary::own(opts);
@@ -2630,6 +2683,7 @@ fn open_through_head(path: &Path, name: &str, opts: ff::Dictionary) -> Result<De
             io: Some((pb, free_reader::<HeadReader>)),
         };
         let res = ff::ffi::avformat_find_stream_info(ps, ptr::null_mut());
+        drop(opening);
         if res < 0 || (watched && asked_to_stop()) {
             return Err(if watched && asked_to_stop() { stopped() } else { ff::Error::from(res).into() });
         }
@@ -3007,6 +3061,51 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// A stop that comes after the open, while the recording is being read,
+    /// is the reading's own: said as a stop, not as a recording that kept
+    /// failing. The open's interrupt answered every read after it too, and
+    /// the pass ended at sixty-four errors in a row with [`reads_failed`].
+    #[test]
+    fn a_stop_after_the_open_is_a_stop() {
+        crate::init().ok();
+        // Four megabytes of silence, read in packets far smaller than what
+        // the reader underneath fetches at a time.
+        let data = 4u32 << 20;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&48000u32.to_le_bytes());
+        wav.extend_from_slice(&(48000u32 * 4).to_le_bytes());
+        wav.extend_from_slice(&4u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data.to_le_bytes());
+        wav.resize(wav.len() + data as usize, 0);
+        let path = std::env::temp_dir().join(format!("smartcut-read-stop-{}.wav", std::process::id()));
+        std::fs::File::create(&path).unwrap().write_all(&wav).unwrap();
+        let name = path.to_str().unwrap();
+        let stop = std::rc::Rc::new(std::cell::Cell::new(false));
+        {
+            let asked = stop.clone();
+            let _reads = stop_reads_when(move || asked.get());
+            let mut d = open(name, false).unwrap();
+            let mut read = 0;
+            for _ in d.read_packets() {
+                read += 1;
+                if read == 10 {
+                    stop.set(true);
+                }
+            }
+            assert!(read < 200, "read {read} packets after the stop");
+            assert!(reads_stopped() && !reads_failed());
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn an_output_is_written_under_the_name_it_is_given() {
         assert_eq!(as_output("/a/rec.ts"), "/a/rec.ts");
@@ -3168,6 +3267,7 @@ mod tests {
             head: kept_head(&path, identity),
             at: 0,
             watched: false,
+            short: None,
         };
         let read = |r: &mut HeadReader, size: usize| {
             let mut buf = vec![0u8; size];
@@ -3202,6 +3302,52 @@ mod tests {
         // Kept whole blocks only: the head is full, none was short.
         let head = kept_head(&path, identity);
         assert!(head.blocks.lock().unwrap().iter().all(|b| b.as_ref().is_some_and(|b| b.len() == HEAD_BLOCK)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A recording shorter than the head: its last block, which the file
+    /// cannot fill, is read straight off the file after the first try, and
+    /// what is handed over is the file's own bytes.
+    #[test]
+    fn a_recording_shorter_than_the_head() {
+        let dir = std::env::temp_dir().join(format!("smartcut-input-short-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rec.ts");
+        let len = 3 * HEAD_BLOCK + 54321;
+        let bytes: Vec<u8> = (0..len).map(|i| (i * 13 + i / 1009) as u8).collect();
+        File::create(&path).unwrap().write_all(&bytes).unwrap();
+        let identity = file_identity(&path.to_string_lossy());
+        let mut last = None;
+        for _ in 0..2 {
+            let mut r = HeadReader {
+                file: File::open(&path).unwrap(),
+                head: kept_head(&path, identity),
+                at: 0,
+                watched: false,
+                short: None,
+            };
+            last = Some(r.head.clone());
+            let mut got = Vec::new();
+            loop {
+                let mut buf = vec![0u8; 32768];
+                let n = r.read(buf.as_mut_ptr(), buf.len() as c_int);
+                if n == ff::ffi::AVERROR_EOF {
+                    break;
+                }
+                assert!(n > 0);
+                got.extend_from_slice(&buf[..n as usize]);
+            }
+            assert!(got == bytes);
+            assert_eq!(r.short, Some(3));
+            assert_eq!(r.seek(3 * HEAD_BLOCK as i64 + 7, SEEK_SET), 3 * HEAD_BLOCK as i64 + 7);
+            let mut buf = vec![0u8; 100];
+            assert_eq!(r.read(buf.as_mut_ptr(), 100), 100);
+            assert_eq!(&buf[..], &bytes[3 * HEAD_BLOCK + 7..3 * HEAD_BLOCK + 107]);
+        }
+        // The reader's own: other tests can push it out of [`HEADS`].
+        let head = last.unwrap();
+        let kept: Vec<bool> = head.blocks.lock().unwrap().iter().take(5).map(|b| b.is_some()).collect();
+        assert_eq!(kept, [true, true, true, false, false]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

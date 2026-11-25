@@ -120,7 +120,10 @@ pub fn shared<S: AsRef<str>>(names: &[S]) -> Option<String> {
             return None;
         }
         let looser: Vec<String> = titles.iter().map(|t| before_bare_number(t)).collect();
-        alike(&looser).filter(|t| !t.is_empty())
+        // Not where the number stood inside the series' own brackets
+        // (`枠「X 18 Y」 2`): that cut leaves half a pair on the disc.
+        let open = |t: &String| t.matches('「').count() > t.matches('」').count();
+        alike(&looser).filter(|t| !t.is_empty() && !open(t))
     };
     let readings: Vec<(String, String)> = names
         .iter()
@@ -640,6 +643,8 @@ mod tests {
         assert_eq!(shared(&["日曜枠「灯台守の休日」 #43", "日曜枠「硝子の塔」"]), None);
         // And a name read the other way must match another name, not itself.
         assert_eq!(shared(&["日曜枠「灯台守の休日」", "日曜枠「硝子の塔」"]).as_deref(), Some("日曜枠"));
+        // A bare number inside the block's brackets is not the episode's.
+        assert_eq!(shared(&["日曜枠「硝子の塔 18 霧」 #44", "日曜枠「硝子の塔 18 霧」 2"]), None);
     }
 
     /// The shapes a listing writes that the rules above did not cut: a

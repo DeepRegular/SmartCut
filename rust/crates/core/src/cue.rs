@@ -96,7 +96,10 @@ pub fn track_starts(sheet: &[u8]) -> Vec<f64> {
         match word.to_ascii_uppercase().as_str() {
             "FILE" => {
                 files += 1;
-                if files > 1 {
+                // A second file, or a first one after tracks a sheet with no
+                // `FILE` line of its own gave already: the tracks under it
+                // are another file's, timed from its own start.
+                if files > 1 || track.is_some() || !starts.is_empty() {
                     break;
                 }
             }
@@ -276,6 +279,9 @@ mod tests {
         assert_eq!(track_starts(sheet), vec![0.0, 600.0]);
         let mut more = sheet.to_vec();
         more.extend_from_slice(b"FILE \"b.wav\" WAVE\n");
+        assert_eq!(track_starts(&more), vec![0.0, 600.0]);
+        // ...nor are the tracks of a file named after them places in it.
+        more.extend_from_slice(b"TRACK 03 AUDIO\nINDEX 01 01:00:00\n");
         assert_eq!(track_starts(&more), vec![0.0, 600.0]);
     }
 }

@@ -1113,6 +1113,9 @@ pub fn video_decoder_with(
 /// recording (see [`cut::xvid_mpeg_quant`]). Every video decoder here is
 /// opened through it, so the cut, its seams, the check and the previews all
 /// see the same pictures.
+// `FF_THREAD_SLICE` is whatever bindgen made of a `#define`, which is not the
+// same type on every platform this is built for.
+#[allow(clippy::unnecessary_cast)]
 pub(crate) fn video_context(
     params: ff::codec::Parameters,
 ) -> Result<ff::codec::context::Context> {
@@ -1170,6 +1173,10 @@ pub struct EntryPictures<'a> {
     /// pictures with a sequence of their own. See `copy_segment` in
     /// [`cut`].
     shape: Option<bitstream::FieldShape>,
+    /// The entry points the index listed and the start they are rebased on,
+    /// where an entry picture libavformat does not flag may be among them:
+    /// see [`Self::of`]. `None` takes the key flag alone, as always.
+    listed: Option<(&'a [AccessPoint], f64)>,
 }
 
 /// What [`EntryPictures::step`] says to do with a packet.
@@ -1189,7 +1196,39 @@ impl<'a> EntryPictures<'a> {
             video,
             partner: false,
             shape: video.field_shape,
+            listed: None,
         }
+    }
+
+    /// As [`Self::new`], for the entry points `src`'s index listed.
+    ///
+    /// **An entry point libavformat does not flag is an entry picture too.**
+    /// An AVCHD disc whose map enters on I pictures that are neither IDR nor
+    /// recovery points -- cut since 0.8.52 (`copy_segment` in [`cut`]) -- has
+    /// no packet libavformat calls key, and a pass that took the key flag for
+    /// the entry pictures found none: no thumbnails, an empty film strip.
+    /// Such a picture is taken where the index lists an entry point on it and
+    /// nowhere else, so an I picture between two entry points (an encoder's
+    /// scene change) is skipped as it always was; the decoder that gets it
+    /// has to be told to show it ([`entrypool`], and `walk` in [`preview`]).
+    pub fn of(src: &'a Source) -> Self {
+        let mut entries = Self::new(&src.video);
+        if src.video.codec == "h264" {
+            entries.listed = Some((&src.points, src.start_time));
+        }
+        entries
+    }
+
+    /// Whether `packet`, not flagged key, is an entry picture [`Self::of`]
+    /// takes: on a listed entry point, and an unmarked intra H.264 picture.
+    fn unflagged_entry(&self, packet: &ff::Packet) -> bool {
+        let Some((points, start)) = self.listed else { return false };
+        let Some(pts) = packet.pts() else { return false };
+        let t = pts as f64 * self.video.time_base - start;
+        let half = self.video.frame_duration() / 2.0;
+        let i = points.partition_point(|p| p.time < t - half);
+        points.get(i).is_some_and(|p| (p.time - t).abs() < half)
+            && bitstream::h264_unmarked_intra(packet.data().unwrap_or(&[]), self.video.framing)
     }
 
     /// What to do with the next packet of the video stream.
@@ -1201,7 +1240,7 @@ impl<'a> EntryPictures<'a> {
         if std::mem::take(&mut self.partner) {
             return Step::Whole;
         }
-        if !packet.is_key() {
+        if !packet.is_key() && !self.unflagged_entry(packet) {
             return Step::Skip;
         }
         let data = packet.data().unwrap_or(&[]);
@@ -1828,7 +1867,6 @@ impl Outline {
     }
 }
 
-/// The container's own answer about a recording. See [`Outline`].
 /// **H.264 or HEVC in start codes is read in a program stream** (an `ffmpeg
 /// -f vob` of a `.ts` opens and cuts); what libav probes as sound, or as
 /// pictures of no codec it knows, is an `.mp4`'s pictures written in as they
@@ -1892,6 +1930,7 @@ fn ps_pictures_in_lengths(path: &str) -> bool {
     false
 }
 
+/// The container's own answer about a recording. See [`Outline`].
 pub fn outline(path: &str) -> Result<Outline> {
     outline_of(path).map(|(o, _)| o)
 }
@@ -1962,9 +2001,11 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     {
         // Said with what it is and the way out: the words alone ("no random
         // access points found") named no cause. Matched whole by the GUI's
-        // i18n.js `engine.bareStream`.
+        // i18n.js `engine.bareStream`, `engine.bareStreamAvi` and
+        // `engine.bareStreamPlain`, one for each way out below.
         let format = ictx.format();
-        let kind = match format.name().split(',').next().unwrap_or("").trim() {
+        let first = format.name().split(',').next().unwrap_or("").trim();
+        let kind = match first {
             "mpegvideo" => "MPEG-1/MPEG-2 video",
             "h264" => "H.264",
             "hevc" => "HEVC",
@@ -1975,11 +2016,24 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
             "h263" => "H.263",
             other => other,
         };
+        // **The way out named is one that works for that kind.** mkvmerge
+        // reads a bare H.264, HEVC or MPEG-1/2 stream and the file it makes
+        // cuts; it does not read a bare MPEG-4 Part 2 stream at all ("could not
+        // be recognized"), which ffmpeg puts into an AVI -- a container that
+        // needs no times, cut since 0.8.52 -- and a bare VC-1 it puts into a
+        // Matroska file, which is refused for having no times either. For
+        // those and the rest no tool is named rather than one that fails.
+        let way = match first {
+            "mpegvideo" | "h264" | "hevc" => {
+                "Put it into a container first (.mkv, .mp4 or .ts) with a tool that works the \
+                 times out of the stream, such as mkvmerge: mkvmerge -o out.mkv <this file>"
+            }
+            "m4v" => "Put it into an AVI first, which needs no times: ffmpeg -i <this file> -c copy out.avi",
+            _ => "Put it into a container first with a tool that works the times out of the stream.",
+        };
         return Err(anyhow!(
             "{path}: a bare {kind} stream, with no container around it, carries no times of its \
-             own, so no picture can be found to start a cut from. Put it into a container \
-             first (.mkv, .mp4 or .ts) with a tool that works the times out of the stream, \
-             such as mkvmerge: mkvmerge -o out.mkv <this file>"
+             own, so no picture can be found to start a cut from. {way}"
         ));
     }
     if let Some(why) = avi_refusal(&ictx) {

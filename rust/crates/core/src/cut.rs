@@ -1210,7 +1210,7 @@ struct AudioTrack {
     mender: Option<crate::audio::Mender<Mended>>,
     /// The program config element the track's first frame is to carry,
     /// where its frames name their channels in one and the first written
-    /// may not: taken once that frame is written. See
+    /// may not: put on frames until one is written. See
     /// [`crate::adts::pce_of`] and [`AudioTrack::opening`].
     pce: Option<Vec<u8>>,
 }
@@ -1264,8 +1264,12 @@ impl AudioTrack {
         if self.written > 0 {
             return packet;
         }
-        let Some(pce) = self.pce.take() else { return packet };
-        let Some(body) = packet.data().and_then(|d| crate::adts::with_pce(d, &pce)) else {
+        // Kept, not taken: a first frame the muxer turns away (a damaged
+        // header) is not written, and the frame after it, now the first,
+        // needs the element as much -- taken here, every later frame of the
+        // track was turned away for the want of it.
+        let Some(pce) = self.pce.as_ref() else { return packet };
+        let Some(body) = packet.data().and_then(|d| crate::adts::with_pce(d, pce)) else {
             return packet;
         };
         let mut out = ff::Packet::copy(&body);
@@ -1626,13 +1630,6 @@ struct GraphicsTrack {
 }
 
 impl Writer {
-    /// Queue a picture. Writing is delayed by the reorder depth so that its
-    /// DTS can be taken from the display order rather than the decode order.
-    ///
-    /// DTS has to be the display timeline shifted back, not a running sum of
-    /// each picture's own length: under pulldown the lengths differ, and a
-    /// decode-order sum overtakes the presentation time it is supposed to
-    /// precede. The muxer rejects that outright -- `pts < dts`.
     /// A segment of the plan begins. See [`Mpeg4Delay::next_segment`].
     fn next_segment(&mut self) {
         if let Some(Some(delay)) = self.mpeg4_delay.as_mut() {
@@ -1640,6 +1637,13 @@ impl Writer {
         }
     }
 
+    /// Queue a picture. Writing is delayed by the reorder depth so that its
+    /// DTS can be taken from the display order rather than the decode order.
+    ///
+    /// DTS has to be the display timeline shifted back, not a running sum of
+    /// each picture's own length: under pulldown the lengths differ, and a
+    /// decode-order sum overtakes the presentation time it is supposed to
+    /// precede. The muxer rejects that outright -- `pts < dts`.
     fn push(&mut self, kind: SegmentKind, mut e: Emitted) -> Result<()> {
         if let Some(config) = self.av1_mp4.as_mut() {
             config.packet(&mut e.packet, kind)?;
@@ -4703,39 +4707,9 @@ fn head_palette(ictx: &ff::format::context::Input, path: &str, video: usize) -> 
     None
 }
 
-/// A packet's `AV_PKT_DATA_PALETTE`, where it has one.
-fn packet_palette(packet: &ff::Packet) -> Option<Vec<u8>> {
-    let mut size = 0;
-    // SAFETY: a lookup in the packet's own side data; the bytes are copied
-    // out before the packet can go.
-    unsafe {
-        let p = ff::ffi::av_packet_get_side_data(
-            ff::packet::Ref::as_ptr(packet),
-            ff::ffi::AVPacketSideDataType::AV_PKT_DATA_PALETTE,
-            &mut size,
-        );
-        (!p.is_null() && size > 0).then(|| std::slice::from_raw_parts(p, size).to_vec())
-    }
-}
-
-/// Puts the recording's palette on a copied picture that came without one;
-/// one that has its own keeps it. See [`head_palette`].
-fn give_palette(packet: &mut ff::Packet, palette: &[u8]) {
-    if packet_palette(packet).is_some() {
-        return;
-    }
-    // SAFETY: new side data of the size asked for, filled at once.
-    unsafe {
-        let p = ff::ffi::av_packet_new_side_data(
-            ff::packet::Mut::as_mut_ptr(packet),
-            ff::ffi::AVPacketSideDataType::AV_PKT_DATA_PALETTE,
-            palette.len(),
-        );
-        if !p.is_null() {
-            std::ptr::copy_nonoverlapping(palette.as_ptr(), p, palette.len());
-        }
-    }
-}
+// What [`head_palette`] reads off the head and puts back on the copy's first
+// picture, one helper for the cut and the preview's decoders alike.
+use crate::preview::{give_palette, packet_palette};
 
 /// The streams a segment's read takes anything from: the pictures, the sound,
 /// the captions, the graphics and a DVD's subpictures. See
@@ -5918,6 +5892,96 @@ use conformed::conform_segment;
 // The seam window scales a reel into the master the way the cut does.
 pub(crate) use conformed::{convert_matrices, far_slack, matrices};
 
+/// Where a picture read at `t` really belongs, when its time is damage
+/// rather than the recording's: `None` where it is the recording's.
+///
+/// The walk's rule, asked as the walk asks it ([`crate::index::stray_at`]):
+/// a picture shown more than [`crate::index::STRAY`] after both the one
+/// decoded before it (`recent`, the last first, as put back; `before_dts`
+/// that one's decode time) and the one decoded after it is damage when it
+/// is decoded out of place, or when the [`crate::index::REORDERED`]-th
+/// picture decoded after it is shown that far before it too -- or, where
+/// the recording ends first, more than [`crate::index::TAIL`] of them all
+/// are. After a long hold, the pictures decoded next are soon shown after
+/// it; at a clock that jumps, all of them are; the last picture of a
+/// recording has no more after it than the stream reorders, and stays.
+///
+/// **A key picture the walk put back is put where the walk put it**, as the
+/// index says (`walked`): its entry point is where a copy ends or opens,
+/// and the copy has to meet it there. Asked of the read only where the
+/// index does not say -- an index kept from before the walk put such
+/// pictures back -- or of a picture that is not a key.
+///
+/// The read goes on into `ahead` for as long as the question takes, and the
+/// copy reads those packets next. `shown` gives the time of a packet that is
+/// one of the pictures, and its decode time (its shown time where it has
+/// none).
+#[allow(clippy::too_many_arguments)]
+fn stray_place<'a, I>(
+    t: f64,
+    dts: Option<f64>,
+    before_dts: Option<f64>,
+    walked: Option<f64>,
+    fd: f64,
+    recent: &std::collections::VecDeque<f64>,
+    ahead: &mut std::collections::VecDeque<(ff::format::stream::Stream<'a>, ff::Packet, bool)>,
+    packets: &mut poc_seam::Paired<'a, I>,
+    shown: impl Fn(&(ff::format::stream::Stream<'a>, ff::Packet, bool)) -> Option<(f64, f64)>,
+) -> Option<f64>
+where
+    I: Iterator<Item = (ff::format::stream::Stream<'a>, ff::Packet)>,
+{
+    use crate::index::{REORDERED, STRAY};
+    if walked.is_some() {
+        return walked;
+    }
+    recent.front()?;
+    let mut after: Vec<(f64, f64)> = ahead.iter().filter_map(&shown).collect();
+    // Bounded by the packets, not only the pictures: a recording whose
+    // pictures stop here would have the read run on through its sound, and
+    // the pictures are then at their end, as the walk's are.
+    let mut read = ahead.len();
+    while after.len() < REORDERED && read < 64 * REORDERED {
+        if after.first().is_some_and(|&(a, _)| t - a <= STRAY) {
+            return None;
+        }
+        let Some(item) = packets.read() else { break };
+        if let Some(a) = shown(&item) {
+            after.push(a);
+        }
+        ahead.push_back(item);
+        read += 1;
+    }
+    let in_place = match (before_dts, dts.or(Some(t)), after.first()) {
+        (Some(before), Some(own), Some(&(_, next))) => before <= own && own <= next,
+        _ => true,
+    };
+    let recent: Vec<f64> = recent.iter().copied().collect();
+    let times: Vec<f64> = after.iter().map(|a| a.0).collect();
+    crate::index::stray_at(t, dts, in_place, fd, &recent, &times)
+}
+
+/// The time the walk put a key picture back at whose own time is damage:
+/// that of `src`'s entry point at the packet's byte, where it is more than
+/// [`crate::index::STRAY`] before `t`. `None` for every other picture, and
+/// for an index that kept the damaged time.
+pub(crate) fn walked_place(src: &Source, packet: &ff::Packet, t: f64) -> Option<f64> {
+    let pos = packet.position() as i64;
+    if !packet.is_key() || pos < 0 {
+        return None;
+    }
+    src.points.iter().find(|p| p.pos == pos && t - p.time > crate::index::STRAY).map(|p| p.time)
+}
+
+/// The judgement of [`stray_place`] on what it read: `recent` the pictures'
+/// times decoded before the one at `t` (the last first), `after` those
+/// decoded after it, in order -- [`crate::index::REORDERED`] of them, or
+/// all there are where the recording ends first. Its decode time is taken
+/// to be in its place; see [`crate::index::stray_at`].
+pub(crate) fn stray_slot(t: f64, dts: Option<f64>, fd: f64, recent: &[f64], after: &[f64]) -> Option<f64> {
+    crate::index::stray_at(t, dts, true, fd, recent, after)
+}
+
 /// Take the segment's packets straight from the source, untouched.
 fn copy_segment(
     src: &Source,
@@ -6103,6 +6167,8 @@ fn copy_segment(
     // the entry point itself never turned up.
     let mut instead: Option<f64> = None;
     let mut video_done = false;
+    // Whether the picture just copied is the last; see where the copy ends.
+    let mut last_copied = false;
     // One flag per stream being gathered. The read stops when every one of
     // them has run past this segment, not when the first does: the sound of
     // a bilingual recording arrives on two PIDs that are interleaved but not
@@ -6121,7 +6187,15 @@ fn copy_segment(
     let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
     // One picture behind the read: see [`poc_seam::Pairs`].
     let mut packets = poc_seam::Paired::new(ictx.read_packets(), ist_index, order.is_some());
-    while let Some((stream, packet, doubted)) = packets.read() {
+    // Read ahead of the copy, to judge a picture whose time may be damage:
+    // see [`stray_place`]. Empty but for that.
+    let mut ahead = std::collections::VecDeque::new();
+    // The pictures' times as they were read (put back where damaged), last
+    // first, and the last one's decode time (its shown time where it has
+    // none).
+    let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    let mut last_dts: Option<f64> = None;
+    while let Some((stream, packet, doubted)) = ahead.pop_front().or_else(|| packets.read()) {
         let index = stream.index();
         // Where the pictures have got to, in bytes into the clip. Not every
         // packet says -- the second field of a pair does not -- so the last
@@ -6176,6 +6250,9 @@ fn copy_segment(
             }
             continue;
         }
+        // The picture before was the copy's last (both its fields); see
+        // where the copy ends.
+        video_done |= last_copied && first_field.is_none();
         if video_done {
             if audio_done.iter().all(|&d| d)
                 && caption_done.iter().all(|&d| d)
@@ -6307,7 +6384,38 @@ fn copy_segment(
             },
             (None, None) => continue,
         };
-        let t = pts as f64 * in_tb - src.start_time;
+        let mut t = pts as f64 * in_tb - src.start_time;
+        // As it was read, for an index that kept a damaged time: see where
+        // the copy ends.
+        let read_t = t;
+        let dts = packet.dts().map(|d| d as f64 * in_tb - src.start_time);
+        // **A picture whose time alone is damaged is placed among its
+        // neighbours**, not where the damage puts it. One I picture of an SD
+        // broadcast whose PES time was hit, 4444 s ahead at 40 s, was taken
+        // for the copy's end: `--keep 30-60` wrote 313 of its 899 pictures
+        // and held the last for 20 s. Asked only of a picture shown more than
+        // [`crate::index::STRAY`] after the one decoded before it, which no
+        // ordinary picture is -- or of the first read, where there is none
+        // before it and only the index can say.
+        if recent.front().is_none_or(|&before| t - before > crate::index::STRAY) {
+            let walked = walked_place(src, &packet, t);
+            if let Some(at) = stray_place(t, dts, last_dts, walked, fd, &recent, &mut ahead, &mut packets, |p| {
+                (p.0.index() == ist_index)
+                    .then(|| p.1.pts().map(|q| q as f64 * in_tb - src.start_time))
+                    .flatten()
+                    .map(|q| (q, p.1.dts().map_or(q, |d| d as f64 * in_tb - src.start_time)))
+            }) {
+                crate::note_once(format!(
+                    "note: a picture at about {at:.3}s carries a time {:.0}s further on, which \
+                     only damage gives; it is copied in its place among the pictures around it",
+                    t - at
+                ));
+                t = at;
+            }
+        }
+        recent.push_front(t);
+        recent.truncate(crate::index::REORDERED);
+        last_dts = dts.or(Some(read_t));
         // A converted subtitle whose stop the pictures have passed comes down
         // here, not when the next one arrives. See [`Writer::converted_due`].
         if !writer.converted.is_empty() && t >= seg.start && t < seg.end {
@@ -6352,7 +6460,31 @@ fn copy_segment(
         // frame, and the access point that ends a copy opens one, so a pair
         // left open here can only be one the fallback below caught partway.
         if let Some(until) = seg.copy_until.filter(|_| first_field.is_none()) {
-            if ((t - until).abs() < fd / 2.0 && entry_like(&packet)) || t > until + fd {
+            // **Or where it was read**, for an index kept from before the
+            // walk put a damaged key picture back ([`crate::index::strays`]):
+            // it holds the entry point at the damaged time, which a copy that
+            // puts the picture back never meets nor passes, and a copy of a
+            // range ending before it ran on to the end of the recording
+            // (`--keep 30-40.7`: 1803 pictures for 321). And past the
+            // segment's end where the point is one no picture before it can
+            // be shown after -- its leading pictures are never that many --
+            // which only such a time gives.
+            //
+            // Met where it was read, the picture put back can lie inside the
+            // copy, before the end such an index gives it: the leading
+            // pictures it measured at the damaged time were every picture of
+            // a closed GOP, and the end was the second. Copied, and the copy
+            // ends after it; left out, the re-encode after the copy, which
+            // begins at that end, never had it (`--keep 30-40.7`: 320 of 321).
+            let unmet = until - seg.end > crate::index::STRAY && t > seg.end + fd;
+            let met_as_read =
+                (t - until).abs() >= fd / 2.0 && (read_t - until).abs() < fd / 2.0 && entry_like(&packet);
+            if met_as_read && t < seg.end - fd / 2.0 {
+                last_copied = true;
+            } else if (((t - until).abs() < fd / 2.0 || met_as_read) && entry_like(&packet))
+                || t > until + fd
+                || unmet
+            {
                 video_done = true;
                 if audio_done.iter().all(|&d| d)
                     && caption_done.iter().all(|&d| d)
@@ -8584,8 +8716,10 @@ impl Mpeg4Delay {
                     }
                 }
                 0xB6 => {
-                    // A B-VOP is delayed whatever the VOL said (libavcodec
-                    // clears a low delay it is told wrongly).
+                    // A B-VOP is taken as delayed whatever the VOL said:
+                    // libavcodec clears a low delay its VOL did not state,
+                    // and where one stated it wrongly, restating the next
+                    // segment's VOL delayed only costs a picture's wait.
                     if data.get(i + 4).is_some_and(|b| b >> 6 == 2) {
                         self.delayed = Some(true);
                         self.kept = false;
@@ -10027,9 +10161,27 @@ fn default_bit_rate(src: &Source) -> usize {
 /// anything else says so rather than quietly coming out the size it always
 /// was: the caller worked out that share because something has to fit, and a
 /// cut that ignores it leaves them to find out from the disc.
+/// Whether this recording's pictures can be written back smaller without
+/// decoding them: MPEG-2's can. **So can an MPEG-2 recording libav calls
+/// MPEG-1**, which a damaged packet reading as a sequence header makes of a
+/// broadcast (see [`open_encoder`]): cut since the seams are written as
+/// MPEG-2, it was copied at its full size by `--fit` and the GUI's fitting
+/// to a disc, "only MPEG-2 can be written back smaller". The header the open
+/// kept says what it is. Asked by [`crate::fit`] as well, so the disc is
+/// priced as it is written.
+pub(crate) fn shrinkable(src: &Source) -> bool {
+    match src.video.codec.as_str() {
+        "mpeg2video" => true,
+        "mpeg1video" => open_input(&src.input.url).ok().is_some_and(|(ictx, index)| {
+            ictx.stream(index).and_then(|s| stated_sequence(&s.parameters())).is_some()
+        }),
+        _ => false,
+    }
+}
+
 fn shrink_for(src: &Source, opts: &CutOptions) -> Option<Shrink> {
     let share = opts.video_share.filter(|s| *s > 0.0 && *s < 1.0)?;
-    if src.video.codec != "mpeg2video" {
+    if !shrinkable(src) {
         crate::note_once(format!(
             "note: this recording's pictures are {} and only MPEG-2 can be written back smaller \
              without decoding it, so they are copied as they are. The cut will be its full size.",
@@ -10617,7 +10769,11 @@ fn reencode_segment(
     let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
     // One picture behind the read: see [`poc_seam::Pairs`].
     let mut packets = poc_seam::Paired::new(ictx.read_packets(), ist_index, order.is_some());
-    while let Some((stream, packet, doubted)) = packets.read() {
+    // See [`stray_place`], and where the copy asks it.
+    let mut ahead = std::collections::VecDeque::new();
+    let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    let mut last_dts: Option<f64> = None;
+    while let Some((stream, packet, doubted)) = ahead.pop_front().or_else(|| packets.read()) {
         let index = stream.index();
         // Where the pictures have got to, in bytes into the clip. Not every
         // packet says -- the second field of a pair does not -- so the last
@@ -10765,6 +10921,30 @@ fn reencode_segment(
                     }
                 }
             }
+        }
+        // A picture whose time alone is damaged goes in at its place among
+        // the pictures around it, as the copy places it: decoded with the
+        // damaged time, it came out past the segment's end and was left out.
+        if let Some(pts) = packet.pts() {
+            let mut t = pts as f64 * in_tb - src.start_time;
+            let dts = packet.dts().map(|d| d as f64 * in_tb - src.start_time);
+            // The first read too, which only the index can answer for: a
+            // range opening on such a key picture lost it.
+            if recent.front().is_none_or(|&before| t - before > crate::index::STRAY) {
+                let walked = walked_place(src, &packet, t);
+                if let Some(at) = stray_place(t, dts, last_dts, walked, fd, &recent, &mut ahead, &mut packets, |p| {
+                    (p.0.index() == ist_index)
+                        .then(|| p.1.pts().map(|q| q as f64 * in_tb - src.start_time))
+                        .flatten()
+                        .map(|q| (q, p.1.dts().map_or(q, |d| d as f64 * in_tb - src.start_time)))
+                }) {
+                    packet.set_pts(Some(((at + src.start_time) / in_tb).round() as i64));
+                    t = at;
+                }
+            }
+            recent.push_front(t);
+            recent.truncate(crate::index::REORDERED);
+            last_dts = dts.or(Some(pts as f64 * in_tb - src.start_time));
         }
         if !run_up.passes(&packet, in_tb, src.start_time) {
             continue;
@@ -18813,5 +18993,60 @@ mod tests {
         back[23] = 0x24;
         assert_eq!(back, packet);
         assert!(r.packet(&out).unwrap().is_none());
+    }
+
+    /// Display slots in decode order for an I B B P... stream: each
+    /// reference ahead of the two B pictures shown before it.
+    fn ibbp(n: usize) -> Vec<usize> {
+        let mut order = vec![0];
+        let mut r = 3;
+        while r < n {
+            order.extend([r, r - 2, r - 1]);
+            r += 3;
+        }
+        order
+    }
+
+    /// One reference picture whose shown time alone is damaged, 4444 s ahead,
+    /// is put back in its own slot; see [`stray_place`].
+    #[test]
+    fn a_picture_whose_time_alone_is_damaged_is_put_back() {
+        let fd = 1.0 / 30.0;
+        let order = ibbp(400);
+        let hit = order.iter().position(|&k| k == 150).unwrap();
+        let shown: Vec<f64> = order.iter().map(|&k| k as f64 * fd).collect();
+        let recent: Vec<f64> = shown[..hit].iter().rev().take(64).copied().collect();
+        let after: Vec<f64> = shown[hit + 1..hit + 65].to_vec();
+        // Its decode time, the one shown just before it in decode order.
+        let dts = Some(shown[hit - 1] - 1e-6);
+        let t = shown[hit] + 4444.0;
+        let at = stray_slot(t, dts, fd, &recent, &after).unwrap();
+        assert!((at - shown[hit]).abs() < fd / 4.0, "{at}");
+        // With its decode time damaged too, from the picture before it.
+        let at = stray_slot(t, Some(t), fd, &recent, &after).unwrap();
+        assert!((at - shown[hit]).abs() < fd / 4.0, "{at}");
+    }
+
+    /// A picture after a hold longer than the rule's reach, a clock that
+    /// jumps, and a recording's last picture keep their times.
+    #[test]
+    fn a_long_hold_a_jump_and_the_last_picture_keep_their_times() {
+        let fd = 1.0 / 30.0;
+        let recent: Vec<f64> = (0..64).map(|k| (100 - k) as f64 * fd).collect();
+        let t = 100.0 * fd + 70.0;
+        // A hold whose B pictures were shown before it: the next ones come
+        // after it again.
+        let mut after: Vec<f64> = vec![101.0 * fd, 102.0 * fd];
+        after.extend((1..63).map(|k| t + k as f64 * fd));
+        assert_eq!(stray_slot(t, Some(100.0 * fd), fd, &recent, &after), None);
+        // A clock that jumps: everything after it comes after it.
+        let after: Vec<f64> = (1..65).map(|k| t + k as f64 * fd).collect();
+        assert_eq!(stray_slot(t, Some(t - fd), fd, &recent, &after), None);
+        // The last picture, after a long still: too few after it to judge.
+        let after: Vec<f64> = vec![101.0 * fd, 102.0 * fd];
+        assert_eq!(stray_slot(t, Some(100.0 * fd), fd, &recent, &after), None);
+        // And an ordinary picture is not asked at all.
+        let after: Vec<f64> = (0..64).map(|k| (101 + k) as f64 * fd).collect();
+        assert_eq!(stray_slot(101.0 * fd, None, fd, &recent, &after), None);
     }
 }

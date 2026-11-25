@@ -324,13 +324,24 @@ fn read_head_from(nal: &[u8], sets: &Sets) -> Option<Head> {
     if kind == Kind::B {
         b.skip(1)?;
     }
+    // **How many entries the slice really has, and how many are followed.**
+    // A slice that does not override the counts takes the picture parameter
+    // set's as they stand, a field's as a frame's (7.4.3; libavcodec's
+    // `ff_h264_parse_ref_count` does not double them either), and the weight
+    // table is read for that many. The lists are still followed twice as
+    // long for a field: a longer list can only name more pictures, so it errs
+    // towards "needed". Read for the doubled count, a field slice with
+    // explicit weights lost its place in the table and read its marking out
+    // of the weights.
     let scale = if field { 2 } else { 1 };
+    let mut stated = [pps.l0_default, pps.l1_default];
     let mut active = [pps.l0_default * scale, pps.l1_default * scale];
     if kind != Kind::I && b.u(1)? == 1 {
         active[0] = b.ue()?.checked_add(1)?;
         if kind == Kind::B {
             active[1] = b.ue()?.checked_add(1)?;
         }
+        stated = active;
     }
     if active[0] > 32 || active[1] > 32 {
         return None;
@@ -368,7 +379,7 @@ fn read_head_from(nal: &[u8], sets: &Sets) -> Option<Head> {
         if sps.chroma_array_type != 0 {
             b.ue()?;
         }
-        for &n in active.iter().take(lists) {
+        for &n in stated.iter().take(lists) {
             for _ in 0..n {
                 if b.u(1)? == 1 {
                     b.se()?;
@@ -1562,5 +1573,34 @@ mod tests {
             }
             let _ = run(&mangled, next() % 2 == 0);
         }
+    }
+
+    /// A field slice that takes the picture parameter set's count reads its
+    /// weight table for that count, not twice it, and its marking after.
+    #[test]
+    fn a_field_reads_its_weights_for_the_stated_count() {
+        let mut sets = Sets::default();
+        let (id, sps) = read_sps(&sps_as(2, false)[4..]).unwrap();
+        sets.sps.insert(id, sps);
+        let mut w = W::default();
+        // id 0, sps 0, CAVLC, no bottom poc, no slice groups, 1 + 1 refs,
+        // weighted_pred 1, bipred 0, qp/qs/cb 0, deblocking, no constrained,
+        // no redundant.
+        w.ue(0).ue(0).u(1, 0).u(1, 0).ue(0).ue(0).ue(0).u(1, 1).u(2, 0);
+        w.ue(0).ue(0).ue(0).u(1, 1).u(1, 0).u(1, 0);
+        let (id, pps) = read_pps(&w.nal(0x68)[4..]).unwrap();
+        sets.pps.insert(id, pps);
+        let mut w = W::default();
+        w.ue(0).ue(5).ue(0).u(8, 3); // first_mb, P, pps 0, frame_num
+        w.u(1, 1).u(1, 0); // a field, the top one
+        w.u(8, 6); // poc lsb
+        w.u(1, 0); // the stated count
+        w.u(1, 0); // no list modification
+        w.ue(0).ue(0).u(1, 0).u(1, 0); // denominators; one entry, no weights
+        w.u(1, 1).ue(1).ue(0).ue(0); // marking: unmark one, then the end
+        let head = read_head_from(&w.nal(0x21)[4..], &sets).unwrap();
+        assert_eq!(head.picture.marking, Some(vec![(1, 0)]));
+        assert!(!head.picture.long_term);
+        assert_eq!(head.slice.unwrap().active[0], 2);
     }
 }

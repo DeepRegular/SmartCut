@@ -378,7 +378,8 @@ fn walk_keyframes<T: Send + 'static>(
         }
         // A seek leaves whatever was half sent behind it.
         pending.clear();
-        let mut entries = crate::EntryPictures::new(&src.video);
+        // Unflagged listed entry points too: see [`crate::EntryPictures::of`].
+        let mut entries = crate::EntryPictures::of(src);
         let mut took = 0usize;
         // One picture's packets: the key packet, and the one behind it where
         // the material is field coded and the picture is two.
@@ -767,6 +768,8 @@ pub fn detect_with(
         )?;
     }
 
+    let (times, scores) = without_strays(times, scores);
+
     // Thresholds from the recording itself: how boldly a logo reads varies
     // by channel, but the programme always dominates the runtime, so the
     // median score is a reliable stand-in for "logo present".
@@ -858,6 +861,38 @@ pub fn detect_with(
         absent,
         brief,
     })
+}
+
+// How far ahead of the entry pictures on either side of it a picture's time
+// has to stand to be damage rather than the recording's: the walk's own rule
+// for the same thing.
+use crate::index::STRAY;
+
+/// The scored timeline without the entry pictures whose time is damage.
+///
+/// **Reception damage that hits only an I or P picture's shown time** puts
+/// that one picture minutes ahead of the pictures around it, and the walk
+/// throws its time away (`strays` in [`crate::index`]). Read here as it
+/// stands, where it fell on the picture that took the logo away, the absence
+/// began minutes past the recording's end and was dropped as having no
+/// length, and where it fell on the picture the logo came back on, no later
+/// picture was ever five seconds past that return, so the absence ran on to
+/// the end of the recording. Only a picture with a neighbour on both sides,
+/// as the walk's rule is: the last entry picture after a long still is the
+/// recording's.
+fn without_strays(times: Vec<f64>, scores: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
+    let stray = |i: usize| {
+        i > 0 && i + 1 < times.len() && times[i] - times[i - 1].max(times[i + 1]) > STRAY
+    };
+    let keep: Vec<bool> = (0..times.len()).map(|i| !stray(i)).collect();
+    if keep.iter().all(|&k| k) {
+        return (times, scores);
+    }
+    let kept = |col: &[f64]| -> Vec<f64> {
+        col.iter().zip(&keep).filter(|(_, &k)| k).map(|(&v, _)| v).collect()
+    };
+    let scores = scores.iter().map(|col| kept(col)).collect();
+    (kept(&times), scores)
 }
 
 /// Turn a score timeline into "logo missing" stretches, with hysteresis so a
@@ -1086,5 +1121,29 @@ mod tests {
         let (times, scores) = timeline(1800.0, (600.0, 690.0));
         let (absent, _, _) = intervals_from(&times, &scores, 0.2, 0.1, 1800.4, &opts);
         assert_eq!(absent, vec![(600.0, 690.0)]);
+    }
+
+    /// An entry picture whose time alone was hit, minutes ahead, neither
+    /// throws away the break it starts nor runs the break it ends on to the
+    /// end of the recording; the last picture after a long still is kept.
+    #[test]
+    fn a_picture_minutes_ahead_is_left_out() {
+        let opts = LogoOptions::default();
+        let read = |times: Vec<f64>, scores: Vec<f64>| {
+            let (times, scores) = without_strays(times, vec![scores]);
+            intervals_from(&times, &scores[0], 0.2, 0.1, 1800.4, &opts).0
+        };
+        // The picture the logo went on, and the one it came back on: the
+        // break is read from the picture next to it.
+        for (hit, read_as) in [(600.0, (600.5, 690.0)), (690.0, (600.0, 690.5))] {
+            let (mut times, scores) = timeline(1800.0, (600.0, 690.0));
+            let at = times.iter().position(|&t| t == hit).unwrap();
+            times[at] += 4444.0;
+            assert_eq!(read(times, scores), vec![read_as]);
+        }
+        let (mut times, scores) = timeline(100.0, (200.0, 200.0));
+        *times.last_mut().unwrap() += 70.0;
+        let (kept, _) = without_strays(times.clone(), vec![scores]);
+        assert_eq!(kept, times);
     }
 }

@@ -390,7 +390,7 @@ fn entry_packets(
         .stream(idx)
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
         .parameters();
-    let mut entries = crate::EntryPictures::new(&src.video);
+    let mut entries = crate::EntryPictures::of(src);
     // Each entry picture may go to any decoder of the pool: see [`InForce`].
     let mut in_force = InForce::pool(&params, &src.video);
     // And the MPEG-4 Part 2 VOL in force: see [`VolInForce`].
@@ -405,6 +405,24 @@ fn entry_packets(
     // that time, as [`walk`] gives it: passed over, the film strip's cell on
     // it stayed empty. See [`Untimed`].
     let mut untimed = Untimed::knowing(&src.video, &params);
+    // A palette recording's palette, for the first entry picture: see
+    // [`head_palette`]. The pool hands it on to every decoder.
+    let mut palette_owed = head_palette(src, &params);
+    // **A ceiling on the read, for a recording whose entry points the packets
+    // do not flag**: an AVCHD disc whose map enters on I pictures that are
+    // neither IDR nor recovery points (see `walk`) has no packet this takes
+    // for an entry picture, and every strip run read on to the end of the
+    // title, twice. Past the longest gap between two entry points beyond
+    // `until`, the next entry picture -- the one the read stops at below --
+    // would already have come on every recording whose packets say which
+    // they are, so stopping there changes nothing for them.
+    let longest = src
+        .points
+        .windows(2)
+        .map(|w| w[1].time - w[0].time)
+        .fold(0.0_f64, f64::max);
+    let ceiling = until + longest + 1.0;
+    let mut beyond = 0u32;
     let mut reading = untimed.paired(ictx.read_packets(), idx);
     while let Some((stream, mut packet, doubted)) = reading.read() {
         if stream.index() != idx {
@@ -412,6 +430,19 @@ fn entry_packets(
         }
         Landed::mend(&mut landed, &mut packet, src);
         untimed.place(&mut packet, doubted);
+        // Thirty in a row, so that one damaged stamp far ahead stops nothing.
+        if packet
+            .dts()
+            .or(packet.pts())
+            .is_some_and(|d| d as f64 * src.video.time_base - src.start_time > ceiling)
+        {
+            beyond += 1;
+            if beyond >= 30 {
+                break;
+            }
+        } else {
+            beyond = 0;
+        }
         in_force.see(&packet);
         // A half held from the stretch before has no partner after the seam:
         // dropped, as [`walk`] drops it there. See `thumbs::build_with_sound`.
@@ -459,8 +490,11 @@ fn entry_packets(
         if when > until {
             break;
         }
-        let packets = std::mem::take(&mut pending);
+        let mut packets = std::mem::take(&mut pending);
         if keep(when) {
+            if let (Some(palette), Some(head)) = (palette_owed.take(), packets.first_mut()) {
+                give_palette(head, &palette);
+            }
             out.push((when, packets));
         }
     }
@@ -998,6 +1032,12 @@ struct Glancer {
     /// The MPEG-4 Part 2 VOL in force where a glance lands; see
     /// [`VolInForce`].
     vols: VolInForce,
+    /// How an H.264 stream's units are framed, for an entry picture with no
+    /// key flag (see where the packets are fed); `None` for anything else.
+    h264: Option<crate::bitstream::NalFraming>,
+    /// A palette recording's palette, for the first picture of each glance:
+    /// see [`head_palette`].
+    palette: Option<Vec<u8>>,
 }
 
 /// The recording a [`Glancer`] reads as a [`Source`], opened only once one
@@ -1064,6 +1104,18 @@ impl Glancer {
                     == crate::bitstream::NalFraming::AnnexB;
             (InForce::of(&params, on), annex_b)
         };
+        let h264 = (params.id() == ff::codec::Id::H264).then(|| {
+            let extradata = unsafe {
+                let p = params.as_ptr();
+                if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+                    &[][..]
+                } else {
+                    std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize)
+                }
+            };
+            crate::bitstream::framing_from_extradata("h264", extradata)
+        });
+        let palette = palette_of(&input.url, idx, &params);
         let (mut in_force, annex_b) = in_force;
         in_force.given = Some(in_force.record.clone());
         in_force.ask = false;
@@ -1090,6 +1142,8 @@ impl Glancer {
             lent: None,
             untimed,
             vols,
+            h264,
+            palette,
         })
     }
 
@@ -1128,6 +1182,8 @@ impl Glancer {
             lent,
             untimed,
             vols,
+            h264,
+            palette,
         } = self;
         let (idx, time_base, sar, start) = (*idx, *time_base, *sar, *start);
         let again = std::mem::replace(used, true);
@@ -1142,6 +1198,14 @@ impl Glancer {
         // Whatever the last glance left in the pipeline belongs to wherever it
         // landed, and is a picture from the wrong place if it comes out here.
         decoder.flush();
+        // Told to show an unflagged entry picture by the glance before (see
+        // below), and not by this one yet.
+        unsafe {
+            (*decoder.as_mut_ptr()).flags2 &= !ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+        }
+        let mut palette_owed = palette.as_deref();
+        // Whether the read started without a key packet, for want of one.
+        let mut unkeyed = false;
         if want > start + 1e-6 {
             let ts = (want * ff::ffi::AV_TIME_BASE as f64) as i64;
             // A seek that fails leaves the file where it was, which is the
@@ -1203,6 +1267,7 @@ impl Glancer {
                 // put it rather than to the end and answered with nothing.
                 waiting += 1;
                 started = waiting > 300;
+                unkeyed = started;
                 if !started {
                     continue;
                 }
@@ -1210,6 +1275,26 @@ impl Glancer {
             left -= 1;
             if left <= 0 {
                 break;
+            }
+            // **An entry picture libavformat does not flag**: an AVCHD
+            // disc's map enters on I pictures that are neither IDR nor
+            // recovery points, so its packets flag no key at all and the
+            // read above starts for want of one. libavcodec decodes such a
+            // picture and never shows it, and the glance came back with no
+            // picture; told to show it, as `walk` is, the glance stands on
+            // it. Only where no key packet started the read.
+            if unkeyed
+                && !packet.is_key()
+                && h264.is_some_and(|framing| {
+                    crate::bitstream::h264_unmarked_intra(packet.data().unwrap_or(&[]), framing)
+                })
+            {
+                unsafe {
+                    (*decoder.as_mut_ptr()).flags2 |= ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+                }
+            }
+            if let Some(p) = palette_owed.take() {
+                give_palette(&mut packet, p);
             }
             in_force.mend(&mut packet, &mut |at, record| lend(lent, spec).map(|src| sets_before(src, at, record)));
             if vols.asks(&packet) {
@@ -2220,6 +2305,9 @@ fn walk(
     let record = params.clone();
     // See [`crate::cut::Mpeg4LeadingB`].
     let mut leading_b = crate::cut::Mpeg4LeadingB::new(&params);
+    // The palette of a palette recording, owed to the first picture sent:
+    // see [`head_palette`].
+    let mut palette_owed = head_palette(src, &params);
     // What `place` read ahead of the entry point, for the order alone: see
     // [`Ahead`]. Not where the caller asked for a margin of its own.
     let mut ahead = if margin == 0.0 { Ahead::new(src, from) } else { None };
@@ -2235,7 +2323,7 @@ fn walk(
     // point libavformat does not flag is fed.
     let mut keyed_in = false;
     let mut stopped = false;
-    let mut entries = crate::EntryPictures::new(&src.video);
+    let mut entries = crate::EntryPictures::of(src);
     // A recording that repeats fields is shown frame by frame, as a screen
     // shows it, rather than picture by picture. Not for a walk over the entry
     // pictures alone: they are asked about as pictures, and the fields
@@ -2299,6 +2387,8 @@ fn walk(
     // A picture whose packet carries no time is given the one its order
     // says, as the cut gives it: see [`Untimed`] (made above, from the record).
     let mut packets = untimed.paired(ictx.read_packets(), idx);
+    // The last picture's time as it was read (or put back).
+    let mut read_before: Option<f64> = None;
     'outer: while let Some((stream, mut packet, doubted)) = packets.read() {
         if stream.index() != idx {
             continue;
@@ -2307,6 +2397,21 @@ fn walk(
         untimed.place(&mut packet, doubted);
         if let Some(pts) = vol_untimed.pts_of(src, &packet, in_tb, || crate::cut::mpeg4_config(&record)) {
             packet.set_pts(Some(pts));
+        }
+        // **A key picture whose own time is damage is shown where the walk
+        // put it back**, as the cut copies it (`walked_place` in
+        // [`crate::cut`]): decoded at its damaged time, 4444 s on, a still
+        // anywhere in its GOP was the picture before it. Asked only of the
+        // first picture read and of one shown more than
+        // [`crate::index::STRAY`] after the one read before it.
+        if let Some(pts) = packet.pts() {
+            let t = pts as f64 * in_tb - src.start_time;
+            if read_before.is_none_or(|before| t - before > crate::index::STRAY) {
+                if let Some(at) = crate::cut::walked_place(src, &packet, t) {
+                    packet.set_pts(Some(((at + src.start_time) / in_tb).round() as i64));
+                }
+            }
+            read_before = packet.pts().map(|p| p as f64 * in_tb - src.start_time);
         }
         in_force.see(&packet);
         if Ahead::before(&mut ahead, &packet, src) {
@@ -2389,6 +2494,9 @@ fn walk(
             }
         }
         keyed_in |= packet.is_key();
+        if let Some(palette) = palette_owed.take() {
+            give_palette(&mut packet, &palette);
+        }
         if decoder.send_packet(&packet).is_err() {
             entries.broke();
             continue;
@@ -2726,6 +2834,76 @@ pub(crate) fn pictures_in(
         break;
     }
     Ok(())
+}
+
+/// **A palette recording's palette, which only its first packet carries**,
+/// for a read that does not start there.
+///
+/// QuickTime's and AVI's palette pictures (`raw ` or `qtrle` at 8 bits or
+/// fewer, an 8-bit `.avi`) keep their palette in the stream's header, and
+/// libavformat hands it on once, as `AV_PKT_DATA_PALETTE` on the first
+/// packet read after the open -- which the open's own probe reads, and the
+/// seek here throws away. The decoder, given no palette, painted every
+/// picture black: a still, the editor's picture and `--verify` (which read
+/// the cut the same way and so called a cut with no palette right). The cut
+/// gives it back to its copy the same way (`head_palette` in [`crate::cut`]).
+///
+/// Read off an opening of its own, and only where there can be one: a stream
+/// of eight bits a pixel or fewer (33 to 40 are QuickTime's greys), or one
+/// libav already calls a palette. Every other recording opens nothing more.
+fn head_palette(src: &Source, params: &ff::codec::Parameters) -> Option<Vec<u8>> {
+    palette_of(&src.input.url, src.video.stream_index, params)
+}
+
+/// [`head_palette`] of the stream `idx` of `url`.
+fn palette_of(url: &str, idx: usize, params: &ff::codec::Parameters) -> Option<Vec<u8>> {
+    // SAFETY: the parameters are the stream's own, read in place.
+    let (bits, format) = unsafe { ((*params.as_ptr()).bits_per_coded_sample, (*params.as_ptr()).format) };
+    if !(matches!(bits, 1..=8 | 33..=40) || format == ff::ffi::AVPixelFormat::AV_PIX_FMT_PAL8 as i32) {
+        return None;
+    }
+    let mut head = crate::input::demux(url).ok()?;
+    // The first picture, which is at most a few packets in.
+    for (stream, packet) in head.read_packets().take(64) {
+        if stream.index() == idx {
+            return packet_palette(&packet);
+        }
+    }
+    None
+}
+
+/// A packet's `AV_PKT_DATA_PALETTE`, where it has one.
+pub(crate) fn packet_palette(packet: &ff::Packet) -> Option<Vec<u8>> {
+    let mut size = 0;
+    // SAFETY: a lookup in the packet's own side data; the bytes are copied
+    // out before the packet can go.
+    unsafe {
+        let p = ff::ffi::av_packet_get_side_data(
+            ff::packet::Ref::as_ptr(packet),
+            ff::ffi::AVPacketSideDataType::AV_PKT_DATA_PALETTE,
+            &mut size,
+        );
+        (!p.is_null() && size > 0).then(|| std::slice::from_raw_parts(p, size).to_vec())
+    }
+}
+
+/// Puts the recording's palette on a picture that came without one; one
+/// that has its own keeps it. See [`head_palette`].
+pub(crate) fn give_palette(packet: &mut ff::Packet, palette: &[u8]) {
+    if packet_palette(packet).is_some() {
+        return;
+    }
+    // SAFETY: new side data of the size asked for, filled at once.
+    unsafe {
+        let p = ff::ffi::av_packet_new_side_data(
+            ff::packet::Mut::as_mut_ptr(packet),
+            ff::ffi::AVPacketSideDataType::AV_PKT_DATA_PALETTE,
+            palette.len(),
+        );
+        if !p.is_null() {
+            std::ptr::copy_nonoverlapping(palette.as_ptr(), p, palette.len());
+        }
+    }
 }
 
 /// A decoder whose pictures are the same every time it is run.

@@ -251,6 +251,8 @@ fn pictures_afresh(
     // Knowing the record's sets, as the read opens at a seek: see
     // [`crate::preview::Untimed::knowing`].
     let mut untimed = crate::preview::Untimed::knowing(&src.video, &params);
+    // See [`crate::cut::Mpeg4LeadingB`].
+    let mut leading_b = crate::cut::Mpeg4LeadingB::new(&params);
 
     let mut decoder = crate::video_decoder(params)?;
     // Which masters lay a reel's pictures at their own instants; see below.
@@ -697,6 +699,26 @@ fn pictures_afresh(
             Some(crate::preview::sets_before(src, at, record))
         });
         vols.mend(&mut packet, src, in_tb);
+        // An AVCHD reel entered on an I picture that is not IDR and carries
+        // no recovery point, which the decoder never starts showing from: as
+        // in [`reencode_segment`], where the rule is told at length. A
+        // conformed AVCHD reel, or one under a transition, ended "no pictures
+        // decoded" without it.
+        if !keyed
+            && !shown_any
+            && !packet.is_key()
+            && src.video.codec == "h264"
+            && crate::bitstream::h264_unmarked_intra(packet.data().unwrap_or(&[]), src.video.framing)
+        {
+            unsafe {
+                (*decoder.as_mut_ptr()).flags2 |= ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+            }
+        }
+        // And the B-VOPs that lead an interlaced MPEG-4 Part 2 read off a
+        // seek, as there: see [`crate::cut::Mpeg4LeadingB`].
+        if leading_b.skip(&packet) {
+            continue;
+        }
         if decoder.send_packet(&packet).is_err() {
             let at = packet.pts().or(packet.dts()).map(|p| p as f64 * in_tb - src.start_time);
             if keyed || at.is_none_or(|t| t >= seg.start - slack) {
@@ -1025,6 +1047,13 @@ struct FarSide<'s> {
     /// Where a picture whose packet carries no time is shown. See
     /// [`crate::preview::Untimed`].
     untimed: crate::preview::Untimed,
+    /// Whether a key picture has gone in, and whether the decoder has handed
+    /// any picture back: when an AVCHD entry is decoded showing all. See
+    /// [`pictures_afresh`].
+    keyed: bool,
+    shown: bool,
+    /// See [`crate::cut::Mpeg4LeadingB`].
+    leading_b: crate::cut::Mpeg4LeadingB,
 }
 
 impl<'s> FarSide<'s> {
@@ -1040,6 +1069,7 @@ impl<'s> FarSide<'s> {
         // Knowing the record's sets, as the read opens at a seek: see
         // [`crate::preview::Untimed::knowing`].
         let untimed = crate::preview::Untimed::knowing(&src.video, &params);
+        let leading_b = crate::cut::Mpeg4LeadingB::new(&params);
         let decoder = crate::video_decoder(params)?;
         // Back a little, because the picture wanted at the crossing's first
         // instant is the one standing there, and it may have been coded
@@ -1071,6 +1101,9 @@ impl<'s> FarSide<'s> {
             in_force,
             vols,
             untimed,
+            keyed: false,
+            shown: false,
+            leading_b,
         })
     }
 
@@ -1105,6 +1138,7 @@ impl<'s> FarSide<'s> {
         let mut frame = ff::frame::Video::empty();
         loop {
             if self.decoder.receive_frame(&mut frame).is_ok() {
+                self.shown = true;
                 let Some(pts) = frame.pts() else { continue };
                 let t = pts as f64 * self.in_tb - self.start_time;
                 return Ok(Some((t, reshape(&frame, into, &mut self.rescale)?)));
@@ -1151,7 +1185,25 @@ impl<'s> FarSide<'s> {
                 Some(crate::preview::sets_before(src, at, record))
             });
             self.vols.mend(&mut packet, src, self.in_tb);
-            let _ = self.decoder.send_packet(&packet);
+            // As in [`pictures_afresh`]: an AVCHD entry that is not IDR and
+            // has no recovery point, and an interlaced MPEG-4's leading
+            // B-VOPs.
+            if !self.keyed
+                && !self.shown
+                && !packet.is_key()
+                && src.video.codec == "h264"
+                && crate::bitstream::h264_unmarked_intra(packet.data().unwrap_or(&[]), src.video.framing)
+            {
+                unsafe {
+                    (*self.decoder.as_mut_ptr()).flags2 |= ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+                }
+            }
+            if self.leading_b.skip(&packet) {
+                continue;
+            }
+            if self.decoder.send_packet(&packet).is_ok() {
+                self.keyed |= packet.is_key();
+            }
         }
     }
 }

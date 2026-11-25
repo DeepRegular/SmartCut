@@ -391,11 +391,24 @@ pub fn walk(
     // damage: the recording read 3.96 s long for 124, and a cut of it lost
     // the still and its last picture. The damage measured hits the decode
     // time as well (-11552 s there). See [`strays`] for damage that does not.
-    let stray = strays(&packets);
+    //
+    // **Such a picture is given the time it is copied at** ([`stray_at`],
+    // asked as the copy asks it), not left out: an I picture hit that way is
+    // an entry point, and kept at its damaged time it ended the copy of a
+    // range before it nowhere -- the copy, which puts the picture back in
+    // its place, never met it, and `--keep 30-40.7` of a 90 s recording
+    // copied on to the end of it. In `shown` as well, where it was one
+    // picture 4400 s on.
+    for (i, at) in strays(&packets, video.frame_duration()) {
+        let raw = packets[i].pts;
+        if let Some(s) = shown.iter_mut().find(|s| **s == raw) {
+            *s = at;
+        }
+        packets[i].pts = at;
+    }
     let end = shown
         .iter()
         .copied()
-        .filter(|t| !stray.contains(t))
         .fold(f64::NEG_INFINITY, f64::max)
         .into_finite()
         .map(|t| t + video.frame_duration());
@@ -439,12 +452,41 @@ pub fn walk(
 /// How far, in seconds, a picture has to be shown after both of its
 /// neighbours in decode order before its time is taken for damage rather
 /// than the recording's end. See [`walk`].
-const STRAY: f64 = 60.0;
+pub(crate) const STRAY: f64 = 60.0;
 
 /// The pictures of [`walk`] whose shown time is damage rather than the
-/// recording's: shown more than [`STRAY`] after both of their neighbours in
-/// decode order, and either decoded out of place or shown after a picture
-/// decoded [`REORDERED`] places later.
+/// recording's, by their place in `packets`, with the time each is put back
+/// at: see [`stray_at`], which is asked of each in decode order, with the
+/// times already put back before it.
+fn strays(packets: &[PacketView], fd: f64) -> Vec<(usize, f64)> {
+    let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    let mut found = Vec::new();
+    for (i, it) in packets.iter().enumerate() {
+        let mut t = it.pts;
+        if recent.front().is_some_and(|&before| t - before > STRAY) {
+            let after: Vec<f64> = packets[i + 1..].iter().take(REORDERED).map(|p| p.pts).collect();
+            let in_place = match (i.checked_sub(1).map(|j| &packets[j]), packets.get(i + 1)) {
+                (Some(before), Some(next)) => before.dts <= it.dts && it.dts <= next.dts,
+                _ => true,
+            };
+            let before: Vec<f64> = recent.iter().copied().collect();
+            if let Some(at) = stray_at(t, Some(it.dts), in_place, fd, &before, &after) {
+                found.push((i, at));
+                t = at;
+            }
+        }
+        recent.push_front(t);
+        recent.truncate(REORDERED);
+    }
+    found
+}
+
+/// Whether a picture shown at `t` has a time that is damage rather than the
+/// recording's: shown more than [`STRAY`] after both of its neighbours in
+/// decode order (`before` the one decoded before it, as it was put back;
+/// `after` the pictures decoded after it, in order), and either decoded out
+/// of place (`in_place` false: its decode time is not between theirs) or
+/// shown after a picture decoded [`REORDERED`] places later.
 ///
 /// **The second is for damage that hits only an I or P picture's shown
 /// time.** Such a picture carries a decode time of its own, which the damage
@@ -456,22 +498,70 @@ const STRAY: f64 = 60.0;
 /// reorders; after a long still mid-recording, the pictures decoded next
 /// are shown after it. The damaged one has the rest of the recording after
 /// it, shown before it.
-fn strays(packets: &[PacketView]) -> Vec<f64> {
-    (1..packets.len().saturating_sub(1))
-        .filter(|&i| {
-            let (before, it, after) = (&packets[i - 1], &packets[i], &packets[i + 1]);
-            it.pts - before.pts.max(after.pts) > STRAY
-                && (!(before.dts <= it.dts && it.dts <= after.dts)
-                    || packets.get(i + REORDERED).is_some_and(|later| it.pts - later.pts > STRAY))
-        })
-        .map(|i| packets[i].pts)
-        .collect()
+///
+/// **Where the recording ends before [`REORDERED`] pictures more** (`after`
+/// is shorter: whoever asks hands over that many where there are), more than
+/// [`TAIL`] of them all shown that far before it say the same: no stream
+/// reorders that many. A picture hit in the last two seconds of a broadcast
+/// kept its time, and a cut of the end of it ended there.
+///
+/// One rule for the walk ([`strays`]), the copy and the re-encode (see
+/// `stray_place` in [`crate::cut`]) and the check ([`crate::verify`]), so
+/// that a picture the copy puts back is one the walk did.
+pub(crate) fn is_stray(t: f64, before: f64, after: &[f64], in_place: bool) -> bool {
+    let Some(&next) = after.first() else { return false };
+    let lead = t - before.max(next);
+    if lead.is_nan() || lead <= STRAY {
+        return false;
+    }
+    if !in_place {
+        return true;
+    }
+    match after.get(REORDERED - 1) {
+        Some(&later) => t - later > STRAY,
+        None => after.len() > TAIL && after.iter().all(|&a| t - a > STRAY),
+    }
 }
+
+/// Where a picture read at `t` really belongs, when [`is_stray`] says its
+/// time is damage: `None` where it is the recording's. `recent` are the
+/// pictures' times decoded before it (the last first, as put back), `after`
+/// those decoded after it, in order -- [`REORDERED`] of them, or all there
+/// are where the recording ends first -- and `dts` its own decode time.
+///
+/// The place is the first slot of the picture rate (`fd`), from the
+/// picture's own decode time (where that is not damaged too) or from the
+/// picture before it, that no picture read either side of it is shown in.
+pub(crate) fn stray_at(
+    t: f64,
+    dts: Option<f64>,
+    in_place: bool,
+    fd: f64,
+    recent: &[f64],
+    after: &[f64],
+) -> Option<f64> {
+    let before = *recent.first()?;
+    let after = &after[..after.len().min(REORDERED)];
+    if !is_stray(t, before, after, in_place) {
+        return None;
+    }
+    let from = dts.filter(|&d| d <= t - STRAY && d >= before - 1.0).unwrap_or(before);
+    let taken = |at: f64| recent.iter().chain(after.iter()).any(|&o| (o - at).abs() < fd / 2.0);
+    (0..=2 * REORDERED as i64)
+        .map(|k| from + k as f64 * fd)
+        .find(|&at| !taken(at))
+        .or(Some(before + fd))
+}
+
+/// More pictures than any stream decodes after one and shows ahead of it
+/// (fields counted one by one, as [`walk`] counts them): what [`is_stray`]
+/// asks of the end of a recording.
+pub(crate) const TAIL: usize = REORDERED / 2;
 
 /// More pictures (and fields, which [`walk`] counts one by one) than any
 /// stream shows ahead of one decoded before them: H.264 and HEVC reorder 16
 /// frames at most, 32 fields.
-const REORDERED: usize = 64;
+pub(crate) const REORDERED: usize = 64;
 
 /// The shortest gap between two of `shown`, which is in the order the
 /// pictures are shown. Two pictures at one time are one gap of nothing, not
@@ -813,8 +903,29 @@ impl IndexSource for ContainerIndex {
         if unnamed {
             points.remove(0);
         }
+        // **The head of an `.avi` timed on asking, where the copy reads it**:
+        // from the open, which is not sought (see `seek_to` in
+        // [`crate::cut`]). libavformat stamps such a file's first key picture
+        // itself there, and after a seek leaves it to be timed with the rest:
+        // an MPEG-1 `.avi` with B pictures read 0.000 s from the open and
+        // 0.040 s back from the seek this table is measured by, and every
+        // range kept from the head was refused, "the entry point at 0.040s
+        // was passed without being met". Taken from the open, the head is
+        // where the walk ([`PacketScan`]) puts it. The first picture has nothing
+        // decoded before it, so nothing leads it.
+        let opened = crate::input::avi_untimed(&ictx)
+            .then(|| head_from_the_open(path, video))
+            .flatten()
+            .map(|t| t - start_time)
+            .filter(|t| points.first().is_some_and(|p| (p.time + head - t).abs() <= 2.0 * video.frame_duration()));
         for (i, slot) in points.iter_mut().enumerate() {
             slot.time += if i == 0 { head } else { rest };
+            if let Some(t) = opened.filter(|_| i == 0) {
+                // Measured already, and not again from a seek
+                // ([`refine_leading`]), which would put it back.
+                slot.time = t;
+                slot.measured = true;
+            }
             slot.lead_start = slot.time;
         }
         Ok(Index {
@@ -829,6 +940,19 @@ impl IndexSource for ContainerIndex {
             sets: None,
         })
     }
+}
+
+/// The time the first key picture of `video` is read at by a demuxer just
+/// opened on `path`, read on from the open as a copy of the head reads it.
+fn head_from_the_open(path: &str, video: &VideoInfo) -> Option<f64> {
+    let mut ictx = crate::input::demux(path).ok()?;
+    let found = ictx
+        .read_packets()
+        .take(4096)
+        .find(|(s, p)| s.index() == video.stream_index && p.is_key())
+        .and_then(|(_, p)| p.pts())
+        .map(|pts| pts as f64 * video.time_base);
+    found
 }
 
 /// How many of a seek table's entries are read back to measure the distance
@@ -2346,23 +2470,65 @@ mod tests {
             .collect()
     }
 
+    /// Which of `packets` [`strays`] takes for damage, and whether each is
+    /// put back within a quarter of a frame of `want`'s time.
+    fn stray_ids(packets: &[PacketView], want: &[PacketView]) -> Vec<usize> {
+        let f = 1.0 / 30.0;
+        strays(packets, f)
+            .into_iter()
+            .inspect(|&(i, at)| assert!((at - want[i].pts).abs() < f / 4.0, "{i}: {at} for {}", want[i].pts))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     #[test]
     fn damage_to_an_i_or_p_pictures_time_alone_is_a_stray() {
+        let clean = ibbp(3000);
         // One P picture's shown time 4444 s ahead, its decode time untouched.
         let mut hit = ibbp(3000);
         hit[1200].pts += 4444.0;
-        assert_eq!(strays(&hit), vec![hit[1200].pts]);
+        assert_eq!(stray_ids(&hit, &clean), vec![1200]);
         // Its decode time hit as well, as before.
         let mut both = ibbp(3000);
         both[1200].pts += 4444.0;
         both[1200].dts -= 11552.0;
-        assert_eq!(strays(&both), vec![both[1200].pts]);
+        assert_eq!(stray_ids(&both, &clean), vec![1200]);
+        // A key picture: given back its time, so its entry point is where
+        // the copy meets it.
+        let mut key = ibbp(3000);
+        key[1200].pts += 4444.0;
+        assert!(key[1200].key);
+        assert_eq!(stray_ids(&key, &clean), vec![1200]);
+        for (i, at) in strays(&key, 1.0 / 30.0) {
+            key[i].pts = at;
+        }
+        let points = points_from(&key, "mpeg2video");
+        let p = points.iter().find(|p| p.pos == 1200).unwrap();
+        // And its leading pictures, the two B pictures decoded after it, are
+        // its own again, not the whole GOP.
+        assert!((p.time - clean[1200].pts).abs() < 1.0 / 120.0, "{}", p.time);
+        assert!((p.lead_start - clean[1201].pts).abs() < 1e-9 && p.lead_indices == vec![1, 2]);
+        // Two within a few pictures of each other, the later further out,
+        // and three in a row: each its own.
+        let mut two = ibbp(3000);
+        two[1200].pts += 4444.0;
+        two[1209].pts += 5000.0;
+        assert_eq!(stray_ids(&two, &clean), vec![1200, 1209]);
+        let mut row = ibbp(3000);
+        for i in [1200, 1203, 1206] {
+            row[i].pts += 4444.0;
+        }
+        assert_eq!(stray_ids(&row, &clean), vec![1200, 1203, 1206]);
+        // In the last REORDERED pictures of the recording.
+        let mut end = ibbp(3000);
+        end[2961].pts += 4444.0;
+        assert_eq!(stray_ids(&end, &clean), vec![2961]);
         // The last picture shown after a long still, with the B pictures
         // shown ahead of it decoded after it: the recording's end.
         let mut still = ibbp(300);
         let last = still.len() - 3;
         still[last].pts += 120.0;
-        assert!(strays(&still).is_empty());
+        assert!(strays(&still, 1.0 / 30.0).is_empty());
         // A long still mid-recording: what is decoded after it is shown
         // after it.
         let mut held = ibbp(3000);
@@ -2373,8 +2539,18 @@ mod tests {
         for p in &mut held[1201..1203] {
             p.pts -= 120.0;
         }
-        assert!(strays(&held).is_empty());
-        assert!(strays(&ibbp(3000)).is_empty());
+        assert!(strays(&held, 1.0 / 30.0).is_empty());
+        // The same near the end: fewer than REORDERED after it.
+        let mut late = ibbp(3000);
+        for p in &mut late[2970..] {
+            p.pts += 120.0;
+            p.dts += 120.0;
+        }
+        for p in &mut late[2971..2973] {
+            p.pts -= 120.0;
+        }
+        assert!(strays(&late, 1.0 / 30.0).is_empty());
+        assert!(strays(&ibbp(3000), 1.0 / 30.0).is_empty());
     }
 
     #[test]

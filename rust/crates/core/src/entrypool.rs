@@ -118,6 +118,9 @@ pub struct Pool<T> {
     due: usize,
     /// Answers that arrived before the ones in front of them.
     early: std::collections::BTreeMap<usize, Result<Vec<T>>>,
+    /// A palette recording's palette, once a job has brought it: see
+    /// [`Self::push`].
+    palette: Option<Vec<u8>>,
 }
 
 impl<T: Send + 'static> Pool<T> {
@@ -148,6 +151,9 @@ impl<T: Send + 'static> Pool<T> {
         let (out_tx, out) = std::sync::mpsc::channel();
         let make = std::sync::Arc::new(make);
         let time_base = video.time_base;
+        // Whether a job may open on an entry picture libavformat did not
+        // flag: see where it is sent.
+        let h264 = (video.codec == "h264").then_some(video.framing);
         // All of it to one decoder where there is only one worker -- a
         // machine with a core or two is the case the spreading cannot help,
         // and MPEG-2 still threads inside a picture there.
@@ -192,6 +198,28 @@ impl<T: Send + 'static> Pool<T> {
                     let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let mut made = Vec::new();
                         let mut err = None;
+                        // **An entry picture with no key flag** -- an AVCHD
+                        // disc's I picture that is neither IDR nor a recovery
+                        // point, taken where the index lists it (see
+                        // [`crate::EntryPictures::of`]) -- is one libavcodec
+                        // decodes and never shows. Told to show it, for this
+                        // picture alone, as `walk` in [`crate::preview`] and
+                        // the cut's re-encode are; a flagged one is decoded
+                        // as it always was.
+                        let show_all = h264.is_some_and(|framing| {
+                            packets.first().is_some_and(|p| {
+                                !p.is_key()
+                                    && crate::bitstream::h264_unmarked_intra(
+                                        p.data().unwrap_or(&[]),
+                                        framing,
+                                    )
+                            })
+                        });
+                        if show_all {
+                            unsafe {
+                                (*decoder.as_mut_ptr()).flags2 |= ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+                            }
+                        }
                         for p in &packets {
                             if decoder.send_packet(p).is_err() {
                                 break;
@@ -211,6 +239,11 @@ impl<T: Send + 'static> Pool<T> {
                             }
                         }
                         decoder.flush();
+                        if show_all {
+                            unsafe {
+                                (*decoder.as_mut_ptr()).flags2 &= !ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+                            }
+                        }
                         err.map_or(Ok(made), Err)
                     }));
                     let Ok(answer) = answer else {
@@ -230,6 +263,7 @@ impl<T: Send + 'static> Pool<T> {
             sent: 0,
             due: 0,
             early: std::collections::BTreeMap::new(),
+            palette: None,
         })
     }
 
@@ -240,8 +274,25 @@ impl<T: Send + 'static> Pool<T> {
     /// which is what keeps a fast demuxer from reading the whole recording
     /// into memory. Answers that have arrived meanwhile are taken in first,
     /// so [`Self::ready`] has them waiting.
-    pub fn push(&mut self, packets: Vec<ff::Packet>) {
+    pub fn push(&mut self, mut packets: Vec<ff::Packet>) {
         self.gather();
+        // **A palette goes to every worker.** A palette recording's palette
+        // comes once, on its first packet (see `head_palette` in
+        // [`crate::preview`]), and a decoder keeps it for the pictures after
+        // -- but here only the worker that took that job had it, and every
+        // other one painted its pictures black. So a job without one is
+        // given the last one seen. A recording with no palette has none to
+        // pass on.
+        if let Some(head) = packets.first_mut() {
+            match crate::preview::packet_palette(head) {
+                Some(palette) => self.palette = Some(palette),
+                None => {
+                    if let Some(palette) = &self.palette {
+                        crate::preview::give_palette(head, palette);
+                    }
+                }
+            }
+        }
         let i = self.sent;
         self.sent += 1;
         if let Some(tx) = &self.jobs {

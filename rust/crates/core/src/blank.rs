@@ -430,6 +430,9 @@ struct Walk {
     looks: Vec<Look>,
     /// The last time taken, so that a picture out of order can be passed over.
     last: f64,
+    /// The time taken before that one, for telling a picture out of order
+    /// from a picture after one that was: see [`Walk::after_a_stray`].
+    before: f64,
     /// The gap before it; see where this is set up.
     gap: f64,
     /// How long the container says that last picture is up, where it says.
@@ -447,12 +450,13 @@ impl Walk {
         // Out of order, which a recording off air manages at a discontinuity.
         // Taken as it stands it would put a run's two ends the wrong way
         // round.
-        if t <= self.last {
+        if t <= self.last && !self.after_a_stray(t) {
             return Ok(());
         }
         if self.last.is_finite() {
             self.gap = t - self.last;
         }
+        self.before = self.last;
         self.last = t;
         let own = frame.packet().duration;
         self.length = (own > 0).then_some(own as f64 * src.video.time_base);
@@ -466,6 +470,36 @@ impl Walk {
             shade: look_at(frame, luma, opts),
         });
         Ok(())
+    }
+}
+
+// How far ahead of the pictures around it a picture's time has to stand to
+// be damage rather than the recording's: the walk's own rule for the same
+// thing.
+use crate::index::STRAY;
+
+impl Walk {
+    /// Whether the picture before this one, `t`, was the one out of place,
+    /// and is now taken back.
+    ///
+    /// **Reception damage that hits only an I or P picture's shown time**
+    /// puts that one picture minutes ahead of the pictures around it, and the
+    /// walk throws its time away (`strays` in [`crate::index`]). Here it was
+    /// taken as the latest time, every picture after it was passed over as
+    /// out of order, and the flat stretches of the rest of the recording were
+    /// never looked for: one I picture of a broadcast recording hit that way
+    /// 30 s in, and the six black stretches after it were not found. A
+    /// picture shown more than [`STRAY`] after both the one before it and the
+    /// one after it, which is shown between the two, is that damage; a long
+    /// hold has the pictures after it shown after it.
+    fn after_a_stray(&mut self, t: f64) -> bool {
+        if !(self.before.is_finite() && t > self.before && self.last - t > STRAY) {
+            return false;
+        }
+        self.looks.pop();
+        self.last = self.before;
+        self.before = f64::NEG_INFINITY;
+        true
     }
 }
 
@@ -505,6 +539,7 @@ pub fn find_runs_with(
         luma: None,
         looks: Vec::new(),
         last: f64::NEG_INFINITY,
+        before: f64::NEG_INFINITY,
         // Uneven, so it is measured rather than taken from the frame rate: a
         // broadcast recording does not space its pictures evenly. Only the
         // last picture's end is wanted from it, and the gap before it is the
@@ -696,6 +731,7 @@ mod tests {
             luma: None,
             looks: Vec::new(),
             last: 27.983,
+            before: f64::NEG_INFINITY,
             gap,
             length,
         };
@@ -704,6 +740,36 @@ mod tests {
         assert_eq!(tail_of(&walk(0.05, Some(1.0 / 30.0))), 27.983 + 0.05);
         // ...and where nothing says how long it is.
         assert_eq!(tail_of(&walk(2.983, None)), 27.983 + 2.983);
+    }
+
+    /// A picture whose time alone was hit, minutes ahead of the pictures
+    /// around it, is taken back when the next one comes, and the pictures
+    /// after it are looked at; a picture out of order is still passed over,
+    /// and a long hold is not taken for damage.
+    #[test]
+    fn a_picture_minutes_ahead_does_not_end_the_walk() {
+        let mut walk = Walk {
+            luma: None,
+            looks: Vec::new(),
+            last: f64::NEG_INFINITY,
+            before: f64::NEG_INFINITY,
+            gap: 0.04,
+            length: None,
+        };
+        // As `take` does with each picture's time.
+        let mut admit = |walk: &mut Walk, t: f64| {
+            if t <= walk.last && !walk.after_a_stray(t) {
+                return;
+            }
+            walk.before = walk.last;
+            walk.last = t;
+            walk.looks.push(Look { time: t, shade: None });
+        };
+        for t in [0.0, 0.5, 1.0, 4445.0, 1.5, 2.0, 1.9, 2.5, 80.0, 70.0, 81.0] {
+            admit(&mut walk, t);
+        }
+        let times: Vec<f64> = walk.looks.iter().map(|l| l.time).collect();
+        assert_eq!(times, vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 80.0, 81.0]);
     }
 
     /// A level is a fraction of the same span the samples are shifted on,

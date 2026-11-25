@@ -173,7 +173,7 @@ pub fn rates(src: &Source) -> Rates {
             .map(|r| r * written_scale(src))
             .unwrap_or_else(|| file_rate(src) * 0.9),
         audio: src.audios.iter().map(audio_rate).sum(),
-        can_shrink: src.video.codec == "mpeg2video",
+        can_shrink: crate::cut::shrinkable(src),
     }
 }
 

@@ -2032,7 +2032,10 @@ fn run() -> Result<()> {
                     );
                     None
                 }
-                Some(unfit @ smartcut_core::seek_index::Unfit::Empty) => {
+                Some(
+                    unfit @ (smartcut_core::seek_index::Unfit::Empty
+                    | smartcut_core::seek_index::Unfit::Older),
+                ) => {
                     smartcut_core::say!("note: {unfit}; it is made again");
                     None
                 }

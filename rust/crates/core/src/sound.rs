@@ -2550,12 +2550,22 @@ thread_local! {
     static OPENING_PCE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// A frame has been written to the file: the ones after it go as they came.
+/// Not before -- a first frame the muxer turns away (a damaged header, left
+/// out by [`write_copied`]) is not written, and the frame after it, now the
+/// first, needs the element as much: taken when the first was handed over,
+/// every later frame of the track was turned away for the want of it. As
+/// `AudioTrack::opening` in [`crate::cut`] keeps it.
+fn opened() {
+    OPENING_PCE.with(|p| p.borrow_mut().take());
+}
+
 /// The file's first frame, given the program config element its track names
 /// its channels in ([`OPENING_PCE`]) where it does not carry one itself: the
 /// .m4a and .mka muxers turned every frame away without it. As
 /// `AudioTrack::opening` in [`crate::cut`].
 fn opening(packet: ff::Packet) -> ff::Packet {
-    let Some(pce) = OPENING_PCE.with(|p| p.borrow_mut().take()) else { return packet };
+    let Some(pce) = OPENING_PCE.with(|p| p.borrow().clone()) else { return packet };
     let Some(body) = packet.data().and_then(|d| crate::adts::with_pce(d, &pce)) else {
         return packet;
     };
@@ -2591,7 +2601,11 @@ fn write_copied(
             crate::say!("note: a frame of the sound at {at:.3}s has a damaged header and was left out.");
             Ok(())
         }
-        r => Ok(r?),
+        r => {
+            r?;
+            opened();
+            Ok(())
+        }
     }
 }
 
@@ -2638,6 +2652,7 @@ fn write_encoded(
     packet.set_position(-1);
     let packet = opening(packet);
     packet.write_interleaved(octx)?;
+    opened();
     Ok(seconds)
 }
 

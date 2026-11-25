@@ -682,7 +682,10 @@ pub fn build_with_sound(
         .parameters();
 
     let mut collector = Collector::new(src, opts);
-    let mut entries = crate::EntryPictures::new(&src.video);
+    // With the entry points the index lists that libavformat does not flag:
+    // an AVCHD disc entering on plain I pictures had no thumbnail at all. See
+    // [`crate::EntryPictures::of`].
+    let mut entries = crate::EntryPictures::of(src);
     // Each entry picture may go to any decoder of the pool, and one opened
     // past the IDR a splice's second encode restated its sets on decoded it
     // by the first encode's: see [`crate::preview::InForce`].
@@ -1052,6 +1055,22 @@ fn decode_on(
         Some(stream) => crate::preview::Untimed::knowing(&src.video, &stream.parameters()),
         None => crate::preview::Untimed::new(&src.video),
     };
+    // **The three things [`crate::preview`]'s walk does to the packets before
+    // the decoder, done here too**, so that the window is the pictures the
+    // cut writes and the editor shows: an MPEG-4 Part 2 picture with no time
+    // ([`crate::cut::Mpeg4Untimed`]), the B-VOPs an interlaced MPEG-4 Part 2
+    // read opens on ([`crate::cut::Mpeg4LeadingB`]), and an AVCHD disc's
+    // entry picture that is an I picture libavcodec will not show from (see
+    // `walk`). Without the last, nothing came out of a read on such a disc:
+    // the window never filled, and the read went on to the end of the title
+    // -- a minute and a half of decoding for one `--cut-near` on an hour's
+    // title, and once per candidate for the commercial detection. Each acts
+    // on that shape alone; every other recording is read as before.
+    let record = ictx.stream(idx).map(|s| s.parameters());
+    let mut vol_untimed = crate::cut::Mpeg4Untimed::default();
+    let mut leading_b = record.as_ref().map(crate::cut::Mpeg4LeadingB::new);
+    let mut keyed_in = false;
+    let mut shown_any = false;
     let mut reading = untimed.paired(ictx.read_packets(), idx);
     while let Some((stream, mut packet, doubted)) = reading.read() {
         if stream.index() != idx {
@@ -1060,6 +1079,11 @@ fn decode_on(
         // See [`crate::preview::Landed`].
         crate::preview::Landed::mend(&mut landed, &mut packet, src);
         untimed.place(&mut packet, doubted);
+        if let Some(pts) = vol_untimed.pts_of(src, &packet, src.video.time_base, || {
+            record.as_ref().and_then(crate::cut::mpeg4_config)
+        }) {
+            packet.set_pts(Some(pts));
+        }
         in_force.see(&packet);
         if crate::preview::Ahead::before(&mut ahead, &packet, src) {
             continue;
@@ -1069,6 +1093,7 @@ fn decode_on(
             fed = false;
             let _ = decoder.send_eof();
             while decoder.receive_frame(&mut frame).is_ok() {
+                shown_any = true;
                 let Some(t) = time(&frame) else { continue };
                 if was.outside(t) {
                     continue;
@@ -1079,13 +1104,28 @@ fn decode_on(
             }
             decoder.flush();
         }
+        if leading_b.as_mut().is_some_and(|b| b.skip(&packet)) {
+            continue;
+        }
         in_force.mend(&mut packet, &mut |at, record| Some(crate::preview::sets_before(src, at, record)));
         vols.mend(&mut packet, src, src.video.time_base);
+        if !keyed_in
+            && !shown_any
+            && !packet.is_key()
+            && src.video.codec == "h264"
+            && crate::bitstream::h264_unmarked_intra(packet.data().unwrap_or(&[]), src.video.framing)
+        {
+            unsafe {
+                (*decoder.as_mut_ptr()).flags2 |= ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+            }
+        }
+        keyed_in |= packet.is_key();
         if decoder.send_packet(&packet).is_err() {
             continue;
         }
         fed = true;
         while decoder.receive_frame(&mut frame).is_ok() {
+            shown_any = true;
             let Some(t) = time(&frame) else { continue };
             if stretches.outside(t) {
                 continue;

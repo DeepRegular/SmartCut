@@ -731,6 +731,86 @@ fn front_of(src: &Source, landing: f64) -> i64 {
     }
 }
 
+/// A decoder that can read `src`'s track from wherever the reading starts,
+/// given the first of its frames read (`data`): one opened again with the
+/// track's program config element, where its frames name their channels in
+/// one carried only now and then ([`crate::aac::decodable`]), as the writers
+/// open theirs. Opened from the middle of such a track (2.1 AAC made by
+/// FFmpeg), every frame failed to decode and the preview played silence.
+/// `None` for every other track, which is every broadcast's: its decoder is
+/// kept as it is.
+fn reopened_for(params: &ff::codec::Parameters, data: &[u8], src: &Source, idx: usize) -> Option<ff::decoder::Audio> {
+    if params.id() != ff::codec::Id::AAC {
+        return None;
+    }
+    let f = crate::adts::AdtsFormat::parse(data).filter(|f| f.channel_config == 0)?;
+    // SAFETY: read, not kept.
+    let given = if unsafe { (*params.as_ptr()).extradata_size } > 0 {
+        // What `aac::decodable` gives back unchanged.
+        params.clone()
+    } else {
+        let asc = head_pce_of(src, idx).and_then(|pce| crate::adts::asc_with_pce(&f, &pce))?;
+        with_extradata(params, &asc)?
+    };
+    ff::codec::context::Context::from_parameters(given).ok()?.decoder().audio().ok()
+}
+
+/// [`crate::aac::head_pce`] of `src`'s track `idx`, read once per recording
+/// for the process: by its name, length and time of writing, as `--verify`
+/// keeps an MPEG-4 record. Asked afresh, every meter reading of the editor
+/// (one a picture step) and every play start opened the recording again and
+/// read up to 512 of the track's frames for the element. A recording that
+/// cannot be weighed is read every time, as before.
+fn head_pce_of(src: &Source, idx: usize) -> Option<Vec<u8>> {
+    let url = &src.input.url;
+    let Some(weight) = std::fs::metadata(url).ok().and_then(|m| Some((m.len(), m.modified().ok()?))) else {
+        return crate::aac::head_pce(url, idx);
+    };
+    remembered_pce((url.clone(), weight.0, weight.1, idx), || crate::aac::head_pce(url, idx))
+}
+
+type PceKey = (String, u64, std::time::SystemTime, usize);
+
+/// The answer kept under `key`, or `read`'s, kept. Eight recordings at most;
+/// a recording that has changed replaces its own entry.
+fn remembered_pce(key: PceKey, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+    type Kept = Vec<(PceKey, Option<Vec<u8>>)>;
+    static KEPT: Mutex<Kept> = Mutex::new(Vec::new());
+    if let Some((_, pce)) = KEPT.lock().ok()?.iter().find(|(k, _)| *k == key) {
+        return pce.clone();
+    }
+    let pce = read();
+    if let Ok(mut all) = KEPT.lock() {
+        all.retain(|(k, _)| !(k.0 == key.0 && k.3 == key.3));
+        if all.len() >= 8 {
+            all.remove(0);
+        }
+        all.push((key, pce.clone()));
+    }
+    pce
+}
+
+/// `params` with `asc` for its extradata, as [`crate::aac::decodable`] gives
+/// them.
+fn with_extradata(params: &ff::codec::Parameters, asc: &[u8]) -> Option<ff::codec::Parameters> {
+    let mut params = params.clone();
+    // SAFETY: the copy is this function's own; the buffer is allocated the
+    // way libavcodec frees it, with the padding it expects.
+    unsafe {
+        let p = params.as_mut_ptr();
+        let pad = ff::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize;
+        let buf = ff::ffi::av_mallocz(asc.len() + pad) as *mut u8;
+        if buf.is_null() {
+            return None;
+        }
+        std::ptr::copy_nonoverlapping(asc.as_ptr(), buf, asc.len());
+        ff::ffi::av_freep(std::ptr::addr_of_mut!((*p).extradata) as *mut std::ffi::c_void);
+        (*p).extradata = buf;
+        (*p).extradata_size = asc.len() as i32;
+    }
+    Some(params)
+}
+
 /// Put interleaved samples in libav's order into the card's. See
 /// [`card_order`].
 fn to_card_order(samples: &mut [f32], channels: u16) {
@@ -1175,9 +1255,12 @@ fn feed_from(
         .stream(idx)
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
         .parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?
+    let mut decoder = ff::codec::context::Context::from_parameters(params.clone())?
         .decoder()
         .audio()?;
+    // Whether the first of the track's frames has been looked at. See
+    // [`reopened_for`].
+    let mut looked = false;
     let mut resampled = ff::frame::Audio::empty();
     let mut folded = ff::frame::Audio::empty();
 
@@ -1229,6 +1312,12 @@ fn feed_from(
                     break;
                 }
                 continue;
+            }
+            if !looked {
+                looked = true;
+                if let Some(d) = packet.data().and_then(|data| reopened_for(&params, data, src, idx)) {
+                    decoder = d;
+                }
             }
             if decoder.send_packet(&packet).is_err() {
                 continue;
@@ -1395,9 +1484,11 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
         .stream(idx)
         .ok_or_else(|| anyhow!("stream {idx} vanished"))?
         .parameters();
-    let mut decoder = ff::codec::context::Context::from_parameters(params)?
+    let mut decoder = ff::codec::context::Context::from_parameters(params.clone())?
         .decoder()
         .audio()?;
+    // See [`reopened_for`].
+    let mut looked = false;
 
     // Early, as `play_audio` seeks: landing past the moment asked about would
     // meter the wrong instant, and landing early only costs a few frames of
@@ -1421,6 +1512,12 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
                 break;
             }
             continue;
+        }
+        if !looked {
+            looked = true;
+            if let Some(d) = packet.data().and_then(|data| reopened_for(&params, data, src, idx)) {
+                decoder = d;
+            }
         }
         if decoder.send_packet(&packet).is_err() {
             continue;
@@ -1465,6 +1562,37 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
 
 #[cfg(test)]
 mod tests {
+    /// The element is read once per recording and track, and again once
+    /// the recording has changed.
+    #[test]
+    fn a_head_pce_is_read_once_per_recording() {
+        use std::cell::Cell;
+        let reads = Cell::new(0);
+        let read = || {
+            reads.set(reads.get() + 1);
+            Some(vec![0xa0])
+        };
+        let at = std::time::SystemTime::UNIX_EPOCH;
+        let key = |len, idx| ("/no/such/pce-test.ts".to_string(), len, at, idx);
+        assert_eq!(super::remembered_pce(key(10, 1), read), Some(vec![0xa0]));
+        assert_eq!(super::remembered_pce(key(10, 1), read), Some(vec![0xa0]));
+        assert_eq!(reads.get(), 1);
+        // Another track of it, and then the recording grown.
+        super::remembered_pce(key(10, 2), read);
+        assert_eq!(reads.get(), 2);
+        super::remembered_pce(key(11, 1), read);
+        super::remembered_pce(key(11, 1), read);
+        assert_eq!(reads.get(), 3);
+        // Nothing found is kept as well.
+        let none = || {
+            reads.set(reads.get() + 1);
+            None
+        };
+        assert_eq!(super::remembered_pce(key(5, 3), none), None);
+        assert_eq!(super::remembered_pce(key(5, 3), none), None);
+        assert_eq!(reads.get(), 4);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn surround_goes_out_in_alsa_order() {

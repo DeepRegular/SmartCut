@@ -671,6 +671,18 @@ struct Reader<'s> {
     /// shows it: an H.264 `.mpg` clip lost its pts-less pictures here, the
     /// one before each held in its place. See [`crate::preview::Untimed`].
     untimed: crate::preview::Untimed,
+    /// The B-VOPs leading an interlaced MPEG-4 Part 2 read off, left out as
+    /// the cut and the editor's walk leave them out: decoded, they cost
+    /// every B-VOP after them, and the window held each I or P picture of a
+    /// clip opened at a seek over the two B-VOPs after it. See
+    /// [`crate::cut::Mpeg4LeadingB`].
+    leading_b: crate::cut::Mpeg4LeadingB,
+    /// Whether a key picture has gone into the decoder. Until one has, an
+    /// AVCHD disc's entry picture -- an I picture with no IDR and no
+    /// recovery point -- is shown from, as the editor's walk and the cut
+    /// show from it: libavcodec shows nothing from one, and the window's
+    /// still was black and its playback stopped at once.
+    keyed: bool,
 }
 
 impl<'s> Reader<'s> {
@@ -739,6 +751,7 @@ impl<'s> Reader<'s> {
         // Knowing the record's sets, as the read opens at a seek: see
         // [`crate::preview::Untimed::knowing`].
         let untimed = crate::preview::Untimed::knowing(&src.video, &params);
+        let leading_b = crate::cut::Mpeg4LeadingB::new(&params);
         let decoder = crate::video_decoder(params)?;
         let landed = seek(&mut ictx);
         crate::input::keep_only(&mut ictx, &[ist]);
@@ -766,6 +779,8 @@ impl<'s> Reader<'s> {
             in_force,
             vols,
             untimed,
+            leading_b,
+            keyed: false,
         })
     }
 
@@ -904,11 +919,27 @@ impl<'s> Reader<'s> {
                 }
                 self.decoder.flush();
             }
+            if self.leading_b.skip(&packet) {
+                continue;
+            }
             let src = self.src;
             self.in_force.mend(&mut packet, &mut |at, record| {
                 Some(crate::preview::sets_before(src, at, record))
             });
             self.vols.mend(&mut packet, src, self.in_tb);
+            // As `walk` in [`crate::preview`] asks it: only before any key
+            // picture has gone in and anything has come out.
+            if !self.keyed
+                && self.first.is_none()
+                && !packet.is_key()
+                && src.video.codec == "h264"
+                && crate::bitstream::h264_unmarked_intra(packet.data().unwrap_or(&[]), src.video.framing)
+            {
+                unsafe {
+                    (*self.decoder.as_mut_ptr()).flags2 |= ff::ffi::AV_CODEC_FLAG2_SHOW_ALL;
+                }
+            }
+            self.keyed |= packet.is_key();
             // A packet the decoder will not take is not a reason to stop.
             if self.decoder.send_packet(&packet).is_ok() {
                 self.fed = true;
