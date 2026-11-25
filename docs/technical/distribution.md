@@ -99,7 +99,7 @@ make things *more* fragile across environments, so the exclusion stays. What is 
 can be checked by extracting:
 
 ```bash
-./SmartCut_0.8.53_amd64.AppImage --appimage-extract >/dev/null
+./SmartCut_0.9.0_amd64.AppImage --appimage-extract >/dev/null
 ldd squashfs-root/usr/bin/smartcut | grep -E 'asound|jack|pulse'
 # libasound.so.2 / libjack.so.0 -> /lib/x86_64-linux-gnu/...   (system)
 # libpulse.so.0                 -> squashfs-root/usr/bin/../lib/...  (bundled)
@@ -130,8 +130,8 @@ runtime, and `appdir-lint.sh` finds no fatal issues.
 
 ```bash
 JAMMY=/path/to/root gui/jammy/build.sh   # AppImage, tar.gz and deb (Ubuntu 22.04 root)
-# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.8.53-linux-x86_64.tar.gz
-# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.8.53_amd64.deb
+# -> gui/src-tauri/target/release/bundle/linux/SmartCut-0.9.0-linux-x86_64.tar.gz
+# -> gui/src-tauri/target/release/bundle/linux/smartcut_0.9.0_amd64.deb
 ```
 
 One build of SmartCut, packed two ways. Both install **the GUI as `smartcut` and the
@@ -142,13 +142,13 @@ The cargo crate is named `gui`, so left alone Tauri installs it straight to
 `/usr/bin/gui` — not a name anyone should be occupying. `mainBinaryName` in
 `tauri.conf.json` pins it to `smartcut` (since 0.2.0; before that it was set for Windows
 only). The bundle *files* Tauri writes are named after `productName` instead —
-`SmartCut_0.8.53_amd64.deb` and the like — which is why they and the deb's package name
+`SmartCut_0.9.0_amd64.deb` and the like — which is why they and the deb's package name
 `smartcut` differ. `build-linux.sh` reads both out of `tauri.conf.json`.
 
 | Artifact | Size | FFmpeg | Requires |
 |---|---|---|---|
-| `SmartCut-0.8.53-linux-x86_64.tar.gz` | 193.6 MB | Bundled | glibc 2.35 or newer. No FUSE needed |
-| `smartcut_0.8.53_amd64.deb` | 30.0 MB | Bundled (`/usr/lib/smartcut`) | Ubuntu 22.04 or later, Debian 13 or later |
+| `SmartCut-0.9.0-linux-x86_64.tar.gz` | 193.6 MB | Bundled | glibc 2.35 or newer. No FUSE needed |
+| `smartcut_0.9.0_amd64.deb` | 30.0 MB | Bundled (`/usr/lib/smartcut`) | Ubuntu 22.04 or later, Debian 13 or later |
 
 **The tar.gz contains the same AppDir as the AppImage, extracted.** The 633 libraries
 linuxdeploy gathered by following `ldd` sit in `app/` as they are, `./smartcut` is a
@@ -219,7 +219,7 @@ binary comes from Tauri's deb, and the tar.gz's from the AppDir.
 
 ### What was verified
 
-- On a bare Ubuntu 22.04 (ubuntu-base 22.04.5), `apt install ./smartcut_0.8.53_amd64.deb`
+- On a bare Ubuntu 22.04 (ubuntu-base 22.04.5), `apt install ./smartcut_0.9.0_amd64.deb`
   installs it: every dependency resolves, neither binary has a library it cannot find,
   and `smartcut-cli` loads `/usr/lib/smartcut/libavcodec.so.61`.
 - A 30-second cut of a broadcast recording made there matches the tar.gz's
@@ -243,7 +243,7 @@ sudo apt update && sudo apt install smartcut
 
 `gui/publish-apt.sh` publishes it, on the development VM, from the .deb
 `gui/jammy/build.sh` made (`FLATPAK_GPG_HOME=... ./gui/publish-apt.sh
-smartcut_0.8.53_amd64.deb`): `apt-ftparchive` writes `Packages` and `Release`,
+smartcut_0.9.0_amd64.deb`): `apt-ftparchive` writes `Packages` and `Release`,
 `InRelease` and `Release.gpg` are signed, and the Pages repository's main is replaced
 with one commit. One suite, `stable`, component `main`, amd64 only, the newest
 version only; older ones are on the Releases page. The key is the Flatpak
@@ -258,7 +258,7 @@ and `apt install smartcut` went through with the signature checked. An
 
 ```bash
 ./gui/build-flatpak.sh     # on the development VM (Debian 13): signed repository + bundle
-# -> gui/src-tauri/target/flatpak/SmartCut-0.8.53-x86_64.flatpak
+# -> gui/src-tauri/target/flatpak/SmartCut-0.9.0-x86_64.flatpak
 ./gui/publish-flatpak.sh   # the repository onto GitHub Pages
 ```
 
@@ -372,7 +372,7 @@ Cross-built from the Linux development VM to `x86_64-pc-windows-msvc`.
 
 ```bash
 ./gui/build-windows.sh
-# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.8.53_x64-setup.exe
+# -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SmartCut_0.9.0_x64-setup.exe
 # -> gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/smartcut-portable-x64.zip
 ```
 
@@ -491,7 +491,7 @@ portable zip.
 
 ## The updater
 
-From 0.9.0 the four packagings nothing else updates -- the Windows installer, the
+From 0.9 the four packagings nothing else updates -- the Windows installer, the
 Windows portable zip, the Linux tar.gz and the AppImage -- update themselves
 (`gui/src-tauri/src/update.rs`). The .deb and the Flatpak are left to APT and to
 `flatpak update`, and are not checked at all; nor is a build run out of a source tree.

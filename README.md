@@ -144,12 +144,12 @@ Every build bundles FFmpeg, so there is nothing else to install.
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.53_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.8.53-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.53_amd64.deb` | `sudo apt install ./smartcut_0.8.53_amd64.deb`. 30.0 MB, because GTK and WebKitGTK come from your system. Add the [APT repository](https://deepregular.github.io/smartcut-apt/) and `apt upgrade` takes later versions |
-| **Linux (Flatpak)** | `SmartCut-0.8.53-x86_64.flatpak` | `flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref`, and `flatpak update` takes later versions; an install from the Releases file does too. The runtime (GNOME 50) comes from Flathub. The command-line tool is `flatpak run --command=smartcut-cli dev.smartcut.app` |
-| **Windows** | `SmartCut_0.8.53_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
-| **Windows** | `smartcut-portable-x64-0.8.53.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
+| **Linux** | `SmartCut_0.9.0_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.9.0-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.9.0_amd64.deb` | `sudo apt install ./smartcut_0.9.0_amd64.deb`. 30.0 MB, because GTK and WebKitGTK come from your system. Add the [APT repository](https://deepregular.github.io/smartcut-apt/) and `apt upgrade` takes later versions |
+| **Linux (Flatpak)** | `SmartCut-0.9.0-x86_64.flatpak` | `flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref`, and `flatpak update` takes later versions; an install from the Releases file does too. The runtime (GNOME 50) comes from Flathub. The command-line tool is `flatpak run --command=smartcut-cli dev.smartcut.app` |
+| **Windows** | `SmartCut_0.9.0_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
+| **Windows** | `smartcut-portable-x64-0.9.0.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.35 or newer, which
 means Ubuntu 22.04, Debian 12, Fedora 36 or later. The `.deb` is for Ubuntu 22.04
@@ -160,6 +160,14 @@ other builds. The `.deb` installs the GUI as
 `smartcut-cli.exe`. The Windows builds are
 x64 only and need the WebView2 runtime, which ships with Windows 11 and is
 already present on nearly all Windows 10 machines.
+
+**Updates.** From 0.9 on the AppImage, the tar.gz and both Windows builds update
+themselves. A few seconds after the start SmartCut looks for a newer release on
+GitHub, and when there is one the SmartCut button in the corner gets a blue dot;
+nothing is downloaded until you choose the update from its menu, and the files are
+replaced only once their signature has checked out. 環境設定 > 更新 (Preferences >
+Updates) turns the check off. The `.deb` and the Flatpak update through
+`apt upgrade` and `flatpak update`. From 0.8.x, replace it by hand once.
 
 To build from source, see [Building](docs/technical/building.md).
 

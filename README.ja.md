@@ -137,12 +137,12 @@ CM 自動検出で決めた 5 区間・22 分の書き出しでは、**40589 フ
 
 | プラットフォーム | ファイル | 備考 |
 |---|---|---|
-| **Linux** | `SmartCut_0.8.53_amd64.AppImage` | 実行権限を付けて起動します |
-| **Linux** | `SmartCut-0.8.53-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.8.53_amd64.deb` | `sudo apt install ./smartcut_0.8.53_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 30.0 MB で済みます。[APT リポジトリ](https://deepregular.github.io/smartcut-apt/)を登録すると、以後は `apt upgrade` で更新できます |
-| **Linux (Flatpak)** | `SmartCut-0.8.53-x86_64.flatpak` | `flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref` で入れると、以後は `flatpak update` で更新できます。Releases のファイルから入れても同じです。ランタイム（GNOME 50）は Flathub から入ります。コマンドライン版は `flatpak run --command=smartcut-cli dev.smartcut.app` です |
-| **Windows** | `SmartCut_0.8.53_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
-| **Windows** | `smartcut-portable-x64-0.8.53.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
+| **Linux** | `SmartCut_0.9.0_amd64.AppImage` | 実行権限を付けて起動します |
+| **Linux** | `SmartCut-0.9.0-linux-x86_64.tar.gz` | 展開して `./smartcut` を実行します。FUSE を使いたくない場合はこちらです |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.9.0_amd64.deb` | `sudo apt install ./smartcut_0.9.0_amd64.deb`。GTK や WebKitGTK はシステムのものを使うので 30.0 MB で済みます。[APT リポジトリ](https://deepregular.github.io/smartcut-apt/)を登録すると、以後は `apt upgrade` で更新できます |
+| **Linux (Flatpak)** | `SmartCut-0.9.0-x86_64.flatpak` | `flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref` で入れると、以後は `flatpak update` で更新できます。Releases のファイルから入れても同じです。ランタイム（GNOME 50）は Flathub から入ります。コマンドライン版は `flatpak run --command=smartcut-cli dev.smartcut.app` です |
+| **Windows** | `SmartCut_0.9.0_x64-setup.exe` | インストーラ。コマンドライン版の `smartcut-cli.exe` も同じフォルダーに入ります |
+| **Windows** | `smartcut-portable-x64-0.9.0.zip` | 展開して `smartcut.exe` を実行します。コマンドライン版は `smartcut-cli.exe` です |
 
 **動作条件。** AppImage と tar.gz には glibc 2.35 以降が必要です（Ubuntu 22.04、
 Debian 12、Fedora 36 以降）。deb は Ubuntu 22.04 以降と Debian 13 以降で
@@ -153,6 +153,13 @@ deb では GUI が `smartcut`、コマンドライン版が `smartcut-cli` と�
 `smartcut-cli.exe` という名前です。Windows 版は x64 のみで、WebView2
 ランタイムが必要です（Windows 11 には標準で入っており、Windows 10 でもほとんどの
 環境に入っています）。
+
+**更新。** AppImage・tar.gz・Windows の 2 つは、0.9 以降は SmartCut 自身が
+新しい版を確認して更新します。起動して数秒後に GitHub を確認し、新しい版があれば
+右上の SmartCut ボタンに青い点が付きます。ダウンロードは、メニューから更新を
+選んだときだけです。ファイルは署名を確かめてから入れ替えます。確認は環境設定の
+「更新」で止められます。deb と Flatpak は、それぞれ `apt upgrade` と
+`flatpak update` で更新してください。0.8.x からは、一度だけ手で入れ替えてください。
 
 ソースからビルドする場合は[ビルド](docs/technical/building.ja.md)を参照して
 ください。
