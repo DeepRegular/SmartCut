@@ -144,12 +144,12 @@ Every build bundles FFmpeg, so there is nothing else to install.
 
 | Platform | File | Notes |
 |---|---|---|
-| **Linux** | `SmartCut_0.9.0_amd64.AppImage` | Make it executable and run it |
-| **Linux** | `SmartCut-0.9.0-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
-| **Linux (Debian/Ubuntu)** | `smartcut_0.9.0_amd64.deb` | `sudo apt install ./smartcut_0.9.0_amd64.deb`. 30.0 MB, because GTK and WebKitGTK come from your system. Add the [APT repository](https://deepregular.github.io/smartcut-apt/) and `apt upgrade` takes later versions |
-| **Linux (Flatpak)** | `SmartCut-0.9.0-x86_64.flatpak` | `flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref`, and `flatpak update` takes later versions; an install from the Releases file does too. The runtime (GNOME 50) comes from Flathub. The command-line tool is `flatpak run --command=smartcut-cli dev.smartcut.app` |
-| **Windows** | `SmartCut_0.9.0_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
-| **Windows** | `smartcut-portable-x64-0.9.0.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
+| **Linux** | `SmartCut_0.9.1_amd64.AppImage` | Make it executable and run it |
+| **Linux** | `SmartCut-0.9.1-linux-x86_64.tar.gz` | Unpack and run `./smartcut`. Use this if you would rather not deal with FUSE |
+| **Linux (Debian/Ubuntu)** | `smartcut_0.9.1_amd64.deb` | `sudo apt install ./smartcut_0.9.1_amd64.deb`. 30.0 MB, because GTK and WebKitGTK come from your system. Add the [APT repository](https://deepregular.github.io/smartcut-apt/) and `apt upgrade` takes later versions |
+| **Linux (Flatpak)** | `SmartCut-0.9.1-x86_64.flatpak` | `flatpak install --user https://deepregular.github.io/smartcut-flatpak/smartcut.flatpakref`, and `flatpak update` takes later versions; an install from the Releases file does too. The runtime (GNOME 50) comes from Flathub. The command-line tool is `flatpak run --command=smartcut-cli dev.smartcut.app` |
+| **Windows** | `SmartCut_0.9.1_x64-setup.exe` | Installer. The command-line tool, `smartcut-cli.exe`, goes into the same folder |
+| **Windows** | `smartcut-portable-x64-0.9.1.zip` | Unzip and run `smartcut.exe`. The command-line tool is `smartcut-cli.exe` |
 
 **Requirements.** The AppImage and the tar.gz need glibc 2.35 or newer, which
 means Ubuntu 22.04, Debian 12, Fedora 36 or later. The `.deb` is for Ubuntu 22.04
