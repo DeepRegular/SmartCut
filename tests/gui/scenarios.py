@@ -8579,6 +8579,16 @@ def _shown_number(app, height):
     return _strip_number(raw) if len(raw) >= 4 else None
 
 
+def _walk_landed(app, timeout=180):
+    """Until the stage says it shows the exact picture: the walk's access
+    points have reached the editor (`walked()` in main.js), not only the
+    plan line."""
+    wait_for("the walk to reach the stage", lambda: app.s.js(
+        "const k = document.getElementById('ovl-kind');"
+        " return !!k && k.innerText !== '' && !k.innerText.includes('解析中')"
+        " && !k.innerText.includes('still reading')"), timeout, 0.2)
+
+
 def _ord_mark(app, frame, key, height):
     app.goto(frame)
     n = _shown_number(app, height)
@@ -8620,6 +8630,11 @@ def ordinary_material_cuts(cfg, t):
             app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
             app.open_row(i, name)
             _walk_done(app)
+            # (57th) The plan line can be past 読み込んで while the stage still
+            # carries the nearest entry picture (近くのフレーム（解析中）, by
+            # design): with ten rows' passes running in the list, cam.MTS and
+            # slow120.mp4 were marked on a glimpse a GOP away and failed.
+            _walk_landed(app)
             time.sleep(1)
             st = app.state()
             total = st["frames"]
@@ -8696,6 +8711,7 @@ def ordinary_material_keys(cfg, t):
             app.s.js(f"document.querySelector('#cliplist > li:nth-child({i})').scrollIntoView({{block: 'center'}})")
             app.open_row(i, name)
             _walk_done(app)
+            _walk_landed(app)  # (57th) see ordinary_material_cuts
             time.sleep(1)
             total = app.state()["frames"]
             gone = []
@@ -15203,6 +15219,239 @@ def vfr_mark_off_picture_ki51(cfg, t):
 SCENARIOS += [vfr_mark_off_picture_ki51]
 
 
+def update_box_holds_keys_57(cfg, t):
+    """(57th pass, appjs) The update box is a panel over the list like 環境設定:
+    with it up, Delete must not take the selected row out behind it, nor Enter
+    open it in the editor. A build out of the tree is not an updatable kind, so
+    the menu line is shown by hand and pressed; the box comes up on "latest"."""
+    with App(cfg, "update_box_holds_keys_57", clips(cfg)) as app:
+        app.to_list()
+        app.s.click("#cliplist > li:nth-child(1) .nm")
+        wait_for("row 1 selected", lambda: app.s.js(
+            "return !!document.querySelector('#cliplist > li.on')"), 15)
+        app.s.js("document.getElementById('menu-update').hidden = false;"
+                 "document.getElementById('menu-update').click();")
+        wait_for("the update box", lambda: app.s.js(
+            "return !document.getElementById('update').hidden"), 5)
+        app.s.keys("Delete")
+        time.sleep(0.5)
+        rows = app.rows()
+        app.s.keys("Enter")
+        time.sleep(2)
+        editor = app.editor()
+        t.check("57u Delete under the update box leaves the row", rows == 2, f"rows {rows}")
+        t.check("57u Enter under the update box opens no editor", editor is None, f"editor {editor}")
+        app.to_list()
+        app.s.keys("Escape")
+        wait_for("the box put away", lambda: app.s.js(
+            "return document.getElementById('update').hidden"), 5)
+        if editor:
+            app.escape(discard=True, expect_dialog=False)
+            app.gone()
+
+
+SCENARIOS += [update_box_holds_keys_57]
+
+
+
+def _dmg57_hit(src, dst, hits):
+    """rev56/p3review dmgk.py: for each (T, D), the first video PES at/after T
+    seconds (by its PTS from the first) that carries a DTS gets PTS += D s,
+    the DTS left alone -- the #25 damaged picture time."""
+    d = bytearray(open(src, "rb").read())
+
+    def rd(b):
+        return ((b[0] >> 1) & 7) << 30 | b[1] << 22 | (b[2] >> 1) << 15 | b[3] << 7 | b[4] >> 1
+
+    def wr(o, v):
+        v %= 1 << 33
+        d[o] = (d[o] & 0xf0) | ((v >> 30) & 7) << 1 | 1
+        d[o + 1] = (v >> 22) & 255
+        d[o + 2] = ((v >> 15) & 127) << 1 | 1
+        d[o + 3] = (v >> 7) & 255
+        d[o + 4] = (v & 127) << 1 | 1
+    first, todo = None, sorted(hits)
+    for off in range(0, len(d) - 187, 188):
+        if not todo:
+            break
+        if d[off] != 0x47:
+            continue
+        pid = (d[off + 1] & 31) << 8 | d[off + 2]
+        afc = (d[off + 3] >> 4) & 3
+        i = 4 + (1 + d[off + 4] if afc & 2 else 0)
+        if pid != 0x100 or not d[off + 1] & 0x40 or not afc & 1 or d[off + i:off + i + 3] != b"\0\0\1":
+            continue
+        fl = d[off + i + 7]
+        if not fl & 0x80:
+            continue
+        q = off + i + 9
+        pts = rd(d[q:q + 5])
+        if first is None:
+            first = pts
+        if fl & 0x40 and (pts - first) / 90000 >= todo[0][0] - 1e-6:
+            _, dd = todo.pop(0)
+            wr(q, pts + int(dd * 90000))
+    open(dst, "wb").write(d)
+
+
+def damaged_time_editor_57(cfg, t):
+    """(57th pass, mainjs.) #25: a 25p x264 .ts whose P picture 158 and I
+    picture 202 carry a PTS 4444 s off (the DTS right). The counter must count
+    every picture; J to each picture round them, and → from the one before
+    the damaged P, must land on and show that picture; cuts next to them must
+    give an output holding exactly what the editor did not show as cut.
+    Fails on ae84a0a: the stills have the walk's stray rule for keys only, so
+    every picture from the damaged P to the next key (156..174) is answered
+    with 155, the playhead snaps back to it and → stands still there."""
+    d = os.path.join(cfg.work, "dmg57mainjs")
+    os.makedirs(d, exist_ok=True)
+    h = 360
+    clean = os.path.join(d, "clean.ts")
+    dmg = os.path.join(d, "dmg.ts")
+    if not os.path.exists(dmg):
+        _m50_ff(["-f", "lavfi", "-i", "sine=frequency=440:duration=12:sample_rate=48000",
+                 "-filter_complex", _num_graph(640, h, "25", 12), "-map", "[v]", "-map", "0:a",
+                 "-c:v", "libx264", "-preset", "veryfast", "-g", "25", "-sc_threshold", "0", "-bf", "3",
+                 "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-shortest", "-f", "mpegts",
+                 clean + ".part"])
+        os.replace(clean + ".part", clean)
+        _dmg57_hit(clean, dmg + ".part", [(6.2, 4444.0), (8.0, 4444.0)])
+        os.replace(dmg + ".part", dmg)
+    src = _numbers(clean)
+    with App(cfg, "damaged_time_editor_57", [{"path": dmg}]) as app:
+        app.to_list()
+        app.open_row(1, "dmg.ts")
+        _walk_done(app)
+        _walk_landed(app)
+        time.sleep(1)
+        total = app.state()["frames"]
+        t.check("57d the counter counts every picture", total == len(src), f"counter {total}, pictures {len(src)}")
+        def jump(f):
+            app.s.keys("j")
+            wait_for("the jump box", lambda: app.s.js(
+                "const b = document.getElementById('counter-jump'); return b && !b.hidden"), 5)
+            app.s.keys("Control+a")
+            app.s.type(str(f))
+            app.s.keys("Enter")
+            time.sleep(2.0)
+            return app.state()["at"], _shown_number(app, h)
+
+        # 158 is the damaged reference picture (a P), 202 the damaged I.
+        seen = [(f, *jump(f)) for f in (154, 155, 156, 157, 158, 159, 160, 174, 175, 199, 200, 201, 202, 203)]
+        bad = [x for x in seen if not (x[0] == x[1] == x[2])]
+        t.check("57d J lands on and shows every picture round the damaged pictures", not bad,
+                f"(asked, playhead, shown) wrong {bad}")
+        jump(155)
+        steps = []
+        for _ in range(4):
+            app.s.keys("Right")
+            time.sleep(1.5)
+            steps.append((app.state()["at"], _shown_number(app, h)))
+        t.check("57d → steps on from the picture before the damaged one", steps == [(n, n) for n in range(156, 160)],
+                f"(playhead, shown) after each → from 155: {steps}")
+        removed = []
+        # Counted on the output: the second ends on 201 (just before the damaged
+        # I), the third starts on it.
+        for a, b in ((140, 154), (180, 186), (180, 185)):
+            left = app.state()["frames"]
+            na = _ord_mark(app, a, "i", h)
+            nb = _ord_mark(app, b, "o", h)
+            app.s.keys("Delete")
+            wait_for(f"cut {a}-{b}", lambda: app.state()["frames"] == left - (b - a + 1), 10)
+            removed.append((na, nb))
+        app.ok()
+        app.gone()
+        time.sleep(0.5)
+        app.save()
+        app.export(timeout=600)
+        files = [f for f in _ord_outputs(app).get(1, []) if not f.endswith(".log")]
+        got = _numbers(files[0]) if len(files) == 1 else None
+        gone = set()
+        for na, nb in removed:
+            if na in src and nb in src:
+                gone.update(src[src.index(na):src.index(nb) + 1])
+        want = [n for n in src if n not in gone]
+        diff = [(k, a, b) for k, (a, b) in enumerate(zip(got or [], want)) if a != b][:4]
+        t.check("57d output = what the editor left", got == want,
+                f"shown cut {removed}; got {None if got is None else len(got)} want {len(want)}; first diff {diff}")
+        for f in files:
+            os.remove(f)
+
+
+SCENARIOS += [damaged_time_editor_57]
+
+
+def update_commands_57(cfg, t):
+    """(57th pass, tauri.) update_status and update_restart run off the
+    window's thread now (#[tauri::command(async)]): the window still gets
+    their answers. A build out of the tree is not an updatable packaging --
+    kind "other", nothing ready -- and 再起動して更新 with nothing fetched is
+    refused with a sentence, while the call-off (on: false) answers."""
+    with App(cfg, "update_commands_57", clips(cfg)) as app:
+        app.to_list()
+        st = app.s.js("return window.__TAURI__.core.invoke('update_status')")
+        t.check("57 update_status answers off the window's thread",
+                isinstance(st, dict) and st.get("kind") == "other" and not st.get("ready")
+                and bool(st.get("current")), f"{st}")
+        said = app.s.js("return window.__TAURI__.core.invoke('update_restart', {on: true})"
+                        ".then(() => 'ok', (e) => 'refused: ' + e)")
+        off = app.s.js("return window.__TAURI__.core.invoke('update_restart', {on: false})"
+                       ".then(() => 'ok', (e) => 'refused: ' + e)")
+        t.check("57 update_restart answers both ways", said.startswith("refused: ") and off == "ok",
+                f"on: {said}; off: {off}")
+
+
+SCENARIOS += [update_commands_57]
+
+
+def _stage57_colour(url, d, name):
+    """The mean colour of a data: URL JPEG, as (r, g, b)."""
+    import base64
+    f = os.path.join(d, name)
+    open(f, "wb").write(base64.b64decode(url.split(",", 1)[1]))
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", f, "-vf", "scale=1:1:flags=area",
+                          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+    os.remove(f)
+    return tuple(raw[:3])
+
+
+def stage_poster_frame_57(cfg, t):
+    """(57th pass, p2review.) On the output screen a clip with nothing to
+    re-encode stands on the stage as its row's poster, replaced by the same
+    frame at the stage's size. The poster is the strip picture NEAREST a tenth
+    into the keeps; the stage picture was decoded at the tenth itself, so the
+    soft picture gave way to a sharp one of another frame. Material: 23 s of
+    frames each of their own flat colour (a tenth = 2.3 s, strip pictures every
+    0.5 s), so two frames apart are colours apart."""
+    d = os.path.join(cfg.work, "stage57p2review")
+    os.makedirs(d, exist_ok=True)
+    src = os.path.join(d, "colours.mp4")
+    if not os.path.exists(src):
+        _m50_ff(["-f", "lavfi", "-i", "nullsrc=s=640x360:r=25:d=23,format=yuv444p,"
+                 "geq=lum='mod(N*37,200)+28':cb='mod(N*71,200)+28':cr='mod(N*53,200)+28',format=yuv420p",
+                 "-f", "lavfi", "-i", "sine=frequency=440:duration=23:sample_rate=48000",
+                 "-c:v", "libx264", "-preset", "veryfast", "-g", "25", "-bf", "0", "-c:a", "aac",
+                 "-shortest", src + ".part.mp4"])
+        os.replace(src + ".part.mp4", src)
+    with App(cfg, "stage_poster_frame_57", [{"path": src}]) as app:
+        app.to_list()
+        wait_for("the row's index", lambda: "インデックス" in app.s.js(
+            "const li = document.querySelector('#cliplist > li'); return li ? li.innerText : ''"), 120, 0.5)
+        time.sleep(5)
+        poster = app.s.js("const i = document.querySelector('#cliplist > li .poster'); return i ? i.src : ''")
+        app.s.click('button.tab[data-screen="out"]')
+        wait_for("the sharp stage picture", lambda: app.s.js(
+            "const i = document.getElementById('out-preview');"
+            " return !i.hidden && i.complete && i.naturalWidth >= 480"), 60, 0.2)
+        stage = app.s.js("return document.getElementById('out-preview').src")
+        a = _stage57_colour(poster, d, "p.jpg") if poster.startswith("data:") else None
+        b = _stage57_colour(stage, d, "s.jpg") if stage.startswith("data:") else None
+        near = a is not None and b is not None and max(abs(x - y) for x, y in zip(a, b)) <= 10
+        t.check("57s the stage picture is the row poster's frame", near, f"poster {a}, stage {b}")
+
+
+SCENARIOS += [stage_poster_frame_57]
+
 
 def main():
     cfg = Cfg()
@@ -15248,3 +15497,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

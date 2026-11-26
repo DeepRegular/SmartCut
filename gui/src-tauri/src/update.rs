@@ -158,30 +158,38 @@ fn detect() -> Kind {
     if std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists() {
         return Kind::Elsewhere("flatpak");
     }
-    // Set by the AppImage runtime to the image itself.
-    if let Some(image) = std::env::var_os("APPIMAGE").map(PathBuf::from) {
-        if image.is_file() {
-            return Kind::AppImage { image };
-        }
-    }
     let Ok(exe) = std::env::current_exe() else {
         return Kind::Elsewhere("other");
     };
     if exe.starts_with("/usr") {
         return Kind::Elsewhere("deb");
     }
-    // <root>/app/usr/bin/smartcut, with the two launchers in <root>.
-    let root = exe.ancestors().nth(4).map(Path::to_path_buf);
-    match root {
-        Some(root)
-            if exe.ends_with("app/usr/bin/smartcut")
-                && root.join("smartcut").is_file()
-                && root.join("smartcut-cli").is_file() =>
+    // <root>/app/usr/bin/smartcut, with the two launchers in <root>. Before
+    // the AppImage: the tar.gz's launcher sets `APPDIR` too.
+    if let Some(root) = exe.ancestors().nth(4) {
+        if exe.ends_with("app/usr/bin/smartcut")
+            && root.join("smartcut").is_file()
+            && root.join("smartcut-cli").is_file()
         {
-            Kind::LinuxTar { root }
+            return Kind::LinuxTar { root: root.to_path_buf() };
         }
-        _ => Kind::Elsewhere("other"),
     }
+    // Set by the AppImage runtime to the image itself, and `APPDIR` to where
+    // it is mounted -- which this program runs out of only when it is that
+    // image's. Both are handed down to everything started from inside any
+    // AppImage (an editor's terminal, say), so a SmartCut started from there
+    // would otherwise take the other program's image for its own, and an
+    // update would be renamed over it.
+    if let Some(image) = std::env::var_os("APPIMAGE").map(PathBuf::from) {
+        let ours = std::env::var_os("APPDIR")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+            .is_some_and(|d| exe.starts_with(&d) || std::fs::canonicalize(&d).is_ok_and(|d| exe.starts_with(d)));
+        if ours && image.is_file() {
+            return Kind::AppImage { image };
+        }
+    }
+    Kind::Elsewhere("other")
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -210,6 +218,22 @@ fn plain_name(name: &str) -> bool {
         && name.len() <= 200
         && !name.starts_with('.')
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Whether `name` is a file of the packaging the manifest lists it under.
+/// The signature's comment names the file the manifest names, so it binds the
+/// version but not the packaging: every file of a release is signed alike,
+/// and without this a manifest could hand an AppImage the release's tar.gz
+/// (or its installer) -- signed, checked, and renamed over the image.
+fn fits(asset: &str, name: &str) -> bool {
+    let tail = match asset {
+        "windows-setup" => "-setup.exe",
+        "windows-portable" => ".zip",
+        "linux-tar" => ".tar.gz",
+        "appimage" => ".AppImage",
+        _ => return false,
+    };
+    name.len() > tail.len() && name.ends_with(tail)
 }
 
 /// The manifest: `{"version": "0.9.1", "files": {"appimage": {"name": ...,
@@ -315,11 +339,27 @@ fn writable(dir: &Path) -> Result<(), String> {
             e
         )
     };
+    // Asked every time the window or 環境設定 looks: a folder made only to
+    // ask is not left beside somebody's AppImage.
+    let made = !dir.is_dir();
     std::fs::create_dir_all(dir).map_err(fail)?;
     let probe = dir.join(format!(".probe-{}", std::process::id()));
-    std::fs::write(&probe, b"").map_err(fail)?;
+    let wrote = std::fs::write(&probe, b"").map_err(fail);
     let _ = std::fs::remove_file(&probe);
-    Ok(())
+    if made {
+        let _ = std::fs::remove_dir(dir);
+    }
+    wrote
+}
+
+/// Whether `path` was last written more than `secs` ago: a fetch or an
+/// unpack of another SmartCut still going on keeps its own fresh.
+fn stale(path: &Path, secs: u64) -> bool {
+    std::fs::symlink_metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_none_or(|age| age.as_secs() > secs)
 }
 
 /// Ask whether there is a newer release for this packaging. `None` where
@@ -356,7 +396,7 @@ fn read_manifest(body: &str, asset: &str, now: (u64, u64, u64)) -> Result<Option
     let Some(file) = manifest.files.get(asset) else {
         return Ok(None);
     };
-    if !plain_name(&file.name) || file.size == 0 || file.size > LARGEST {
+    if !plain_name(&file.name) || !fits(asset, &file.name) || file.size == 0 || file.size > LARGEST {
         return Err(format!("file {:?}", file.name));
     }
     let v = format!("{}.{}.{}", version.0, version.1, version.2);
@@ -421,9 +461,15 @@ fn fetch_now(app: &tauri::AppHandle, mut progress: impl FnMut(u64, u64)) -> Resu
     }
     let mut verifier = key.verify_stream(&sig).map_err(|e| e.to_string())?;
 
-    let part = dir.join(format!("{}.part", found.name));
+    // This process's own: another SmartCut fetching into the same folder
+    // would otherwise write the same file, and the bytes checked as they came
+    // would not be the bytes on the disk.
+    let part = dir.join(format!("{}.{}.part", found.name, std::process::id()));
     let mut resp = agent().get(&url).call().map_err(|e| e.to_string())?;
     let mut reader = resp.body_mut().with_config().limit(found.size + 1).reader();
+    // Made here, not before the signature was fetched: until a file is in
+    // it, the start of another SmartCut removes it as left empty.
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; 256 * 1024];
     let mut done = 0u64;
@@ -468,6 +514,10 @@ fn fetch_now(app: &tauri::AppHandle, mut progress: impl FnMut(u64, u64)) -> Resu
     }
     std::fs::rename(&part, &file).map_err(|e| failed(e.to_string()))?;
 
+    if matches!(k, Kind::LinuxTar { .. } | Kind::WindowsPortable { .. }) {
+        // Whatever was waiting in `new` is replaced by this one.
+        with_state(|s| s.staged = None);
+    }
     let path = prepare(k, &dir, &file).inspect_err(|_| {
         let _ = std::fs::remove_file(&file);
     })?;
@@ -492,6 +542,13 @@ fn prepare(k: &Kind, dir: &Path, file: &Path) -> Result<PathBuf, String> {
         Kind::AppImage { image } => {
             // In place now: the running program is a mount of the file it was
             // started from, which keeps it open whatever its name comes to.
+            // An ELF with the AppImage type-2 mark, or it does not replace
+            // the program.
+            let mut head = [0u8; 11];
+            let read = std::fs::File::open(file).and_then(|mut f| f.read_exact(&mut head));
+            if read.is_err() || &head[..4] != b"\x7fELF" || &head[8..11] != b"AI\x02" {
+                return Err("the file is not an AppImage".into());
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -503,29 +560,58 @@ fn prepare(k: &Kind, dir: &Path, file: &Path) -> Result<PathBuf, String> {
             let _ = std::fs::remove_dir(dir);
             Ok(image.clone())
         }
-        Kind::LinuxTar { .. } => {
-            let new = dir.join("new");
-            let _ = std::fs::remove_dir_all(&new);
-            unpack_tar(file, &new)?;
+        Kind::LinuxTar { .. } | Kind::WindowsPortable { .. } => {
+            // Unpacked under a name of this process's own and only then made
+            // `new`: the start of another SmartCut clears a `new` it finds
+            // with no `new.version` beside it, which is what a `new` being
+            // unpacked looks like.
+            let unpacking = dir.join(format!("unpack-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&unpacking);
+            let unpacked = if matches!(k, Kind::LinuxTar { .. }) {
+                unpack_tar(file, &unpacking)
+            } else {
+                unpack_zip(file, &unpacking)
+            };
             let _ = std::fs::remove_file(file);
-            let top = only_folder(&new)?;
-            if !top.join("smartcut").is_file() || !top.join("app/usr/bin/smartcut").is_file() {
-                return Err("the archive is not a SmartCut tree".into());
-            }
-            Ok(top)
-        }
-        Kind::WindowsPortable { .. } => {
+            let checked = unpacked.and_then(|()| {
+                let top = only_folder(&unpacking)?;
+                if is_tree(k, &top) {
+                    Ok(top)
+                } else {
+                    Err("the archive is not a SmartCut folder".to_string())
+                }
+            });
+            let top = match checked {
+                Ok(top) => top,
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&unpacking);
+                    return Err(e);
+                }
+            };
             let new = dir.join("new");
+            // What was waiting there (another version) is gone with it.
+            let _ = std::fs::remove_file(dir.join(NEW_VERSION));
             let _ = std::fs::remove_dir_all(&new);
-            unpack_zip(file, &new)?;
-            let _ = std::fs::remove_file(file);
-            let top = only_folder(&new)?;
-            if !top.join("smartcut.exe").is_file() {
-                return Err("the archive is not a SmartCut folder".into());
+            if let Err(e) = std::fs::rename(&unpacking, &new) {
+                let _ = std::fs::remove_dir_all(&unpacking);
+                return Err(e.to_string());
             }
-            Ok(top)
+            Ok(new.join(top.file_name().ok_or("no name")?))
         }
         Kind::Elsewhere(_) => Err("nothing to update".into()),
+    }
+}
+
+/// Whether `top` is a whole SmartCut of packaging `k`.
+fn is_tree(k: &Kind, top: &Path) -> bool {
+    match k {
+        Kind::LinuxTar { .. } => {
+            top.join("smartcut").is_file()
+                && top.join("smartcut-cli").is_file()
+                && top.join("app/usr/bin/smartcut").is_file()
+        }
+        Kind::WindowsPortable { .. } => top.join("smartcut.exe").is_file(),
+        _ => false,
     }
 }
 
@@ -591,7 +677,7 @@ pub fn want_restart(app: &tauri::AppHandle) -> Result<(), String> {
             .into());
         }
     }
-    if matches!(kind(), Kind::WindowsSetup) && others_running() {
+    if matches!(kind(), Kind::WindowsSetup | Kind::WindowsPortable { .. }) && others_running() {
         return Err(tr!(
             "ほかの SmartCut のウィンドウが開いています。閉じてから更新してください",
             "Another SmartCut window is open. Close it before updating"
@@ -645,6 +731,9 @@ fn others_running() -> bool {
 fn tree_in_use(root: &Path) -> bool {
     let me = std::process::id().to_string();
     let program = root.join("app/usr/bin/smartcut");
+    // The cutter too: a cut it is writing into the folder by a relative name
+    // would go on into the folder put aside.
+    let cutter = root.join("app/usr/bin/smartcut-cli");
     let Ok(procs) = std::fs::read_dir("/proc") else {
         return true;
     };
@@ -653,7 +742,7 @@ fn tree_in_use(root: &Path) -> bool {
         let name = name.to_string_lossy();
         name.bytes().all(|b| b.is_ascii_digit())
             && name != me
-            && std::fs::read_link(p.path().join("exe")).is_ok_and(|exe| exe == program)
+            && std::fs::read_link(p.path().join("exe")).is_ok_and(|exe| exe == program || exe == cutter)
     })
 }
 
@@ -688,24 +777,39 @@ pub fn on_exit() {
         }
         Kind::LinuxTar { root } => {
             // Left unpacked, for the next start to offer and the next way
-            // out to put in place (see `tidy`).
-            if tree_in_use(root) {
-                smartcut_core::log::line("update: another SmartCut runs out of the folder; left for later");
-                return;
-            }
-            if let Err(e) = swap_folder(root, &staged.path) {
+            // out to put in place (see `tidy`). The folder is renamed only
+            // over a whole tree: the start of another SmartCut may have
+            // cleared `new` since it was made.
+            let left = if tree_in_use(root) {
+                Some("another SmartCut runs out of the folder; left for later".to_string())
+            } else if !is_tree(kind(), &staged.path) {
+                Some(format!("{} is not a whole SmartCut; not put in place", staged.path.display()))
+            } else {
+                swap_folder(root, &staged.path).err()
+            };
+            if let Some(e) = &left {
                 smartcut_core::log::line(&format!("update: {e}"));
-                return;
             }
+            // Asked to start again: the window said it would, so the one
+            // there is is started, new or not.
             if !restart {
                 return;
             }
             crate::desktop_command(&root.join("smartcut").to_string_lossy()).spawn().map(drop)
         }
         Kind::WindowsPortable { dir } => {
-            if let Err(e) = swap_files(dir, &staged.path) {
+            // Another SmartCut would go on with the old program and the new
+            // libraries. Which folder it runs from is not known here, so any
+            // of this user's: left for a later way out, as the tar.gz is.
+            let left = if others_running() {
+                Some("another SmartCut is running; left for later".to_string())
+            } else if !is_tree(kind(), &staged.path) {
+                Some(format!("{} is not a whole SmartCut; not put in place", staged.path.display()))
+            } else {
+                swap_files(dir, &staged.path).err()
+            };
+            if let Some(e) = &left {
                 smartcut_core::log::line(&format!("update: {e}"));
-                return;
             }
             if !restart {
                 return;
@@ -729,18 +833,76 @@ fn aside(staging: &Path) -> PathBuf {
 }
 
 /// The tar.gz: `root` renamed aside and `new` put in its name. Put back as
-/// it was if the second rename fails.
+/// it was if the second rename fails. What the user kept in the folder --
+/// anything at its top the release does not have, a cut written there, a
+/// project -- is moved into the new folder: what is aside is removed at the
+/// next start.
 fn swap_folder(root: &Path, new: &Path) -> Result<(), String> {
     let staging = root.parent().ok_or("no parent")?.join(".smartcut-update");
     let old = aside(&staging);
-    std::fs::rename(root, &old).map_err(|e| format!("{}: {e}", root.display()))?;
-    if let Err(e) = std::fs::rename(new, root) {
-        let _ = std::fs::rename(&old, root);
-        return Err(format!("{}: {e}", new.display()));
+    if exchange(root, new) {
+        // One step: there is no moment with nothing in `root`'s name. The old
+        // folder is now where the new one was.
+        if std::fs::rename(new, &old).is_err() {
+            // Still in `new`, which goes with the next start's tidy all the
+            // same; the user's files are taken from there.
+            keep_theirs(new, root);
+            return Ok(());
+        }
+    } else {
+        std::fs::rename(root, &old).map_err(|e| format!("{}: {e}", root.display()))?;
+        if let Err(e) = std::fs::rename(new, root) {
+            let _ = std::fs::rename(&old, root);
+            return Err(format!("{}: {e}", new.display()));
+        }
     }
+    keep_theirs(&old, root);
     let _ = std::fs::remove_dir_all(staging.join("new"));
     let _ = std::fs::remove_file(staging.join(NEW_VERSION));
     Ok(())
+}
+
+/// Move what is at the top of `old` and not of `new` into `new`.
+fn keep_theirs(old: &Path, new: &Path) {
+    let Ok(entries) = std::fs::read_dir(old) else { return };
+    for entry in entries.flatten() {
+        let to = new.join(entry.file_name());
+        if std::fs::symlink_metadata(&to).is_err() {
+            if let Err(e) = std::fs::rename(entry.path(), &to) {
+                smartcut_core::log::line(&format!("update: {} not kept: {e}", entry.path().display()));
+            }
+        }
+    }
+}
+
+/// `a` and `b` swapped in one rename, where the file system can.
+#[cfg(target_os = "linux")]
+fn exchange(a: &Path, b: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    extern "C" {
+        fn renameat2(
+            olddirfd: i32,
+            oldpath: *const std::ffi::c_char,
+            newdirfd: i32,
+            newpath: *const std::ffi::c_char,
+            flags: u32,
+        ) -> i32;
+    }
+    const AT_FDCWD: i32 = -100;
+    const RENAME_EXCHANGE: u32 = 2;
+    let (Ok(a), Ok(b)) = (
+        std::ffi::CString::new(a.as_os_str().as_bytes()),
+        std::ffi::CString::new(b.as_os_str().as_bytes()),
+    ) else {
+        return false;
+    };
+    // SAFETY: two NUL-terminated paths that live across the call.
+    unsafe { renameat2(AT_FDCWD, a.as_ptr(), AT_FDCWD, b.as_ptr(), RENAME_EXCHANGE) == 0 }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn exchange(_: &Path, _: &Path) -> bool {
+    false
 }
 
 /// The zip: each thing at the top of `new` put into `dir`, what it replaces
@@ -751,10 +913,15 @@ fn swap_files(dir: &Path, new: &Path) -> Result<(), String> {
     let staging = dir.join(".update");
     let old = aside(&staging);
     std::fs::create_dir_all(&old).map_err(|e| e.to_string())?;
-    let mut done: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
-    let undo = |done: &[(PathBuf, Option<PathBuf>)]| {
-        for (target, was) in done.iter().rev() {
-            let _ = std::fs::remove_file(target);
+    let mut done: Vec<(PathBuf, Option<PathBuf>, PathBuf)> = Vec::new();
+    // Back into `new`, not thrown away: it stays waiting for the next way
+    // out, and with a file missing from it that would put half a release
+    // in place.
+    let undo = |done: &[(PathBuf, Option<PathBuf>, PathBuf)]| {
+        for (target, was, from) in done.iter().rev() {
+            if std::fs::rename(target, from).is_err() {
+                let _ = std::fs::remove_file(target);
+            }
             if let Some(was) = was {
                 let _ = std::fs::rename(was, target);
             }
@@ -781,7 +948,7 @@ fn swap_files(dir: &Path, new: &Path) -> Result<(), String> {
             undo(&done);
             return Err(format!("{}: {e}", target.display()));
         }
-        done.push((target, was));
+        done.push((target, was, entry.path()));
     }
     let _ = std::fs::remove_dir_all(staging.join("new"));
     let _ = std::fs::remove_file(staging.join(NEW_VERSION));
@@ -797,8 +964,28 @@ pub fn tidy(app: &tauri::AppHandle) {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
+        let swaps = matches!(kind(), Kind::LinuxTar { .. } | Kind::WindowsPortable { .. });
         if name.starts_with("old-") {
-            let _ = std::fs::remove_dir_all(&path);
+            // Made only by the two that swap, so not an AppImage's to clear:
+            // a tar.gz's start does it, and takes back first what was written
+            // into it after the swap -- a terminal whose folder was the one
+            // put aside writes `./smartcut-cli ... -o cut.ts` there.
+            if swaps {
+                if let Kind::LinuxTar { root } = kind() {
+                    keep_theirs(&path, root);
+                }
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        } else if name.starts_with("unpack-") {
+            // Left by an unpack that never finished; one still going on is
+            // younger than this.
+            if stale(&path, 3600) {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        } else if (name == "new" || name == NEW_VERSION) && !swaps {
+            // The folder is shared by everything in the same parent folder:
+            // a tar.gz unpacked beside this AppImage waits here for its own
+            // way out.
         } else if name == "new" {
             // Unpacked by a session whose way out could not put it in place
             // -- another SmartCut was running out of the folder. Offered
@@ -806,12 +993,9 @@ pub fn tidy(app: &tauri::AppHandle) {
             let version = std::fs::read_to_string(dir.join(NEW_VERSION))
                 .ok()
                 .and_then(|v| parse_version(v.trim()));
-            let top = only_folder(&path).ok();
+            let top = only_folder(&path).ok().filter(|top| is_tree(kind(), top));
             match (version, top) {
-                (Some(v), Some(top))
-                    if v > current()
-                        && matches!(kind(), Kind::LinuxTar { .. } | Kind::WindowsPortable { .. }) =>
-                {
+                (Some(v), Some(top)) if v > current() => {
                     with_state(|s| {
                         s.staged = Some(Staged { version: format!("{}.{}.{}", v.0, v.1, v.2), path: top })
                     })
@@ -827,7 +1011,10 @@ pub fn tidy(app: &tauri::AppHandle) {
                 let _ = std::fs::remove_file(&path);
             }
         } else if name.ends_with(".part") {
-            let _ = std::fs::remove_file(&path);
+            // Not one another SmartCut is still writing.
+            if stale(&path, 600) {
+                let _ = std::fs::remove_file(&path);
+            }
         } else if matches!(kind(), Kind::WindowsSetup) && name.ends_with("-setup.exe") {
             // A version this one already is or has passed is of no more use.
             let version = name.split('_').nth(1).and_then(parse_version);
@@ -889,6 +1076,18 @@ mod tests {
         assert!(read_manifest(body, "windows-setup", (0, 9, 0)).unwrap().is_none());
         // A name that is not a file name is refused.
         assert!(read_manifest(body, "linux-tar", (0, 9, 0)).is_err());
+        // Another packaging's file, signed alike, is refused.
+        let other = r#"{"version":"0.9.1","files":{
+            "appimage":{"name":"SmartCut-0.9.1-linux-x86_64.tar.gz","size":10},
+            "linux-tar":{"name":"SmartCut_0.9.1_amd64.AppImage","size":10},
+            "windows-setup":{"name":"smartcut-portable-x64-0.9.1.zip","size":10},
+            "windows-portable":{"name":"SmartCut_0.9.1_x64-setup.exe","size":10}}}"#;
+        for asset in ["appimage", "linux-tar", "windows-setup", "windows-portable"] {
+            assert!(read_manifest(other, asset, (0, 9, 0)).is_err(), "{asset}");
+        }
+        assert!(fits("linux-tar", "SmartCut-0.9.1-linux-x86_64.tar.gz"));
+        assert!(fits("windows-setup", "SmartCut_0.9.1_x64-setup.exe"));
+        assert!(fits("windows-portable", "smartcut-portable-x64-0.9.1.zip"));
     }
 
     #[test]
@@ -909,8 +1108,25 @@ mod tests {
         let new = base.join(".smartcut-update/new/SmartCut-x");
         std::fs::create_dir_all(&new).unwrap();
         std::fs::write(new.join("v"), "new").unwrap();
+        std::fs::write(root.join("mine.ts"), "cut").unwrap();
+        std::fs::create_dir_all(root.join("projects")).unwrap();
+        std::fs::write(root.join("projects/a.scproj"), "{}").unwrap();
         swap_folder(&root, &new).unwrap();
         assert_eq!(std::fs::read_to_string(root.join("v")).unwrap(), "new");
+        // What the user kept in the folder comes along; nothing of the old
+        // release does.
+        assert_eq!(std::fs::read_to_string(root.join("mine.ts")).unwrap(), "cut");
+        assert_eq!(std::fs::read_to_string(root.join("projects/a.scproj")).unwrap(), "{}");
+        assert!(!new.exists());
+        let aside: Vec<_> = std::fs::read_dir(base.join(".smartcut-update"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(aside.len() == 1 && aside[0].starts_with("old-"), "{aside:?}");
+        let old = base.join(".smartcut-update").join(&aside[0]);
+        assert_eq!(std::fs::read_to_string(old.join("v")).unwrap(), "old");
+        assert!(!old.join("mine.ts").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 

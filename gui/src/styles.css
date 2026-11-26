@@ -337,7 +337,9 @@ button.brand.has-update::after {
 }
 #update .modal-box { width: min(520px, 94vw); }
 #update .modal-body { display: flex; flex-direction: column; gap: 8px; }
-.update-bar { flex: none; }
+/* .progress (further down) is flex: 1 for the output screen's row; in this
+   column it would take the bar's height to nothing, so the class pair wins. */
+.progress.update-bar { flex: none; }
 .update-bar[hidden] { display: none; }
 #update-head { font-weight: 600; }
 

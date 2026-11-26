@@ -2016,6 +2016,7 @@ function takePictures(clip, got, was) {
     // The ranges as they are *now*, which is what `refreshPoster` compares
     // against -- and which the walk has just made exact.
     clip.posterSig = JSON.stringify(rangesOf(clip));
+    clip.posterAt = Number.isFinite(got.poster_at) ? { t: got.poster_at, sig: clip.posterSig } : null;
   }
 }
 
@@ -2633,12 +2634,14 @@ async function refreshPoster(clip) {
   // so the last one stands until there is.
   if (!keeps.length) return;
   try {
-    const url = await invoke("clip_poster", { path: clip.path, keeps });
+    const got = await invoke("clip_poster", { path: clip.path, keeps });
     // Nothing where there is no track to take it from, and the row keeps what
     // it had. And the cuts may have moved on while this was in flight, in
     // which case the later answer is the one that speaks for the row.
-    if (url && clip.posterSig === sig) {
+    if (got && clip.posterSig === sig) {
+      const [url, at] = got;
       clip.poster = url;
+      clip.posterAt = Number.isFinite(at) ? { t: at, sig } : null;
       paintRow(clip);
     }
   } catch (e) {
@@ -8499,7 +8502,34 @@ async function reencodeOf(clip) {
     return srcToOut(keeps, t) ?? out[i];
   });
   clip.reencode = { sig, width, plan, segs, shots, out, at, shown };
+  holdPictures(clip);
   return clip.reencode;
+}
+
+/// The clips whose stage pictures are held, the latest first.
+///
+/// Since they are made at the stage's own width they are each a tenth of a
+/// megabyte or more, and they were kept on every clip the screen had shown
+/// for as long as the list lived: a run through thirty recordings of twenty
+/// seams held a hundred and more megabytes of pictures nobody would see
+/// again. Only the last few keep theirs; the plan stays with every clip, and
+/// coming back to one asks for its pictures again, as a wider window does.
+const PICTURED_KEEP = 4;
+let pictured = [];
+function holdPictures(clip) {
+  pictured = [clip, ...pictured.filter((c) => c !== clip)];
+  for (const c of pictured.splice(PICTURED_KEEP)) {
+    // Not the one on the stage, whose pictures `stageShot` reads.
+    if (onShow && onShow.clip === c) {
+      pictured.push(c);
+      continue;
+    }
+    if (c.reencode) {
+      c.reencode.shots = [];
+      c.reencode.width = 0;
+    }
+    c.stagePoster = null;
+  }
 }
 
 /// How many device pixels wide the output screen's stage is, for the
@@ -8539,13 +8569,25 @@ async function stagePosterOf(clip) {
     if (want < len) break;
     want -= len;
   }
+  // The row's poster is the held picture nearest that instant, up to half a
+  // strip cell's spacing away: asked at the instant itself, the sharp picture
+  // that replaced it was of another frame. Its own time where it was taken
+  // for the cuts as they are.
+  const shown = clip.posterAt;
+  if (clip.poster && shown && shown.sig === JSON.stringify(ranges)) at = shown.t;
   const width = outStageWidth();
-  const key = JSON.stringify([at, width]);
-  if (clip.stagePoster && clip.stagePoster.key === key) return clip.stagePoster.url;
+  const key = JSON.stringify(at);
+  // One as wide or wider of the same instant serves, as `reencodeOf` keeps
+  // its pictures: a window made smaller is not a decode.
+  const held = clip.stagePoster;
+  if (held && held.key === key && held.width >= width) return held.url;
   try {
     const [shot] = await invoke("clip_thumbs", { path: clip.path, times: [at], width });
     const url = (shot && shot.url) || null;
-    if (url) clip.stagePoster = { key, url };
+    if (url) {
+      clip.stagePoster = { key, width, url };
+      holdPictures(clip);
+    }
     return url;
   } catch (e) {
     jlog(`stagePosterOf: ${e}`);
@@ -8872,12 +8914,23 @@ function stageShot(i, note = "", poster = null) {
 /// once, and the same frame at the stage's size over it when that arrives
 /// (`stagePosterOf`) -- unless the stage has moved on to something else in
 /// the meantime, which `token` is there to tell.
+///
+/// Told by what the stage still shows rather than by `token` alone: a second
+/// `showReencode` of the same clip and cuts -- any repaint of the screen while
+/// the picture is being made -- counts the token on and then finds the clip
+/// already on show and goes home, and the sharp picture it would have put up
+/// was thrown away for the soft one. `token` still lets a call that was not
+/// overtaken through at once.
 function stageClip(clip, note, token) {
-  stageShot(null, note, posterOf(clip));
+  const poster = posterOf(clip);
+  stageShot(null, note, poster);
+  const mine = onShow;
   stagePosterOf(clip).then((url) => {
-    if (!url || token !== shotsToken || !onShow || onShow.clip !== clip) return;
-    if (onShow.r.segs.length) return;
-    stageShot(null, note, url);
+    if (!url || !onShow || onShow !== mine || onShow.clip !== clip || onShow.r.segs.length) return;
+    const same =
+      token === shotsToken ||
+      (stageSrc === (poster || null) && el("out-ovl-kind").textContent === (note || "—"));
+    if (same) stageShot(null, note, url);
   });
 }
 
@@ -14621,7 +14674,11 @@ const UPDATE_KINDS = ["windows-setup", "windows-portable", "linux-tar", "appimag
 /// Asked to start again into the update, and not yet answered by the close.
 let restartAsked = false;
 
-const updateable = () => !!upd.status && UPDATE_KINDS.includes(upd.status.kind) && !upd.status.blocked;
+// Never in the batch tool, which is left running unattended and is never what
+// gets updated: its 環境設定 reaches the 更新 group too, and 今すぐ確認 there
+// fetched -- an AppImage replaced -- from a window that cannot restart into it.
+const updateable = () =>
+  !isTool() && !!upd.status && UPDATE_KINDS.includes(upd.status.kind) && !upd.status.blocked;
 
 async function updateStatus() {
   if (!upd.status && invoke) upd.status = await invoke("update_status").catch(() => null);
@@ -14640,7 +14697,9 @@ async function checkForUpdate(byHand) {
   if (!updateable()) return null;
   try {
     const found = await invoke("update_check");
-    upd.found = found || null;
+    // Not under a fetch: the box is about the file coming down, and with
+    // nothing found it would put 閉じる on the button that stops it.
+    if (upd.phase !== "fetching") upd.found = found || null;
     if (upd.phase === "idle" || upd.phase === "found" || upd.phase === "failed") {
       upd.phase = found ? "found" : "idle";
     }
@@ -14671,8 +14730,11 @@ function scheduleUpdateCheck() {
 /// The dot, the menu line, and the box if it is up.
 function paintUpdate() {
   const v = upd.phase === "ready" ? upd.ready : upd.found && upd.found.version;
-  const skipped = upd.phase === "found" && prefs.get("updateSkip") === v;
-  const offer = (upd.phase === "found" && !skipped) || upd.phase === "ready" || upd.phase === "fetching";
+  // A fetch that failed or was stopped is still an offer: with the dot and
+  // the menu line gone, the box could be got back only through 環境設定.
+  const open = upd.phase === "found" || upd.phase === "failed";
+  const skipped = open && prefs.get("updateSkip") === v;
+  const offer = (open && !skipped) || upd.phase === "ready" || upd.phase === "fetching";
   el("brand").classList.toggle("has-update", offer);
   const item = el("menu-update");
   item.hidden = !offer;
@@ -14746,8 +14808,10 @@ async function fetchUpdate() {
 
 async function restartIntoUpdate() {
   // A run being written goes on writing until the window closes, and the
-  // close would end it half done.
-  if (exporting) {
+  // close would end it half done. And one being started, whose checks before
+  // the first byte (the names, the disc's room) are awaits the menu is open
+  // through.
+  if (exporting || starting) {
     el("update-said").textContent = t("update.busy");
     return;
   }
@@ -14777,8 +14841,12 @@ el("menu-update").addEventListener("click", () => {
   showUpdate(true);
 });
 el("update-go").addEventListener("click", () => {
-  if (upd.phase === "fetching") invoke("update_cancel");
-  else if (upd.phase === "ready") restartIntoUpdate();
+  // Stop takes effect between two reads, which a stalled line can make a
+  // minute: the button goes quiet until the fetch answers.
+  if (upd.phase === "fetching") {
+    el("update-go").disabled = true;
+    invoke("update_cancel");
+  } else if (upd.phase === "ready") restartIntoUpdate();
   else if (upd.found) fetchUpdate();
   else showUpdate(false);
 });
@@ -15069,7 +15137,7 @@ window.addEventListener("keydown", (ev) => {
   // A panel is over the queue: the ground behind it says the rest of the
   // program is not listening, and Delete taking a job out from under it would
   // be the queue listening anyway.
-  if (!prefsPanel.hidden || !about.hidden) return;
+  if (!prefsPanel.hidden || !about.hidden || !updatePanel.hidden) return;
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   const key = ev.key.toLowerCase();
   if ((ev.ctrlKey || ev.metaKey) && key === "a") {
@@ -15130,6 +15198,9 @@ window.addEventListener("keydown", (ev) => {
   // and it holds the keyboard on a button, which the check for a field
   // below lets through.
   if (!prefsPanel.hidden || !about.hidden || !mediaPanel.hidden || chooser) return;
+  // And the update box, which is a panel like the others: Delete there took
+  // the selected rows out behind it, Enter opened one in the editor.
+  if (!updatePanel.hidden) return;
   if (!el("divide").hidden) return;
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   const key = ev.key.toLowerCase();

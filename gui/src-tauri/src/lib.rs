@@ -549,6 +549,9 @@ struct ClipPictures {
     /// A picture from a little way in, for the row to show. Absent only when
     /// the pass produced no pictures at all.
     poster: Option<String>,
+    /// The time that picture is of, so the output screen can ask for the
+    /// same frame at its own size (`stagePosterOf`).
+    poster_at: Option<f64>,
     scenes: usize,
     /// Whether the pictures were already on disc, in which case this cost a
     /// read of one file and no decoding at all.
@@ -3701,10 +3704,10 @@ fn merged_clip_now(
     // work the ranges out from. It has both now.
     let whole = [(info.first_point, src.duration)];
     let keeps = if keeps.is_empty() { &whole[..] } else { keeps };
+    let poster = poster_of(&track, keeps).or_else(|| track.thumbs.first());
     info.pictures = Some(ClipPictures {
-        poster: poster_of(&track, keeps)
-            .or_else(|| track.thumbs.first())
-            .map(|t| as_url(&t.jpeg)),
+        poster: poster.map(|t| as_url(&t.jpeg)),
+        poster_at: poster.map(|t| t.time),
         scenes: track.scenes.len(),
         cached: false,
         seconds: 0.0,
@@ -3748,13 +3751,15 @@ fn clip_pictures_now(
         return Err("cancelled".into());
     }
 
-    let answer = |track: &smartcut_core::Track, cached| ClipPictures {
-        poster: poster_of(track, keeps)
-            .or_else(|| track.thumbs.first())
-            .map(|t| as_url(&t.jpeg)),
-        scenes: track.scenes.len(),
-        cached,
-        seconds: began.elapsed().as_secs_f64(),
+    let answer = |track: &smartcut_core::Track, cached| {
+        let poster = poster_of(track, keeps).or_else(|| track.thumbs.first());
+        ClipPictures {
+            poster: poster.map(|t| as_url(&t.jpeg)),
+            poster_at: poster.map(|t| t.time),
+            scenes: track.scenes.len(),
+            cached,
+            seconds: began.elapsed().as_secs_f64(),
+        }
     };
 
     // Already made, by this session's earlier run or by an earlier session.
@@ -4639,7 +4644,9 @@ async fn clip_poster(
     path: String,
     keeps: Vec<(f64, f64)>,
     app: tauri::AppHandle,
-) -> Result<Option<String>, String> {
+) -> Result<Option<(String, f64)>, String> {
+    // With the time the picture is of: see `ClipPictures::poster_at`.
+    let answer = |t: &smartcut_core::thumbs::Thumb| (as_url(&t.jpeg), t.time);
     off_thread(move || {
         {
             // The path asked with the pictures' lock held. Asked before it, an
@@ -4653,7 +4660,7 @@ async fn clip_poster(
                 .as_ref()
                 .filter(|_| open_here)
                 .and_then(|t| poster_of(t, &keeps))
-                .map(|t| as_url(&t.jpeg));
+                .map(answer);
             if url.is_some() {
                 return Ok(url);
             }
@@ -4663,7 +4670,7 @@ async fn clip_poster(
         let Some(track) = held_index(&app, &path).and_then(|mut ix| ix.track.take()) else {
             return Ok(None);
         };
-        Ok(poster_of(&track, &keeps).map(|t| as_url(&t.jpeg)))
+        Ok(poster_of(&track, &keeps).map(answer))
     })
     .await
 }
@@ -10196,7 +10203,11 @@ struct Versions {
 // newer release is out, fetching it, and starting again into it. All of the
 // deciding is in that module; these only carry it across.
 
-#[tauri::command]
+// Off the window's thread, as every command that waits on the disc is: this
+// one makes the folder an update would be fetched into and writes a file in
+// it to see whether it can, and that folder is beside the program -- an
+// AppImage on a share that has stalled would hold the window still as long.
+#[tauri::command(async)]
 fn update_status(app: tauri::AppHandle) -> update::Status {
     update::status(&app)
 }
@@ -10233,7 +10244,9 @@ fn update_cancel() {
 /// (`on` false) not after all. The window asks to close after this, the way
 /// 終了 does, so that unsaved work is asked about first; `false` is the
 /// answer to a close that was then called off.
-#[tauri::command]
+// Off the window's thread: it reads every process's program out of /proc,
+// or on Windows runs `tasklist` and waits for it.
+#[tauri::command(async)]
 fn update_restart(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     if on {
         update::want_restart(&app)
