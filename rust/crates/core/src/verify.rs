@@ -909,7 +909,7 @@ pub fn check_placed(
                         going && !stop.load(Ordering::Relaxed)
                     })?;
                     if !gone {
-                        for (t, kept) in stops.finish() {
+                        for (t, kept) in stops.finish_with(|t, before| decoded_after(src, t, before)) {
                             if kept.as_ref().is_some_and(|frame| !hand(t, frame)) {
                                 gone = true;
                                 break;
@@ -1550,6 +1550,18 @@ struct Held {
 /// which writes every picture there is: a picture shown at or past the
 /// recording's stated length (an MPEG-1 `.avi` timed on asking puts its last
 /// at 8.000 s of an 8.000 s file) is one the cut writes.
+///
+/// **Where the recording ends before [`crate::index::REORDERED`] pictures
+/// more**, what the rule weighs is how many there are
+/// ([`crate::index::TAIL`]), and the cut counts them as packets in decode
+/// order: the B pictures shown just ahead of a damaged P are decoded after
+/// it, and a picture its decoder does not finish at the end of the file is
+/// one too. There the packets are read as the cut reads them, where the
+/// caller can ([`Stops::finish_with`], [`decoded_after`]). A broadcast hit
+/// 1.1 s before its end, cut `--keep 160-165.8`, had the cut put the picture
+/// back (33 packets after it) and this check, counting the 30 pictures
+/// decoded after it, stop at it: "174 written, 168 expected" on a correct
+/// cut.
 struct Stops<T> {
     from: f64,
     end: f64,
@@ -1561,6 +1573,9 @@ struct Stops<T> {
     up: Option<(f64, T)>,
     /// A picture held as possible damage, and the pictures read after it.
     held: Option<Doubted<T>>,
+    /// The times of the packets decoded after the held picture, as the cut
+    /// reads them, where [`Stops::finish_with`] was told them.
+    told: Option<Vec<f64>>,
 }
 
 /// A picture of [`Stops`] held as possible damage, with its time, and the
@@ -1583,7 +1598,7 @@ type Handed<T> = Vec<(f64, Option<T>)>;
 
 impl<T> Stops<T> {
     fn new(from: f64, end: f64, fd: f64, least: f64) -> Self {
-        Stops { from, end, fd, least, recent: std::collections::VecDeque::new(), up: None, held: None }
+        Stops { from, end, fd, least, recent: std::collections::VecDeque::new(), up: None, held: None, told: None }
     }
 
     /// A picture at `t` has been read; `keep` makes a copy of it to hold.
@@ -1633,13 +1648,28 @@ impl<T> Stops<T> {
         self.up_too()
     }
 
+    /// As [`Self::finish`], with the shown times of the packets decoded after
+    /// the held picture read from the recording itself where fewer pictures
+    /// came after it than the rule asks for: `decoded_after` is given the
+    /// held picture's time and that of the picture shown before it, and says
+    /// `None` where it cannot tell. See the type's note.
+    fn finish_with(&mut self, decoded_after: impl FnOnce(f64, f64) -> Option<Vec<f64>>) -> Handed<T> {
+        let before = self.up.as_ref().map(|u| u.0).or(self.recent.front().copied());
+        if let (Some(((s, _), after)), Some(before)) = (&self.held, before) {
+            if after.len() < crate::index::REORDERED {
+                self.told = decoded_after(*s, before);
+            }
+        }
+        self.finish()
+    }
+
     /// The held picture judged on what was read after it, by the cut's rule:
     /// handed on in its slot with the pictures after it where it is damage,
     /// and the read goes on; else the read stops where it would have.
     fn judged(&mut self) -> (Handed<T>, bool) {
         let Some(((s, item), after)) = self.held.take() else { return (self.up_too(), false) };
         let recent: Vec<f64> = self.up.iter().map(|u| u.0).chain(self.recent.iter().copied()).collect();
-        let times: Vec<f64> = after.iter().map(|x| x.0).collect();
+        let times: Vec<f64> = self.told.take().unwrap_or_else(|| after.iter().map(|x| x.0).collect());
         let Some(at) = stray_slot(s, self.fd, &recent, &times) else {
             return (self.up_too(), false);
         };
@@ -1682,6 +1712,46 @@ impl<T> Stops<T> {
         self.recent.push_front(t);
         self.recent.truncate(crate::index::REORDERED);
     }
+}
+
+/// The shown times of the packets decoded after the picture shown at `t` --
+/// a picture held as possible damage, shown after one at `before` -- as the
+/// cut reads them (`stray_place` in [`crate::cut`]): its video packets in
+/// decode order, up to [`crate::index::REORDERED`] of them. `None` where that
+/// picture's packet is not met within a few seconds of reading, or where a
+/// recorder's seams put the check's times on a joined clock.
+fn decoded_after(src: &Source, t: f64, before: f64) -> Option<Vec<f64>> {
+    if !src.joins.is_empty() {
+        return None;
+    }
+    let video = src.video.stream_index;
+    let fd = src.video.frame_duration();
+    let mut ictx = crate::input::demux(&src.input.url).ok()?;
+    crate::input::keep_only(&mut ictx, &[video]);
+    let tb = f64::from(ictx.stream(video)?.time_base());
+    let target = ((before - 1.0 + src.start_time) * ff::ffi::AV_TIME_BASE as f64) as i64;
+    ictx.seek(target, ..target).ok()?;
+    let mut met = false;
+    let mut after = Vec::new();
+    for (stream, packet) in ictx.read_packets() {
+        if stream.index() != video {
+            continue;
+        }
+        let Some(at) = packet.pts().map(|q| q as f64 * tb - src.start_time) else { continue };
+        if !met {
+            // Its time is the damaged one: nothing else is shown near it.
+            met = (at - t).abs() < fd / 4.0;
+            if !met && at > before + 10.0 && at < t - crate::index::STRAY {
+                return None;
+            }
+            continue;
+        }
+        after.push(at);
+        if after.len() >= crate::index::REORDERED {
+            break;
+        }
+    }
+    met.then_some(after)
 }
 
 /// Time with no picture in it among pictures starting at `times`, sorted:
@@ -1828,7 +1898,15 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
         let mut packets = untimed.paired(ictx.read_packets(), video);
         // See [`crate::cut::Mpeg4Untimed`].
         let mut vol_untimed = crate::cut::Mpeg4Untimed::default();
-        while let Some((stream, packet, doubted)) = packets.read() {
+        // **A picture whose time alone is damage is where the cut copies
+        // it** ([`crate::preview::Strays`]), and the read does not stop on
+        // it ([`crate::index::PastStop`]): one B picture of a broadcast whose
+        // PES time was hit, 4444 s on, ended the read in the middle of
+        // `--keep 50-70`, and a correct cut was called "10.143s to 19.983s
+        // in the source" with "10.373s with none of this track" OFF.
+        let mut strays = crate::preview::Strays::new(src);
+        let mut past_stop = crate::index::PastStop::default();
+        while let Some((stream, mut packet, doubted)) = strays.read(&mut packets) {
             if stop.load(Ordering::Relaxed) {
                 return None;
             }
@@ -1845,12 +1923,14 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
                 // to let a cut that lost that much pass. Read on for it, as
                 // far as 10 s past the range: a track that has stopped in
                 // the recording has nothing more to come.
-                if crate::audio::read_reached(&stream, &packet, start)
-                    .is_some_and(|t| t > b + 10.0 || (t > b + 1.5 && heard_to.iter().all(|&h| h >= b)))
-                {
-                    to_the_end = false;
-                    break;
+                if let Some(t) = crate::audio::read_reached(&stream, &packet, start) {
+                    let past = t > b + 10.0 || (t > b + 1.5 && heard_to.iter().all(|&h| h >= b));
+                    if past_stop.ends(t, b + 1.5, past) {
+                        to_the_end = false;
+                        break;
+                    }
                 }
+                strays.mend(src, &mut packet, tb, &mut packets);
                 let own = untimed.pts_of(&packet, doubted);
                 let by_vol = vol_untimed.pts_of(src, &packet, tb, || mpeg4_record(src));
                 let pts = own.or(by_vol);
@@ -2532,6 +2612,7 @@ fn listen(
     got: &mut Heard,
 ) -> Option<()> {
     let mut packets = ictx.read_packets();
+    let mut past_stop = crate::index::PastStop::default();
     for (stream, packet) in packets.by_ref() {
         let Some(k) = tracks.iter().position(|&i| i == stream.index()) else {
             // The pictures say when the stretch is over: sound is laid
@@ -2542,8 +2623,12 @@ fn listen(
             // ([`crate::audio::read_reached`]), and asked of its
             // presentation time the read stopped there and a cut's own
             // recording was said to have seconds less sound than it has.
-            if crate::audio::read_reached(&stream, &packet, start).is_some_and(|t| t > y + 1.5) {
-                break;
+            // Past one picture whose time alone is damage: see
+            // [`crate::index::PastStop`].
+            if let Some(t) = crate::audio::read_reached(&stream, &packet, start) {
+                if past_stop.ends(t, y + 1.5, t > y + 1.5) {
+                    break;
+                }
             }
             continue;
         };
@@ -2866,12 +2951,45 @@ mod tests {
         let (out, _) = stopped(20.0, &last);
         assert_eq!(out.len(), 340);
         assert!(out.windows(2).all(|w| w[1].0 > w[0].0));
-        // Too few after it to say: the read stops at it, as before.
-        assert_eq!(stopped(20.0, &last[..320]).0.len(), 300);
+        // Near the end, 19 after it: the slot it leaves among them says it
+        // (see `tail_gap` in [`crate::index`]); one after it is too few.
+        assert_eq!(stopped(20.0, &last[..320]).0.len(), 320);
+        assert_eq!(stopped(20.0, &last[..302]).0.len(), 300);
         // The range ends right at the damaged picture: it is put back, and
         // that is past the range's end.
         let (out, _) = stopped(10.0 - 1e-6, &times);
         assert_eq!(out.len(), 300);
+    }
+
+    /// Near the end of the recording the packets decoded after a damaged
+    /// picture are what is weighed where the caller can read them; the 30
+    /// pictures decoded after it say it too, by the slot it leaves among
+    /// them.
+    #[test]
+    fn the_end_of_a_recording_counts_the_packets() {
+        let fd = 1.0 / 30.0;
+        let run = |told: Option<Vec<f64>>| {
+            let mut stops = Stops::new(f64::NEG_INFINITY, 20.0 - 1e-6, fd, fd);
+            let mut out = 0;
+            for k in 0..=330usize {
+                let t = k as f64 * fd + if k == 300 { 4444.0 } else { 0.0 };
+                let (handed, going) = stops.push(t, || k);
+                out += handed.len();
+                assert!(going);
+            }
+            let asked = std::cell::Cell::new(None);
+            let rest = stops.finish_with(|t, before| {
+                asked.set(Some((t, before)));
+                told.clone()
+            });
+            assert_eq!(asked.get(), Some((300.0 * fd + 4444.0, 299.0 * fd)));
+            out + rest.len()
+        };
+        assert_eq!(run(None), 331);
+        let packets: Vec<f64> = (298..=333).filter(|&k| k != 300).map(|k| k as f64 * fd).collect();
+        assert_eq!(run(Some(packets)), 331);
+        // Told no more than came: the same.
+        assert_eq!(run(Some((301..=330).map(|k| k as f64 * fd).collect())), 331);
     }
 
     /// A range opening on the damaged picture: the picture up before it,

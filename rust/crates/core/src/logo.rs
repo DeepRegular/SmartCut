@@ -335,11 +335,18 @@ fn walk_keyframes<T: Send + 'static>(
         move |t, frame| Ok(take(frame).map(|v| (t, v))),
     )?;
 
+    // The progress is read from the earlier of the last two pictures: an
+    // entry picture minutes ahead of the ones on either side of it is damage
+    // ([`without_strays`]), and read as it stood it said the whole recording
+    // was done and the bar stood still at the end of the pass from there on.
+    // A real long still is passed on the picture after it.
+    let mut behind = f64::NEG_INFINITY;
     let mut deliver = |made: Vec<Option<(f64, T)>>| {
         let mut last = None;
         for (t, v) in made.into_iter().flatten() {
             visit(t, v);
-            last = Some(t);
+            last = Some(behind.min(t));
+            behind = t;
         }
         last
     };
@@ -863,11 +870,6 @@ pub fn detect_with(
     })
 }
 
-// How far ahead of the entry pictures on either side of it a picture's time
-// has to stand to be damage rather than the recording's: the walk's own rule
-// for the same thing.
-use crate::index::STRAY;
-
 /// The scored timeline without the entry pictures whose time is damage.
 ///
 /// **Reception damage that hits only an I or P picture's shown time** puts
@@ -882,7 +884,9 @@ use crate::index::STRAY;
 /// recording's.
 fn without_strays(times: Vec<f64>, scores: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
     let stray = |i: usize| {
-        i > 0 && i + 1 < times.len() && times[i] - times[i - 1].max(times[i + 1]) > STRAY
+        // In the order the pictures are shown, where nothing is decoded out
+        // of place: see [`crate::index::is_stray`].
+        i > 0 && i + 1 < times.len() && crate::index::is_stray_shown(times[i], times[i - 1], times[i + 1])
     };
     let keep: Vec<bool> = (0..times.len()).map(|i| !stray(i)).collect();
     if keep.iter().all(|&k| k) {

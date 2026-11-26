@@ -683,6 +683,10 @@ struct Reader<'s> {
     /// show from it: libavcodec shows nothing from one, and the window's
     /// still was black and its playback stopped at once.
     keyed: bool,
+    /// The instant of the picture handed on last, and the picture after it
+    /// read ahead to judge it by. See `pull`.
+    last: Option<f64>,
+    peeked: Option<(f64, ff::frame::Video)>,
 }
 
 impl<'s> Reader<'s> {
@@ -781,6 +785,8 @@ impl<'s> Reader<'s> {
             untimed,
             leading_b,
             keyed: false,
+            last: None,
+            peeked: None,
         })
     }
 
@@ -847,7 +853,44 @@ impl<'s> Reader<'s> {
         self.src.video.frame_duration() * 1e-3
     }
 
-    /// The next picture of the clip, in the order it is shown.
+    /// The next picture of the clip, in the order it is shown, at the
+    /// instant it is shown at.
+    ///
+    /// **A picture whose time alone is damage is shown in its place among
+    /// the pictures around it**, as the walk and the cut place it -- by the
+    /// one rule, asked of the pictures in the order they are shown
+    /// ([`crate::index::stray_shown_at`]): more than [`crate::index::STRAY`]
+    /// after, or before, both the one before it and the one after it (in
+    /// that order there is no decode place to ask about, so the lead alone
+    /// decides). Taken at its time, a
+    /// picture a reception fault had stamped 4444 s on stood ahead of every
+    /// instant asked for, and the window held the picture before it from
+    /// there to its end -- through the crossing, and on past it where the
+    /// cut copies the clip as it is. A clock that really jumps on moves the
+    /// picture after too, and is read as it was.
+    fn pull(&mut self) -> Result<Option<(f64, ff::frame::Video)>> {
+        let next = match self.peeked.take() {
+            Some(next) => Some(next),
+            None => self.pull_shown()?,
+        };
+        let Some((mut t, frame)) = next else { return Ok(None) };
+        let fd = self.src.video.frame_duration();
+        if let Some(before) = self.last.filter(|&b| crate::index::far_from(t, b)) {
+            self.peeked = self.pull_shown()?;
+            if let Some((after, _)) = &self.peeked {
+                if fd.is_finite() && fd > 0.0 {
+                    if let Some(at) = crate::index::stray_shown_at(t, before, *after, fd) {
+                        t = at;
+                    }
+                }
+            }
+        }
+        self.last = Some(t);
+        Ok(Some((t, frame)))
+    }
+
+    /// The next picture the decoder hands back, in the order it is shown,
+    /// at the time it carries.
     ///
     /// **A recorder's seam is read across as the cut reads it**, by the rule
     /// [`crate::preview`]'s walk reads it with: the decoder is drained of the
@@ -859,7 +902,7 @@ impl<'s> Reader<'s> {
     /// pictures of the old stretch after its end, which neither the output
     /// nor the window's own still ([`shot`]) shows. Nothing changes on a
     /// recording without seams.
-    fn pull(&mut self) -> Result<Option<(f64, ff::frame::Video)>> {
+    fn pull_shown(&mut self) -> Result<Option<(f64, ff::frame::Video)>> {
         let mut frame = ff::frame::Video::empty();
         loop {
             if let Some(next) = self.queued.pop_front() {

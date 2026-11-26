@@ -1210,8 +1210,9 @@ struct AudioTrack {
     mender: Option<crate::audio::Mender<Mended>>,
     /// The program config element the track's first frame is to carry,
     /// where its frames name their channels in one and the first written
-    /// may not: put on frames until one is written. See
-    /// [`crate::adts::pce_of`] and [`AudioTrack::opening`].
+    /// may not: put on frames until one that opens on it is written. See
+    /// [`crate::adts::pce_of`], [`AudioTrack::opening`] and
+    /// [`AudioTrack::opens_on_pce`].
     pce: Option<Vec<u8>>,
 }
 
@@ -1261,13 +1262,11 @@ impl AudioTrack {
     /// frame read nothing. Every later frame, and every frame of a track
     /// that names a configuration, goes as it came.
     fn opening(&mut self, packet: ff::Packet) -> ff::Packet {
-        if self.written > 0 {
-            return packet;
-        }
         // Kept, not taken: a first frame the muxer turns away (a damaged
         // header) is not written, and the frame after it, now the first,
         // needs the element as much -- taken here, every later frame of the
-        // track was turned away for the want of it.
+        // track was turned away for the want of it. Given up only once a
+        // frame that opens on it is written; see [`Self::opened`].
         let Some(pce) = self.pce.as_ref() else { return packet };
         let Some(body) = packet.data().and_then(|d| crate::adts::with_pce(d, pce)) else {
             return packet;
@@ -1280,6 +1279,20 @@ impl AudioTrack {
         out.set_dts(packet.dts());
         out.set_position(packet.position());
         out
+    }
+
+    /// Whether a frame handed to the muxer settles [`Self::pce`]: one that
+    /// opens on the element, or one with no ADTS header (the re-encoder's,
+    /// whose element is in what the encoder states). **Not every written
+    /// frame**: one [`Self::opening`] could not put the element in (several
+    /// raw blocks, which a damaged header can claim) went out as it came, and
+    /// with the element given up there no frame of the cut could be decoded.
+    /// As `opened` in [`crate::sound`].
+    fn opens_on_pce(&self, packet: &ff::Packet) -> bool {
+        self.pce.is_some()
+            && packet.data().is_some_and(|w| {
+                crate::adts::pce_of(w).is_some() || crate::adts::AdtsFormat::parse(w).is_none()
+            })
     }
 
     /// A copied frame in the framing the track is written in. See
@@ -2082,8 +2095,12 @@ impl Writer {
         }
         packet.set_position(-1);
         let packet = self.audio[track].opening(packet);
+        let opens = self.audio[track].opens_on_pce(&packet);
         self.write(packet, None)??;
         self.audio[track].written += 1;
+        if opens {
+            self.audio[track].pce = None;
+        }
         Ok(())
     }
 
@@ -2294,6 +2311,7 @@ impl Writer {
         };
         let tolerated = (!self.into_ts && self.audio[track].adts.is_some()).then_some(track);
         let packet = self.audio[track].opening(packet);
+        let opens = self.audio[track].opens_on_pce(&packet);
         match self.write(packet, tolerated)? {
             // An MP4 or Matroska muxer runs AAC through aac_adtstoasc, which
             // turns away a frame whose ADTS header is damaged -- one bad
@@ -2311,6 +2329,9 @@ impl Writer {
         }
         let t = &mut self.audio[track];
         t.written += 1;
+        if opens {
+            t.pce = None;
+        }
         t.last_out = Some(pts);
         self.laid.insert(track, out_start);
         // On a track laid end to end, from where this frame was laid: the
@@ -4335,12 +4356,15 @@ fn read_ttml_span(
     // gives: a track with nothing after the range's start never says so.
     crate::input::keep_with_pictures(&mut ictx, &[caption.in_index]);
     let mut span: Vec<TtmlRead> = Vec::new();
+    let mut past_stop = crate::index::PastStop::default();
     for (stream, packet) in ictx.read_packets() {
         if stream.index() != caption.in_index {
-            if crate::input::packet_time(&stream, &packet, src.start_time)
-                .is_some_and(|t| t >= stop + PAST_UNTIL)
-            {
-                break;
+            // Past one picture whose time alone is damage: see
+            // [`crate::index::PastStop`].
+            if let Some(t) = crate::input::packet_time(&stream, &packet, src.start_time) {
+                if past_stop.ends(t, stop + PAST_UNTIL, t >= stop + PAST_UNTIL) {
+                    break;
+                }
             }
             continue;
         }
@@ -4440,12 +4464,15 @@ fn read_caption_before(
     // Per language: the packet whose statement is up, with when it was sent.
     let mut up: std::collections::BTreeMap<u8, (f64, ff::Packet)> = Default::default();
     let mut management: Option<(f64, ff::Packet)> = None;
+    let mut past_stop = crate::index::PastStop::default();
     for (stream, packet) in ictx.read_packets() {
         if stream.index() != caption.in_index {
-            if crate::input::packet_time(&stream, &packet, src.start_time)
-                .is_some_and(|t| t >= through + PAST_UNTIL)
-            {
-                break;
+            // Past one picture whose time alone is damage: see
+            // [`crate::index::PastStop`].
+            if let Some(t) = crate::input::packet_time(&stream, &packet, src.start_time) {
+                if past_stop.ends(t, through + PAST_UNTIL, t >= through + PAST_UNTIL) {
+                    break;
+                }
             }
             continue;
         }
@@ -5501,13 +5528,17 @@ fn read_subpictures_before(src: &Source, until: f64, through: f64) -> Result<Sub
     // came last. See [`carried_up`].
     let mut handed: Vec<(i32, f64, Vec<u8>)> = Vec::new();
     let mut sent: Vec<(i32, f64, Vec<u8>)> = Vec::new();
+    let mut past_stop = crate::index::PastStop::default();
     for (stream, packet) in ictx.read_packets() {
         if stream.parameters().id() != ff::codec::Id::DVD_SUBTITLE {
-            if stream.index() == src.video.stream_index
-                && crate::input::packet_time(&stream, &packet, src.start_time)
-                    .is_some_and(|t| t >= through + PAST_UNTIL)
-            {
-                break;
+            // Past one picture whose time alone is damage: see
+            // [`crate::index::PastStop`].
+            if stream.index() == src.video.stream_index {
+                if let Some(t) = crate::input::packet_time(&stream, &packet, src.start_time) {
+                    if past_stop.ends(t, through + PAST_UNTIL, t >= through + PAST_UNTIL) {
+                        break;
+                    }
+                }
             }
             continue;
         }
@@ -5812,12 +5843,15 @@ fn read_graphics_before(
     let mut before: Vec<Option<crate::pgs::Plane>> = vec![None; writer.graphics.len()];
     let mut opening: Vec<Option<crate::pgs::Plane>> = vec![None; writer.graphics.len()];
     let mut late = Vec::new();
+    let mut past_stop = crate::index::PastStop::default();
     for (stream, packet) in ictx.read_packets() {
         let Some(k) = wanted.iter().position(|i| *i == stream.index()) else {
-            if crate::input::packet_time(&stream, &packet, src.start_time)
-                .is_some_and(|t| t >= through + PAST_UNTIL)
-            {
-                break;
+            // Past one picture whose time alone is damage: see
+            // [`crate::index::PastStop`].
+            if let Some(t) = crate::input::packet_time(&stream, &packet, src.start_time) {
+                if past_stop.ends(t, through + PAST_UNTIL, t >= through + PAST_UNTIL) {
+                    break;
+                }
             }
             continue;
         };
@@ -5904,7 +5938,10 @@ pub(crate) use conformed::{convert_matrices, far_slack, matrices};
 /// the recording ends first, more than [`crate::index::TAIL`] of them all
 /// are. After a long hold, the pictures decoded next are soon shown after
 /// it; at a clock that jumps, all of them are; the last picture of a
-/// recording has no more after it than the stream reorders, and stays.
+/// recording has no more after it than the stream reorders, and stays
+/// unless it leaves a gap among them (see [`crate::index::stray_at`]). The
+/// mirror of it, a time damaged backwards, is asked the same way
+/// ([`crate::index::is_stray_back`]).
 ///
 /// **A key picture the walk put back is put where the walk put it**, as the
 /// index says (`walked`): its entry point is where a copy ends or opens,
@@ -5917,7 +5954,7 @@ pub(crate) use conformed::{convert_matrices, far_slack, matrices};
 /// one of the pictures, and its decode time (its shown time where it has
 /// none).
 #[allow(clippy::too_many_arguments)]
-fn stray_place<'a, I>(
+pub(crate) fn stray_place<'a, I>(
     t: f64,
     dts: Option<f64>,
     before_dts: Option<f64>,
@@ -5931,7 +5968,7 @@ fn stray_place<'a, I>(
 where
     I: Iterator<Item = (ff::format::stream::Stream<'a>, ff::Packet)>,
 {
-    use crate::index::{REORDERED, STRAY};
+    use crate::index::REORDERED;
     if walked.is_some() {
         return walked;
     }
@@ -5942,7 +5979,7 @@ where
     // the pictures are then at their end, as the walk's are.
     let mut read = ahead.len();
     while after.len() < REORDERED && read < 64 * REORDERED {
-        if after.first().is_some_and(|&(a, _)| t - a <= STRAY) {
+        if after.first().is_some_and(|&(a, _)| !crate::index::far_from(t, a)) {
             return None;
         }
         let Some(item) = packets.read() else { break };
@@ -5952,10 +5989,9 @@ where
         ahead.push_back(item);
         read += 1;
     }
-    let in_place = match (before_dts, dts.or(Some(t)), after.first()) {
-        (Some(before), Some(own), Some(&(_, next))) => before <= own && own <= next,
-        _ => true,
-    };
+    // Out of place only by decode times the demuxer stated, as the walk asks
+    // it: see [`crate::index::decoded_in_place`].
+    let in_place = crate::index::decoded_in_place(before_dts, dts, after.first().map(|a| a.1));
     let recent: Vec<f64> = recent.iter().copied().collect();
     let times: Vec<f64> = after.iter().map(|a| a.0).collect();
     crate::index::stray_at(t, dts, in_place, fd, &recent, &times)
@@ -5970,7 +6006,7 @@ pub(crate) fn walked_place(src: &Source, packet: &ff::Packet, t: f64) -> Option<
     if !packet.is_key() || pos < 0 {
         return None;
     }
-    src.points.iter().find(|p| p.pos == pos && t - p.time > crate::index::STRAY).map(|p| p.time)
+    src.points.iter().find(|p| p.pos == pos && crate::index::far_from(t, p.time)).map(|p| p.time)
 }
 
 /// The judgement of [`stray_place`] on what it read: `recent` the pictures'
@@ -5980,6 +6016,43 @@ pub(crate) fn walked_place(src: &Source, packet: &ff::Packet, t: f64) -> Option<
 /// to be in its place; see [`crate::index::stray_at`].
 pub(crate) fn stray_slot(t: f64, dts: Option<f64>, fd: f64, recent: &[f64], after: &[f64]) -> Option<f64> {
     crate::index::stray_at(t, dts, true, fd, recent, after)
+}
+
+/// How far before the byte of the entry point that ends a copy a picture
+/// has to be read for the copy to take it for one decoded ahead of that
+/// point: more than the few bytes two readers can differ by over where a
+/// packet begins, and less than any picture.
+const UNTIL_SLACK: u64 = 4096;
+
+/// The shown time of the next picture of the stream `video` the read hands
+/// over, read into `ahead` (which the copy reads next) where it is not there
+/// already. `None` where none comes within as many packets as
+/// [`stray_place`] reads.
+fn next_picture_shown<'a, I>(
+    video: usize,
+    in_tb: f64,
+    start: f64,
+    ahead: &mut std::collections::VecDeque<(ff::format::stream::Stream<'a>, ff::Packet, bool)>,
+    packets: &mut poc_seam::Paired<'a, I>,
+) -> Option<f64>
+where
+    I: Iterator<Item = (ff::format::stream::Stream<'a>, ff::Packet)>,
+{
+    let shown = |p: &(ff::format::stream::Stream<'a>, ff::Packet, bool)| {
+        (p.0.index() == video).then(|| p.1.pts()).flatten().map(|q| q as f64 * in_tb - start)
+    };
+    if let Some(t) = ahead.iter().find_map(shown) {
+        return Some(t);
+    }
+    while ahead.len() < 64 * crate::index::REORDERED {
+        let item = packets.read()?;
+        let t = shown(&item);
+        ahead.push_back(item);
+        if t.is_some() {
+            return t;
+        }
+    }
+    None
 }
 
 /// Take the segment's packets straight from the source, untouched.
@@ -6169,6 +6242,20 @@ fn copy_segment(
     let mut video_done = false;
     // Whether the picture just copied is the last; see where the copy ends.
     let mut last_copied = false;
+    // The byte of the entry point that ends the copy, where the index has
+    // it: see where the copy ends. Only on a transport or program stream,
+    // whose pictures carry their PES's own times -- the damage that rule is
+    // for is a reception fault in one -- not where the times are worked out
+    // (an `.avi` with B pictures, timed on asking: at the join of two
+    // encodes its last P picture came out a picture's slot past the entry
+    // point, and left out as damage it took the pictures after it with it).
+    let pes_timed = ictx.format().name().split(',').any(|n| matches!(n.trim(), "mpegts" | "mpeg"));
+    let until_at: Option<u64> = seg.copy_until.filter(|_| pes_timed).and_then(|until| {
+        src.points
+            .iter()
+            .find(|p| (p.time - until).abs() < fd / 2.0)
+            .and_then(|p| u64::try_from(p.pos).ok())
+    });
     // One flag per stream being gathered. The read stops when every one of
     // them has run past this segment, not when the first does: the sound of
     // a bilingual recording arrives on two PIDs that are interleaved but not
@@ -6191,8 +6278,7 @@ fn copy_segment(
     // see [`stray_place`]. Empty but for that.
     let mut ahead = std::collections::VecDeque::new();
     // The pictures' times as they were read (put back where damaged), last
-    // first, and the last one's decode time (its shown time where it has
-    // none).
+    // first, and the last one's decode time where the demuxer stated one.
     let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
     let mut last_dts: Option<f64> = None;
     while let Some((stream, packet, doubted)) = ahead.pop_front().or_else(|| packets.read()) {
@@ -6388,16 +6474,22 @@ fn copy_segment(
         // As it was read, for an index that kept a damaged time: see where
         // the copy ends.
         let read_t = t;
-        let dts = packet.dts().map(|d| d as f64 * in_tb - src.start_time);
+        // The packet's own decode time, and only where its shown time is its
+        // own too: one placed by its order (see [`poc_seam::Pairs`]) has no
+        // decode time of its own, as the walk takes it.
+        let dts = packet
+            .dts()
+            .filter(|_| packet.pts() == Some(pts))
+            .map(|d| d as f64 * in_tb - src.start_time);
         // **A picture whose time alone is damaged is placed among its
         // neighbours**, not where the damage puts it. One I picture of an SD
         // broadcast whose PES time was hit, 4444 s ahead at 40 s, was taken
         // for the copy's end: `--keep 30-60` wrote 313 of its 899 pictures
         // and held the last for 20 s. Asked only of a picture shown more than
-        // [`crate::index::STRAY`] after the one decoded before it, which no
-        // ordinary picture is -- or of the first read, where there is none
-        // before it and only the index can say.
-        if recent.front().is_none_or(|&before| t - before > crate::index::STRAY) {
+        // [`crate::index::STRAY`] after or before the one decoded before it
+        // ([`crate::index::far_from`]) -- or of the first read, where there
+        // is none before it and only the index can say.
+        if recent.front().is_none_or(|&before| crate::index::far_from(t, before)) {
             let walked = walked_place(src, &packet, t);
             if let Some(at) = stray_place(t, dts, last_dts, walked, fd, &recent, &mut ahead, &mut packets, |p| {
                 (p.0.index() == ist_index)
@@ -6406,16 +6498,17 @@ fn copy_segment(
                     .map(|q| (q, p.1.dts().map_or(q, |d| d as f64 * in_tb - src.start_time)))
             }) {
                 crate::note_once(format!(
-                    "note: a picture at about {at:.3}s carries a time {:.0}s further on, which \
+                    "note: a picture at about {at:.3}s carries a time {:.0}s {}, which \
                      only damage gives; it is copied in its place among the pictures around it",
-                    t - at
+                    (t - at).abs(),
+                    if t > at { "further on" } else { "earlier" }
                 ));
                 t = at;
             }
         }
         recent.push_front(t);
         recent.truncate(crate::index::REORDERED);
-        last_dts = dts.or(Some(read_t));
+        last_dts = dts;
         // A converted subtitle whose stop the pictures have passed comes down
         // here, not when the next one arrives. See [`Writer::converted_due`].
         if !writer.converted.is_empty() && t >= seg.start && t < seg.end {
@@ -6479,6 +6572,37 @@ fn copy_segment(
             let unmet = until - seg.end > crate::index::STRAY && t > seg.end + fd;
             let met_as_read =
                 (t - until).abs() >= fd / 2.0 && (read_t - until).abs() < fd / 2.0 && entry_like(&packet);
+            // **Not on a picture before that entry point whose time alone is
+            // past it.** Every picture decoded ahead of an entry point is shown
+            // ahead of it, so one read before the point's byte and shown past
+            // it, while the picture decoded next is not, carries damage too
+            // short for [`stray_place`] to put back (under
+            // [`crate::index::STRAY`]): one B picture of a broadcast whose PES
+            // time was hit 30 s ahead ended `--keep 50-70` there, 321 of its
+            // 599 pictures. It is left out, the one picture it is, and the
+            // copy goes on to its entry point. A copy that has reached the
+            // point's byte, or whose next picture is past it as well, ends
+            // as it always did. **Only on a time the packet states itself**:
+            // one its order placed (an `.avi` of two MPEG-4 encodes with B
+            // pictures joined, whose reference P before the join has none)
+            // is the order's guess, and left out by this a P was lost and
+            // the pictures after it decoded wrong.
+            let damage_past = !met_as_read
+                && !doubted
+                && packet.pts() == Some(pts)
+                && t > until + fd
+                && (t - until).abs() >= fd / 2.0
+                && read_at.zip(until_at).is_some_and(|(at, k)| at.saturating_add(UNTIL_SLACK) < k)
+                && next_picture_shown(ist_index, in_tb, src.start_time, &mut ahead, &mut packets)
+                    .is_some_and(|next| next <= until + fd);
+            if damage_past {
+                crate::note_once(format!(
+                    "note: a picture read before the entry point at {until:.3}s carries a time \
+                     {:.3}s past it, which only damage gives; it is left out of the copy",
+                    t - until
+                ));
+                continue;
+            }
             if met_as_read && t < seg.end - fd / 2.0 {
                 last_copied = true;
             } else if (((t - until).abs() < fd / 2.0 || met_as_read) && entry_like(&packet))
@@ -10905,6 +11029,9 @@ fn reencode_segment(
         // in `feed!` -- a range re-encoded across one wrote 16 of its 17
         // head pictures. Every packet with a time goes in as it was.
         let mut packet = packet;
+        // The time the packet came with, before its order placed one: see
+        // where its decode time is read below.
+        let own_pts = packet.pts();
         if let Some(order) = order.as_mut() {
             match packet.pts() {
                 // One whose time is the next picture's: see [`poc_seam::Pairs`].
@@ -10927,10 +11054,19 @@ fn reencode_segment(
         // damaged time, it came out past the segment's end and was left out.
         if let Some(pts) = packet.pts() {
             let mut t = pts as f64 * in_tb - src.start_time;
-            let dts = packet.dts().map(|d| d as f64 * in_tb - src.start_time);
+            // Only a decode time the demuxer stated, and only for a picture
+            // whose shown time is its own, as the copy and the walk take it
+            // ([`copy_segment`]): a Matroska states none on its first
+            // pictures and after a seek, and a shown time put in for one made
+            // a slide show's P picture (70 s holds, B pictures) read as
+            // damage and moved 12 s early.
+            let dts = packet
+                .dts()
+                .filter(|_| own_pts == Some(pts))
+                .map(|d| d as f64 * in_tb - src.start_time);
             // The first read too, which only the index can answer for: a
             // range opening on such a key picture lost it.
-            if recent.front().is_none_or(|&before| t - before > crate::index::STRAY) {
+            if recent.front().is_none_or(|&before| crate::index::far_from(t, before)) {
                 let walked = walked_place(src, &packet, t);
                 if let Some(at) = stray_place(t, dts, last_dts, walked, fd, &recent, &mut ahead, &mut packets, |p| {
                     (p.0.index() == ist_index)
@@ -10944,7 +11080,7 @@ fn reencode_segment(
             }
             recent.push_front(t);
             recent.truncate(crate::index::REORDERED);
-            last_dts = dts.or(Some(pts as f64 * in_tb - src.start_time));
+            last_dts = dts;
         }
         if !run_up.passes(&packet, in_tb, src.start_time) {
             continue;

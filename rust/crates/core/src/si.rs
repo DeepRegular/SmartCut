@@ -1588,7 +1588,14 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
         // The difference on a 33-bit clock, either way round.
         let d = (now - shown).rem_euclid(1 << 33);
         let d = if d >= 1 << 32 { d - (1 << 33) } else { d };
-        Some(d as f64 / 90_000.0)
+        // Not where the opening picture's own time is damage: a key hit by
+        // reception damage (`crate::index::is_stray`) is listed at the time
+        // the copy puts it back at, so a range opens on it, and its stamp
+        // read here is a minute or more ahead -- the clock went out that far
+        // wrong (4444 s on one). No picture is shown ten seconds after the
+        // clock reference that comes with it; the range's clock is then
+        // written from where it opens, as where nothing was heard.
+        (d as f64 > -10.0 * 90_000.0).then(|| d as f64 / 90_000.0)
     };
 
     let mut at = base;

@@ -473,11 +473,6 @@ impl Walk {
     }
 }
 
-// How far ahead of the pictures around it a picture's time has to stand to
-// be damage rather than the recording's: the walk's own rule for the same
-// thing.
-use crate::index::STRAY;
-
 impl Walk {
     /// Whether the picture before this one, `t`, was the one out of place,
     /// and is now taken back.
@@ -489,11 +484,12 @@ impl Walk {
     /// out of order, and the flat stretches of the rest of the recording were
     /// never looked for: one I picture of a broadcast recording hit that way
     /// 30 s in, and the six black stretches after it were not found. A
-    /// picture shown more than [`STRAY`] after both the one before it and the
+    /// picture shown more than [`crate::index::STRAY`] after both the one before it and the
     /// one after it, which is shown between the two, is that damage; a long
     /// hold has the pictures after it shown after it.
     fn after_a_stray(&mut self, t: f64) -> bool {
-        if !(self.before.is_finite() && t > self.before && self.last - t > STRAY) {
+        // In the order the pictures are shown: see [`crate::index::is_stray`].
+        if !(self.before.is_finite() && t > self.before && crate::index::is_stray_shown(self.last, self.before, t)) {
             return false;
         }
         self.looks.pop();
@@ -569,7 +565,12 @@ pub fn find_runs_with(
             walk.take(&frame, src, opts)?;
         }
         if let Some(f) = progress.as_mut() {
-            let done = (walk.last.max(0.0) / src.duration.max(1e-9)).clamp(0.0, 1.0);
+            // From the picture taken before the last: a last one minutes
+            // ahead may be damage that the next picture takes back (see
+            // [`Walk::after_a_stray`]), and read as it stood it said the
+            // whole recording was done and the bar stood still at the end
+            // from there on.
+            let done = (walk.before.max(0.0) / src.duration.max(1e-9)).clamp(0.0, 1.0);
             if done - told >= 0.02 {
                 told = done;
                 f(done);
@@ -765,7 +766,9 @@ mod tests {
             walk.last = t;
             walk.looks.push(Look { time: t, shade: None });
         };
-        for t in [0.0, 0.5, 1.0, 4445.0, 1.5, 2.0, 1.9, 2.5, 80.0, 70.0, 81.0] {
+        // A picture shown a little before the one ahead of it (less than
+        // `STRAY`) after a long hold is passed over as out of order.
+        for t in [0.0, 0.5, 1.0, 4445.0, 1.5, 2.0, 1.9, 2.5, 80.0, 77.0, 81.0] {
             admit(&mut walk, t);
         }
         let times: Vec<f64> = walk.looks.iter().map(|l| l.time).collect();

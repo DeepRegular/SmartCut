@@ -242,20 +242,6 @@ pub fn writable_rate(id: ff::codec::Id, want: u32) -> u32 {
     ff::encoder::find(encoder_for(id)).map_or(want, |codec| encoder_rate(&codec, want))
 }
 
-/// Build the encoder that stands in for the recording's own.
-///
-/// Perceptual noise substitution is off: it is an MPEG-4 tool, and a stream
-/// that announces itself as MPEG-2 AAC must not contain one. It is on by
-/// default in this encoder, so a frame written into an ARIB recording without
-/// this is a frame an MPEG-2 decoder is entitled to refuse.
-///
-/// `channels` is what comes *out*, which is the recording's own count except
-/// where a downmix was asked for. `rate` is likewise the recording's own
-/// unless a rate was asked for. `id` is what is written, which is the
-/// recording's own codec except where the container has no box for it -- see
-/// [`crate::cut`] and Blu-ray LPCM. `like` is the width the samples are
-/// wanted at, which is where the encoder's format is picked from -- the
-/// recording's own unless a width was asked for.
 /// The encoder that writes frames a recording's own decoder would take.
 ///
 /// The recording's own codec, with one exception: **LATM is a framing rather
@@ -271,6 +257,21 @@ pub(crate) fn encoder_for(id: ff::codec::Id) -> ff::codec::Id {
     }
 }
 
+/// Build the encoder that stands in for the recording's own.
+///
+/// Perceptual noise substitution is off: it is an MPEG-4 tool, and a stream
+/// that announces itself as MPEG-2 AAC must not contain one. It is on by
+/// default in this encoder, so a frame written into an ARIB recording without
+/// this is a frame an MPEG-2 decoder is entitled to refuse.
+///
+/// `channels` is what comes *out*, which is the recording's own count except
+/// where a downmix was asked for. `rate` is likewise the recording's own
+/// unless a rate was asked for. `id` is what is written, which is the
+/// recording's own codec except where the container has no box for it -- see
+/// [`crate::cut`] and Blu-ray LPCM. `like` is the width the samples are
+/// wanted at, which is where the encoder's format is picked from -- the
+/// recording's own unless a width was asked for.
+///
 /// `keep` is the arrangement to keep where the encoder takes it; see
 /// [`encoder_layout`]. An encoder that lists no arrangements can still turn
 /// one down when it is opened -- AAC writes the ones it has a channel

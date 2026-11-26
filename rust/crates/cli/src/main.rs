@@ -2434,11 +2434,11 @@ fn run() -> Result<()> {
         // A held index carries the track it was built with, so the pass over
         // the key pictures is not repeated either.
         let built;
-        let (track, how) = match held.as_ref().and_then(|ix| ix.track.as_ref()) {
-            Some(t) => (t, "読み込み"),
+        let (track, how, made) = match held.as_ref().and_then(|ix| ix.track.as_ref()) {
+            Some(t) => (t, "読み込み", false),
             None => {
                 built = smartcut_core::thumbs::build(&src, &opts, None)?;
-                (&built, "構築")
+                (&built, "構築", true)
             }
         };
         let bytes: usize = track.thumbs.iter().map(|t| t.jpeg.len()).sum();
@@ -2457,17 +2457,36 @@ fn run() -> Result<()> {
             track.typical,
             src.duration / track.scenes.len().max(1) as f64
         );
-        if let Some(p) = &writing {
+        // And into a held index that had no track -- one a cut wrote --
+        // which was believed and so never written again: every `--scenes`
+        // with it built the track afresh.
+        let track_due = seek_index
+            .as_ref()
+            .filter(|_| made && held.is_some() && !as_proxy)
+            .map(std::path::PathBuf::from);
+        if let Some(p) = writing.as_ref().or(track_due.as_ref()) {
             src.input.refuse_as_output(&p.to_string_lossy())?;
             // As above: an index of half the recording is not kept, and was
             // said so when the recording was opened.
             if src.read_whole {
-                smartcut_core::SeekIndex::of(&src, Some(track)).save(p)?;
-                tell!(
-                    "シーク用インデックス : {} ({:.1} MB)",
-                    p.display(),
-                    std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) as f64 / 1e6
-                );
+                let saved = smartcut_core::SeekIndex::of(&src, Some(track)).save(p);
+                // Into a held index only for the next run's sake: one on a
+                // share it was read from but cannot be written to is left as
+                // it was, and the scenes found are still the answer.
+                match (saved, &writing) {
+                    (Err(e), None) => smartcut_core::say!(
+                        "note: {} was not given the thumbnail track: {e}",
+                        p.display()
+                    ),
+                    (saved, _) => {
+                        saved?;
+                        tell!(
+                            "シーク用インデックス : {} ({:.1} MB)",
+                            p.display(),
+                            std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) as f64 / 1e6
+                        );
+                    }
+                }
             }
         }
         if let Ok(path) = std::env::var("SMARTCUT_SCENES_OUT") {
@@ -3168,24 +3187,15 @@ fn run() -> Result<()> {
     // went with the run; H.264 into a `.ra` was written under RealVideo's
     // name, which no player decodes. `.mka` is a Matroska file and holds
     // them as they are. The pictures are the first recording's: a `--join`
-    // is written in its shape, unless `--master` names another.
-    if !sound_only && stopping_at.is_none() && bdav.is_none() && master <= 1 {
+    // is written in its shape, unless `--master` names another -- which is
+    // asked once it is open (below). `master` counts from nought here: held
+    // to `master <= 1`, `--master 2` was asked of the first recording's
+    // pictures, refusing a cut the master's could be written as and letting
+    // through one it could not, to fail with "Invalid argument" once `-o`
+    // was gone.
+    if !sound_only && stopping_at.is_none() && bdav.is_none() && master == 0 {
         if let Some(out) = output.as_deref() {
-            let ext = smartcut_core::carry::extension(out);
-            let takes: &[&str] = match ext.as_str() {
-                "m4a" | "m4b" => &["h264", "mpeg4"],
-                "ogg" | "ogv" => &["theora", "vp8"],
-                "ra" | "rm" => &["rv10", "rv20"],
-                _ => &[],
-            };
-            if !takes.is_empty() && !takes.contains(&src.video.codec.as_str()) {
-                bail!(
-                    "a .{ext} cannot carry {} pictures: it holds only {} ones. Add --sound-only to \
-                     write the sound alone, or name a .mkv, which holds the pictures as they are",
-                    src.video.codec,
-                    takes.join(" or ")
-                );
-            }
+            container_takes(out, &src.video.codec)?;
         }
     }
     // `--analyze` stops here, before the disc is touched. Reserving a slot on
@@ -3635,6 +3645,11 @@ fn run() -> Result<()> {
     }
     drop_streams_named(shaped_like, &drop_streams)?;
     drop_subpictures_named(&src, &joined_src, &drop_subpictures)?;
+    // The pictures a `--master N` writes the join in, as the first
+    // recording's were asked above.
+    if !sound_only && onto.is_none() && master > 0 {
+        container_takes(&out, &shaped_like.video.codec)?;
+    }
     // The sound and no pictures. Taken here, once every recording of the run
     // is open: what the sound writer wants is the ranges and the joins, both
     // of which are in hand, and nothing the planner works out.
@@ -4467,6 +4482,27 @@ fn disc_can_hold(
                 a.stream_index
             );
         }
+    }
+    Ok(())
+}
+
+/// Refuse an output named as a sound file whose muxer takes pictures of a few
+/// kinds only, for pictures of another kind (see the call before
+/// `--analyze`).
+fn container_takes(out: &str, codec: &str) -> Result<()> {
+    let ext = smartcut_core::carry::extension(out);
+    let takes: &[&str] = match ext.as_str() {
+        "m4a" | "m4b" => &["h264", "mpeg4"],
+        "ogg" | "ogv" => &["theora", "vp8"],
+        "ra" | "rm" => &["rv10", "rv20"],
+        _ => &[],
+    };
+    if !takes.is_empty() && !takes.contains(&codec) {
+        bail!(
+            "a .{ext} cannot carry {codec} pictures: it holds only {} ones. Add --sound-only to \
+             write the sound alone, or name a .mkv, which holds the pictures as they are",
+            takes.join(" or ")
+        );
     }
     Ok(())
 }

@@ -511,6 +511,9 @@ impl Reader {
         // The last picture's time, for a packet that carries none: see the
         // crawl below.
         let mut clock: Option<f64> = None;
+        // One entry point passed over as damage. See where the pictures stop
+        // the read.
+        let mut past_stop = crate::index::PastStop::default();
         // The time of the composition the display set being read opened
         // with. See the graphics below.
         let mut composed: Option<f64> = None;
@@ -552,8 +555,18 @@ impl Reader {
                         } else {
                             to
                         };
-                        if t > past {
+                        // **Not on one entry point whose time alone is
+                        // damage** ([`crate::index::PastStop`], the rule the
+                        // cut's look-backs stop by): stopped there, a window
+                        // read across a damaged key of a broadcast showed
+                        // none of the captions after it, which the cut
+                        // carries where they are. Passed over once, not as
+                        // the clock.
+                        if past_stop.ends(t, past, t > past) {
                             break;
+                        }
+                        if t > past {
+                            continue;
                         }
                         clock = Some(t);
                     }

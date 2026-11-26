@@ -598,7 +598,13 @@ fn pictures_afresh(
     // See [`crate::input::LateFrames`], as in the cut's own segments.
     let mut late = crate::input::LateFrames::new(&ictx, ctx.audio.len());
     let mut packets = untimed.paired(ictx.read_packets(), ist_index);
-    while let Some((stream, mut packet, doubted)) = packets.read() {
+    // A picture whose time alone is damaged, placed as the cut's own
+    // re-encode places it: see [`crate::cut::stray_place`].
+    let fd = src.video.frame_duration();
+    let mut ahead = std::collections::VecDeque::new();
+    let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    let mut last_dts: Option<f64> = None;
+    while let Some((stream, mut packet, doubted)) = ahead.pop_front().or_else(|| packets.read()) {
         let index = stream.index();
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
@@ -685,7 +691,49 @@ fn pictures_afresh(
         // an H.264 `.mpg` reel conformed to another master lost both of its
         // pts-less pictures, the one before each held in its place. See
         // [`crate::preview::Untimed`].
+        let own_pts = packet.pts();
         untimed.place(&mut packet, doubted);
+        // **A picture whose time alone is damaged goes in at its place among
+        // the pictures around it**, as the cut's own re-encode and copy put
+        // it ([`crate::cut::stray_place`]). Decoded at its damaged time --
+        // 4444 s on, in a broadcast recording whose PES header was hit -- it
+        // came out past the range's end, and every picture after it in the
+        // range was taken as past the end too: a reel conformed to another
+        // master, or a crossing over it, froze on the picture before.
+        if let Some(pts) = packet.pts() {
+            let mut t = pts as f64 * in_tb - src.start_time;
+            // Only a stated decode time of a picture whose shown time is its
+            // own, as the copy takes it: see [`crate::cut::stray_place`].
+            let dts = packet
+                .dts()
+                .filter(|_| own_pts == Some(pts))
+                .map(|d| d as f64 * in_tb - src.start_time);
+            if recent.front().is_none_or(|&before| crate::index::far_from(t, before)) {
+                let walked = crate::cut::walked_place(src, &packet, t);
+                if let Some(at) = crate::cut::stray_place(
+                    t,
+                    dts,
+                    last_dts,
+                    walked,
+                    fd,
+                    &recent,
+                    &mut ahead,
+                    &mut packets,
+                    |p| {
+                        (p.0.index() == ist_index)
+                            .then(|| p.1.pts().map(|q| q as f64 * in_tb - src.start_time))
+                            .flatten()
+                            .map(|q| (q, p.1.dts().map_or(q, |d| d as f64 * in_tb - src.start_time)))
+                    },
+                ) {
+                    packet.set_pts(Some(((at + src.start_time) / in_tb).round() as i64));
+                    t = at;
+                }
+            }
+            recent.push_front(t);
+            recent.truncate(crate::index::REORDERED);
+            last_dts = dts;
+        }
         // A packet the decoder will not take is not a reason to stop; see
         // [`reencode_segment`], where the same is said at more length --
         // and counted on the same terms: a packet of the run-up the seek
@@ -1054,6 +1102,13 @@ struct FarSide<'s> {
     shown: bool,
     /// See [`crate::cut::Mpeg4LeadingB`].
     leading_b: crate::cut::Mpeg4LeadingB,
+    /// A picture whose time alone is damaged, placed as in
+    /// [`pictures_afresh`]: the packets read ahead to judge it (read next),
+    /// the pictures' times read before it (the last first), and the last
+    /// one's decode time.
+    queue: std::collections::VecDeque<ff::Packet>,
+    recent: std::collections::VecDeque<f64>,
+    last_dts: Option<f64>,
 }
 
 impl<'s> FarSide<'s> {
@@ -1104,7 +1159,61 @@ impl<'s> FarSide<'s> {
             keyed: false,
             shown: false,
             leading_b,
+            queue: Default::default(),
+            recent: Default::default(),
+            last_dts: None,
         })
+    }
+
+    /// Where a picture read at `t` really belongs, where its time is damage
+    /// rather than the clip's: [`crate::cut::stray_place`]'s question,
+    /// asked of this reader, which reads one packet at a time and keeps what
+    /// it reads ahead in `queue`.
+    fn stray(&mut self, packet: &ff::Packet, t: f64, dts: Option<f64>) -> Result<Option<f64>> {
+        use crate::index::REORDERED;
+        if let Some(at) = crate::cut::walked_place(self.src, packet, t) {
+            return Ok(Some(at));
+        }
+        if self.recent.is_empty() {
+            return Ok(None);
+        }
+        let of = |p: &ff::Packet, in_tb: f64, start: f64| {
+            p.pts().map(|q| {
+                let q = q as f64 * in_tb - start;
+                (q, p.dts().map_or(q, |d| d as f64 * in_tb - start))
+            })
+        };
+        let (in_tb, start) = (self.in_tb, self.start_time);
+        let mut after: Vec<(f64, f64)> = self.queue.iter().filter_map(|p| of(p, in_tb, start)).collect();
+        let mut read = self.queue.len();
+        while after.len() < REORDERED && read < 64 * REORDERED {
+            if after.first().is_some_and(|&(a, _)| !crate::index::far_from(t, a)) {
+                return Ok(None);
+            }
+            let (next, ended) = {
+                let mut packets = self.ictx.read_packets();
+                let next = packets.next().map(|(stream, packet)| (stream.index(), packet));
+                (next, packets.finished())
+            };
+            match next {
+                Some((index, p)) if index == self.ist => {
+                    if let Some(a) = of(&p, in_tb, start) {
+                        after.push(a);
+                    }
+                    self.queue.push_back(p);
+                }
+                Some(_) => {}
+                None => {
+                    ended?;
+                    break;
+                }
+            }
+            read += 1;
+        }
+        let in_place = crate::index::decoded_in_place(self.last_dts, dts, after.first().map(|a| a.1));
+        let recent: Vec<f64> = self.recent.iter().copied().collect();
+        let times: Vec<f64> = after.iter().map(|a| a.0).collect();
+        Ok(crate::index::stray_at(t, dts, in_place, self.src.video.frame_duration(), &recent, &times))
     }
 
     /// The picture this clip has on screen `elapsed` seconds into the
@@ -1143,10 +1252,13 @@ impl<'s> FarSide<'s> {
                 let t = pts as f64 * self.in_tb - self.start_time;
                 return Ok(Some((t, reshape(&frame, into, &mut self.rescale)?)));
             }
-            let (read, ended) = {
-                let mut packets = self.ictx.read_packets();
-                let read = packets.next().map(|(stream, packet)| (stream.index(), packet));
-                (read, packets.finished())
+            let (read, ended) = match self.queue.pop_front() {
+                Some(packet) => (Some((self.ist, packet)), Ok(())),
+                None => {
+                    let mut packets = self.ictx.read_packets();
+                    let read = packets.next().map(|(stream, packet)| (stream.index(), packet));
+                    (read, packets.finished())
+                }
             };
             // One picture behind the read, so that it can be told whether the
             // next has its time: see [`crate::preview::Untimed::hold`].
@@ -1174,7 +1286,26 @@ impl<'s> FarSide<'s> {
             };
             self.in_force.see(&packet);
             // As in [`pictures_afresh`].
+            let own_pts = packet.pts();
             self.untimed.place(&mut packet, doubted);
+            // And a picture whose time alone is damaged, as there: the
+            // crossing froze on the picture before it.
+            if let Some(pts) = packet.pts() {
+                let mut t = pts as f64 * self.in_tb - self.start_time;
+                let dts = packet
+                    .dts()
+                    .filter(|_| own_pts == Some(pts))
+                    .map(|d| d as f64 * self.in_tb - self.start_time);
+                if self.recent.front().is_none_or(|&before| crate::index::far_from(t, before)) {
+                    if let Some(at) = self.stray(&packet, t, dts)? {
+                        packet.set_pts(Some(((at + self.start_time) / self.in_tb).round() as i64));
+                        t = at;
+                    }
+                }
+                self.recent.push_front(t);
+                self.recent.truncate(crate::index::REORDERED);
+                self.last_dts = dts;
+            }
             // A packet the decoder will not take is not a reason to stop
             // the cut; see [`reencode_segment`].
             if !self.run_up.passes(&packet, self.in_tb, self.start_time) {

@@ -751,8 +751,9 @@ pub fn build_with_sound(
     // passed over, it had no thumbnail and no scene change could be found
     // on it. See [`crate::preview::Untimed`].
     let mut untimed = crate::preview::Untimed::new(&src.video);
+    let mut strays = crate::preview::Strays::new(src);
     let mut reading = untimed.paired(ictx.read_packets(), idx);
-    while let Some((stream, mut packet, doubted)) = reading.read() {
+    while let Some((stream, mut packet, doubted)) = strays.read(&mut reading) {
         if let Some(f) = stop.as_ref() {
             if f() {
                 bail!("abandoned");
@@ -788,6 +789,9 @@ pub fn build_with_sound(
         // packet is no picture's second half. Dropped, as [`crate::preview`]'s
         // walk drops it there.
         untimed.place(&mut packet, doubted);
+        // A key picture whose own time is damage, at the time the walk put
+        // it back: see [`crate::preview::Strays`].
+        strays.mend(src, &mut packet, src.video.time_base, &mut reading);
         in_force.see(&packet);
         if stretches.reach(packet.position()) {
             pending.clear();
@@ -1071,14 +1075,17 @@ fn decode_on(
     let mut leading_b = record.as_ref().map(crate::cut::Mpeg4LeadingB::new);
     let mut keyed_in = false;
     let mut shown_any = false;
+    let mut strays = crate::preview::Strays::new(src);
     let mut reading = untimed.paired(ictx.read_packets(), idx);
-    while let Some((stream, mut packet, doubted)) = reading.read() {
+    while let Some((stream, mut packet, doubted)) = strays.read(&mut reading) {
         if stream.index() != idx {
             continue;
         }
         // See [`crate::preview::Landed`].
         crate::preview::Landed::mend(&mut landed, &mut packet, src);
         untimed.place(&mut packet, doubted);
+        // See [`crate::preview::Strays`].
+        strays.mend(src, &mut packet, src.video.time_base, &mut reading);
         if let Some(pts) = vol_untimed.pts_of(src, &packet, src.video.time_base, || {
             record.as_ref().and_then(crate::cut::mpeg4_config)
         }) {

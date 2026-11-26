@@ -2550,14 +2550,22 @@ thread_local! {
     static OPENING_PCE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
 }
 
-/// A frame has been written to the file: the ones after it go as they came.
-/// Not before -- a first frame the muxer turns away (a damaged header, left
-/// out by [`write_copied`]) is not written, and the frame after it, now the
-/// first, needs the element as much: taken when the first was handed over,
-/// every later frame of the track was turned away for the want of it. As
-/// `AudioTrack::opening` in [`crate::cut`] keeps it.
-fn opened() {
-    OPENING_PCE.with(|p| p.borrow_mut().take());
+/// A frame (`written`) has been written to the file: once one that opens on
+/// the element is, the ones after it go as they came. Not before -- a first
+/// frame the muxer turns away (a damaged header, left out by
+/// [`write_copied`]) is not written, and the frame after it, now the first,
+/// needs the element as much: taken when the first was handed over, every
+/// later frame of the track was turned away for the want of it. Nor after a
+/// frame written without it: one [`opening`] could not put it in (several raw
+/// blocks, which a damaged header can claim) went into an .aac or a .ts as it
+/// came, and with the element given up there, no frame of the file could be
+/// decoded. A frame with no ADTS header (the re-encoder's) never takes it
+/// here: the element is in what the encoder states.
+fn opened(written: Option<&[u8]>) {
+    let done = |w: &[u8]| crate::adts::pce_of(w).is_some() || crate::adts::AdtsFormat::parse(w).is_none();
+    if written.is_some_and(done) {
+        OPENING_PCE.with(|p| p.borrow_mut().take());
+    }
 }
 
 /// The file's first frame, given the program config element its track names
@@ -2593,6 +2601,9 @@ fn write_copied(
     packet.set_duration((dur / clock.tb).round() as i64);
     packet.set_position(-1);
     let packet = opening(packet);
+    // What it was, for [`opened`]; copied only while the element is owed,
+    // the muxer taking the packet's own bytes.
+    let data = OPENING_PCE.with(|p| p.borrow().is_some()).then(|| packet.data().unwrap_or(&[]).to_vec());
     match packet.write_interleaved(octx) {
         // A frame whose ADTS header is damaged, which the MP4 and Matroska
         // muxers' aac_adtstoasc turns away. One such frame used to fail the
@@ -2603,7 +2614,7 @@ fn write_copied(
         }
         r => {
             r?;
-            opened();
+            opened(data.as_deref());
             Ok(())
         }
     }
@@ -2651,8 +2662,11 @@ fn write_encoded(
     }
     packet.set_position(-1);
     let packet = opening(packet);
+    // What it was, for [`opened`]; copied only while the element is owed,
+    // the muxer taking the packet's own bytes.
+    let data = OPENING_PCE.with(|p| p.borrow().is_some()).then(|| packet.data().unwrap_or(&[]).to_vec());
     packet.write_interleaved(octx)?;
-    opened();
+    opened(data.as_deref());
     Ok(seconds)
 }
 

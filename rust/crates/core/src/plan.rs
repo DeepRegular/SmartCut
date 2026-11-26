@@ -490,7 +490,18 @@ fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
     // half-second slide: its picture 15 lost, the rest a frame early against
     // the sound).
     let mut head_leading: Option<f64> = None;
-    let mut starts = Vec::new();
+    // **The pictures read, in decode order, with their decode times and
+    // whether each is one the answer may hold**, so that a picture whose
+    // shown time alone is damage is put back where the walk and the cut put
+    // it ([`crate::index::stray_at`]) before it is asked about. Taken at its
+    // time it was missing from every answer near it: the clip after a
+    // crossing that ended on the picture before resumed on the picture after
+    // (one picture lost from the output), and a range opening on it had its
+    // sound a frame late. Only where one is met is anything more read: see
+    // below.
+    let mut read: Vec<(f64, Option<f64>, bool)> = Vec::new();
+    let mut stray_met = false;
+    let mut past_stop = crate::index::PastStop::default();
     let mut reading = ictx.read_packets();
     for (stream, packet) in reading.by_ref() {
         if stream.index() != idx {
@@ -546,11 +557,21 @@ fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
         let pts = packet.pts().map(|p| p as f64 * tb - src.start_time);
         let dts = packet.dts().map(|p| p as f64 * tb - src.start_time);
         // Without a decode time to go by (Matroska), on presentation times
-        // a generous way past, for the pictures reordered behind one.
-        if dts.map_or(pts.is_some_and(|t| t > hi + 1.0), |t| t > hi + 2.0 * fd) {
+        // a generous way past, for the pictures reordered behind one. Not on
+        // one B picture whose time alone is damage, which a transport stream
+        // hands over as its decode time too ([`crate::index::PastStop`]): it
+        // is judged below with the rest.
+        let stop = if dts.is_some() { hi + 2.0 * fd } else { hi + 1.0 };
+        if dts.or(pts).is_some_and(|t| past_stop.ends(t, stop, t > stop)) {
+            if let Some(t) = pts.filter(|_| stray_met) {
+                read.push((t, dts, false));
+            }
             break;
         }
         if second_half {
+            if let Some(t) = pts {
+                read.push((t, dts, false));
+            }
             continue;
         }
         // Only a packet with no time of either kind: a program stream (a
@@ -562,11 +583,56 @@ fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
             None if head_leading.is_some() && dts.is_none() => continue,
             None => return None,
         };
-        if t >= lo && t <= hi {
-            starts.push(t);
+        stray_met |= read.last().is_some_and(|&(before, _, _)| crate::index::far_from(t, before));
+        read.push((t, dts, true));
+    }
+    // What a picture met here is judged by: the pictures decoded after it,
+    // as many as the walk asks of (or the end of the recording), bounded by
+    // the packets as the cut's own read-ahead is (`stray_place` in
+    // [`crate::cut`]). Nothing of it is answered for.
+    if stray_met {
+        use crate::index::REORDERED;
+        let mut more = 0;
+        let mut packets = 0;
+        for (stream, packet) in reading.by_ref() {
+            packets += 1;
+            if more >= REORDERED || packets > 64 * REORDERED {
+                break;
+            }
+            if stream.index() != idx {
+                continue;
+            }
+            let at = |v: Option<i64>| v.map(|p| p as f64 * tb - src.start_time);
+            if let Some(t) = at(packet.pts()) {
+                read.push((t, at(packet.dts()), false));
+                more += 1;
+            }
         }
     }
     reading.finished().ok()?;
+    let mut starts = Vec::new();
+    let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    for (i, &(mut t, dts, answered)) in read.iter().enumerate() {
+        if recent.front().is_some_and(|&before| crate::index::far_from(t, before)) {
+            use crate::index::REORDERED;
+            let after: Vec<f64> = read[i + 1..].iter().take(REORDERED).map(|r| r.0).collect();
+            // As the walk asks it ([`crate::index`]'s `strays`).
+            let in_place = crate::index::decoded_in_place(
+                i.checked_sub(1).and_then(|j| read[j].1),
+                dts,
+                read.get(i + 1).map(|r| r.1.unwrap_or(r.0)),
+            );
+            let recent: Vec<f64> = recent.iter().copied().collect();
+            if let Some(at) = crate::index::stray_at(t, dts, in_place, fd, &recent, &after) {
+                t = at;
+            }
+        }
+        recent.push_front(t);
+        recent.truncate(crate::index::REORDERED);
+        if answered && t >= lo && t <= hi {
+            starts.push(t);
+        }
+    }
     starts.sort_by(f64::total_cmp);
     starts.dedup();
     (!starts.is_empty()).then_some(starts)

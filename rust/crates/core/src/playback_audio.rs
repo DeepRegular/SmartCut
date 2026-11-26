@@ -755,6 +755,20 @@ fn reopened_for(params: &ff::codec::Parameters, data: &[u8], src: &Source, idx: 
     ff::codec::context::Context::from_parameters(given).ok()?.decoder().audio().ok()
 }
 
+/// Whether [`reopened_for`] has had its answer from `data`: from any frame
+/// of a track that is not AAC, or that states its own configuration, and
+/// from the first whose ADTS header can be read on one that does not. A
+/// first frame read with a damaged header -- the reading can start on one --
+/// left the decoder as it was, and a track naming its channels in a program
+/// config element was heard without them from there (2.1 made by FFmpeg
+/// played on two channels, its LFE silent).
+fn looked_at(params: &ff::codec::Parameters, data: &[u8]) -> bool {
+    params.id() != ff::codec::Id::AAC
+        // SAFETY: read, not kept.
+        || unsafe { (*params.as_ptr()).extradata_size } > 0
+        || crate::adts::AdtsFormat::parse(data).is_some()
+}
+
 /// [`crate::aac::head_pce`] of `src`'s track `idx`, read once per recording
 /// for the process: by its name, length and time of writing, as `--verify`
 /// keeps an MPEG-4 record. Asked afresh, every meter reading of the editor
@@ -1258,8 +1272,7 @@ fn feed_from(
     let mut decoder = ff::codec::context::Context::from_parameters(params.clone())?
         .decoder()
         .audio()?;
-    // Whether the first of the track's frames has been looked at. See
-    // [`reopened_for`].
+    // Whether the track's frames have been looked at. See [`looked_at`].
     let mut looked = false;
     let mut resampled = ff::frame::Audio::empty();
     let mut folded = ff::frame::Audio::empty();
@@ -1314,9 +1327,11 @@ fn feed_from(
                 continue;
             }
             if !looked {
-                looked = true;
-                if let Some(d) = packet.data().and_then(|data| reopened_for(&params, data, src, idx)) {
-                    decoder = d;
+                if let Some(data) = packet.data() {
+                    looked = looked_at(&params, data);
+                    if let Some(d) = reopened_for(&params, data, src, idx) {
+                        decoder = d;
+                    }
                 }
             }
             if decoder.send_packet(&packet).is_err() {
@@ -1514,9 +1529,11 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
             continue;
         }
         if !looked {
-            looked = true;
-            if let Some(d) = packet.data().and_then(|data| reopened_for(&params, data, src, idx)) {
-                decoder = d;
+            if let Some(data) = packet.data() {
+                looked = looked_at(&params, data);
+                if let Some(d) = reopened_for(&params, data, src, idx) {
+                    decoder = d;
+                }
             }
         }
         if decoder.send_packet(&packet).is_err() {

@@ -879,6 +879,9 @@ pub fn build(
                 Ok(true)
             };
 
+        // A picture whose time alone is damage, put back among the pictures
+        // around it before anything is told of it; see [`Placing`].
+        let mut placing = Placing::new(f64::from(tb_in), fd);
         'read: {
             let mut packets = untimed.paired(ictx.read_packets(), idx);
             while let Some((stream, mut packet, doubted)) = packets.read() {
@@ -901,8 +904,10 @@ pub fn build(
                     if decoder.receive_frame(&mut frame).is_err() {
                         break;
                     }
-                    if !hand_over(Some(frame), &tx)? {
-                        break 'read;
+                    for frame in placing.through(frame) {
+                        if !hand_over(Some(frame), &tx)? {
+                            break 'read;
+                        }
                     }
                 }
             }
@@ -914,6 +919,13 @@ pub fn build(
                     if decoder.receive_frame(&mut frame).is_err() {
                         break;
                     }
+                    for frame in placing.through(frame) {
+                        if !hand_over(Some(frame), &tx)? {
+                            break 'read;
+                        }
+                    }
+                }
+                if let Some(frame) = placing.rest() {
                     if !hand_over(Some(frame), &tx)? {
                         break 'read;
                     }
@@ -981,6 +993,74 @@ pub fn build(
         marks,
         track: collector.finish(src.duration),
     })
+}
+
+/// **A picture whose shown time alone is damage is put back among the
+/// pictures around it** before the proxy, its marks or its thumbnails hear of
+/// it, by the rule the walk and the cut place one with
+/// ([`crate::index::stray_shown_at`]), asked of the pictures in the order the
+/// decoder shows them: more than [`crate::index::STRAY`] after, or before,
+/// both the one before it and the one after it. Taken at its time -- a reception fault stamping
+/// one I picture of a broadcast 4444 s on -- it was the proxy's last picture:
+/// every picture after it came earlier and was passed over as a clock
+/// stepping back, the marks dropped them as out of order, and the access
+/// points after it were walked past unmatched (a 90 s recording made a proxy
+/// of its first 40 s and no thumbnail after them). A clock that really jumps
+/// on moves the picture after too, and is left as it is; nothing is held on
+/// any other recording.
+struct Placing {
+    /// Seconds a tick of the picture track's clock, and a frame.
+    tb: f64,
+    fd: f64,
+    /// The time of the picture handed on last, in seconds.
+    last: Option<f64>,
+    /// A picture held back to be judged by the one after it.
+    held: Option<ff::frame::Video>,
+}
+
+impl Placing {
+    fn new(tb: f64, fd: f64) -> Self {
+        Placing { tb, fd, last: None, held: None }
+    }
+
+    fn seconds(&self, frame: &ff::frame::Video) -> Option<f64> {
+        frame.pts().map(|p| p as f64 * self.tb)
+    }
+
+    /// The pictures to hand on now that `frame` has come out of the decoder:
+    /// the one held back, judged, and `frame` unless it is held in its turn.
+    fn through(&mut self, frame: ff::frame::Video) -> Vec<ff::frame::Video> {
+        let mut out = Vec::with_capacity(2);
+        let now = self.seconds(&frame);
+        if let Some(mut held) = self.held.take() {
+            if let (Some(t), Some(before), Some(next)) = (self.seconds(&held), self.last, now) {
+                if self.fd.is_finite() && self.fd > 0.0 && self.tb > 0.0 {
+                    if let Some(at) =
+                        crate::index::stray_shown_at(t, before, next, self.fd)
+                    {
+                        held.set_pts(Some((at / self.tb).round() as i64));
+                    }
+                }
+            }
+            self.last = self.seconds(&held).or(self.last);
+            out.push(held);
+        }
+        if let (Some(t), Some(before)) = (now, self.last) {
+            if crate::index::far_from(t, before) {
+                self.held = Some(frame);
+                return out;
+            }
+        }
+        self.last = now.or(self.last);
+        out.push(frame);
+        out
+    }
+
+    /// The picture still held when the decoder has nothing more: the last
+    /// of the recording, at its own time.
+    fn rest(&mut self) -> Option<ff::frame::Video> {
+        self.held.take()
+    }
 }
 
 fn rescale(ticks: i64, from: ff::Rational, to: ff::Rational) -> i64 {
@@ -1313,5 +1393,34 @@ mod tests {
         std::fs::write(&at, &raw).unwrap();
         assert!(Marks::load(&at).is_err());
         let _ = std::fs::remove_file(&at);
+    }
+
+    /// A picture whose time alone is damage goes into the proxy in its place;
+    /// a clock that really jumps on is left as it is, and so is every
+    /// picture of a recording without either.
+    #[test]
+    fn a_damaged_time_is_put_back_and_a_jump_is_not() {
+        // A 90 kHz clock at 30 a second: 3000 ticks a picture.
+        let (tb, fd) = (1.0 / 90_000.0, 1.0 / 30.0);
+        let run = |ticks: &[i64]| -> Vec<i64> {
+            let mut placing = Placing::new(tb, fd);
+            let mut out = Vec::new();
+            for &t in ticks {
+                let mut f = ff::frame::Video::new(ff::format::Pixel::YUV420P, 16, 16);
+                f.set_pts(Some(t));
+                out.extend(placing.through(f));
+            }
+            out.extend(placing.rest());
+            out.iter().map(|f| f.pts().unwrap()).collect()
+        };
+        let damage = 4444 * 90_000;
+        assert_eq!(run(&[0, 3000, 6000 + damage, 9000, 12000]), [0, 3000, 6000, 9000, 12000]);
+        let jump = 100 * 90_000;
+        let jumped = [0, 3000, jump, jump + 3000, jump + 6000];
+        assert_eq!(run(&jumped), jumped);
+        let plain: Vec<i64> = (0..10).map(|k| k * 3000).collect();
+        assert_eq!(run(&plain), plain);
+        // The last picture of all, judged by nothing, keeps its time.
+        assert_eq!(run(&[0, 3000, 6000 + damage]), [0, 3000, 6000 + damage]);
     }
 }

@@ -121,8 +121,15 @@ pub fn shared<S: AsRef<str>>(names: &[S]) -> Option<String> {
         }
         let looser: Vec<String> = titles.iter().map(|t| before_bare_number(t)).collect();
         // Not where the number stood inside the series' own brackets
-        // (`枠「X 18 Y」 2`): that cut leaves half a pair on the disc.
-        let open = |t: &String| t.matches('「').count() > t.matches('」').count();
+        // (`枠「X 18 Y」 2`): that cut leaves half a pair on the disc. Any
+        // pair a title is written in, `『X 18 Y』` and `（X 18 Y）` as well.
+        let open = |t: &String| {
+            let folded: Vec<char> = t.chars().map(fold).collect();
+            let count = |c: char| folded.iter().filter(|&&f| f == c).count();
+            [('「', '」'), ('『', '』'), ('(', ')'), ('【', '】')]
+                .iter()
+                .any(|&(o, c)| count(o) > count(c))
+        };
         alike(&looser).filter(|t| !t.is_empty() && !open(t))
     };
     let readings: Vec<(String, String)> = names
@@ -645,6 +652,8 @@ mod tests {
         assert_eq!(shared(&["日曜枠「灯台守の休日」", "日曜枠「硝子の塔」"]).as_deref(), Some("日曜枠"));
         // A bare number inside the block's brackets is not the episode's.
         assert_eq!(shared(&["日曜枠「硝子の塔 18 霧」 #44", "日曜枠「硝子の塔 18 霧」 2"]), None);
+        assert_eq!(shared(&["日曜枠『硝子の塔 18 霧』 #44", "日曜枠『硝子の塔 18 霧』 2"]), None);
+        assert_eq!(shared(&["（硝子の塔 18 霧） #44", "（硝子の塔 18 霧） 2"]), None);
     }
 
     /// The shapes a listing writes that the rules above did not cut: a

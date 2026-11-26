@@ -423,13 +423,16 @@ fn entry_packets(
         .fold(0.0_f64, f64::max);
     let ceiling = until + longest + 1.0;
     let mut beyond = 0u32;
+    let mut strays = Strays::new(src);
     let mut reading = untimed.paired(ictx.read_packets(), idx);
-    while let Some((stream, mut packet, doubted)) = reading.read() {
+    while let Some((stream, mut packet, doubted)) = strays.read(&mut reading) {
         if stream.index() != idx {
             continue;
         }
         Landed::mend(&mut landed, &mut packet, src);
         untimed.place(&mut packet, doubted);
+        // As [`walk`] times it: see [`Strays`].
+        strays.mend(src, &mut packet, src.video.time_base, &mut reading);
         // Thirty in a row, so that one damaged stamp far ahead stops nothing.
         if packet
             .dts()
@@ -2109,6 +2112,107 @@ fn place(ictx: &mut crate::input::Demux, src: &Source, from: f64, margin: f64) -
     Ok(None)
 }
 
+/// **A picture whose own time is damage, put back where the cut copies
+/// it**: a key picture where the walk put it (`walked_place` in
+/// [`crate::cut`]), and any other by the rule the walk and the cut place one
+/// with, asked as the cut asks it (`stray_place` there, which reads ahead as
+/// far as the question takes; the reader reads those packets next, through
+/// [`Strays::read`]). Decoded at its damaged time, 4444 s on, a still
+/// anywhere in its GOP was the picture before it, and a film strip's entry
+/// run (which stops at the first entry picture past what it was asked for)
+/// stopped there and left that cell and every one after it empty; a P
+/// picture hit that way was never shown at its place -- the editor's J and
+/// arrow keys stood on the picture before it for the 19 pictures up to the
+/// next key, and playback stopped there. Asked only of the first picture
+/// read and of one shown more than [`crate::index::STRAY`] after or before
+/// the one read before it ([`crate::index::far_from`]).
+pub(crate) struct Strays<'a> {
+    video: usize,
+    /// The pictures' times as read (or put back), the last first.
+    recent: std::collections::VecDeque<f64>,
+    /// The last picture's decode time, where the demuxer stated one.
+    last_dts: Option<f64>,
+    /// The time the last picture handed out by [`Strays::read`] came with,
+    /// before anything placed one: a decode time is the packet's own only
+    /// with it.
+    own: Option<i64>,
+    /// What the question read ahead, which is read next.
+    ahead: std::collections::VecDeque<(ff::format::stream::Stream<'a>, ff::Packet, bool)>,
+}
+
+impl<'a> Strays<'a> {
+    pub(crate) fn new(src: &Source) -> Self {
+        Strays {
+            video: src.video.stream_index,
+            recent: Default::default(),
+            last_dts: None,
+            own: None,
+            ahead: Default::default(),
+        }
+    }
+
+    /// The next packet: one read ahead by [`Strays::mend`], else the next
+    /// of `reading`.
+    pub(crate) fn read<I>(
+        &mut self,
+        reading: &mut crate::cut::poc_seam::Paired<'a, I>,
+    ) -> Option<(ff::format::stream::Stream<'a>, ff::Packet, bool)>
+    where
+        I: Iterator<Item = (ff::format::stream::Stream<'a>, ff::Packet)>,
+    {
+        let item = self.ahead.pop_front().or_else(|| reading.read())?;
+        if item.0.index() == self.video {
+            self.own = item.1.pts();
+        }
+        Some(item)
+    }
+
+    /// The picture just read (through [`Strays::read`]) put back where its
+    /// time is damage.
+    pub(crate) fn mend<I>(
+        &mut self,
+        src: &Source,
+        packet: &mut ff::Packet,
+        time_base: f64,
+        reading: &mut crate::cut::poc_seam::Paired<'a, I>,
+    ) where
+        I: Iterator<Item = (ff::format::stream::Stream<'a>, ff::Packet)>,
+    {
+        let Some(pts) = packet.pts() else { return };
+        let start = src.start_time;
+        let mut t = pts as f64 * time_base - start;
+        // Its own decode time, as the copy takes it.
+        let dts = packet.dts().filter(|_| self.own == Some(pts)).map(|d| d as f64 * time_base - start);
+        if self.recent.front().is_none_or(|&before| crate::index::far_from(t, before)) {
+            let walked = crate::cut::walked_place(src, packet, t);
+            let video = self.video;
+            let Strays { recent, last_dts, ahead, .. } = self;
+            if let Some(at) = crate::cut::stray_place(
+                t,
+                dts,
+                *last_dts,
+                walked,
+                src.video.frame_duration(),
+                recent,
+                ahead,
+                reading,
+                |p| {
+                    (p.0.index() == video)
+                        .then(|| p.1.pts().map(|q| q as f64 * time_base - start))
+                        .flatten()
+                        .map(|q| (q, p.1.dts().map_or(q, |d| d as f64 * time_base - start)))
+                },
+            ) {
+                packet.set_pts(Some(((at + start) / time_base).round() as i64));
+                t = at;
+            }
+        }
+        self.recent.push_front(t);
+        self.recent.truncate(crate::index::REORDERED);
+        self.last_dts = dts;
+    }
+}
+
 /// The entry point a seek by byte ([`crate::index::seek_to_entry`]) put a
 /// read at: its picture's instant and the byte the index found it at.
 ///
@@ -2414,9 +2518,9 @@ fn walk(
     // A picture whose packet carries no time is given the one its order
     // says, as the cut gives it: see [`Untimed`] (made above, from the record).
     let mut packets = untimed.paired(ictx.read_packets(), idx);
-    // The last picture's time as it was read (or put back).
-    let mut read_before: Option<f64> = None;
-    'outer: while let Some((stream, mut packet, doubted)) = packets.read() {
+    // See [`Strays`].
+    let mut strays = Strays::new(src);
+    'outer: while let Some((stream, mut packet, doubted)) = strays.read(&mut packets) {
         if stream.index() != idx {
             continue;
         }
@@ -2425,21 +2529,8 @@ fn walk(
         if let Some(pts) = vol_untimed.pts_of(src, &packet, in_tb, || crate::cut::mpeg4_config(&record)) {
             packet.set_pts(Some(pts));
         }
-        // **A key picture whose own time is damage is shown where the walk
-        // put it back**, as the cut copies it (`walked_place` in
-        // [`crate::cut`]): decoded at its damaged time, 4444 s on, a still
-        // anywhere in its GOP was the picture before it. Asked only of the
-        // first picture read and of one shown more than
-        // [`crate::index::STRAY`] after the one read before it.
-        if let Some(pts) = packet.pts() {
-            let t = pts as f64 * in_tb - src.start_time;
-            if read_before.is_none_or(|before| t - before > crate::index::STRAY) {
-                if let Some(at) = crate::cut::walked_place(src, &packet, t) {
-                    packet.set_pts(Some(((at + src.start_time) / in_tb).round() as i64));
-                }
-            }
-            read_before = packet.pts().map(|p| p as f64 * in_tb - src.start_time);
-        }
+        // A key picture whose own time is damage: see [`Strays`].
+        strays.mend(src, &mut packet, in_tb, &mut packets);
         in_force.see(&packet);
         if Ahead::before(&mut ahead, &packet, src) {
             continue;

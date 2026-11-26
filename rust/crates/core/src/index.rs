@@ -353,6 +353,7 @@ pub fn walk(
             } as f64
                 * time_base
                 - start_time,
+            dts_stated: p.dts().is_some() && p.pts() == Some(pts),
             key: p.is_key(),
             reference,
             pos: p.position() as i64,
@@ -449,10 +450,39 @@ pub fn walk(
     })
 }
 
-/// How far, in seconds, a picture has to be shown after both of its
-/// neighbours in decode order before its time is taken for damage rather
-/// than the recording's end. See [`walk`].
-pub(crate) const STRAY: f64 = 60.0;
+/// How far, in seconds, a picture has to be shown after (or before) both of
+/// its neighbours in decode order before its time is asked about as damage
+/// rather than the recording's. See [`walk`] and [`is_stray`].
+///
+/// **Five seconds, not sixty.** A reception fault flips one bit of a PES
+/// time, so the damage comes in powers of two of 90 kHz ticks: 5.8, 11.7,
+/// 23.3 and 46.6 s were all short of the sixty this once was, and one B
+/// picture of a broadcast hit 30 s on ended the copy of `--keep 50-70`
+/// there (321 of its 599 pictures). What is asked once a picture is that
+/// far out is the same as at sixty -- the pictures decoded after it
+/// ([`REORDERED`] of them) shown before it too -- and no hold, gap or
+/// reordering of an ordinary recording meets that: the pictures decoded
+/// after a long still are shown after it. Five seconds is well past the
+/// most any stream reorders (sixteen frames).
+pub(crate) const STRAY: f64 = 5.0;
+
+/// How far a picture decoded out of place (see [`decoded_in_place`]) has to
+/// be shown after both of its neighbours to be damage on that alone, as it
+/// was before [`STRAY`] came down: a transport stream that states no decode
+/// time on its PES has libavformat hand the shown time over for one, and a
+/// P picture after a hold then reads as out of place by the B pictures
+/// shown ahead of it. Under this, such a picture is judged by what is
+/// decoded after it, as one in its place is.
+pub(crate) const OUT_OF_PLACE: f64 = 60.0;
+
+/// Whether a picture read at `t` after one at `before` (as that one was put
+/// back) is to be asked about as damage at all: shown more than [`STRAY`]
+/// after it or before it. Every reader asks this before it asks
+/// [`stray_at`] (or [`stray_shown_at`]), so that they all ask of the same
+/// pictures.
+pub(crate) fn far_from(t: f64, before: f64) -> bool {
+    (t - before).abs() > STRAY
+}
 
 /// The pictures of [`walk`] whose shown time is damage rather than the
 /// recording's, by their place in `packets`, with the time each is put back
@@ -463,12 +493,21 @@ fn strays(packets: &[PacketView], fd: f64) -> Vec<(usize, f64)> {
     let mut found = Vec::new();
     for (i, it) in packets.iter().enumerate() {
         let mut t = it.pts;
-        if recent.front().is_some_and(|&before| t - before > STRAY) {
+        if recent.front().is_some_and(|&before| far_from(t, before)) {
             let after: Vec<f64> = packets[i + 1..].iter().take(REORDERED).map(|p| p.pts).collect();
-            let in_place = match (i.checked_sub(1).map(|j| &packets[j]), packets.get(i + 1)) {
-                (Some(before), Some(next)) => before.dts <= it.dts && it.dts <= next.dts,
-                _ => true,
-            };
+            // Out of place only by decode times the demuxer stated: one put
+            // in from a shown time is no decode time. A slide show in
+            // Matroska, 70 s a picture with B pictures, has none on its first
+            // pictures, and its first P picture -- decoded before the B shown
+            // ahead of it -- read as out of place by the I picture's shown
+            // time and was moved 11.7 s back. A shown time is never before
+            // its decode time, so the one after it may stand in.
+            let stated = |p: &PacketView| p.dts_stated.then_some(p.dts);
+            let in_place = decoded_in_place(
+                i.checked_sub(1).and_then(|j| stated(&packets[j])),
+                stated(it),
+                packets.get(i + 1).map(|p| p.dts),
+            );
             let before: Vec<f64> = recent.iter().copied().collect();
             if let Some(at) = stray_at(t, Some(it.dts), in_place, fd, &before, &after) {
                 found.push((i, at));
@@ -481,12 +520,66 @@ fn strays(packets: &[PacketView], fd: f64) -> Vec<(usize, f64)> {
     found
 }
 
+/// Whether a picture is decoded in its place, for [`is_stray`]: its own
+/// decode time (`own`) between that of the picture decoded before it
+/// (`before`) and that of the one decoded after it (`next`, or that one's
+/// shown time where it has none: a shown time is never before its decode
+/// time). **Only decode times the demuxer stated** go in as `before` and
+/// `own`: a Matroska's first pictures, and the first after a seek, have none,
+/// and a shown time put in for one made a slide show's P picture (70 s a
+/// picture, B pictures) read as out of place. In place where any is missing.
+/// Asked by every reader that reads in decode order -- the walk
+/// ([`strays`]), the copy, the re-encode and the conform readers (see
+/// `stray_place` in [`crate::cut`]) and the planner -- so that they judge a
+/// picture alike.
+pub(crate) fn decoded_in_place(before: Option<f64>, own: Option<f64>, next: Option<f64>) -> bool {
+    match (before, own, next) {
+        (Some(before), Some(own), Some(next)) => before <= own && own <= next,
+        _ => true,
+    }
+}
+
+/// Where a read that stops on the pictures' clock stops, past one picture
+/// whose time alone is damage.
+///
+/// A look back for the subtitles up where a range opens reads until a
+/// picture is shown past where it is to stop. One key picture of a broadcast
+/// whose PES time was hit, 4444 s on, is past any such stop, and the read
+/// ended there: the caption standing where the range opened was not carried.
+/// **A picture more than [`STRAY`] past the stop is passed over once**; the
+/// next one shown before the stop again puts the read back on its way. A
+/// clock that really jumps is past the stop at the next picture too, and the
+/// read stops there -- one picture later. Ordinary reads never meet it: the
+/// first picture past a stop is within a frame or two of it.
+#[derive(Default)]
+pub(crate) struct PastStop {
+    /// Whether the last picture read was one passed over.
+    passed: bool,
+}
+
+impl PastStop {
+    /// Whether the read ends at a picture shown at `t`: `past` is the
+    /// reader's own test of `t` against its `stop`.
+    pub(crate) fn ends(&mut self, t: f64, stop: f64, past: bool) -> bool {
+        if !past {
+            self.passed = false;
+            return false;
+        }
+        if t - stop > STRAY && !self.passed {
+            self.passed = true;
+            return false;
+        }
+        true
+    }
+}
+
 /// Whether a picture shown at `t` has a time that is damage rather than the
 /// recording's: shown more than [`STRAY`] after both of its neighbours in
 /// decode order (`before` the one decoded before it, as it was put back;
 /// `after` the pictures decoded after it, in order), and either decoded out
-/// of place (`in_place` false: its decode time is not between theirs) or
-/// shown after a picture decoded [`REORDERED`] places later.
+/// of place (`in_place` false: its decode time is not between theirs) and
+/// more than [`OUT_OF_PLACE`] after them, or shown after a picture decoded
+/// [`REORDERED`] places later.
 ///
 /// **The second is for damage that hits only an I or P picture's shown
 /// time.** Such a picture carries a decode time of its own, which the damage
@@ -514,24 +607,99 @@ pub(crate) fn is_stray(t: f64, before: f64, after: &[f64], in_place: bool) -> bo
     if lead.is_nan() || lead <= STRAY {
         return false;
     }
-    if !in_place {
+    if !in_place && lead > OUT_OF_PLACE {
         return true;
     }
+    // Shown after them at all: the lead above is what says how far.
     match after.get(REORDERED - 1) {
-        Some(&later) => t - later > STRAY,
-        None => after.len() > TAIL && after.iter().all(|&a| t - a > STRAY),
+        Some(&later) => later < t,
+        None => after.len() > TAIL && after.iter().all(|&a| a < t),
     }
 }
 
-/// Where a picture read at `t` really belongs, when [`is_stray`] says its
-/// time is damage: `None` where it is the recording's. `recent` are the
-/// pictures' times decoded before it (the last first, as put back), `after`
-/// those decoded after it, in order -- [`REORDERED`] of them, or all there
-/// are where the recording ends first -- and `dts` its own decode time.
+/// Whether a picture shown at `t` has a time damaged **backwards** -- a stamp
+/// in the past -- rather than the recording's: shown more than [`STRAY`]
+/// before both of its neighbours in decode order (`recent` the pictures
+/// decoded before it, the last first, as put back; `after` those decoded
+/// after it) and before the picture decoded [`REORDERED`] places before it.
+///
+/// The mirror of [`is_stray`]. A P picture of an SD broadcast stamped 35 s
+/// back was taken by the copy for a leading picture of the entry point
+/// before it and left out, and the rest of its GOP decoded wrong (`--keep
+/// 39-41`: 9 pictures). **A clock that really goes back** -- a recorder's
+/// seam, a channel switch, a program stream that starts again, a wrap --
+/// takes the pictures after it back with it, so the one decoded next is
+/// shown near it, and it is never this. **A B picture shown long before the
+/// reference decoded ahead of it** -- a slide show with B pictures -- has the
+/// pictures decoded before that reference shown before it. No stream shows
+/// a picture before one decoded that many places earlier.
+///
+/// **Where fewer than [`REORDERED`] were decoded before it** -- the head of
+/// the recording, or the head of a read that began at an entry point -- more
+/// than [`TAIL`] of them all shown that far after it say the same; with
+/// fewer, its time stands. A copy that begins just before such a picture
+/// therefore leaves it as it always did (see `stray_place` in
+/// [`crate::cut`]).
+pub(crate) fn is_stray_back(t: f64, recent: &[f64], after: &[f64]) -> bool {
+    let (Some(&before), Some(&next)) = (recent.first(), after.first()) else { return false };
+    let lag = before.min(next) - t;
+    if lag.is_nan() || lag <= STRAY {
+        return false;
+    }
+    match recent.get(REORDERED - 1) {
+        Some(&earlier) => earlier > t,
+        None => recent.len() > TAIL && recent.iter().all(|&r| r > t),
+    }
+}
+
+/// Whether a picture shown at `t`, in the order a decoder hands the pictures
+/// back, between one shown at `before` and one at `next`, has a time that is
+/// damage: more than [`STRAY`] after both or before both. In that order
+/// every picture of a recording is shown after the one before it, up to the
+/// few a decoder that guessed its delay short hands back early; a clock that
+/// jumps either way takes the picture after it along. The readers that see
+/// only what a decoder hands back -- the seam window, the proxy, the flat
+/// and logo passes -- ask this; those that read packets ask [`stray_at`].
+pub(crate) fn is_stray_shown(t: f64, before: f64, next: f64) -> bool {
+    let lead = t - before.max(next);
+    let lag = before.min(next) - t;
+    lead > STRAY || lag > STRAY
+}
+
+/// Where a picture of [`is_stray_shown`] belongs: the first slot of the
+/// picture rate (`fd`) out from the one before it that neither neighbour is
+/// shown in. `None` where its time is the recording's. **Within
+/// [`OUT_OF_PLACE`] of them, and backwards, only where a slot is open
+/// between the two** -- the gap damage leaves -- as [`stray_at`] asks it: a
+/// time a demuxer worked out with no slot for it stands.
+pub(crate) fn stray_shown_at(t: f64, before: f64, next: f64, fd: f64) -> Option<f64> {
+    if !is_stray_shown(t, before, next) {
+        return None;
+    }
+    let far = t - before.max(next) > OUT_OF_PLACE;
+    // Not where the two are on two clocks either (see [`together`]): a
+    // clock that goes back to a still.
+    if !far && (next - before < 1.5 * fd || !together(t, &[before], &[next], fd)) {
+        return None;
+    }
+    Some(slot(None, before, fd, &[before], &[next]))
+}
+
+/// Where a picture read at `t` really belongs, when [`is_stray`] or
+/// [`is_stray_back`] says its time is damage: `None` where it is the
+/// recording's. `recent` are the pictures' times decoded before it (the last
+/// first, as put back), `after` those decoded after it, in order --
+/// [`REORDERED`] of them, or all there are where the recording ends first --
+/// and `dts` its own decode time.
 ///
 /// The place is the first slot of the picture rate (`fd`), from the
 /// picture's own decode time (where that is not damaged too) or from the
 /// picture before it, that no picture read either side of it is shown in.
+///
+/// **Near the end of the recording** (fewer than [`REORDERED`] after it, so
+/// that [`is_stray`] cannot tell it from the last picture after a long
+/// still) it is damage only where the pictures around it leave its slot
+/// open between them: see [`tail_gap`].
 pub(crate) fn stray_at(
     t: f64,
     dts: Option<f64>,
@@ -542,15 +710,201 @@ pub(crate) fn stray_at(
 ) -> Option<f64> {
     let before = *recent.first()?;
     let after = &after[..after.len().min(REORDERED)];
-    if !is_stray(t, before, after, in_place) {
+    // Its own decode time where that is not damaged too: a picture is never
+    // shown before it is decoded, so its place is from there on. Where it is
+    // -- a B picture's PES carries no decode time, and libavformat hands its
+    // shown time over for one -- the place is the one nearest the picture
+    // decoded before it, on either side: the first B decoded after its
+    // reference is shown before that reference, and looked for only after
+    // it, it went in 64 pictures late, on another picture's slot (bsfuji,
+    // `--keep 50-70`: 534 of 599 pictures decoded). A time damaged backwards
+    // has its decode time after it, and is placed the second way.
+    let own = dts.filter(|&d| d <= t - STRAY && d >= before - 1.0);
+    if is_stray(t, before, after, in_place) {
+        // **Within [`OUT_OF_PLACE`], only into the gap it left.** Damage
+        // leaves the picture's own slot open among the pictures around it.
+        // A time a demuxer worked out rather than read can stand ahead of
+        // the pictures after it with no slot open for it: the last P picture
+        // of the first of two MPEG-4 encodes joined in an `.avi`, its B
+        // pictures cut off at the join, is handed the file's end by
+        // libavformat (12 s in a 12 s file, 6 s on), and put on the first
+        // free slot past the pictures read it went in on top of another
+        // picture's. Its time stands, as it always did.
+        let lead = t - before.max(after[0]);
+        if lead <= OUT_OF_PLACE {
+            if !together(t, recent, after, fd) {
+                return None;
+            }
+            return gap(own, before, fd, recent, after);
+        }
+        return Some(slot(own, before, fd, recent, after));
+    }
+    if is_stray_back(t, recent, after) {
+        if !together(t, recent, after, fd) {
+            return None;
+        }
+        return gap(own, before, fd, recent, after);
+    }
+    tail_gap(t, own, fd, recent, after)
+}
+
+/// Whether the pictures read around a stray at `t` are on one clock, and it
+/// alone off it, for [`stray_at`] within [`OUT_OF_PLACE`] and backwards: the
+/// one decoded next shown no further than [`TAIL`] frames from the one
+/// decoded before it (`recent`, the last first), none of `after` (the
+/// pictures decoded after it) that far before that one, and none of either
+/// within that of `t`.
+///
+/// **Damage moves one picture and leaves the pictures around it where they
+/// were**: the ones decoded after it carry on from the one before it, none
+/// shown further ahead of it than the stream reorders, and none near where
+/// the damage put it. **A clock that really
+/// goes back next to a hold** has them on two clocks. Two screen recordings
+/// joined with `cat`, the second opening on a still of 8 s: its first
+/// picture was shown more than five seconds before both the last picture of
+/// the first (the clock went back) and the one decoded after it (the still),
+/// and was put back into a gap among the first recording's last pictures,
+/// 20 s on. The last picture of the first after a still of 8 s, the same
+/// way: the second recording's pictures, decoded after it, were all shown
+/// before it. A B picture of the second shown before a still of its own,
+/// its reference decoded ahead of it after the still, among the first
+/// pictures after the join: shown before every picture of the first, and
+/// next to the second's pictures decoded before it. None of them was asked
+/// about before [`STRAY`] came down from sixty seconds, and such a time
+/// stands, as it did.
+fn together(t: f64, recent: &[f64], after: &[f64], fd: f64) -> bool {
+    let near = TAIL as f64 * fd;
+    let (Some(&before), Some(&next)) = (recent.first(), after.first()) else { return true };
+    (next - before).abs().partial_cmp(&near) != Some(std::cmp::Ordering::Greater)
+        && !after.iter().any(|&a| a < before - near)
+        && !recent.iter().chain(after).any(|&o| (o - t).abs() <= near)
+}
+
+/// The slots the pictures around a stray leave open, nearest `from` first
+/// considered by the caller: a place where the pictures read either side of
+/// it (`recent`, `after`) step twice as far as they do just before, one of
+/// those steps short of the picture after the gap.
+fn gaps_near(from: f64, fd: f64, recent: &[f64], after: &[f64]) -> Vec<f64> {
+    let reach = 2.0 * REORDERED as f64 * fd;
+    let mut near: Vec<f64> = recent
+        .iter()
+        .chain(after.iter())
+        .copied()
+        .filter(|o| o.is_finite() && *o >= from - reach - 4.0 * fd && *o <= from + reach)
+        .collect();
+    near.sort_by(f64::total_cmp);
+    near.dedup();
+    near.windows(3)
+        .filter_map(|w| {
+            let (a, b) = (w[1], w[2]);
+            let at = b - (a - w[0]);
+            (at - a >= 0.75 * fd && b - at >= 0.75 * fd).then_some(at)
+        })
+        .collect()
+}
+
+/// The gap a stray left among the pictures around it (see [`slot`]), where
+/// there is one.
+fn gap(own: Option<f64>, before: f64, fd: f64, recent: &[f64], after: &[f64]) -> Option<f64> {
+    let from = own.unwrap_or(before);
+    let gaps = gaps_near(from, fd, recent, after).into_iter();
+    match own {
+        Some(d) => gaps.filter(|&at| at >= d - fd / 4.0).reduce(f64::min),
+        None => gaps.reduce(|x, y| if (y - from).abs() < (x - from).abs() { y } else { x }),
+    }
+}
+
+/// The slot of a stray: from `own` (its decode time, where usable) on, or
+/// out from `before` on both sides.
+fn slot(own: Option<f64>, before: f64, fd: f64, recent: &[f64], after: &[f64]) -> f64 {
+    let from = own.unwrap_or(before);
+    // **The gap the pictures around it leave**, where there is one: a place
+    // where the pictures read either side of it step twice as far as they do
+    // just before, and it goes one of those steps short of the picture after
+    // the gap. On a recording whose pictures are not all one frame long --
+    // soft telecine, three fields and two by turns -- the frame grid from the
+    // decode time is not the grid the pictures are shown on: an I picture of
+    // a broadcast's film at 60.008 s went back at 59.991, and every picture
+    // copied after it was half a frame late against the sound. On one frame
+    // a picture it is the slot the grid below finds.
+    if let Some(gap) = gap(own, before, fd, recent, after) {
+        return gap;
+    }
+    let taken = |at: f64| recent.iter().chain(after.iter()).any(|&o| (o - at).abs() < fd / 2.0);
+    // From the decode time on; or out from the picture before, nearest
+    // first: 0, +1, -1, +2, -2 ...
+    let step = |k: i64| match own {
+        Some(_) => k,
+        None => if k % 2 == 1 { (k + 1) / 2 } else { -(k / 2) },
+    };
+    let tries = if own.is_some() { 2 } else { 4 } * REORDERED as i64;
+    (0..=tries)
+        .map(|k| from + step(k) as f64 * fd)
+        .find(|&at| !taken(at))
+        .unwrap_or(before + fd)
+}
+
+/// **A picture near the end of the recording whose time alone is damage**:
+/// fewer than [`REORDERED`] pictures decoded after it, every one of them
+/// shown more than [`STRAY`] before it, as is the one decoded before it --
+/// the shape of the last picture after a long still too, which [`is_stray`]
+/// leaves alone. What tells the damaged one apart is the slot it leaves:
+/// the last picture after a still is shown after every picture there is,
+/// and the pictures around it run on without a gap up to where the still
+/// begins; the damaged one leaves a gap among them, with pictures decoded
+/// after it on both sides of it. One P picture of a broadcast hit 4444 s on
+/// 0.8 s before its end made the recording 77 min long, and `--keep
+/// 150-170` of it wrote 482 of 499 pictures.
+///
+/// The gap has to be one the picture could have been decoded into: after
+/// every picture decoded before it, with the pictures decoded after it shown
+/// before the gap first (its own B pictures) and the rest after it -- at
+/// least two of them, and a reference among them shown after a picture
+/// decoded later (the next group of pictures), or, on a stream that showed
+/// no reordering in the pictures before it, any two. A gap a variable rate
+/// leaves among the B pictures ahead of a last picture after a still does
+/// not have that shape. `None` where there is no such gap: the time stands.
+///
+/// **On a stream that reorders, the gap has to come after one of its own B
+/// pictures at least** (`k` of them before it). A screen recording drops
+/// the pictures that repeat the one before, so its pictures leave a gap at
+/// every one dropped; one that ends on a picture after a long still, with
+/// the B pictures ahead of it running over such a gap, had that last
+/// picture put back 23 s early, into the gap just ahead of all of its own B
+/// pictures (x264 `--bframes 16`, `.ts`: a cut of the end wrote 100 of its
+/// 101 pictures, and into `.mkv` showed the last one in the middle). A
+/// reference hit by damage is decoded ahead of the B pictures it is shown
+/// after, and they are shown before its slot. A gap after some of a last
+/// picture's B pictures and before the rest takes a pyramid whose B
+/// pictures are references in turn (`--b-pyramid strict`) and a picture
+/// dropped just after its middle one. **Where no reordering was seen**,
+/// nothing decoded after it may be shown before the gap: a recording only
+/// fifteen pictures long, half a second and then a still, has too few
+/// pictures before its last one to show that it reorders, and its B
+/// pictures, all decoded after that last one, are shown before it.
+fn tail_gap(t: f64, own: Option<f64>, fd: f64, recent: &[f64], after: &[f64]) -> Option<f64> {
+    let before = *recent.first()?;
+    let far = |o: f64| t - o > STRAY;
+    let usable = (2..REORDERED).contains(&after.len()) && fd > 0.0;
+    if !usable || !far(before) || !far(after[0]) || !after.iter().all(|&a| a < t) {
         return None;
     }
-    let from = dts.filter(|&d| d <= t - STRAY && d >= before - 1.0).unwrap_or(before);
-    let taken = |at: f64| recent.iter().chain(after.iter()).any(|&o| (o - at).abs() < fd / 2.0);
-    (0..=2 * REORDERED as i64)
-        .map(|k| from + k as f64 * fd)
-        .find(|&at| !taken(at))
-        .or(Some(before + fd))
+    let top = recent.iter().copied().filter(|r| r.is_finite()).fold(f64::NEG_INFINITY, f64::max);
+    // Decode order, the last first: reordered where a picture decoded later
+    // is shown before one decoded ahead of it.
+    let reorders = recent.windows(2).any(|w| w[0] < w[1]);
+    let mut gaps = gaps_near(own.unwrap_or(before), fd, recent, after);
+    gaps.sort_by(f64::total_cmp);
+    gaps.into_iter()
+        .filter(|&at| at > top + fd / 4.0 && own.is_none_or(|d| at >= d - fd / 4.0))
+        .find(|&at| {
+            let k = after.iter().take_while(|&&a| a < at).count();
+            let rest = &after[k..];
+            // Its own B pictures before the gap where the stream reorders;
+            // none where it does not, as none is shown ahead of it there.
+            let own_first = if reorders { k > 0 && rest.windows(2).any(|w| w[1] < w[0]) } else { k == 0 };
+            own_first && rest.len() >= 2 && rest.iter().all(|&a| a > at)
+        })
 }
 
 /// More pictures than any stream decodes after one and shows ahead of it
@@ -1402,6 +1756,11 @@ struct PacketView {
     /// even constant -- so an entry has to be matched on DTS and read back as
     /// PTS.
     dts: f64,
+    /// Whether `dts` is the packet's own, not its shown time put in where
+    /// the demuxer gave none -- a Matroska's first pictures, before
+    /// libavformat has worked out how far the stream reorders. See
+    /// [`strays`], which asks a decode time only where it is the packet's.
+    dts_stated: bool,
     key: bool,
     reference: bool,
     /// Byte offset the packet starts at, or -1 where the demuxer does not say.
@@ -2261,6 +2620,7 @@ fn window_from(
         out.push(PacketView {
             pts: t,
             dts: d,
+            dts_stated: true,
             key,
             reference,
             pos: p.position() as i64,
@@ -2461,6 +2821,7 @@ mod tests {
                 PacketView {
                     pts,
                     dts: i as f64 * f - 2.0 * f,
+                    dts_stated: true,
                     key: i % 15 == 0,
                     reference: ip,
                     pos: i as i64,
@@ -2519,6 +2880,15 @@ mod tests {
             row[i].pts += 4444.0;
         }
         assert_eq!(stray_ids(&row, &clean), vec![1200, 1203, 1206]);
+        // A B picture, whose PES has no decode time: libavformat hands its
+        // damaged shown time over for one. The first B decoded after its
+        // reference, and the second.
+        for i in [1201, 1202] {
+            let mut b = ibbp(3000);
+            b[i].pts += 4444.0;
+            b[i].dts = b[i].pts;
+            assert_eq!(stray_ids(&b, &clean), vec![i]);
+        }
         // In the last REORDERED pictures of the recording.
         let mut end = ibbp(3000);
         end[2961].pts += 4444.0;
@@ -2551,6 +2921,275 @@ mod tests {
         }
         assert!(strays(&late, 1.0 / 30.0).is_empty());
         assert!(strays(&ibbp(3000), 1.0 / 30.0).is_empty());
+    }
+
+    /// The three shapes of damage the rule once left: a time hit by less
+    /// than a minute, a time hit backwards, and a hit near the end of the
+    /// recording -- each put back; and the ordinary shapes next to them (a
+    /// hold of a few seconds, a clock that jumps either way, the last
+    /// picture after a still, a stream without B pictures) left alone.
+    #[test]
+    fn damage_shorter_backwards_or_near_the_end_is_a_stray() {
+        let f = 1.0 / 30.0;
+        let clean = ibbp(3000);
+        // Shorter than a minute: one bit of a PES time is 5.8, 11.7, 23.3 or
+        // 46.6 s. A P, a key, and both B pictures (decode time = the hit).
+        for d in [5.83, 11.65, 23.3, 46.6] {
+            for i in [1200, 1203, 1201, 1202] {
+                let mut hit = ibbp(3000);
+                hit[i].pts += d;
+                if i % 3 != 0 {
+                    hit[i].dts = hit[i].pts;
+                }
+                assert_eq!(stray_ids(&hit, &clean), vec![i], "+{d} at {i}");
+            }
+        }
+        // Backwards, a P, a key and a B, by a little and by a lot.
+        for d in [6.0, 35.0, 4444.0] {
+            for i in [1200, 1203, 1201] {
+                let mut hit = ibbp(3000);
+                hit[i].pts -= d;
+                if i % 3 != 0 {
+                    hit[i].dts = hit[i].pts;
+                }
+                assert_eq!(stray_ids(&hit, &clean), vec![i], "-{d} at {i}");
+            }
+        }
+        // Near the end: a P with 14 pictures after it, a key with 29.
+        for (i, d) in [(2985, 4444.0), (2985, 30.0), (2970, 4444.0)] {
+            let mut hit = ibbp(3000);
+            hit[i].pts += d;
+            assert_eq!(stray_ids(&hit, &clean), vec![i], "+{d} at {i} near the end");
+        }
+        // Holds of a few seconds to a minute, mid-recording and near the end,
+        // and the last picture after a still of that length.
+        for d in [5.5, 8.0, 30.0, 59.0] {
+            for from in [1200, 2970, 2988] {
+                let mut held = ibbp(3000);
+                for p in &mut held[from..] {
+                    p.pts += d;
+                    p.dts += d;
+                }
+                for p in &mut held[from + 1..from + 3] {
+                    p.pts -= d;
+                }
+                assert!(strays(&held, f).is_empty(), "hold {d} at {from}");
+            }
+            let mut still = ibbp(300);
+            let last = still.len() - 3;
+            still[last].pts += d;
+            assert!(strays(&still, f).is_empty(), "still {d}");
+        }
+        // A clock that jumps on or back, mid-recording and near the end.
+        for d in [-4444.0, -100.0, -8.0, 8.0, 100.0] {
+            for from in [1200, 2985] {
+                let mut jump = ibbp(3000);
+                for p in &mut jump[from..] {
+                    p.pts += d;
+                    p.dts += d;
+                }
+                assert!(strays(&jump, f).is_empty(), "jump {d} at {from}");
+            }
+        }
+        // A stream with no B pictures: hit near its end, and its last
+        // picture after a still.
+        let ipp = |n: usize| -> Vec<PacketView> {
+            (0..n)
+                .map(|i| PacketView {
+                    pts: i as f64 * f,
+                    dts: i as f64 * f,
+                    dts_stated: true,
+                    key: i % 30 == 0,
+                    reference: true,
+                    pos: i as i64,
+                    unreferenced: None,
+                })
+                .collect()
+        };
+        let plain = ipp(600);
+        let mut hit = ipp(600);
+        hit[590].pts += 4444.0;
+        assert_eq!(stray_ids(&hit, &plain), vec![590]);
+        let mut still = ipp(600);
+        still[599].pts += 30.0;
+        assert!(strays(&still, f).is_empty());
+        // A time worked out for a picture with no slot open for it: the
+        // last P of an encode joined to another in an `.avi`, handed the
+        // file's end 6 s on. It stands.
+        let g = 0.04;
+        let recent: Vec<f64> = [147, 148].into_iter().chain((84..147).rev()).map(|k| k as f64 * g).collect();
+        let after: Vec<f64> = (0..64).map(|k| (149 + k) as f64 * g).collect();
+        assert_eq!(stray_at(12.0, Some(148.0 * g), true, g, &recent, &after), None);
+        // The same with its slot open: put back there.
+        let open: Vec<f64> = [149].into_iter().chain(151..213).map(|k| k as f64 * g).collect();
+        let at = stray_at(12.0, Some(148.0 * g), true, g, &recent, &open);
+        assert!(at.is_some_and(|at| (at - 150.0 * g).abs() < g / 4.0), "{at:?}");
+        assert_eq!(stray_shown_at(12.0, 5.96, 6.0, 0.04), None);
+        assert!(stray_shown_at(12.0, 5.96, 6.04, 0.04).is_some());
+        // In the order a decoder hands the pictures back.
+        assert!(is_stray_shown(4484.0, 40.0, 40.07));
+        assert!(is_stray_shown(5.0, 40.0, 40.07));
+        assert!(!is_stray_shown(40.03, 40.0, 40.07));
+        // A hold, a clock that jumps on and one that goes back.
+        assert!(!is_stray_shown(70.0, 40.0, 70.03));
+        assert!(!is_stray_shown(5.0, 40.0, 5.03));
+    }
+
+    /// A screen recording that ends on one picture after a 23 s still: x264
+    /// with `--bframes 16` drops the pictures that repeat (one in three
+    /// here, a gap at each), and the last mini-GOP's B pictures, shown ahead
+    /// of the still, are decoded after that last picture. Its time is the
+    /// recording's: no gap among such pictures is the one damage leaves.
+    #[test]
+    fn the_last_picture_of_a_screen_recording_after_a_still_stands() {
+        let ticks: [(i64, i64); 90] = [
+        (498000, 498000), (507000, 504000), (513000, 507000), (516000, 513000), (522000, 516000),
+        (525000, 522000), (531000, 525000), (534000, 531000), (540000, 534000), (621000, 540000),
+        (579000, 543000), (549000, 549000), (552000, 552000), (558000, 558000), (561000, 561000),
+        (567000, 567000), (570000, 570000), (576000, 576000), (585000, 579000), (588000, 585000),
+        (594000, 588000), (597000, 594000), (603000, 597000), (606000, 603000), (612000, 606000),
+        (615000, 612000), (696000, 615000), (657000, 621000), (624000, 624000), (630000, 630000),
+        (633000, 633000), (639000, 639000), (642000, 642000), (648000, 648000), (651000, 651000),
+        (660000, 657000), (666000, 660000), (669000, 666000), (675000, 669000), (678000, 675000),
+        (684000, 678000), (687000, 684000), (693000, 687000), (774000, 693000), (732000, 696000),
+        (702000, 702000), (705000, 705000), (711000, 711000), (714000, 714000), (720000, 720000),
+        (723000, 723000), (729000, 729000), (738000, 732000), (741000, 738000), (747000, 741000),
+        (750000, 747000), (756000, 750000), (759000, 756000), (765000, 759000), (768000, 765000),
+        (849000, 768000), (810000, 774000), (777000, 777000), (783000, 783000), (786000, 786000),
+        (792000, 792000), (795000, 795000), (801000, 801000), (804000, 804000), (813000, 810000),
+        (819000, 813000), (822000, 819000), (828000, 822000), (831000, 828000), (837000, 831000),
+        (840000, 837000), (846000, 840000), (2979000, 846000), (876000, 849000), (855000, 855000),
+        (858000, 858000), (864000, 864000), (867000, 867000), (873000, 873000), (882000, 876000),
+        (885000, 882000), (891000, 885000), (894000, 891000), (900000, 894000), (903000, 900000),
+        ];
+        let packets: Vec<PacketView> = ticks
+            .iter()
+            .enumerate()
+            .map(|(i, &(pts, dts))| PacketView {
+                pts: pts as f64 / 90000.0,
+                dts: dts as f64 / 90000.0,
+                dts_stated: true,
+                key: i == 0,
+                reference: true,
+                pos: i as i64,
+                unreferenced: None,
+            })
+            .collect();
+        assert!(strays(&packets, 1.0 / 30.0).is_empty());
+    }
+
+    /// Two screen recordings joined with `cat`: the clock goes back to the
+    /// second's start, next to a still. The first drops every third picture
+    /// (a gap at each); the second opens on a still, or the first ends on
+    /// one and a last picture. Every time is the recording's. A picture of
+    /// the same shape hit by damage, its neighbours next to each other, is
+    /// still put back.
+    #[test]
+    fn a_clock_that_goes_back_next_to_a_still_is_not_damage() {
+        let f = 1.0 / 30.0;
+        let view = |i: usize, t: f64| PacketView {
+            pts: t,
+            dts: t,
+            dts_stated: true,
+            key: i == 0,
+            reference: true,
+            pos: i as i64,
+            unreferenced: None,
+        };
+        let first: Vec<f64> = (0..600).filter(|n| n % 3 != 1).map(|n| 1.4 + n as f64 * f).collect();
+        for hold in [6.0, 8.0, 15.0, 40.0, 59.0] {
+            // The second opens on a still.
+            let mut ts = first.clone();
+            ts.push(1.4);
+            ts.extend((0..120).map(|n| 1.4 + hold + n as f64 * f));
+            let packets: Vec<PacketView> = ts.iter().enumerate().map(|(i, &t)| view(i, t)).collect();
+            assert!(strays(&packets, f).is_empty(), "opens on a still of {hold}");
+            // The second opens with a B picture shown before a still, its
+            // reference decoded ahead of it after the still.
+            let mut ts = first.clone();
+            ts.extend([1.4, 1.4 + hold + f, 1.4 + f]);
+            ts.extend((2..120).map(|n| 1.4 + hold + n as f64 * f));
+            let packets: Vec<PacketView> = ts.iter().enumerate().map(|(i, &t)| view(i, t)).collect();
+            assert!(strays(&packets, f).is_empty(), "a B before a still of {hold}");
+            // The first ends on a still and one last picture; and the same
+            // with two B pictures decoded after that one, the second of them
+            // the still.
+            for b in [false, true] {
+                let mut ts = first.clone();
+                let end = first[first.len() - 1] + if b { 3.0 * f } else { 0.0 };
+                ts.push(end + hold);
+                if b {
+                    ts.extend([end - 2.0 * f, end - f]);
+                }
+                ts.extend((0..300).map(|n| 1.4 + n as f64 * f));
+                let packets: Vec<PacketView> = ts.iter().enumerate().map(|(i, &t)| view(i, t)).collect();
+                assert!(strays(&packets, f).is_empty(), "ends on a still of {hold} ({b})");
+            }
+        }
+        // Damage to one picture of the first, either way: put back.
+        let clean: Vec<PacketView> = (0..600).map(|n| view(n, 1.4 + n as f64 * f)).collect();
+        for d in [-35.0, -6.0, 6.0, 23.3] {
+            let mut hit: Vec<PacketView> = (0..600).map(|n| view(n, 1.4 + n as f64 * f)).collect();
+            hit[300].pts += d;
+            hit[300].dts = hit[300].pts;
+            assert_eq!(stray_ids(&hit, &clean), vec![300], "{d}");
+        }
+    }
+
+    /// A slide show in Matroska: a picture every 70 s, with B pictures, and
+    /// no decode time on the first three (libavformat gives none before it
+    /// knows how far the stream reorders; the walk puts the shown time in).
+    /// Its first P picture, decoded before the B shown ahead of it, is the
+    /// recording's, not damage.
+    #[test]
+    fn a_slide_show_with_no_decode_times_at_its_head_keeps_its_times() {
+        let shown = [0.0, 70.0, 140.0, 280.0, 210.0, 350.0, 420.0, 560.0, 490.0, 630.0, 770.0, 700.0];
+        let dts = [None, None, None, Some(70.0), Some(140.0), Some(210.0), Some(280.0), Some(350.0),
+            Some(420.0), Some(490.0), Some(560.0), Some(630.0)];
+        let slides: Vec<PacketView> = shown
+            .iter()
+            .zip(dts)
+            .enumerate()
+            .map(|(i, (&pts, d))| PacketView {
+                pts,
+                dts: d.unwrap_or(pts),
+                dts_stated: d.is_some(),
+                key: i == 0,
+                reference: true,
+                pos: i as i64,
+                unreferenced: None,
+            })
+            .collect();
+        assert!(strays(&slides, 0.5).is_empty());
+        // The same damage as above with its decode time hit is still found
+        // where the decode times are stated.
+        let mut both = ibbp(3000);
+        both[1200].pts += 4444.0;
+        both[1200].dts -= 11552.0;
+        assert_eq!(strays(&both, 1.0 / 30.0).len(), 1);
+    }
+
+    /// A look back that stops on the pictures' clock goes past one picture
+    /// whose time alone is damage, and stops where an ordinary clock or a
+    /// clock that really jumps is past the stop.
+    #[test]
+    fn a_read_stopping_on_the_pictures_passes_over_one_damaged_time() {
+        let ends = |times: &[f64]| {
+            let mut stop = PastStop::default();
+            times.iter().position(|&t| stop.ends(t, 10.0, t >= 10.0))
+        };
+        // Ordinary: the first picture past the stop.
+        assert_eq!(ends(&[9.9, 9.96, 10.0, 10.04]), Some(2));
+        // One damaged time 4444 s on, then the pictures go on in place.
+        assert_eq!(ends(&[9.0, 4453.0, 9.04, 9.08, 10.0]), Some(4));
+        // A clock that jumps on: stopped at the second picture past it.
+        assert_eq!(ends(&[9.9, 100.0, 100.04]), Some(2));
+        // Two damaged times in a row stop the read, as before.
+        assert_eq!(ends(&[9.0, 4453.0, 4453.04]), Some(2));
+        // Decode order: only stated times can put a picture out of place.
+        assert!(decoded_in_place(None, Some(5.0), Some(1.0)));
+        assert!(!decoded_in_place(Some(4.0), Some(5.0), Some(1.0)));
+        assert!(decoded_in_place(Some(4.0), Some(5.0), Some(6.0)));
     }
 
     #[test]
