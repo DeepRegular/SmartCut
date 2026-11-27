@@ -882,11 +882,33 @@ pub fn detect_with(
 /// the end of the recording. Only a picture with a neighbour on both sides,
 /// as the walk's rule is: the last entry picture after a long still is the
 /// recording's.
+///
+/// **Within [`crate::index::OUT_OF_PLACE`], only where the two either side
+/// of it are on one clock**, as [`crate::index::stray_shown_at`] asks it of
+/// the pictures: in order, and no further apart than a few of the entry
+/// pictures' own steps -- the gap the damaged one left. Two screen
+/// recordings joined with `cat`, an entry picture every 8 s or the second
+/// opening on a still, had the last entry picture of the first and the first
+/// of the second each more than five seconds from both of theirs, and both
+/// were left out here where the walk, the proxy and 0.9.0 keep them.
 fn without_strays(times: Vec<f64>, scores: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
+    let mut steps: Vec<f64> = times
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .collect();
+    steps.sort_by(f64::total_cmp);
+    let step = steps.get(steps.len() / 2).copied();
     let stray = |i: usize| {
+        if i == 0 || i + 1 >= times.len() {
+            return false;
+        }
+        let (t, before, next) = (times[i], times[i - 1], times[i + 1]);
         // In the order the pictures are shown, where nothing is decoded out
         // of place: see [`crate::index::is_stray`].
-        i > 0 && i + 1 < times.len() && crate::index::is_stray_shown(times[i], times[i - 1], times[i + 1])
+        crate::index::is_stray_shown(t, before, next)
+            && (t - before.max(next) > crate::index::OUT_OF_PLACE
+                || step.is_some_and(|g| next > before && next - before <= 4.0 * g))
     };
     let keep: Vec<bool> = (0..times.len()).map(|i| !stray(i)).collect();
     if keep.iter().all(|&k| k) {
@@ -1149,5 +1171,28 @@ mod tests {
         *times.last_mut().unwrap() += 70.0;
         let (kept, _) = without_strays(times.clone(), vec![scores]);
         assert_eq!(kept, times);
+        // A bit of the time hit, 23.3 s on or back, is left out too.
+        for hit in [23.3, -23.3] {
+            let (mut times, scores) = timeline(100.0, (200.0, 200.0));
+            times[80] += hit;
+            let (kept, _) = without_strays(times.clone(), vec![scores]);
+            assert_eq!(kept.len(), times.len() - 1);
+            assert!(!kept.contains(&times[80]));
+        }
+    }
+
+    /// Two recordings joined with `cat`, the clock going back at the join:
+    /// an entry picture every 8 s, or every 0.6 s with the second opening on
+    /// a still of 11.7 s. Every entry picture stands.
+    #[test]
+    fn a_clock_going_back_at_a_join_is_kept() {
+        let sparse: Vec<f64> = vec![0.0, 8.3, 16.6, 1.4, 9.7, 18.0];
+        let mut still: Vec<f64> = (0..34).map(|i| 1.4 + i as f64 * 0.6).collect();
+        still.extend([13.1, 24.8, 25.4, 26.0]);
+        for times in [sparse, still] {
+            let scores = vec![0.5; times.len()];
+            let (kept, _) = without_strays(times.clone(), vec![scores]);
+            assert_eq!(kept, times);
+        }
     }
 }

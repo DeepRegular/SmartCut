@@ -1582,20 +1582,37 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
     let mut opening: Option<(u16, i64)> = None;
     let mut clocks: HashMap<u16, i64> = HashMap::new();
     let mut first_clock: Option<u16> = None;
-    let since = |opening: Option<(u16, i64)>, clocks: &HashMap<u16, i64>, first: Option<u16>| {
+    // On each PID, the clock reference that came with the opening picture:
+    // the one in force when it arrived, or the first after it.
+    let mut opening_clocks: HashMap<u16, i64> = HashMap::new();
+    // The difference on a 33-bit clock, either way round.
+    let apart = |a: i64, b: i64| {
+        let d = (a - b).rem_euclid(1 << 33);
+        if d >= 1 << 32 { d - (1 << 33) } else { d }
+    };
+    let since = |opening: Option<(u16, i64)>,
+                 opening_clocks: &HashMap<u16, i64>,
+                 clocks: &HashMap<u16, i64>,
+                 first: Option<u16>| {
         let (pid, shown) = opening?;
-        let now = clocks.get(&pid).or_else(|| clocks.get(&first?))?;
-        // The difference on a 33-bit clock, either way round.
-        let d = (now - shown).rem_euclid(1 << 33);
-        let d = if d >= 1 << 32 { d - (1 << 33) } else { d };
+        let on = if clocks.contains_key(&pid) { pid } else { first? };
+        let now = clocks.get(&on)?;
         // Not where the opening picture's own time is damage: a key hit by
         // reception damage (`crate::index::is_stray`) is listed at the time
         // the copy puts it back at, so a range opens on it, and its stamp
-        // read here is a minute or more ahead -- the clock went out that far
-        // wrong (4444 s on one). No picture is shown ten seconds after the
-        // clock reference that comes with it; the range's clock is then
-        // written from where it opens, as where nothing was heard.
-        (d as f64 > -10.0 * 90_000.0).then(|| d as f64 / 90_000.0)
+        // read here is out as far as the hit (4444 s ahead on one). No
+        // picture is shown ten seconds after the clock reference that comes
+        // with it, nor before it arrives; the range's clock is then written
+        // from where it opens, as where nothing was heard. Judged against
+        // that reference and not against the one the section came with: a
+        // clock that steps between the two (recordings of one channel joined
+        // end to end) is the station's own clock, and the difference across
+        // it is the time that really went by.
+        let lead = apart(shown, *opening_clocks.get(&on)?) as f64 / 90_000.0;
+        if !(-3.0..=10.0).contains(&lead) {
+            return None;
+        }
+        Some(apart(*now, shown) as f64 / 90_000.0)
     };
 
     let mut at = base;
@@ -1614,9 +1631,15 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
         if let Some(pcr) = pcr_of(p) {
             clocks.insert(pid, pcr);
             first_clock.get_or_insert(pid);
+            if opening.is_some() {
+                opening_clocks.entry(pid).or_insert(pcr);
+            }
         }
         if opening.is_none() {
             opening = video_pts(p).map(|pts| (pid, pts));
+            if opening.is_some() {
+                opening_clocks.clone_from(&clocks);
+            }
         }
         match pid {
             PID_EIT => eit.feed(p, |sec| {
@@ -1640,11 +1663,11 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
             PID_TDT => tdt.feed(p, |sec| match sec[0] {
                 TABLE_TOT if out.tot.is_none() && sec.len() >= 14 => {
                     out.tot = Some(sec.to_vec());
-                    out.clock_after = since(opening, &clocks, first_clock);
+                    out.clock_after = since(opening, &opening_clocks, &clocks, first_clock);
                 }
                 TABLE_TDT if out.tot.is_none() && out.tdt.is_none() && sec.len() >= 8 => {
                     out.tdt = Some(sec.to_vec());
-                    out.clock_after = since(opening, &clocks, first_clock);
+                    out.clock_after = since(opening, &opening_clocks, &clocks, first_clock);
                 }
                 TABLE_TDT if out.tdt.is_none() && sec.len() >= 8 => out.tdt = Some(sec.to_vec()),
                 _ => {}
@@ -1658,7 +1681,7 @@ pub fn snapshot_at(input: &crate::input::Input, pos: i64, service_id: u16) -> Re
                     && sit_service(sec).is_some_and(|(id, _)| id == service_id)
                 {
                     out.sit = Some(sec.to_vec());
-                    out.sit_after = since(opening, &clocks, first_clock);
+                    out.sit_after = since(opening, &opening_clocks, &clocks, first_clock);
                 }
             }),
             _ => {}
@@ -5752,6 +5775,54 @@ mod tests {
         assert!(snap.tot.is_some());
         let after = snap.clock_after.expect("a picture and a clock to read it by");
         assert!((after - 1.4).abs() < 1e-3, "{after}");
+    }
+
+    #[test]
+    fn a_damaged_opening_stamp_is_not_a_clock_that_stepped() {
+        // The opening picture shown `lead` seconds after the clock reference
+        // it came with, and the clock stepping by `step` seconds a second
+        // before the time table goes out.
+        let reading = |name: &str, lead: f64, step: f64| {
+            let mut out = Vec::new();
+            let mut cc = 0u8;
+            for tenth in 0..40 {
+                let t = 2000.0 + f64::from(tenth) / 10.0 + if tenth >= 14 { step } else { 0.0 };
+                out.extend_from_slice(&pcr_at(0x1FF, t));
+                if tenth == 0 {
+                    let pts = ((2000.0 + lead) * 90_000.0) as i64;
+                    let mut p = vec![0x47, 0x41, 0xFF, 0x10, 0, 0, 1, 0xE0, 0, 0, 0x80, 0x80, 5];
+                    p.extend_from_slice(&[
+                        0x21 | (((pts >> 30) & 7) << 1) as u8,
+                        (pts >> 22) as u8,
+                        (((pts >> 15) & 0x7F) << 1) as u8 | 1,
+                        (pts >> 7) as u8,
+                        ((pts & 0x7F) << 1) as u8 | 1,
+                    ]);
+                    p.resize(PACKET, 0xFF);
+                    out.extend_from_slice(&p);
+                }
+                if tenth == 24 {
+                    packetize(PID_TDT, &tot(61_000, 9, 0, 0), &mut cc, &mut out);
+                }
+            }
+            let at = std::env::temp_dir().join(name);
+            std::fs::write(&at, &out).expect("write the sample");
+            let input = crate::input::Input::plain(&at.to_string_lossy());
+            let snap = snapshot_at(&input, 0, 1).expect("a reading");
+            let _ = std::fs::remove_file(&at);
+            assert!(snap.tot.is_some());
+            snap.clock_after
+        };
+        // A stamp hit by damage, ahead or behind: the clock is not read by it.
+        assert_eq!(reading("smartcut-stamp-ahead.ts", 4444.0, 0.0), None);
+        assert_eq!(reading("smartcut-stamp-behind.ts", -5.8, 0.0), None);
+        // Two recordings of one channel joined end to end, the later one
+        // first: the clock steps back half an hour between the opening and
+        // the table, and the difference across the step is still the time.
+        let after = reading("smartcut-clock-back.ts", 1.0, -1800.0).expect("a clock");
+        assert!((after - (1.4 - 1800.0)).abs() < 1e-3, "{after}");
+        let after = reading("smartcut-clock-on.ts", 1.0, 1800.0).expect("a clock");
+        assert!((after - (1.4 + 1800.0)).abs() < 1e-3, "{after}");
     }
 
     fn nit_of(streams: &[(u16, u8, u16)]) -> Vec<u8> {

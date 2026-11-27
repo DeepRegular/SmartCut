@@ -178,6 +178,15 @@ let warmed = false;
 /// The film strip, the scroll search and the mark cards want this one; only
 /// the scene index has to wait for the pass to end.
 let held = false;
+/// The step looking for the next picture, while it asks (`stepPicture`); put
+/// down by any other move of the playhead. Across a long hold a step asks a
+/// dozen times and takes seconds, and End (or Home, or the timeline) pressed
+/// meanwhile on the picture it started from was undone by the asks that
+/// followed: on the last picture after a 20 s still, ← then End left the
+/// playhead on the picture before, and O there selected from the head.
+let stepOwner = null;
+/// Whether the scrub being asked for is the step's own.
+let stepAsking = false;
 let proxied = false; // whether the pictures now come from a proxy
 let interval = 0.5;
 let previewToken = 0;
@@ -1990,8 +1999,12 @@ const stagePicture = (at) =>
     ? invoke("preview", { time: at, width: stageWidth() })
     : invoke("glimpse", { path: src.path, time: at, width: stageWidth() });
 
-async function showFrame(t) {
+async function showFrame(t, keepStep = false) {
   if (!src) return;
+  // A move by hand stops a step still looking for the next picture
+  // (`stepPicture`); a scrub's own ask, and the asks again for the playhead
+  // where it stands (the walk or the pass landing, a language change), do not.
+  if (!keepStep) stepOwner = null;
   if (playing && t !== playhead) stopPlay();
   // A frame short of the end until the last picture is known, which is then
   // the end: a picture that repeats a field can stand in the last frame of
@@ -4334,7 +4347,11 @@ async function paintFast(t) {
   // wheel and the right-click search move the playhead along, and without it
   // the line on the stage was the one from wherever the drag started.
   showSubs(t);
-  if (!held) return;
+  // Nor for a step's asks (`stepPicture`): across a hold they go seconds out,
+  // and the held picture nearest one is a picture the step never lands on --
+  // stepping from the picture before a 12 s still to the one after it showed
+  // the next key picture, 2 s further on, for as long as the ask took.
+  if (!held || stepAsking) return;
   if (shownTime >= 0 && Math.abs(t - shownTime) < STANDIN_STALE) return;
   const token = ++hoverToken;
   const shot = await invoke("hover_thumb", { time: t });
@@ -4598,13 +4615,21 @@ async function stepPicture(dir) {
   // Under half the closest two pictures can come, where that is finer still
   // (a 240-a-second capture): see `least_gap`.
   const first = Math.min(frame(), PICTURE_ASK, src.least_gap > 0 ? src.least_gap / 2 : PICTURE_ASK);
+  const me = {};
+  stepOwner = me;
   for (let s = first, i = 0; i < 16; s *= 2, i++) {
     const want = clamp(from + dir * s, 0, lastStop());
-    scrubTo(want);
+    stepAsking = true;
+    try {
+      scrubTo(want);
+    } finally {
+      stepAsking = false;
+    }
     await scrubSettled();
     // Another recording, playback, or a hand that moved the playhead
-    // meanwhile (its picture is the one up now): this step is over.
-    if (src !== was || playing || Math.abs(shownTime - pic) > 1e-6) return;
+    // meanwhile (its picture is the one up now, or it is the same one: End on
+    // the picture the step began on): this step is over.
+    if (src !== was || playing || stepOwner !== me || Math.abs(shownTime - pic) > 1e-6) return;
     if (want <= 0 || want >= lastStop()) return;
   }
 }
@@ -4660,6 +4685,7 @@ function scrubTo(o) {
   // A hand on anything that moves the playhead puts a running 早送り down:
   // two things moving it at once is neither of them.
   if (seekRate) endScroll();
+  if (!stepAsking) stepOwner = null;
   // The same end `showFrame` stops at. `lastOut` is the length of the
   // timeline wherever a cut has taken the recording's last picture away, and
   // a step there slid the strip a frame on before the picture pulled it back.
@@ -4682,7 +4708,7 @@ function scrubTo(o) {
 }
 
 async function runScrub(o) {
-  await showFrame(outToSrc(o));
+  await showFrame(outToSrc(o), true);
   if (scrubPending !== null) {
     const next = scrubPending;
     scrubPending = null;
@@ -5337,7 +5363,7 @@ async function prepare() {
     // frames of a recording the playhead having moved on read as a step
     // that came back short and set `tailSrc` early. The stop asks for the
     // picture anyway.
-    if (!playing) showFrame(playhead);
+    if (!playing) showFrame(playhead, true);
   } catch (e) {
     // Opening another file supersedes this one; that is not a failure worth
     // showing, because the second file's own pass is already running.
@@ -7110,7 +7136,7 @@ async function recountEarly(before) {
   stripCache = null;
   scheduleStrip();
   schedulePlan();
-  if (!playing) await showFrame(playhead);
+  if (!playing) await showFrame(playhead, true);
 }
 
 /// The chapter points a recorder wrote on a BDAV disc, as marks.
@@ -8001,7 +8027,7 @@ async function pointsArrived(exact, picked) {
   schedulePlan();
   // The picture on the stage came from a container seek and is a second or
   // two out. Now that the points are here it can be the frame it says it is.
-  await showFrame(at);
+  await showFrame(at, true);
 }
 
 // --- scrubber pointer ---------------------------------------------------
@@ -8883,7 +8909,7 @@ function applyPlays(plays, own = cuts) {
   stripCache = null;
   scheduleStrip();
   schedulePlan();
-  showFrame(playhead);
+  showFrame(playhead, true);
 }
 
 /// IN and OUT as the pictures they stand on, for a timeline about to move
@@ -9627,7 +9653,7 @@ if (listen) {
       startPlay();
       return;
     }
-    showFrame(playhead);
+    showFrame(playhead, true);
   });
   // The video half of playback has no way to notice the audio half failed --
   // they run on separate threads and separate clocks -- so without this the
@@ -10357,7 +10383,7 @@ onLangChange(() => {
     cardsShown = [];
     renderKeyframes();
     // Not under a playback, for the reason `prepare` gives.
-    if (!playing) showFrame(playhead);
+    if (!playing) showFrame(playhead, true);
   }
   // A recording on its way in: the title says so (see `openPath`), and
   // `applyStatic` has just put the markup's 読み込み中… back over it.

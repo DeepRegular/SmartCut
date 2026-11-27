@@ -310,8 +310,8 @@ fn cache_path_with(dir: &Path, src_path: &str, opts: &ProxyOptions, shape: Optio
     // inside a disc image is the image: a path into an image is not a path
     // the operating system knows. What is *keyed* on is still the name the
     // clip goes by, so two clips on one disc do not share an entry.
-    let meta = std::fs::metadata(&crate::input::Input::parse(src_path)?.file)
-        .with_context(|| format!("cannot stat {src_path}"))?;
+    let input = crate::input::Input::parse(src_path)?;
+    let meta = std::fs::metadata(&input.file).with_context(|| format!("cannot stat {src_path}"))?;
     let mtime = meta
         .modified()
         .ok()
@@ -337,6 +337,11 @@ fn cache_path_with(dir: &Path, src_path: &str, opts: &ProxyOptions, shape: Optio
     if let Some(shape) = shape {
         eat(b"ps-h264");
         eat(&shape.to_le_bytes());
+    }
+    // Recordings joined end to end, read on one clock since 0.9.2: what an
+    // older version made of them holds one recording on top of the other.
+    if let Some(salt) = input.cache_salt() {
+        eat(salt.as_bytes());
     }
 
     let stem: String = Path::new(src_path)

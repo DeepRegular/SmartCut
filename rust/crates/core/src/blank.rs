@@ -437,6 +437,9 @@ struct Walk {
     gap: f64,
     /// How long the container says that last picture is up, where it says.
     length: Option<f64>,
+    /// A frame of the recording's picture rate, for
+    /// [`crate::index::stray_shown_at`].
+    fd: f64,
 }
 
 impl Walk {
@@ -488,8 +491,16 @@ impl Walk {
     /// one after it, which is shown between the two, is that damage; a long
     /// hold has the pictures after it shown after it.
     fn after_a_stray(&mut self, t: f64) -> bool {
-        // In the order the pictures are shown: see [`crate::index::is_stray`].
-        if !(self.before.is_finite() && t > self.before && crate::index::is_stray_shown(self.last, self.before, t)) {
+        // In the order the pictures are shown, by the rule the proxy and the
+        // seam window read them with ([`crate::index::stray_shown_at`]):
+        // within a minute, only where the two either side of it are on one
+        // clock. Two screen recordings joined with `cat`, the first ending
+        // on one picture after a still of 30 s, had that picture taken for
+        // damage by the bare five seconds, where the walk and 0.9.0 keep it.
+        let judged = self.fd.is_finite()
+            && self.fd > 0.0
+            && crate::index::stray_shown_at(self.last, self.before, t, self.fd).is_some();
+        if !(self.before.is_finite() && t > self.before && judged) {
             return false;
         }
         self.looks.pop();
@@ -542,6 +553,7 @@ pub fn find_runs_with(
         // best guess at that.
         gap: 1.0 / src.video.frame_rate.max(1.0),
         length: None,
+        fd: src.video.frame_duration(),
     };
     let mut frame = ff::frame::Video::empty();
     let mut told = -1.0;
@@ -735,6 +747,7 @@ mod tests {
             before: f64::NEG_INFINITY,
             gap,
             length,
+            fd: 1.0 / 60.0,
         };
         assert!((tail_of(&walk(2.983, Some(1.0 / 60.0))) - 28.0).abs() < 1e-3);
         // A repeated field, a frame and a half before it: as it was.
@@ -756,6 +769,7 @@ mod tests {
             before: f64::NEG_INFINITY,
             gap: 0.04,
             length: None,
+            fd: 0.5,
         };
         // As `take` does with each picture's time.
         let mut admit = |walk: &mut Walk, t: f64| {
@@ -773,6 +787,27 @@ mod tests {
         }
         let times: Vec<f64> = walk.looks.iter().map(|l| l.time).collect();
         assert_eq!(times, vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 80.0, 81.0]);
+        // A bit of the time hit 23.3 s on is taken back too; the last
+        // picture after a still of 30 s, followed by a recording joined
+        // with `cat` whose clock went back, is not.
+        for (fd, seq, want) in [
+            (0.5, vec![0.0, 0.5, 1.0, 24.8, 2.0, 2.5], vec![0.0, 0.5, 1.0, 2.0, 2.5]),
+            (
+                1.0 / 30.0,
+                vec![3.4, 3.433, 33.466, 11.433, 21.433, 21.466],
+                vec![3.4, 3.433, 33.466],
+            ),
+        ] {
+            walk.fd = fd;
+            walk.looks.clear();
+            walk.last = f64::NEG_INFINITY;
+            walk.before = f64::NEG_INFINITY;
+            for t in seq {
+                admit(&mut walk, t);
+            }
+            let times: Vec<f64> = walk.looks.iter().map(|l| l.time).collect();
+            assert_eq!(times, want);
+        }
     }
 
     /// A level is a fraction of the same span the samples are shifted on,

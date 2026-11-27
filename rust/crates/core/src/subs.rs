@@ -565,7 +565,14 @@ impl Reader {
                         if past_stop.ends(t, past, t > past) {
                             break;
                         }
+                        // Nor is the picture before it the clock until one
+                        // in the window comes: where the time is real -- a
+                        // recording paused, a picture held -- a crawl sent
+                        // after it was timed by the last picture before the
+                        // hold, up to the hold's length early, where the
+                        // read stopped before it up to 0.9.0.
                         if t > past {
+                            clock = None;
                             continue;
                         }
                         clock = Some(t);

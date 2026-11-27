@@ -1452,6 +1452,27 @@ pub fn scan_stoppable(
     on: Option<index::OnProgress>,
     stop: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Result<Source> {
+    match scan_once(path, source, on, stop) {
+        // Read again on one clock, now that the walk has shown the recording
+        // to be several joined end to end ([`restamp::confirm`]). By a walk
+        // whatever answered first: an index held from an earlier open was
+        // made on the clock the file states.
+        Err(e) if e.downcast_ref::<Rejoined>().is_some() => {
+            let walk = index::PacketScan;
+            let anew = e.downcast_ref::<Rejoined>().is_some_and(|r| r.walk);
+            let again: &dyn index::IndexSource = if anew { &walk } else { source };
+            scan_once(path, again, on, stop)
+        }
+        done => done,
+    }
+}
+
+fn scan_once(
+    path: &str,
+    source: &dyn index::IndexSource,
+    on: Option<index::OnProgress>,
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<Source> {
     let (outline, ictx) = outline_of(path)?;
     let idx = source.build(index::IndexInput {
         path,
@@ -1463,6 +1484,28 @@ pub fn scan_stoppable(
     })?;
     assemble(path, outline, idx, source.name())
 }
+
+/// A walk found a transport stream to be recordings joined end to end that
+/// the look [`input::Input::parse`] takes had missed, and the recording is
+/// to be read again: every open after this one reads it on one clock. Only
+/// ever seen inside [`scan_stoppable`] and [`scan_with_pictures`], which do
+/// that.
+#[derive(Debug)]
+pub(crate) struct Rejoined {
+    /// Whether the recording is to be walked again: an index held from an
+    /// earlier open was made on the clock the file states. Not where the
+    /// index itself said it was made on the joined one
+    /// ([`seek_index::SeekIndex`]), which then fits.
+    pub(crate) walk: bool,
+}
+
+impl std::fmt::Display for Rejoined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the recording is to be read again, as recordings joined end to end")
+    }
+}
+
+impl std::error::Error for Rejoined {}
 
 /// Read a recording once and come back with both its index and its pictures.
 ///
@@ -1483,6 +1526,19 @@ pub fn scan_stoppable(
 /// `on` is told how far through the read it is; `stop` is asked the same
 /// question the passes are asked, and gives up where it stands.
 pub fn scan_with_pictures(
+    path: &str,
+    opts: &thumbs::ThumbOptions,
+    on: Option<index::OnProgress>,
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<(Source, thumbs::Track)> {
+    match with_pictures_once(path, opts, on, stop) {
+        // See [`scan_stoppable`].
+        Err(e) if e.downcast_ref::<Rejoined>().is_some() => with_pictures_once(path, opts, on, stop),
+        done => done,
+    }
+}
+
+fn with_pictures_once(
     path: &str,
     opts: &thumbs::ThumbOptions,
     on: Option<index::OnProgress>,
@@ -1608,6 +1664,28 @@ fn assemble(
             ));
         }
     }
+    // **Recordings joined end to end in a transport stream** that the look
+    // the name was given missed ([`restamp::cat_of`]): the walk shows their
+    // pictures' clock going back. Where the clock references go back there
+    // too, the file is read for its joins and opened again on one clock (see
+    // [`scan_stoppable`]); where the two sides cannot be told apart it is
+    // refused, as at the outline. A picture's time put back by reception
+    // damage leaves the references alone and the recording reads as before.
+    if byte_seekable && on_a_ts && joins.is_empty() {
+        if let Some((pos, _, _)) = index::clock_restart(&points) {
+            match input.rejoin(pos as u64) {
+                Some(restamp::Cat::Joined(_)) => return Err(anyhow::Error::new(Rejoined { walk: true })),
+                Some(restamp::Cat::Tangled(why)) => {
+                    return Err(anyhow!(
+                        "{path}: {why}. It holds more than one recording one after another -- files \
+                         joined end to end (cat, copy /b) -- and cannot be cut as one. Open each \
+                         recording on its own: the files as they were before they were joined."
+                    ))
+                }
+                _ => {}
+            }
+        }
+    }
     // Times are rebased by the container's start time, and the first picture
     // can land a fraction of a microsecond below zero when the two disagree
     // in the last bit. Nothing can be seeked to before the file begins, and
@@ -1679,7 +1757,9 @@ fn assemble(
     // otherwise kept every span the sequence table gives (8.8 s of held
     // picture and silence in a `--keep` across the stretch that needs mending).
     let mut mended_any = false;
-    if !joins.is_empty() {
+    // Not where the seams were found by reading the stream: each stretch's
+    // ends were read off its own last stamps there ([`restamp::cat_of`]).
+    if !joins.is_empty() && input.found_joined().is_none() {
         let walked = idx.leading_known;
         match index::mend_stretches(&input.url, &video, start_time, &mut joins, &mut points, walked) {
             Ok(mended) => {
@@ -1961,6 +2041,23 @@ const MAX_CHAPTERS: usize = 10_000;
 fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
     init()?;
     let input = input::Input::parse(path)?;
+    // **Transport streams joined end to end** are read one after another on
+    // one clock ([`restamp::cat_of`]); where the two sides of a join cannot be
+    // told apart, the recording is refused here, before anything is written,
+    // rather than cut with one side quietly left out.
+    if let Some(why) = input.tangled() {
+        return Err(anyhow!(
+            "{path}: {why}. It holds more than one recording one after another -- files joined \
+             end to end (cat, copy /b) -- and cannot be cut as one. Open each recording on its \
+             own: the files as they were before they were joined."
+        ));
+    }
+    if let Some(n) = input.found_joined() {
+        note_once(format!(
+            "note: {path} holds {n} recordings joined end to end, each with a clock of its \
+             own; they are read one after another, on one clock."
+        ));
+    }
     // What libavformat says when it is handed encrypted bytes -- "Invalid
     // data found when processing input" -- describes them accurately and
     // says nothing about what is wrong. A recorder's own disc does: it
@@ -2777,11 +2874,20 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         // quietly lost, and where nothing at all in that window would decode
         // the cut stopped with "no pictures decoded". On one clip the error
         // was five seconds.
+        //
+        // **And on the same turn of the clock.** A table read from the bytes
+        // decides for itself whether libavformat took 2^33 off a recording
+        // that opens within its last minute before the clock turns over, and
+        // where the first picture and the first unit libavformat met sit on
+        // either side of that minute, the two disagreed: every seam was 26.5
+        // hours away, and a file joined end to end whose first recording
+        // began exactly a minute before the wrap could not be cut at all, not
+        // even inside its first part. No seam is half a turn from the start.
         joins: input::joins(&input)
             .into_iter()
             .map(|s| restamp::Seam {
-                time: s.time - start_time,
-                ends: s.ends - start_time,
+                time: on_one_turn(s.time - start_time),
+                ends: on_one_turn(s.ends - start_time),
                 ..s
             })
             .collect(),
@@ -2802,6 +2908,29 @@ fn outline_of(path: &str) -> Result<(Outline, input::Demux)> {
         head: None,
     };
     Ok((outline, ictx))
+}
+
+/// A time from the start of a recording, `t`, brought onto the turn of the
+/// 33-bit clock the start is on. See the joins in [`outline_of`].
+///
+/// **Only a time that cannot be on it is moved**: one before the start by
+/// more than an hour, or within an hour of a whole turn after it -- where a
+/// table and libavformat took the turn differently, the seam is a whole turn
+/// out, and it is always after the start. A seam half a turn and more on is
+/// an ordinary one: recordings joined end to end whose clocks leapt forwards
+/// between them (kept, held) put their later seams 13 hours and more from
+/// the start, and folded back by half a turn every cut of such a file before
+/// that seam failed, the whole file with it.
+fn on_one_turn(t: f64) -> f64 {
+    const TURN: f64 = (1u64 << 33) as f64 / 90_000.0;
+    const HOUR: f64 = 3600.0;
+    if t > TURN - HOUR {
+        t - TURN
+    } else if t < -HOUR {
+        t + TURN
+    } else {
+        t
+    }
 }
 
 /// Where the material begins, read off the front of the file.
@@ -3276,5 +3405,18 @@ mod tests {
         let (kept, folded) = one_track_per_pid(handed, false);
         assert_eq!(kept.len(), 4);
         assert!(folded.is_empty());
+    }
+
+    /// A seam is timed from the start on the start's turn of the 33-bit
+    /// clock: unchanged within half a turn, and brought back where the table
+    /// and libavformat took the turn differently.
+    #[test]
+    fn a_seam_is_on_the_turn_of_the_start() {
+        let turn = (1u64 << 33) as f64 / 90_000.0;
+        for t in [0.0, 80.0, 3600.0, -0.5, 47_000.0, 72_010.658, 90_000.0] {
+            assert_eq!(on_one_turn(t), t);
+            assert!((on_one_turn(t - turn) - t).abs() < 1e-6);
+            assert!((on_one_turn(t + turn) - t).abs() < 1e-6);
+        }
     }
 }

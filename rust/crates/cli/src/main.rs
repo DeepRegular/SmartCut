@@ -2034,7 +2034,8 @@ fn run() -> Result<()> {
                 }
                 Some(
                     unfit @ (smartcut_core::seek_index::Unfit::Empty
-                    | smartcut_core::seek_index::Unfit::Older),
+                    | smartcut_core::seek_index::Unfit::Older
+                    | smartcut_core::seek_index::Unfit::Clock),
                 ) => {
                     smartcut_core::say!("note: {unfit}; it is made again");
                     None
@@ -2463,7 +2464,23 @@ fn run() -> Result<()> {
         let track_due = seek_index
             .as_ref()
             .filter(|_| made && held.is_some() && !as_proxy)
-            .map(std::path::PathBuf::from);
+            .map(std::path::PathBuf::from)
+            // Only one this run may write to. `save` puts the index in place
+            // by a rename, which the folder allows whatever the file does: a
+            // held index made read-only (or another user's, in a folder both
+            // write in) was replaced by one of this run's, its permissions
+            // gone with it, where a share that refused the write was left
+            // alone.
+            .filter(|p| match std::fs::OpenOptions::new().write(true).open(p) {
+                Ok(_) => true,
+                Err(e) => {
+                    smartcut_core::say!(
+                        "note: {} was not given the thumbnail track: {e}",
+                        p.display()
+                    );
+                    false
+                }
+            });
         if let Some(p) = writing.as_ref().or(track_due.as_ref()) {
             src.input.refuse_as_output(&p.to_string_lossy())?;
             // As above: an index of half the recording is not kept, and was

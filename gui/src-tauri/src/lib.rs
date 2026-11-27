@@ -1418,7 +1418,16 @@ fn scan_cached_reporting(
         weighed = weigh(path);
         src = smartcut_core::scan_stoppable(path, &smartcut_core::PacketScan, on, stop);
     }
-    Ok((src.map_err(|e| e.to_string())?, held, weighed))
+    let src = src.map_err(|e| e.to_string())?;
+    // A transport stream of recordings joined end to end that the walk found
+    // to be one ([`smartcut_core::scan_stoppable`]) was read again by a walk:
+    // an index kept from before, made on the clock the file states, is no
+    // answer about it -- its thumbnails are on that clock too.
+    if held.as_ref().is_some_and(|ix| ix.joined().is_none()) && src.input.found_joined().is_some() {
+        held = None;
+        weighed = weigh(path);
+    }
+    Ok((src, held, weighed))
 }
 
 /// A stream's tick for [`SourceInfo::time_base`]: 0 where it is not a
@@ -5047,8 +5056,8 @@ fn detection_path(
     // disc: a path into an image is not a path the operating system knows.
     // The key is still the recording's own name, so two on one disc do not
     // share a detection.
-    let file = smartcut_core::input::Input::parse(src_path).map_err(|e| e.to_string())?.file;
-    let meta = std::fs::metadata(file).map_err(|e| e.to_string())?;
+    let input = smartcut_core::input::Input::parse(src_path).map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&input.file).map_err(|e| e.to_string())?;
     let mtime = meta
         .modified()
         .ok()
@@ -5069,6 +5078,11 @@ fn detection_path(
     eat(&mtime.to_le_bytes());
     eat(&version.to_le_bytes());
     eat(kind.as_bytes());
+    // Recordings joined end to end, read on one clock since 0.9.2: what an
+    // older version found in them is on the clock the file states.
+    if let Some(salt) = input.cache_salt() {
+        eat(salt.as_bytes());
+    }
 
     let stem: String = std::path::Path::new(src_path)
         .file_stem()
@@ -10207,8 +10221,18 @@ struct Versions {
 // one makes the folder an update would be fetched into and writes a file in
 // it to see whether it can, and that folder is beside the program -- an
 // AppImage on a share that has stalled would hold the window still as long.
+//
+// One at a time, now that it is off that thread: the question is a folder
+// made if it is not there, a file written in it under this process's name and
+// removed, and the folder removed again if it was made for the asking. Two
+// askings at once -- 環境設定 opened as the check a few seconds after the
+// start asks -- shared the one file name, and the one that had made the
+// folder removed it under the other, whose write then failed: this copy was
+// "blocked" for the rest of the session and never checked for updates.
 #[tauri::command(async)]
 fn update_status(app: tauri::AppHandle) -> update::Status {
+    static ASKING: Mutex<()> = Mutex::new(());
+    let _one = locked(&ASKING);
     update::status(&app)
 }
 
@@ -10382,7 +10406,7 @@ pub fn run() {
     // Anything said before then -- a file named on the command line that
     // cannot be opened, most of all -- is already in the right language.
     if let Some(tag) = lang::from_os() {
-        lang::set(&tag);
+        lang::set_from_machine(&tag);
     }
     // And the preferences the environment can also set, which is how they
     // were reachable before 環境設定 had a row for each of them. The frontend

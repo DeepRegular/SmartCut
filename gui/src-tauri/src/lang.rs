@@ -38,6 +38,16 @@ pub fn set(tag: &str) {
     }
 }
 
+/// Take the language the machine is set to, as the frontend reads it when
+/// nothing was chosen: Japanese, and anything else English (i18n.js
+/// `FALLBACK`). [`set`] leaves a language it has no words for alone, which at
+/// startup was Japanese on a German or French desktop until the frontend
+/// said otherwise -- the batch tool's title among what was said in it.
+pub fn set_from_machine(tag: &str) {
+    let base = tag.split(['-', '_', '.', '@']).next().unwrap_or("").to_ascii_lowercase();
+    LANG.store(if base == "ja" { JA } else { EN }, Ordering::Relaxed);
+}
+
 /// One of two literals, by the language in force.
 ///
 /// Written as a macro rather than a function so that both wordings stay at

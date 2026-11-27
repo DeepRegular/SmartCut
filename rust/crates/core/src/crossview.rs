@@ -699,8 +699,25 @@ impl<'s> Reader<'s> {
     ) -> Result<Reader<'s>> {
         // Back a little, because the picture wanted at the first instant is
         // the one standing there, which may have been coded before it.
+        //
+        // **On a transport stream, by the byte of the entry point before
+        // there**, as [`Reader::on_entry`] puts a still's read. A transport
+        // stream is sought by time onto whatever packet's decode time comes
+        // before the one asked for, and inside a long still that is the
+        // picture after it -- decoded seconds before it is shown, and no key
+        // picture: a screen recording ending on a still, its seam window
+        // opening in the still, decoded nothing from there, and playback
+        // stopped at its first instant while the window's still was right.
+        // Not where the read starts at the head, which is sought as before.
         Reader::aimed(src, shape, master, step, |ictx| {
-            seek_near(ictx, src, (from - src.seek_margin).max(0.0));
+            let landing = (from - src.seek_margin).max(0.0);
+            let past_head = src.points.first().is_some_and(|p| landing > p.time);
+            if !(src.on_a_ts
+                && past_head
+                && crate::index::seek_to_entry(ictx, src, landing).is_some())
+            {
+                seek_near(ictx, src, landing);
+            }
             None
         })
     }

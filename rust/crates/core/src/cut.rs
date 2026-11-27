@@ -469,6 +469,67 @@ impl CutOptions {
 /// arrived three seconds later is not going to.
 const TRAIL: f64 = 3.0;
 
+/// How much further than [`TRAIL`] a read goes for a sound track that the file
+/// stores far behind its pictures. See [`SoundRead`].
+const LAGGING: f64 = 600.0;
+
+/// How recently, in the pictures' decode time, a sound track has to have been
+/// read for [`SoundRead`] to count it as still arriving: a Matroska cluster of
+/// a slow recording holds many seconds of pictures between two runs of its
+/// sound.
+const STILL_ARRIVING: f64 = 30.0;
+
+/// Where a segment's read of each sound track has got to, and where the
+/// pictures had got to when it last moved.
+///
+/// **Streams are interleaved within a second or two -- nearly always.** An
+/// encoder that holds its pictures back for long stores them ahead of their
+/// sound by as long: a 1 fps recording coded with sixteen B pictures in a
+/// strict pyramid has its pictures 47 to 75 s ahead of the sound in the
+/// file, and a range of it stopped reading [`TRAIL`] past its end in the
+/// pictures with the sound still 40 s short of the end (`--keep 3-50` came
+/// out with 4 s of sound, `--keep 3-20` with 3 of 17). So a read past its
+/// end goes on while a track that is not done is more than [`TRAIL`]
+/// behind the pictures **and still arriving** -- read within
+/// [`STILL_ARRIVING`] of the pictures' decode time now -- up to [`LAGGING`]
+/// past the end. A track
+/// that stopped for good does not hold the read, nor one not met at all
+/// since the seek, and ordinary interleaving never lags by [`TRAIL`]: there
+/// the read stops at the same packet as it always did.
+struct SoundRead {
+    /// Per track: the time of its last packet read, and the pictures'
+    /// decode time when it was read.
+    at: Vec<Option<(f64, f64)>>,
+    /// The pictures' decode time as far as the read has got.
+    pictures: Option<f64>,
+}
+
+impl SoundRead {
+    fn new(tracks: usize) -> Self {
+        SoundRead { at: vec![None; tracks], pictures: None }
+    }
+
+    fn heard(&mut self, k: usize, t: f64) {
+        if let Some(p) = self.pictures {
+            self.at[k] = Some((t, p));
+        }
+    }
+
+    fn seen(&mut self, picture: f64) {
+        self.pictures = Some(picture);
+    }
+
+    /// Whether a read past its end by more than [`TRAIL`] at the picture
+    /// decoded at `picture` goes on for a sound track.
+    fn lags(&mut self, done: &[bool], picture: f64, seg_end: f64) -> bool {
+        self.seen(picture);
+        picture <= seg_end + TRAIL + LAGGING
+            && self.at.iter().zip(done).any(|(a, &d)| {
+                !d && a.is_some_and(|(t, when)| picture - t > TRAIL && picture - when <= STILL_ARRIVING)
+            })
+    }
+}
+
 /// How far past a re-encoded segment's end the read goes while the decoder
 /// has handed back no picture at all, before the segment is given up.
 ///
@@ -564,6 +625,61 @@ pub(crate) fn on_a_picture_slack(video: &crate::VideoInfo) -> f64 {
     if tick.is_finite() && tick > fd * 0.01 { (3.5 * tick).max(tol) } else { tol }
 }
 
+/// The closest two pictures of a recording of stills come, at the least: half
+/// a second. See [`comes_as_stills`].
+const STILLS: f64 = 0.5;
+
+/// Whether a recording's pictures are stills -- never closer than half a
+/// second ([`crate::VideoInfo::least_gap`]) -- so that a range opening
+/// part-way into one keeps it, and one ending part-way into one ends there.
+///
+/// **Everywhere else a range opens on the next picture and ends on the one
+/// after its last**, which costs less than a frame: a range asked for in
+/// seconds is seldom on a picture, and a picture written for the sliver of
+/// it the range keeps is a flash. A slide show's frame is seconds. A range of
+/// one whose pictures change every 5 to 45 s, opening 2 s before its next
+/// picture, opened on that picture and lost the two seconds with their sound
+/// (`--keep 3-50` came out 45 s long); a range of one changing every 10 s
+/// opening 5 s into a picture lost those 5 s and ran on 5 s past its end
+/// instead; a keyed one had its start moved onto the entry point 5 s on.
+/// There the picture on screen where a range opens goes in at its start
+/// ([`reencode_segment`]), the last one stops where the range does, the
+/// sound starts and stops with them ([`sound_span`]), and the planner's
+/// bounds are rounded by a slack rather than half the closest gap
+/// ([`crate::plan::plan_range`]).
+///
+/// Untouched wherever two pictures come within half a second of each other
+/// at all: every recording of two pictures a second or more, film in any
+/// pulldown, phones, and screen recordings, whose holds are already kept by
+/// the closest-gap rule because their pictures do come close somewhere.
+pub(crate) fn comes_as_stills(video: &crate::VideoInfo) -> bool {
+    video.least_gap() > STILLS
+}
+
+/// Where the picture on screen at `start` goes in, on a recording of stills
+/// ([`comes_as_stills`]) whose range opens at `start` and whose own first
+/// picture begins at `next`: from `start` itself, or on whole fields of a
+/// constant rate, where the timeline has nothing finer, a whole number of
+/// them before `next` -- 4.5 s of a picture of a tenth a second was laid as
+/// 5 s, and the range ran on half a second past its sound. `None` where the
+/// range opens on `next`: not stills, `next` within a bound's slack of
+/// `start`, or within half a field of it.
+///
+/// What the cutter does ([`reencode_segment`]), what the sound follows
+/// ([`sound_span`]), and what a reader of the cut's pictures counts on.
+pub(crate) fn still_up_from(src: &Source, start: f64, next: f64) -> Option<f64> {
+    let video = &src.video;
+    if !comes_as_stills(video) || next - start <= on_a_picture_slack(video) {
+        return None;
+    }
+    if video.variable_rate {
+        return Some(start);
+    }
+    let unit = Grid::of(src).unit();
+    let k = ((next - start) / unit).round();
+    (k >= 1.0).then(|| next - k * unit)
+}
+
 /// Where a range's sound starts and ends: where its pictures do.
 ///
 /// **A range asked for in seconds need not start on a picture.** `--keep
@@ -594,7 +710,8 @@ pub(crate) fn on_a_picture_slack(video: &crate::VideoInfo) -> f64 {
 /// puts the picture already up at the range's own start there (a hold, on a
 /// recording whose pictures do not come at a rate), and the sound starts
 /// with it. See `still_on_screen` in [`reencode_segment`], whose rule this
-/// follows.
+/// follows, and [`comes_as_stills`] for a recording whose pictures are all
+/// held.
 ///
 /// The same answer for [`crate::sound`], which opens every range on the
 /// cut's frame.
@@ -628,7 +745,21 @@ pub(crate) fn sound_span(src: &Source, plan: &RangePlan, afresh: bool) -> (f64, 
         let p = after(t)?;
         (p - t > slack && p - t < least).then_some(p)
     };
-    if plan.segments.first().is_some_and(own) && !near_a_seam(from) {
+    // A recording of stills keeps the picture on screen where the range
+    // opens, from where [`still_up_from`] puts it, wherever there is one:
+    // after the first picture. And its end is where the last picture stops:
+    // the range's own, on whole fields of a constant rate. See
+    // [`comes_as_stills`].
+    let stills = comes_as_stills(video);
+    let up_at_from = stills && src.points.first().is_some_and(|k| k.time < from - slack);
+    let unit = (stills && !video.variable_rate).then(|| Grid::of(src).unit());
+    let first_own = plan.segments.first().is_some_and(own) && !near_a_seam(from);
+    if first_own && up_at_from {
+        if let Some(p) = after(from).filter(|p| p - from > slack) {
+            from = still_up_from(src, from, p).unwrap_or(p);
+        }
+    }
+    if first_own && !up_at_from {
         let held = |p: f64| {
             // What the cutter does where nothing arrives within the closest
             // two pictures come of the range's start: a picture held past
@@ -645,8 +776,25 @@ pub(crate) fn sound_span(src: &Source, plan: &RangePlan, afresh: bool) -> (f64, 
         }
     }
     if plan.segments.last().is_some_and(own) && !near_a_seam(to) && to < src.duration {
-        if let Some(q) = next(to) {
-            to = q;
+        if !stills {
+            if let Some(q) = next(to) {
+                to = q;
+            }
+        } else if let Some(unit) = unit {
+            // Where the last picture stops: a whole number of fields from a
+            // picture, as the cutter ends it -- and never before the last
+            // picture's own first field, which the cutter writes however
+            // little of it the range keeps. Ended on the rounded end, a
+            // tenth-a-second recording cut `--keep 15-41 --keep 60-80` had
+            // its picture from 40 s up for 5 s beside 1 s of its sound, and
+            // the second range's pictures 4 s behind their sound.
+            // The picture is the one the cutter takes in, which begins
+            // before `to - tol`: asked for there less the reach
+            // [`crate::plan::picture_on_screen`] looks ahead with.
+            let n = ((to - from) / unit).round().max(1.0);
+            let reach = (3.0 * video.time_base).min(fd / 3.0).max(fd * 1e-3);
+            let last = crate::plan::picture_on_screen(src, to - tol - reach - 1e-9).filter(|&p| p > from + tol);
+            to = last.map_or(from + n * unit, |p| (from + n * unit).max(p + unit));
         }
     }
     (from, to)
@@ -3912,7 +4060,24 @@ fn take_audio(
     };
     // The range's last segment runs its sound on to where its last picture
     // stops being shown. See [`sound_span`].
-    let seg_end = if seg.end >= audio.planned_out { audio.range_out.max(seg.end) } else { seg.end };
+    //
+    // **And no further on a constant-rate recording of stills**, whose last
+    // picture stops on whole fields, which can be before the range's own end
+    // ([`still_up_from`]): run on to the asked end, a half-second recording
+    // cut `--keep 21.75-27.25 --keep 32.25-38.75` laid the quarter second
+    // of sound after 27 s over the next range's first picture and lost that
+    // range's own first quarter second -- up to half a field, two and a half
+    // seconds at a tenth a second. As the sound-only writer ends it.
+    let stills_end = comes_as_stills(&src.video)
+        && !src.video.variable_rate
+        && audio.range_out < seg.end - on_a_picture_slack(&src.video);
+    let seg_end = if seg.end < audio.planned_out {
+        seg.end
+    } else if stills_end {
+        audio.range_out
+    } else {
+        audio.range_out.max(seg.end)
+    };
     let past_end = t >= seg_end;
 
     if audio.mode == AudioMode::Reencode {
@@ -6261,6 +6426,8 @@ fn copy_segment(
     // a bilingual recording arrives on two PIDs that are interleaved but not
     // in step, and stopping on either would truncate the other.
     let mut audio_done = vec![false; ctx.audio.len()];
+    // See [`SoundRead`].
+    let mut heard = SoundRead::new(ctx.audio.len());
     let mut caption_done = vec![false; ctx.captions.len()];
     let mut graphics_done = graphics_read(ctx);
     // A recording with no subtitles of this kind is done with them before it
@@ -6294,11 +6461,20 @@ fn copy_segment(
         // stretch's at a seam. Placed by them, the last picture's second
         // field stood past the wall: a recorder BD-RE PAFF title lost the
         // last picture before a seam, "1 picture(s) could not be placed".
+        // And how far, in their decode time; see [`SoundRead`].
+        if index == ist_index {
+            if let Some(p) = packet.dts().or(packet.pts()) {
+                heard.seen(p as f64 * in_tb - src.start_time);
+            }
+        }
         if index == ist_index && packet.position() >= 0 {
             read_at = Some(packet.position() as u64);
         }
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
+                if let Some(p) = packet.pts().or(packet.dts()) {
+                    heard.heard(k, p as f64 * ctx.audio[k].in_tb - src.start_time);
+                }
                 if !audio_done[k] {
                     for packet in late.pass(k, packet).into_iter().flatten() {
                         if !audio_done[k] {
@@ -6358,7 +6534,8 @@ fn copy_segment(
             // frame lying across that entry point, and the read stopped on
             // it -- 21 ms of sound gone at every such seam.
             if let Some(at) = packet.dts().or(packet.pts()) {
-                if at as f64 * in_tb - src.start_time > seg.end + TRAIL {
+                let at = at as f64 * in_tb - src.start_time;
+                if at > seg.end + TRAIL && !heard.lags(&audio_done, at, seg.end) {
                     break;
                 }
             }
@@ -7097,11 +7274,12 @@ impl Pictures {
     /// a seam in an ordinary cut is.
     fn open(
         src: &Source,
+        bit_rate: usize,
         params: &ff::codec::Parameters,
         opts: &CutOptions,
         signalling: &Signalling,
     ) -> Result<Self> {
-        Pictures::open_into(&src.video, default_bit_rate(src), params, opts, signalling)
+        Pictures::open_into(&src.video, bit_rate, params, opts, signalling)
     }
 
     /// Pictures of a stated shape, whoever is being decoded into them.
@@ -10279,6 +10457,71 @@ fn default_bit_rate(src: &Source) -> usize {
     (px * 0.08) as usize
 }
 
+/// Bits per second for a re-encoded segment of a variable recording whose
+/// pictures come, around the segment, well under the rate the encoder counts
+/// them at; `None` everywhere else, where [`default_bit_rate`] is the answer.
+///
+/// **The encoder is told a rate per second and counts a picture as a tick of
+/// the recording's rate** ([`open_encoder_as`]), so what it spends on a
+/// picture is the rate over the ticks. [`default_bit_rate`] is the
+/// recording's bits over its length, which on a recording that holds its
+/// pictures for seconds is spread over the holds as well: a 30 fps capture
+/// holding 5.5, 11, 33 and 59 s, re-encoded where it moves, was written at
+/// 34.5 kbit/s beside its own 315 there (an eighth of the bits a picture,
+/// 23 dB). So the GOPs being replaced are weighed -- their pictures' bytes
+/// over how many there are -- and a picture written is given what one of
+/// theirs took, and a fifth again, at the encoder's rate.
+///
+/// Only where those GOPs show their pictures at under two thirds of the
+/// rate the encoder ticks at: a recording whose pictures come at that rate
+/// (any constant one, a phone's, a capture while it moves) keeps the answer
+/// it always had, to the byte. Never under [`default_bit_rate`]. At most a
+/// minute of the recording is read.
+fn held_bit_rate(src: &Source, seg: &Segment) -> Option<usize> {
+    let v = &src.video;
+    let fr = v.frame_rate;
+    if !v.variable_rate || !(fr.is_finite() && fr > 0.0) {
+        return None;
+    }
+    let tol = v.frame_duration() * 1e-3;
+    let from = src.points.iter().rev().find(|p| p.time <= seg.start + tol)?.time;
+    let to = src
+        .points
+        .iter()
+        .find(|p| p.time >= seg.end - tol)
+        .map_or(src.duration, |p| p.time)
+        .min(from + 60.0);
+    if !(to - from > 0.0) {
+        return None;
+    }
+    let (mut ictx, index) = open_input(&src.input.url).ok()?;
+    let in_tb = f64::from(ictx.stream(index)?.time_base());
+    crate::input::keep_only(&mut ictx, &[index]);
+    seek_into(&mut ictx, src, from, None).ok()?;
+    let (mut bytes, mut pictures) = (0u64, 0u64);
+    let mut reading = ictx.read_packets();
+    for (stream, packet) in reading.by_ref() {
+        if stream.index() != index {
+            continue;
+        }
+        let at = |p: Option<i64>| p.map(|p| p as f64 * in_tb - src.start_time);
+        // In decode order: nothing shown before `to` is stored after a
+        // picture decoded past it.
+        if at(packet.dts()).or(at(packet.pts()).map(|t| t - TRAIL)).is_some_and(|t| t > to + tol) {
+            break;
+        }
+        if at(packet.pts()).is_some_and(|t| t >= from - tol && t < to - tol) {
+            bytes += packet.size() as u64;
+            pictures += 1;
+        }
+    }
+    if pictures == 0 || bytes == 0 || pictures as f64 / (to - from) * 1.5 >= fr {
+        return None;
+    }
+    let rate = bytes as f64 * 8.0 / pictures as f64 * fr * 1.2;
+    rate.is_finite().then(|| (rate as usize).max(default_bit_rate(src)))
+}
+
 /// Whether this run writes its pictures back smaller, and what with.
 ///
 /// Only MPEG-2, and only where a share was asked for. A recording in
@@ -10599,13 +10842,15 @@ fn reencode_segment(
     let rows_fit = src.video.height.div_ceil(16).is_multiple_of(2);
     // Frames only when the sequence type can be written back afterwards;
     // without it the segment would claim a progressive sequence.
+    // See [`held_bit_rate`].
+    let bit_rate = held_bit_rate(src, seg).unwrap_or_else(|| default_bit_rate(src));
     let open_pictures = |params: &ff::codec::Parameters| {
         if repeats && interlaced_sequence.is_some() && src.video.interlaced() && rows_fit {
             let mut frames = src.video.clone();
             frames.field_order = 1; // AV_FIELD_PROGRESSIVE
-            Pictures::open_into(&frames, default_bit_rate(src), params, opts, ctx.signalling)
+            Pictures::open_into(&frames, bit_rate, params, opts, ctx.signalling)
         } else {
-            Pictures::open(src, params, opts, ctx.signalling)
+            Pictures::open(src, bit_rate, params, opts, ctx.signalling)
         }
     };
     let mut encoder = open_pictures(&params)?;
@@ -10648,6 +10893,8 @@ fn reencode_segment(
 
     let mut frame = ff::frame::Video::empty();
     let mut audio_done = vec![false; ctx.audio.len()];
+    // See [`SoundRead`].
+    let mut heard = SoundRead::new(ctx.audio.len());
     let mut caption_done = vec![false; ctx.captions.len()];
     let mut graphics_done = graphics_read(ctx);
     // A recording with no subtitles of this kind is done with them before it
@@ -10664,6 +10911,10 @@ fn reencode_segment(
     let mut placed: std::collections::HashMap<i64, (i64, i64)> = Default::default();
     let mut fed = 0i64;
     let mut past_end = false;
+    // The first picture shown at or past the segment's end: where the
+    // picture on screen at its start stops, for a window with none of its
+    // own (see the end of this function).
+    let mut next_shown: Option<f64> = None;
     // Whether the decoder has handed back any picture at all, the run-up's
     // included. See [`NOTHING_SHOWN`].
     let mut shown_any = false;
@@ -10733,6 +10984,10 @@ fn reencode_segment(
     // range is answered by the picture it already had.
     let mut still_on_screen: Option<ff::frame::Video> = None;
     let least = src.video.least_gap();
+    let stills = comes_as_stills(&src.video);
+    // Where the last picture placed begins, in fields from the segment's
+    // start: see the end of this function.
+    let mut last_begins: i64 = 0;
 
     macro_rules! place {
         ($f:expr, $t:expr) => {{
@@ -10767,6 +11022,7 @@ fn reencode_segment(
             }
             span.fields = span.fields.max(display - display_base + fields);
             span.pictures += 1;
+            last_begins = last_begins.max(display - display_base);
             $f.set_pts(Some(fed));
             fed += 1;
             $f.set_kind(ff::picture::Type::None);
@@ -10832,6 +11088,7 @@ fn reencode_segment(
                 let t = pts as f64 * in_tb - src.start_time;
                 if t >= seg.end - tol {
                     past_end = true;
+                    next_shown = Some(next_shown.map_or(t, |n: f64| n.min(t)));
                     continue;
                 }
                 if t < seg.start - tol {
@@ -10865,13 +11122,20 @@ fn reencode_segment(
                 // a range 12 ms into a picture on the next one, 38 ms on, and
                 // every picture of the range sat 38 ms ahead of its sound.
                 // See [`crate::VideoInfo::least_gap`].
-                if anchor.is_none() && t - seg.start >= least {
+                //
+                // **On a recording of stills, any picture still up**, however
+                // long it was coded for: there a frame is seconds, and the
+                // range opening inside one is what was asked for. See
+                // [`comes_as_stills`].
+                // See [`still_up_from`].
+                let stills_anchor = still_up_from(src, seg.start, t);
+                if anchor.is_none() && (t - seg.start >= least || stills_anchor.is_some()) {
                     if let Some(mut held) = still_on_screen.take() {
                         let own_end = held.pts().map(|p| {
                             let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
                             p as f64 * in_tb - src.start_time + f64::from(shown_for) * least / 2.0
                         });
-                        if own_end.is_none_or(|end| end < t - least / 4.0) {
+                        if stills || own_end.is_none_or(|end| end < t - least / 4.0) {
                             // Up from the range's start until `t`, which is
                             // at least a frame on: a frame is what it is
                             // written as. A repeat it was coded with ran out
@@ -10879,7 +11143,7 @@ fn reencode_segment(
                             // reach past `t` by a field -- a picture of
                             // film followed by a gap in a damaged stretch.
                             unsafe { (*held.as_mut_ptr()).repeat_pict = 0 };
-                            place!(held, seg.start);
+                            place!(held, stills_anchor.unwrap_or(seg.start));
                         }
                     }
                 }
@@ -10909,11 +11173,20 @@ fn reencode_segment(
         // seam met the wall. The decoder was drained without it and the
         // picture never came out -- a recorder BD-RE PAFF title re-encoded
         // up to a seam was a picture short (191 of 193).
+        // And how far, in their decode time; see [`SoundRead`].
+        if index == ist_index {
+            if let Some(p) = packet.dts().or(packet.pts()) {
+                heard.seen(p as f64 * in_tb - src.start_time);
+            }
+        }
         if index == ist_index && packet.position() >= 0 {
             read_at = Some(packet.position() as u64);
         }
         if index != ist_index {
             if let Some(k) = ctx.audio.iter().position(|a| a.in_index == index) {
+                if let Some(p) = packet.pts().or(packet.dts()) {
+                    heard.heard(k, p as f64 * ctx.audio[k].in_tb - src.start_time);
+                }
                 if !audio_done[k] {
                     for packet in late.pass(k, packet).into_iter().flatten() {
                         if !audio_done[k] {
@@ -10957,7 +11230,8 @@ fn reencode_segment(
             if packet
                 .dts()
                 .or(packet.pts())
-                .is_some_and(|p| p as f64 * in_tb - src.start_time > seg.end + TRAIL)
+                .map(|p| p as f64 * in_tb - src.start_time)
+                .is_some_and(|at| at > seg.end + TRAIL && !heard.lags(&audio_done, at, seg.end))
             {
                 break;
             }
@@ -11287,9 +11561,25 @@ fn reencode_segment(
             // pictures end at 45.5 s), and written with none, its output
             // had no picture at all. See `pictures_in` in [`crate::preview`],
             // which counts as this does.
-            if !past_end
+            //
+            // **Nor, on a constant-rate recording of stills, where the window
+            // is the head of a range before its entry point and under half a
+            // field long** ([`still_up_from`] has no place for the picture
+            // there): the range's sound opens on the entry point
+            // ([`sound_span`]), and the picture written for the one field a
+            // picture is at the least put every picture after it that much
+            // behind its sound -- a 1 fps `.mkv` keyed every 5 s cut
+            // `--keep 10-30`, its pictures 21 ms after each second, opened on
+            // the picture before for half a second and ran half a second
+            // late to the end.
+            let unplaced = stills
+                && !src.video.variable_rate
                 && damaged == 0
-                && until.is_some_and(|end| end <= seg.start + tol && seg.end <= end + fd + tol)
+                && next_shown.is_some_and(|n| n <= seg.end + tol && still_up_from(src, seg.start, n).is_none());
+            if unplaced
+                || (!past_end
+                    && damaged == 0
+                    && until.is_some_and(|end| end <= seg.start + tol && seg.end <= end + fd + tol))
             {
                 past_the_pictures = true;
             } else {
@@ -11330,7 +11620,21 @@ fn reencode_segment(
             seg.start, seg.end, span.pictures,
         );
     }
-    Ok(held_to_the_end(span, anchor, seg, src, ctx))
+    let span = held_to_the_end(span, anchor, seg, src, ctx);
+    // **And on a recording of stills the last picture stops where the
+    // segment does**, not a coded frame of seconds later: the range's sound
+    // stops there ([`sound_span`]), and the range after it began that much
+    // late -- 5 s behind its sound on a slide show changing every 10 s. Never
+    // before the last picture's own first unit. See [`comes_as_stills`].
+    if let Some(a) = anchor.filter(|_| stills) {
+        let until = if src.duration > 0.0 { seg.end.min(src.duration) } else { seg.end };
+        let held = ((until - a).min(FAR) / field).round() as i64;
+        return Ok(Span {
+            fields: span.fields.min(held.max(last_begins + 1)),
+            ..span
+        });
+    }
+    Ok(span)
 }
 
 /// Where the streams go on the way out.
@@ -13729,7 +14033,7 @@ fn ranges_with_transitions(
     // laid out on.
     let step = reels
         .get(master)
-        .map_or(0.0, |r| r.src.video.frame_duration());
+        .map_or(0.0, |r| conformed::crossing_step(&r.src.video));
     // Whether a reel written afresh keeps its own instants; see
     // `cut_conform::pictures_afresh`.
     let own_instants = reels
@@ -13861,10 +14165,23 @@ fn ranges_with_transitions(
                 // the picture is read off them; see
                 // [`crate::plan::pictures_off_the_grid`]. And the same for the
                 // end of a fade's tinted head, where the body after it opens.
+                //
+                // **Not further back than two seconds.** The picture on screen
+                // is looked for within two frames of the average, and a slide
+                // show's average is a minute: a one-second dissolve after a
+                // range ending 49 s into a picture began where that picture
+                // did and ran for 50 s, and the phone clip joined after it
+                // was seen only inside that crossing: 49 of its 875 pictures.
+                // The crossing now begins where it was asked to, inside the
+                // picture, which stands until then. A recording
+                // averaging a picture a second or more is looked at as it
+                // always was: two of its frames are two seconds or less.
+                let reach = 2.0 * reel.src.video.frame_duration().min(1.0);
                 let on_screen = |t: f64| {
                     crate::plan::pictures_off_the_grid(&reel.src.video)
                         .then(|| crate::plan::picture_on_screen(reel.src, t))
                         .flatten()
+                        .map(|p| if t - p > reach { t } else { p })
                         .unwrap_or_else(|| {
                             crate::plan::on_screen_at(&reel.src.video, &reel.src.points, t)
                         })
@@ -17295,9 +17612,14 @@ fn cut_into(
         // The last range of the cut, on a recording whose last picture's
         // coded length is no measure of it, keeps that picture back for
         // [`Writer::ends`] -- on its own grid only, as [`held_to_the_end`].
+        //
+        // And on a recording of stills, whose last picture stops where the
+        // range does ([`comes_as_stills`]): written for its coded frame, a
+        // tenth-a-second slide show cut `--keep 25.5-45` ended on 10 s of
+        // picture beside 5 of sound.
         writer.keep_last = reel_no + 1 == reels.len()
             && plan_no + 1 == reel_plans[reel_no].len()
-            && last_held_to_the_end(&rsrc.video)
+            && (last_held_to_the_end(&rsrc.video) || comes_as_stills(&rsrc.video))
             && Grid::of(rsrc).unit() == grid.unit();
         writer.hold_latest = writer.keep_last && Grid::of(rsrc).divisor.is_some();
         for (n, seg) in plan.segments.iter().enumerate() {
@@ -17537,6 +17859,10 @@ fn cut_into(
             writer.skipped,
             if src.joins.is_empty() {
                 "a damaged recording hands them over out of any order a decoder could restore"
+            } else if src.input.found_joined().is_some() {
+                "where recordings joined end to end meet, the one before presents a little past \
+                 the place the next begins, and a picture landing behind one already written \
+                 has nowhere to go"
             } else {
                 "where a recorder stopped and started, the stretch on one side of the join \
                  presents a little past the place the disc's index gives the next, and a \
@@ -17580,6 +17906,13 @@ fn cut_into(
             (
                 "which is what damage does to a recording's timestamps",
                 "The sound there was lost with the packets that carried it.",
+            )
+        } else if src.input.found_joined().is_some() {
+            (
+                "which is what a join does, where the sound of one recording joined end to \
+                 end runs past the place the next begins",
+                "Those instants are covered by the recording before them; what was left out \
+                 is the second account of them.",
             )
         } else {
             (

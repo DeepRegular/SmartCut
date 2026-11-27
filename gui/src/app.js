@@ -14668,7 +14668,7 @@ window.addEventListener("keydown", (ev) => {
 const updatePanel = el("update");
 /// What the backend says about this copy (`update_status`), what was found,
 /// and where the box is: `idle`, `found`, `fetching`, `ready` or `failed`.
-const upd = { status: null, found: null, phase: "idle", done: 0, total: 0, error: "", ready: "" };
+const upd = { status: null, found: null, phase: "idle", done: 0, total: 0, error: "", ready: "", stopping: false };
 /// The packagings `update.rs` puts in place itself.
 const UPDATE_KINDS = ["windows-setup", "windows-portable", "linux-tar", "appimage"];
 /// Asked to start again into the update, and not yet answered by the close.
@@ -14752,11 +14752,16 @@ function paintUpdateBox() {
   const bar = el("update-bar");
   const said = el("update-said");
   const cur = (upd.status && upd.status.current) || "";
-  el("update-skip").hidden = upd.phase !== "found";
+  // A fetch that failed or was stopped is an offer as `paintUpdate` keeps it,
+  // and one that can be put away the same way: without this the dot and the
+  // menu line stood until the next start.
+  el("update-skip").hidden = upd.phase !== "found" && upd.phase !== "failed";
   el("update-later").hidden = upd.phase === "fetching";
   el("update-notes").hidden = !(upd.found || upd.ready);
   bar.hidden = upd.phase !== "fetching";
-  go.disabled = false;
+  // Quiet once 中止 was pressed, through the progress and language repaints
+  // that come before the fetch answers.
+  go.disabled = upd.phase === "fetching" && upd.stopping;
   said.textContent = "";
   if (upd.phase === "ready") {
     el("update-head").textContent = t("update.readyHead", { v: upd.ready });
@@ -14793,6 +14798,7 @@ function showUpdate(on) {
 
 async function fetchUpdate() {
   upd.phase = "fetching";
+  upd.stopping = false;
   upd.done = 0;
   upd.total = upd.found ? upd.found.size : 0;
   paintUpdate();
@@ -14806,7 +14812,14 @@ async function fetchUpdate() {
   paintUpdate();
 }
 
+/// A press of 再起動して更新 still being answered: a second press meanwhile
+/// (a double click) sent a second close, and with unsaved work two quit
+/// questions stood one over the other -- cancelling one turned the restart
+/// off, and OK on the other then quit without starting again.
+let restartAsking = false;
+
 async function restartIntoUpdate() {
+  if (restartAsking) return;
   // A run being written goes on writing until the window closes, and the
   // close would end it half done. And one being started, whose checks before
   // the first byte (the names, the disc's room) are awaits the menu is open
@@ -14815,11 +14828,14 @@ async function restartIntoUpdate() {
     el("update-said").textContent = t("update.busy");
     return;
   }
+  restartAsking = true;
   try {
     await invoke("update_restart", { on: true });
   } catch (e) {
     el("update-said").textContent = engineSays(String(e));
     return;
+  } finally {
+    restartAsking = false;
   }
   restartAsked = true;
   showUpdate(false);
@@ -14844,6 +14860,7 @@ el("update-go").addEventListener("click", () => {
   // Stop takes effect between two reads, which a stalled line can make a
   // minute: the button goes quiet until the fetch answers.
   if (upd.phase === "fetching") {
+    upd.stopping = true;
     el("update-go").disabled = true;
     invoke("update_cancel");
   } else if (upd.phase === "ready") restartIntoUpdate();
@@ -14879,8 +14896,12 @@ async function paintUpdatePrefs() {
   const can = updateable();
   el("pref-update-check").disabled = !can;
   el("pref-update-now").disabled = !can;
-  el("pref-update-kind").textContent =
-    upd.status && upd.status.blocked ? engineSays(upd.status.blocked) : t(`update.kind.${kind}`);
+  // The batch tool never updates (see `updateable`): the list window does.
+  el("pref-update-kind").textContent = isTool()
+    ? t("update.kind.tool")
+    : upd.status && upd.status.blocked
+      ? engineSays(upd.status.blocked)
+      : t(`update.kind.${kind}`);
 }
 
 el("pref-update-check").addEventListener("change", (ev) => {
@@ -15169,6 +15190,7 @@ window.addEventListener("keydown", (ev) => {
   // project the job is, which is the same act one window further out.
   if (ev.key === "Enter") {
     ev.preventDefault();
+    if (ev.repeat) return;
     openJobProject();
     return;
   }
@@ -15259,6 +15281,10 @@ window.addEventListener("keydown", (ev) => {
   }
   if (ev.key === "Enter") {
     ev.preventDefault();
+    // Not a held key's repeats: an Enter that put a panel away (閉じる, あとで
+    // on the update box) went on repeating into the list once it was gone,
+    // and opened the selected row in the editor.
+    if (ev.repeat) return;
     const one = selected();
     if (one.length === 1) edit(one[0]);
     return;

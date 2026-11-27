@@ -297,9 +297,30 @@ fn pictures_afresh(
     // ordinary recording, more where the master's timeline is divided
     // finely; see `Grid`.
     let field = ctx.grid.unit();
-    let step = into.video.frame_duration();
+    // A transition's frames: see [`crossing_step`].
+    let step = if retouch.is_some() {
+        crossing_step(into.video)
+    } else {
+        into.video.frame_duration()
+    };
     let per_frame = ((step / field).round() as i64).max(1);
     let slack = on_screen_slack(in_tb, step).unwrap_or(step * 1e-3);
+    // **Laid at their own instants, a reel's pictures are never held to
+    // more than a third of their own frame.** There the master's frame is
+    // its average, and a slide show that holds a picture for a minute
+    // averages one a minute: a thousandth of that is 64 ms, more than a
+    // 30 fps reel's pictures are apart, so no picture of the reel was laid
+    // before the next one replaced it -- a broadcast joined onto such a
+    // slide show ended "no pictures decoded", and a phone clip kept 23 of
+    // its 875 pictures, the ones before a dropped one, with nothing said.
+    // Where the slack is already under that -- on a master averaging more
+    // than a picture every ten seconds or so -- it stays as it was.
+    let own_step = src.video.frame_duration();
+    let slack = if own_instants && own_step.is_finite() && own_step > 0.0 {
+        slack.min(own_step / 3.0)
+    } else {
+        slack
+    };
     // The clip's own field order, where its lines reach the output as they
     // are: an interlaced clip of the master's height is scaled across only,
     // so its two fields are still its two fields -- and stated in the
@@ -845,6 +866,35 @@ pub(crate) fn own_instants(master: &crate::VideoInfo) -> bool {
     master.off_the_average()
 }
 
+/// The frame a transition -- a fade or a crossing -- is counted off in: the
+/// master's, which is where a stretch written afresh lands among the
+/// master's own pictures.
+///
+/// **Not a minute, on a master laid at its own instants.** There the
+/// master's frame is its average, and a slide show that holds a picture for
+/// a minute averages one a minute. A one-second dissolve onto a phone clip
+/// joined after it was one frame of 64 s, and the clip resumed after the
+/// crossing 64 s in -- past its own end: none of its 875 pictures was
+/// written. A fade from black into a broadcast laid its first tinted picture
+/// for 64 s, over the broadcast's first minute, and the run then stopped at
+/// "no pictures decoded".
+/// So there the frame is halved until it is a second or less (a power of
+/// two, which the timeline's fine division holds exactly; see `Grid`), as
+/// the seam window counts such a master's crossings at a second
+/// ([`crate::crossview`]). Every master averaging a picture a second or
+/// more is counted off as it always was.
+pub(crate) fn crossing_step(master: &crate::VideoInfo) -> f64 {
+    let step = master.frame_duration();
+    if !own_instants(master) {
+        return step;
+    }
+    let mut parts = 1.0;
+    while step / parts > 1.0 && parts < 64.0 {
+        parts *= 2.0;
+    }
+    step / parts
+}
+
 /// How far after an output instant a picture may arrive and still be the one
 /// on screen at it.
 ///
@@ -1222,7 +1272,7 @@ impl<'s> FarSide<'s> {
         let want = self.from + elapsed;
         // The clip's own clock may be too coarse to put a picture exactly on
         // the instant it belongs to; see [`on_screen_slack`].
-        let slack = far_slack(self.in_tb, into.video.frame_duration());
+        let slack = far_slack(self.in_tb, crossing_step(into.video));
         loop {
             match self.ahead.take() {
                 Some((t, frame)) if t <= want + slack => self.held = Some(frame),

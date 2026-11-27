@@ -180,7 +180,15 @@ fn detect() -> Kind {
     // AppImage (an editor's terminal, say), so a SmartCut started from there
     // would otherwise take the other program's image for its own, and an
     // update would be renamed over it.
+    //
+    // Not a tar.gz's program either, when one of its launchers is gone: its
+    // `smartcut` launcher sets `APPDIR` to its own `app/` and leaves an
+    // inherited `APPIMAGE` as it was, which would pass the test below. An
+    // image's own mount is never laid out as `app/usr/bin`.
     if let Some(image) = std::env::var_os("APPIMAGE").map(PathBuf::from) {
+        if exe.ends_with("app/usr/bin/smartcut") {
+            return Kind::Elsewhere("other");
+        }
         let ours = std::env::var_os("APPDIR")
             .filter(|d| !d.is_empty())
             .map(PathBuf::from)
@@ -323,8 +331,10 @@ pub fn status(app: &tauri::AppHandle) -> Status {
         Kind::Elsewhere(what) => what.to_string(),
         other => other.asset().unwrap_or("other").to_string(),
     };
-    let blocked = k.staging(app).and_then(|dir| writable(&dir).err());
-    let ready = with_state(|s| s.staged.as_ref().map(|st| st.version.clone()));
+    let blocked = k.staging(app).and_then(|dir| writable(&dir).err()).or_else(|| swappable(k).err());
+    // Nothing waiting can be put in place there: not offered as ready at
+    // every start.
+    let ready = with_state(|s| s.staged.as_ref().map(|st| st.version.clone())).filter(|_| blocked.is_none());
     Status { kind: name, current: env!("CARGO_PKG_VERSION").into(), blocked, ready }
 }
 
@@ -341,15 +351,45 @@ fn writable(dir: &Path) -> Result<(), String> {
     };
     // Asked every time the window or 環境設定 looks: a folder made only to
     // ask is not left beside somebody's AppImage.
-    let made = !dir.is_dir();
-    std::fs::create_dir_all(dir).map_err(fail)?;
-    let probe = dir.join(format!(".probe-{}", std::process::id()));
-    let wrote = std::fs::write(&probe, b"").map_err(fail);
+    //
+    // Under a name of this asking's own: a fetch asks while the window does,
+    // and another SmartCut beside this one asks at its start, and with one
+    // name between them the one that had made the folder removed it, or the
+    // file, under the other -- whose write failed, and that copy said
+    // "cannot be written to" for the rest of its session. The folder removed
+    // meanwhile by another asking that made it is made again once.
+    static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let probe = dir.join(format!(".probe-{}-{}", std::process::id(), ASKED.fetch_add(1, Ordering::Relaxed)));
+    let mut made = false;
+    let mut wrote = Ok(());
+    for _ in 0..2 {
+        made |= !dir.is_dir();
+        std::fs::create_dir_all(dir).map_err(fail)?;
+        wrote = std::fs::write(&probe, b"").map_err(fail);
+        if wrote.is_ok() || dir.is_dir() {
+            break;
+        }
+    }
     let _ = std::fs::remove_file(&probe);
     if made {
         let _ = std::fs::remove_dir(dir);
     }
     wrote
+}
+
+/// Whether the tar.gz's folder itself can be swapped: a folder moved to
+/// another folder needs its own write permission (its `..` changes), so one
+/// made read-only refused the swap at every way out, and the window offered
+/// the same update as ready at every start. Asked by making something in it.
+fn swappable(k: &Kind) -> Result<(), String> {
+    match k {
+        Kind::LinuxTar { root } => {
+            static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = ASKED.fetch_add(1, Ordering::Relaxed);
+            writable(&root.join(format!(".smartcut-probe-{}-{n}", std::process::id())))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Whether `path` was last written more than `secs` ago: a fetch or an
@@ -435,6 +475,7 @@ fn fetch_now(app: &tauri::AppHandle, mut progress: impl FnMut(u64, u64)) -> Resu
     let k = kind();
     let dir = k.staging(app).ok_or("no staging folder")?;
     writable(&dir)?;
+    swappable(k)?;
     let url = file_url(&found.version, &found.name);
     let file = dir.join(&found.name);
 
@@ -544,9 +585,8 @@ fn prepare(k: &Kind, dir: &Path, file: &Path) -> Result<PathBuf, String> {
             // started from, which keeps it open whatever its name comes to.
             // An ELF with the AppImage type-2 mark, or it does not replace
             // the program.
-            let mut head = [0u8; 11];
-            let read = std::fs::File::open(file).and_then(|mut f| f.read_exact(&mut head));
-            if read.is_err() || &head[..4] != b"\x7fELF" || &head[8..11] != b"AI\x02" {
+            let head = head_of(file);
+            if !runs_here(&head) || &head[8..11] != b"AI\x02" {
                 return Err("the file is not an AppImage".into());
             }
             #[cfg(unix)]
@@ -608,11 +648,37 @@ fn is_tree(k: &Kind, top: &Path) -> bool {
         Kind::LinuxTar { .. } => {
             top.join("smartcut").is_file()
                 && top.join("smartcut-cli").is_file()
-                && top.join("app/usr/bin/smartcut").is_file()
+                && runs_here(&head_of(&top.join("app/usr/bin/smartcut")))
         }
         Kind::WindowsPortable { .. } => top.join("smartcut.exe").is_file(),
         _ => false,
     }
+}
+
+/// The first bytes of `file`, zeros where it is shorter or unreadable.
+fn head_of(file: &Path) -> [u8; 20] {
+    let mut head = [0u8; 20];
+    if let Ok(mut f) = std::fs::File::open(file) {
+        let _ = f.read(&mut head);
+    }
+    head
+}
+
+/// The ELF machine this build runs on. Every file of a release is signed
+/// alike, so a release with a build for another processor would hand this
+/// one a program that does not start.
+#[cfg(target_arch = "x86_64")]
+const ELF_MACHINE: Option<u16> = Some(0x3E);
+#[cfg(target_arch = "aarch64")]
+const ELF_MACHINE: Option<u16> = Some(0xB7);
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+const ELF_MACHINE: Option<u16> = None;
+
+/// Whether `head` starts a little-endian ELF program for this processor.
+fn runs_here(head: &[u8; 20]) -> bool {
+    &head[..4] == b"\x7fELF"
+        && head[5] == 1
+        && ELF_MACHINE.is_none_or(|m| u16::from_le_bytes([head[18], head[19]]) == m)
 }
 
 /// The one folder an archive unpacked into `dir` holds.
@@ -671,8 +737,8 @@ pub fn want_restart(app: &tauri::AppHandle) -> Result<(), String> {
     if let Kind::LinuxTar { root } = kind() {
         if tree_in_use(root) {
             return Err(tr!(
-                "同じフォルダーからほかの SmartCut が動いています。閉じてから更新してください",
-                "Another SmartCut is running from the same folder. Close it before updating"
+                "同じフォルダーからほかの SmartCut かコマンドライン版が動いています。閉じてから更新してください",
+                "Another SmartCut or the command-line tool is running from the same folder. Close it before updating"
             )
             .into());
         }
@@ -862,17 +928,77 @@ fn swap_folder(root: &Path, new: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Move what is at the top of `old` and not of `new` into `new`.
+/// The names at the top of the tar.gz's folder, in every release so far: the
+/// release's, never the user's. A release that adds a name at the top adds it
+/// here too, or its old copy is left aside at every update (kept, not lost).
+const TAR_TOP: [&str; 5] = ["LICENSE", "README.txt", "app", "smartcut", "smartcut-cli"];
+
+fn is_release_name(name: &std::ffi::OsStr) -> bool {
+    TAR_TOP.iter().any(|t| name == *t)
+}
+
+/// Move what is at the top of `old` and not of `new` into `new`: the user's,
+/// so never one of the release's own names.
 fn keep_theirs(old: &Path, new: &Path) {
     let Ok(entries) = std::fs::read_dir(old) else { return };
     for entry in entries.flatten() {
+        if is_release_name(&entry.file_name()) {
+            continue;
+        }
         let to = new.join(entry.file_name());
         if std::fs::symlink_metadata(&to).is_err() {
-            if let Err(e) = std::fs::rename(entry.path(), &to) {
+            if let Err(e) = move_kept(&entry.path(), &to) {
                 smartcut_core::log::line(&format!("update: {} not kept: {e}", entry.path().display()));
             }
         }
     }
+}
+
+/// `rename`, and for a folder that is read-only -- one copied off a disc keeps
+/// the disc's `r-x` -- with its write permission lent for the move: a folder
+/// moved into another folder needs it (its `..` changes), and without it the
+/// user's folder stayed aside, where the next start's tidy removed it.
+fn move_kept(from: &Path, to: &Path) -> std::io::Result<()> {
+    let refused = match std::fs::rename(from, to) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => e,
+        done => return done,
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(meta) = std::fs::symlink_metadata(from) else { return Err(refused) };
+        let mode = meta.permissions().mode();
+        if !meta.is_dir() || mode & 0o200 != 0 {
+            return Err(refused);
+        }
+        if std::fs::set_permissions(from, std::fs::Permissions::from_mode(mode | 0o200)).is_err() {
+            return Err(refused);
+        }
+        let moved = std::fs::rename(from, to);
+        let _ = std::fs::set_permissions(if moved.is_ok() { to } else { from }, std::fs::Permissions::from_mode(mode));
+        moved
+    }
+    #[cfg(not(unix))]
+    Err(refused)
+}
+
+/// Clear `aside`, a tar.gz folder put aside by a swap: the user's things moved
+/// into `root`, the release's removed, and whatever could be neither left
+/// where it is -- only ever a release's own name is removed.
+fn clear_aside(aside: &Path, root: &Path) {
+    keep_theirs(aside, root);
+    if let Ok(entries) = std::fs::read_dir(aside) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if is_release_name(&entry.file_name()) {
+                let real_dir = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
+                let _ = if real_dir { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+            } else {
+                smartcut_core::log::line(&format!("update: {} left where it is", path.display()));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(aside);
 }
 
 /// `a` and `b` swapped in one rename, where the file system can.
@@ -970,10 +1096,10 @@ pub fn tidy(app: &tauri::AppHandle) {
             // a tar.gz's start does it, and takes back first what was written
             // into it after the swap -- a terminal whose folder was the one
             // put aside writes `./smartcut-cli ... -o cut.ts` there.
-            if swaps {
-                if let Kind::LinuxTar { root } = kind() {
-                    keep_theirs(&path, root);
-                }
+            if let Kind::LinuxTar { root } = kind() {
+                clear_aside(&path, root);
+            } else if swaps {
+                // The zip's: only the files the release replaced.
                 let _ = std::fs::remove_dir_all(&path);
             }
         } else if name.starts_with("unpack-") {
@@ -1000,7 +1126,19 @@ pub fn tidy(app: &tauri::AppHandle) {
                         s.staged = Some(Staged { version: format!("{}.{}.{}", v.0, v.1, v.2), path: top })
                     })
                 }
-                _ => {
+                (v, _) => {
+                    // This very version waiting in `new`: a swap cut short
+                    // between its two renames (a power cut) left there the
+                    // tree it replaced, with the user's things still in it.
+                    // Put aside as any old tree is, not thrown away.
+                    if let (Kind::LinuxTar { root }, Some(v), Ok(top)) = (kind(), v, only_folder(&path)) {
+                        if v == current() {
+                            let old = aside(&dir);
+                            if std::fs::rename(&top, &old).is_ok() {
+                                clear_aside(&old, root);
+                            }
+                        }
+                    }
                     let _ = std::fs::remove_dir_all(&path);
                     let _ = std::fs::remove_file(dir.join(NEW_VERSION));
                 }
@@ -1128,6 +1266,55 @@ mod tests {
         assert_eq!(std::fs::read_to_string(old.join("v")).unwrap(), "old");
         assert!(!old.join("mine.ts").exists());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aside_keeps_every_user_thing() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("sc-upd-a-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("SmartCut");
+        let old = base.join(".smartcut-update/old-1-1");
+        for d in [&root, &old] {
+            std::fs::create_dir_all(d.join("app/usr")).unwrap();
+            std::fs::write(d.join("smartcut"), d.to_string_lossy().as_bytes()).unwrap();
+        }
+        // The user's: a folder copied off a disc (read-only), one whose name
+        // the new folder has too, and a file.
+        std::fs::create_dir_all(old.join("VIDEO_TS")).unwrap();
+        std::fs::write(old.join("VIDEO_TS/VTS_01_1.VOB"), "vob").unwrap();
+        std::fs::set_permissions(old.join("VIDEO_TS"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::create_dir_all(old.join("docs")).unwrap();
+        std::fs::write(old.join("docs/mine.txt"), "mine").unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(old.join("notes.txt"), "n").unwrap();
+        clear_aside(&old, &root);
+        assert_eq!(std::fs::read_to_string(root.join("VIDEO_TS/VTS_01_1.VOB")).unwrap(), "vob");
+        let mode = std::fs::metadata(root.join("VIDEO_TS")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o555);
+        assert_eq!(std::fs::read_to_string(root.join("notes.txt")).unwrap(), "n");
+        // The release's own names are never carried over, and gone from aside.
+        assert_eq!(std::fs::read_to_string(root.join("smartcut")).unwrap(), root.to_string_lossy());
+        assert!(!old.join("smartcut").exists() && !old.join("app").exists());
+        // What clashes is left aside, not removed.
+        assert_eq!(std::fs::read_to_string(old.join("docs/mine.txt")).unwrap(), "mine");
+        std::fs::set_permissions(root.join("VIDEO_TS"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn programs_for_this_processor() {
+        let mut head = [0u8; 20];
+        head[..4].copy_from_slice(b"\x7fELF");
+        head[4] = 2;
+        head[5] = 1;
+        head[8..11].copy_from_slice(b"AI\x02");
+        head[18] = 0x3E;
+        assert_eq!(runs_here(&head), cfg!(target_arch = "x86_64"));
+        head[18] = 0xB7;
+        assert_eq!(runs_here(&head), cfg!(target_arch = "aarch64"));
+        assert!(!runs_here(&[0u8; 20]));
     }
 
     #[test]

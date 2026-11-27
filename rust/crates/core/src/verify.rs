@@ -622,7 +622,15 @@ pub fn check_placed(
     let fps = pieces.first().map(|p| p.src.video.frame_rate).unwrap_or(0.0);
     // Whether a piece's pictures vary, which is when the average says
     // nothing about how long the last of them is up: see `last_length`.
-    let varies = pieces.iter().any(|p| p.src.video.variable_rate);
+    //
+    // **Nor on a constant-rate recording of stills**, whose last picture the
+    // cut ends where its range does, on whole fields
+    // ([`crate::cut::comes_as_stills`]): a 1 fps cut to `.mp4` ending half a
+    // second into its last picture was taken to run a whole frame, and its
+    // sound called OFF.
+    let varies = pieces
+        .iter()
+        .any(|p| p.src.video.variable_rate || crate::cut::comes_as_stills(&p.src.video));
     let estimate = (kept * if fps > 0.0 { fps } else { 30.0 }).max(1.0);
 
     // A join whose clips differ in the pictures -- size, rate, codec, the
@@ -1274,6 +1282,23 @@ pub fn check_placed(
         // all of them that way too.
         let written = sounds.iter().filter(|s| s.2 > 0).count();
         let with_pictures = report.pictures;
+        // **The last picture held to the end of the last range**, which the
+        // output's pictures need not say they are (see [`Held::last_held`]):
+        // what of it the output's own length does not show is time the sound
+        // rightly runs, and is laid, past them. A slide show read at 25 a
+        // second, cut `--keep 3-50 --keep 60-120` into `.mkv`, ends on a
+        // slide up from 107 s to 120 s that the file gives 40 ms, and its
+        // sound, every frame in place, was called "laid 12.939s past the
+        // last picture" OFF. As the pictures' own length is allowed for it.
+        // Only past what the sound is given anyway, so that an ordinary
+        // cut, whose last picture a `.ts` gives a frame, reads as it did.
+        let unheld = match (&held, report.kept) {
+            (Some(h), Some(k)) if with_pictures => {
+                (k.to - report.seconds).clamp(0.0, h.last().map_or(0.0, |h| h.last_held))
+            }
+            _ => 0.0,
+        };
+        let unheld = if unheld > SOUND_SLACK { unheld } else { 0.0 };
         report.sounds = sounds
             .iter()
             .enumerate()
@@ -1286,7 +1311,14 @@ pub fn check_placed(
                 // **A track that opens and yields nothing** is not one that
                 // cannot be measured: it had packets, a decoder took them,
                 // and not a sample came of them.
-                let measured = s.3 > 0.0 || (s.2 > 0 && s.1.is_some());
+                //
+                // **Nor is a file of sound alone with not one packet in any
+                // of its tracks**: there is nothing in it, which is nought
+                // seconds of sound, not a track nothing here can decode. A
+                // slide show's `--sound-only --keep 3-50 -o s.m4a` that wrote
+                // an AAC track with no frame was called "verify: OK".
+                let empty = !with_pictures && written == 0 && kept > SOUND_SLACK;
+                let measured = s.3 > 0.0 || (s.2 > 0 && s.1.is_some()) || empty;
                 // Its seconds against the pictures, where the sources were
                 // read: what each piece holds of the track where its
                 // pictures are kept. A piece whose recording has no track in
@@ -1336,7 +1368,7 @@ pub fn check_placed(
                     // --keep 0-20`, was called "20.011s against 19.002s OFF".
                     let over = over
                         + if with_pictures {
-                            0.0
+                            unheld
                         } else {
                             heard.first().zip(held.first()).map_or(0.0, |(p, h)| {
                                 if own(p) {
@@ -1458,6 +1490,14 @@ pub fn check_placed(
                 }
             })
             .collect();
+    }
+    // **A file of sound alone with no sound in it at all** -- not one
+    // track -- is nought seconds of what was asked for, and is said as a
+    // track that runs that long. A slide show's `--sound-only --keep 3-50 -o
+    // s.m4a` that wrote a 257-byte file with no stream in it was called
+    // "verify: OK".
+    if !report.pictures && report.sounds.is_empty() && kept > SOUND_SLACK && !stop.load(Ordering::Relaxed) {
+        report.sounds.push(Sound { index: 0, seconds: 0.0, measured: true, short: 0.0, past: 0.0, over: 0.0, step: None });
     }
     if let Some(t) = told.as_mut() {
         t(1.0);
@@ -1868,6 +1908,10 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
         let mut ends: Vec<Option<f64>> = vec![None; tracks.len()];
         // How far each track's packets have come, for where the read stops.
         let mut heard_to: Vec<f64> = vec![f64::NEG_INFINITY; tracks.len()];
+        // And the byte each track was last heard at, and how far the
+        // pictures had come then: see where the read stops.
+        let mut heard_at: Vec<(Option<isize>, f64)> = vec![(None, f64::NEG_INFINITY); tracks.len()];
+        let mut reached = f64::NEG_INFINITY;
         let frame: Vec<f64> = src
             .audios
             .iter()
@@ -1923,8 +1967,29 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
                 // to let a cut that lost that much pass. Read on for it, as
                 // far as 10 s past the range: a track that has stopped in
                 // the recording has nothing more to come.
+                //
+                // **Further where a track is still coming**, heard within the
+                // last [`LAGGING`] bytes read or the last 10 s the pictures
+                // came: a muxer can lay the sound far behind them. A slide
+                // show ffmpeg wrote into `.mkv` (and `.ts`) at one
+                // picture a second with sixteen B pictures has its pictures
+                // 40 s ahead of the sound beside them, and read to 10 s past
+                // `--keep 3-50`, the recording was said to have no sound for
+                // 37.755 s of it -- which let a cut that had lost those
+                // seconds pass. A track that has stopped is not heard, and
+                // the read stops at 10 s past the range as before; and never
+                // further than two minutes.
                 if let Some(t) = crate::audio::read_reached(&stream, &packet, start) {
-                    let past = t > b + 10.0 || (t > b + 1.5 && heard_to.iter().all(|&h| h >= b));
+                    reached = reached.max(t);
+                    let here = packet.position();
+                    let lagging = |k: usize| {
+                        let (at, then) = heard_at[k];
+                        heard_to[k] < b
+                            && (t - then <= 10.0 || (here >= 0 && at.is_some_and(|at| here - at <= LAGGING)))
+                    };
+                    let past = t > b + 120.0
+                        || (t > b + 10.0 && !(0..tracks.len()).any(lagging))
+                        || (t > b + 1.5 && heard_to.iter().all(|&h| h >= b));
                     if past_stop.ends(t, b + 1.5, past) {
                         to_the_end = false;
                         break;
@@ -1940,6 +2005,7 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
             } else if let Some(k) = tracks.iter().position(|&i| i == stream.index()) {
                 let Some(t) = packet.pts().map(|q| q as f64 * tb - start).or(ends[k]) else { continue };
                 heard_to[k] = heard_to[k].max(t);
+                heard_at[k] = (Some(packet.position()).filter(|&p| p >= 0), reached);
                 if let Some(o) = open[k].take() {
                     if t > o {
                         sound[k].push((o, t.min(o + 0.5)));
@@ -2008,7 +2074,11 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
         // is all the range holds where nothing begins in it at all.
         let before = (0..shown.len()).rev().find(|&i| shown[i].0 < lo);
         let first = times.first().copied();
-        let up = before.filter(|&i| until(i) > a && first.is_none_or(|f| f - a >= least));
+        // And always on a recording of stills, as the cut keeps it there
+        // ([`crate::cut::still_up_from`]).
+        let up = before.filter(|&i| {
+            until(i) > a && first.is_none_or(|f| f - a >= least || crate::cut::still_up_from(src, a, f).is_some())
+        });
         let (first, last_at, last_end) = match (first, inside.last(), up) {
             (Some(f), Some(&l), None) => (f, shown[l].0, until(l)),
             (Some(_), Some(&l), Some(_)) => {
@@ -2027,11 +2097,41 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
                         held.over[k] = covered(spans, a, reach);
                     }
                 }
+                // **A range wholly in front of the first picture** keeps its
+                // sound in a file of sound alone, as a range from the head
+                // keeps what is in front of it (see [`Held::lead`]): read by
+                // the track's own clock (`by_track` in [`crate::sound`]), a
+                // recording whose pictures begin 12 s after its sound, cut
+                // `--sound-only --keep 3-10 --keep 15-30`, has the 7 s of the
+                // first range, which were called "21.973s against 15.014s
+                // OFF". The cut with pictures leaves such a range out.
+                if before.is_none() && a < entered {
+                    for (k, spans) in sound.iter_mut().enumerate() {
+                        held.lead[k] += covered(spans, a, b.min(entered));
+                    }
+                }
                 continue;
             }
         };
         // A last picture held past the range is kept to the range's end.
         let mut end = last_end.min(b.max(last_at + least));
+        // **On a constant-rate recording of stills, where the cut puts the
+        // range**: from where the picture on screen goes in, on whole fields
+        // before the next, to where its last picture stops, a whole number of
+        // fields on -- where its sound is laid ([`crate::cut::sound_span`]).
+        // Counted from the first picture of the range to the end of the one
+        // after its last, eight ranges of a 1 fps recording, each opening
+        // and closing inside a picture, were "40.354s of pictures, 48.000s in
+        // the source MISMATCH" on a cut whose every picture was in step with
+        // its sound. Only within a frame of what was counted, and not for a
+        // range that runs to the end of the file.
+        let first = match cut_span(src, a, b) {
+            Some((f, t)) if (f - first).abs() <= fd && (t - end).abs() <= fd && t > f => {
+                end = t;
+                f
+            }
+            _ => first,
+        };
         // **Where the recording's sound outlasts its pictures**, a range kept
         // past its last picture keeps the sound there as well. At the end of
         // the output it runs on past the last picture, as long as the
@@ -2054,6 +2154,16 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
                 // the output's pictures show as time with none in it.
                 times.push(reach);
             }
+        } else if !(last && Some(r) == final_range) && end - last_at > 2.5 * fd {
+            // **A range that ends in a hole in the pictures** -- a recording
+            // whose clock ran on through a pause with nothing in it -- keeps
+            // that time, and the output shows it as time with none in it up
+            // to whatever follows. Counted where something follows: two
+            // ranges of a 30 fps `.mkv` each kept from inside a 23 s pause,
+            // the first one ending 11.5 s into one, were called "gaps:
+            // 22.933s with no picture, 11.468s in the source MISMATCH" on a
+            // cut that kept exactly what was asked.
+            times.push(end);
         }
         held.pictures += end - first;
         held.ahead += (entered.min(end) - first).max(0.0);
@@ -2071,7 +2181,7 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
                 };
                 held.head[k] = from(first).map(|hi| (from(a - fd).unwrap_or(hi).min(first) - first, hi - first));
                 if a < entered {
-                    held.lead[k] = from(a).map_or(0.0, |s| (first - s).max(0.0));
+                    held.lead[k] += from(a).map_or(0.0, |s| (first - s).max(0.0));
                 }
             }
         }
@@ -2085,6 +2195,27 @@ fn held_in(p: &Piece, last: bool, stop: &AtomicBool) -> Option<Held> {
     }
     Some(held)
 }
+
+/// Where the cut lays a range `a`..`b` of a constant-rate recording of
+/// stills, as its sound ([`crate::cut::sound_span`]); `None` for any other
+/// recording, and for a range to the end of the file. See [`held_in`].
+fn cut_span(src: &Source, a: f64, b: f64) -> Option<(f64, f64)> {
+    let video = &src.video;
+    let before_the_end = b.partial_cmp(&src.duration) == Some(std::cmp::Ordering::Less);
+    if !crate::cut::comes_as_stills(video) || video.variable_rate || !before_the_end {
+        return None;
+    }
+    let plan = crate::plan::plan_on(src, &[(a, b)], &crate::plan::PlanOptions::default()).pop()?;
+    if plan.segments.is_empty() {
+        return None;
+    }
+    Some(crate::cut::sound_span(src, &plan, false))
+}
+
+/// How far a track may have been last heard behind where [`held_in`]'s read
+/// stands, in bytes, and still be taken for one that is coming: a few
+/// seconds of a broadcast, minutes of a slide show.
+const LAGGING: isize = 4 << 20;
 
 /// What the output's pictures should come to, from [`Held`]: how long they
 /// run, between `from` and `to` seconds -- the lower end leaves room for a

@@ -615,7 +615,12 @@ pub fn play_from(
                     // held past its own coded length.
                     let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
                     let own_end = e + f64::from(shown_for) * least / 2.0;
-                    if copied.is_none() && t - from >= least && own_end < t - least / 4.0 {
+                    // And always on a recording of stills, as the cut keeps
+                    // it there ([`crate::cut::still_up_from`]).
+                    if copied.is_none()
+                        && ((t - from >= least && own_end < t - least / 4.0)
+                            || crate::cut::still_up_from(src, from, t).is_some())
+                    {
                         began_late = false;
                         if !put(e, &held) {
                             stopped = true;
@@ -2883,7 +2888,14 @@ pub(crate) fn pictures_in(
                     && ended.is_some_and(|end| end <= from + eps && to <= end + fd + eps));
         };
         if head.is_some_and(|end| t >= end - eps) {
-            return true;
+            // **But not, on a constant-rate recording of stills, where the
+            // head is under half a field** -- [`crate::cut::still_up_from`]
+            // has no place for the picture, and the cut writes none there
+            // (see the end of `reencode_segment` in [`crate::cut`]).
+            let stills_cfr = crate::cut::comes_as_stills(&src.video) && !src.video.variable_rate;
+            return !(stills_cfr
+                && head.is_some_and(|end| t <= end + eps)
+                && crate::cut::still_up_from(src, from, t).is_none());
         }
         // On the closest two pictures can come, not the average, as the
         // re-encode in `cut` asks it (see `VideoInfo::least_gap`): a frame on
@@ -2891,7 +2903,9 @@ pub(crate) fn pictures_in(
         let least = src.video.least_gap();
         let shown_for = 2 + unsafe { (*held.as_ptr()).repeat_pict.max(0) };
         let own_end = was + f64::from(shown_for) * least / 2.0;
-        t - from >= least && own_end < t - least / 4.0
+        // And always on a recording of stills, as the cut keeps it there
+        // ([`crate::cut::still_up_from`]).
+        (t - from >= least && own_end < t - least / 4.0) || crate::cut::still_up_from(src, from, t).is_some()
     };
     // **The stretch `to` lies in, and not the one after it.** On a
     // recorder's clip the next stretch can open on pictures stamped before

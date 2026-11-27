@@ -349,8 +349,82 @@ impl Input {
 fn joined(mut input: Input) -> Input {
     if let Some(table) = crate::disc::clip_restamp(&input.spec) {
         input.url = format!("{RESTAMP}{}{UNDER}{}", table.encode(), input.url);
+    } else if let crate::restamp::Cat::Joined(table) = cat(&input) {
+        input.url = format!("{RESTAMP}{}{UNDER}{}", table.encode(), input.url);
     }
     input
+}
+
+/// Whether a file of its own -- not a clip on a disc, not a part of an image
+/// -- is transport streams joined end to end; see [`crate::restamp::cat_of`].
+/// A clip on a disc has the disc's index to say how its clocks run, and is
+/// read by it or not at all.
+fn cat(input: &Input) -> crate::restamp::Cat {
+    if !on_its_own(input) {
+        return crate::restamp::Cat::One;
+    }
+    crate::restamp::cat_of(&input.file)
+}
+
+/// Whether `input` is a file of its own, named as it stands: what [`cat`]
+/// asks about.
+fn on_its_own(input: &Input) -> bool {
+    input.range.is_none()
+        && input.parts.is_empty()
+        && (input.url == input.spec || split_restamp(&input.url).is_some_and(|(t, _)| t.found()))
+        && crate::disc::clip_on_a_disc(&input.spec).is_none()
+        && clip_window(&input.spec).is_none()
+}
+
+impl Input {
+    /// What tells this recording's kept work apart from what an older
+    /// version kept for the same file, where the two read it on different
+    /// clocks: the table of a transport stream found to be recordings joined
+    /// end to end ([`crate::restamp::cat_of`]), which 0.9.1 and before read
+    /// on the clock the file states, one recording on top of the other.
+    /// `None` -- nothing added to any key -- for every other recording.
+    pub fn cache_salt(&self) -> Option<String> {
+        split_restamp(&self.url)
+            .filter(|(table, _)| table.found())
+            .map(|(table, _)| table.encode())
+    }
+
+    /// Why this recording cannot be cut as one, where it is transport streams
+    /// joined end to end whose clocks cannot be told apart. See
+    /// [`crate::restamp::Cat::Tangled`].
+    pub fn tangled(&self) -> Option<String> {
+        match cat(self) {
+            crate::restamp::Cat::Tangled(why) => Some(why),
+            _ => None,
+        }
+    }
+
+    /// Read the file whole for recordings joined end to end after all, where
+    /// a walk met a picture's clock going back at byte `at` (see
+    /// [`crate::restamp::confirm`]). `None` where this is not a file of its
+    /// own, or nothing was found; what is found is what every later
+    /// [`Input::parse`] of it in this process reads.
+    pub fn rejoin(&self, at: u64) -> Option<crate::restamp::Cat> {
+        if !on_its_own(self) || self.url != self.spec {
+            return None;
+        }
+        crate::restamp::confirm(&self.file, at)
+    }
+
+    /// Read this, from now on in this process, through `table`: the table an
+    /// index made of it names ([`crate::restamp::adopt`]). Only for a file of
+    /// its own that this process reads on the clock it states.
+    pub fn adopt(&self, table: &str) -> bool {
+        on_its_own(self) && self.url == self.spec && crate::restamp::adopt(&self.file, table)
+    }
+
+    /// How many recordings joined end to end this is read as, where it is a
+    /// file of transport streams found to be that. See [`Input::cache_salt`].
+    pub fn found_joined(&self) -> Option<usize> {
+        split_restamp(&self.url)
+            .filter(|(table, _)| table.found())
+            .map(|(table, _)| table.pieces().len())
+    }
 }
 
 /// One of the files a recording is written in, and where it falls in them.
@@ -2254,7 +2328,7 @@ impl Bridge {
         if at < 0 || size == 0 {
             return ff::ffi::AVERROR_EOF;
         }
-        let packet = crate::restamp::SOURCE_PACKET;
+        let packet = self.table.packet();
         // Where the packet this read starts inside begins, and how much of
         // it has already gone by.
         let past = at as usize % packet;

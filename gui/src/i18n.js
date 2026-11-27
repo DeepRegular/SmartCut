@@ -358,9 +358,11 @@ const CATALOG = {
       "終わると SmartCut {v} が起動します。",
     "update.ready.windows-portable":
       "SmartCut を終了するとファイルが入れ替わり、次の起動から {v} になります。" +
+      "ほかの SmartCut が動いているときは、それを閉じたあとの終了で入れ替わります。" +
       "再起動すると、すぐに {v} で起動し直します。",
     "update.ready.linux-tar":
       "SmartCut を終了するとフォルダーの中身が入れ替わり、次の起動から {v} になります。" +
+      "同じフォルダーのほかの SmartCut かコマンドライン版が動いているときは、それを閉じたあとの終了で入れ替わります。" +
       "再起動すると、すぐに {v} で起動し直します。",
     "update.ready.appimage":
       "AppImage ファイルはすでに {v} に置き換えてあります。再起動すると {v} で起動し直します。",
@@ -374,6 +376,7 @@ const CATALOG = {
     "update.kind.deb": "deb パッケージ版は、APT リポジトリからシステムの更新と一緒に更新されます。",
     "update.kind.flatpak": "Flatpak 版は flatpak update で更新されます。",
     "update.kind.other": "この SmartCut は配布用のパッケージではないため、自動更新の対象外です。",
+    "update.kind.tool": "更新はバッチ出力ツールではなく、一覧のウィンドウから行います。",
 
     // --- 入力設定画面 ----------------------------------------------------
     "input.total": "クリップ合計数: {n}　合計時間: {t}",
@@ -1481,6 +1484,9 @@ const CATALOG = {
       "複数の録画を順につないだファイルなので、1 本の録画としてはカットできません。" +
       "cat や copy /b でつないだファイル、複数のタイトルを含む DVD の .VOB、DVD レコーダーの .VRO がこれに当たります。" +
       "録画を 1 本ずつ開いてください（つなぐ前のファイル、DVD なら .VOB ではなく VIDEO_TS フォルダー）。",
+    "engine.catTangled":
+      "{path}: 複数の録画をつないだファイルで、つなぎ目の前後を見分けられません（{why}）。" +
+      "1 本の録画としてはカットできません。つなぐ前のファイルを 1 本ずつ開いてください。",
     "engine.restampLeft":
       "注意: {path} の到着時刻（.m2ts の各パケットの時刻）は書き直せなかったので、書き出したときのままです（{why}）",
     "engine.vc1Matroska":
@@ -1817,7 +1823,7 @@ const CATALOG = {
     "update.foundShort": "SmartCut {v} is out.",
     "update.latest": "This is the latest version ({v}).",
     "update.what": "{size} to download; its signature is checked before anything is replaced. {how}",
-    "update.how.windows-setup": "Restart and update then runs the installer, which starts SmartCut again when it is done.",
+    "update.how.windows-setup": "Pressing \"Restart and update\" runs the installer, which starts SmartCut again when it is done.",
     "update.how.windows-portable": "The files in this folder are replaced when SmartCut quits.",
     "update.how.linux-tar": "What is in this folder is replaced when SmartCut quits.",
     "update.how.appimage": "This AppImage file is replaced with the new one.",
@@ -1829,9 +1835,11 @@ const CATALOG = {
       "SmartCut {v} starts when it is done.",
     "update.ready.windows-portable":
       "The files are replaced when SmartCut quits, and the next start is {v}. " +
+      "While another SmartCut is running, they wait for a quit after it has closed. " +
       "Restart to be in {v} now.",
     "update.ready.linux-tar":
       "The folder is replaced when SmartCut quits, and the next start is {v}. " +
+      "While another SmartCut or the command-line tool runs from this folder, it waits for a quit after that has closed. " +
       "Restart to be in {v} now.",
     "update.ready.appimage":
       "The AppImage file has already been replaced with {v}. Restart to be in {v} now.",
@@ -1845,6 +1853,7 @@ const CATALOG = {
     "update.kind.deb": "The .deb is updated from the APT repository along with the rest of the system.",
     "update.kind.flatpak": "The Flatpak is updated with flatpak update.",
     "update.kind.other": "This SmartCut is not one of the released packages, so it is not updated from here.",
+    "update.kind.tool": "Updates are made from the list window, not from the batch tool.",
 
     // --- input screen ----------------------------------------------------
     "input.total": "Clips: {n}   Total length: {t}",
@@ -2903,6 +2912,10 @@ const CATALOG = {
       "copy /b), the .VOB files of a DVD set holding more than one title, or a DVD recorder's .VRO -- and it " +
       "cannot be cut as one. Open each recording on its own: the files as they were before they were joined, " +
       "or a DVD's folder (VIDEO_TS) rather than its .VOB files.",
+    "engine.catTangled":
+      "{path}: {why}. It holds more than one recording one after another -- files joined end to end " +
+      "(cat, copy /b) -- and cannot be cut as one. Open each recording on its own: the files as they were " +
+      "before they were joined.",
     "engine.restampLeft": "note: the arrival times in {path} were left as written: {why}",
     "engine.vc1Matroska":
       "{path}: VC-1 in a Matroska file carries no presentation times (libavformat reads only decoding times " +
@@ -3041,6 +3054,13 @@ const ENGINE = [
     /^([\s\S]*): the pictures' clock starts again part-way through the file \(at byte (\d+), (-?[\d.]+)s comes after (-?[\d.]+)s\), so it holds more than one recording one after another -- [\s\S]* rather than its \.VOB files\.$/,
     "engine.clockRestarts",
     (m) => ({ path: m[1], pos: m[2], at: m[3], latest: m[4] }),
+  ],
+  // The refusal of a file joined end to end whose two sides cannot be told
+  // apart, refused when it is opened (`Cat::Tangled` in restamp.rs).
+  [
+    /^([\s\S]*): (the clock of the pictures goes back[\s\S]*)\. It holds more than one recording one after another -- files joined end to end \(cat, copy \/b\) -- and cannot be cut as one\. Open each recording on its own: the files as they were before they were joined\.$/,
+    "engine.catTangled",
+    (m) => ({ path: m[1], why: m[2] }),
   ],
   [
     /^([\s\S]*): VC-1 in a Matroska file carries no presentation times [\s\S]*-c copy out\.m2ts$/,

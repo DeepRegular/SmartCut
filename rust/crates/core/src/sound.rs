@@ -1048,6 +1048,12 @@ fn run(
     if crate::m2ts::standalone(output, opts.disc_clip) {
         crate::m2ts::restamp_or_say(output, opts.notes.as_deref());
     }
+    // **Nothing of the track in any range** -- a recording whose sound
+    // begins after the ranges kept: the file was written with no frame in it
+    // and said "wrote" as any other (an `.aac` of no bytes at all).
+    if !opened && written <= 0.0 {
+        crate::say!("note: there is no sound in the ranges kept; {output} holds none");
+    }
     say(ranges_in_all);
     Ok(())
 }
@@ -1128,7 +1134,10 @@ fn shown_to(src: &Source, b: f64) -> f64 {
     // picture to the range's end, not for an average frame past its start
     // (a phone-style mp4 cut `--keep 15-19.97` and joined on was laid 21 ms
     // late against the cut, which was exact before).
-    if src.video.variable_rate {
+    // **Nor on a recording of stills**, whose last picture the cut ends
+    // where the range does ([`crate::cut::comes_as_stills`]): a 0.1 fps
+    // recording cut in two ranges laid the second one 5 s late.
+    if src.video.variable_rate || crate::cut::comes_as_stills(&src.video) {
         return b;
     }
     let slack = crate::cut::on_a_picture_slack(&src.video);
@@ -1817,297 +1826,395 @@ fn take_range(
     // hole) in front of this range's first frame; see `owed` in `run`.
     owed: f64,
 ) -> Result<(f64, Option<Opening>, f64, bool)> {
-    let mut ictx = crate::input::demux(&src.input.url)?;
-    // Half a second before the range, so the frame it opens on has been
-    // decoded up to rather than seeked into: a seek in a transport stream
-    // lands where it can rather than where it was asked, and an AAC frame
-    // decoded straight after one is missing half its window.
-    //
-    // A range that opens at the head is not seeked for at all: the file was
-    // just opened and is standing at its first byte. Any seek lands on a
-    // picture, and a broadcast's sound starts before its first one does --
-    // half a second of it on an off-air recording, which a whole-recording
-    // .wav had as silence and an .aac did not have at all.
-    //
-    // Except where the cut with pictures seeks at the head too: a Matroska
-    // file with WebVTT in it whose open, read on, has already lost whole
-    // clusters to a block libavformat cannot parse -- 826 of 915 frames of
-    // sound, the first two seconds gone, where the cut with pictures had them
-    // all. See [`sought_at_head`].
-    let landing = (range.0 - 0.5).max(0.0);
-    if landing > 0.0 {
-        let target = ((landing + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
-        ictx.seek(target, ..target)?;
-    } else {
-        sound_from_head(&mut ictx, &src.input.url, track.stream_index)?;
-    }
-    // After the seek, for the reason [`crate::input::keep_only`] gives, and
-    // with the pictures, which say when the range is over where the track
-    // has nothing in it. See [`crate::input::keep_with_pictures`].
-    crate::input::keep_with_pictures(&mut ictx, &[track.stream_index]);
-
-    let in_tb = track.time_base;
-    let mut lengths = Lengths::new(ictx.stream(track.stream_index).map(|s| s.parameters()));
-    let mut first: Option<Opening> = None;
-    // Where the last of the track's frames passed over before the range
-    // opens ended. See `head_owed`.
-    let mut before: Option<f64> = None;
-    // Where the last frame the range laid ended, where the latest of them
-    // started, and the holes between its frames so far.
-    let mut reached: Option<f64> = None;
-    let mut latest: Option<f64> = None;
-    let mut holes = 0.0f64;
-    // Whether `owed` was laid.
-    let mut kept_owed = false;
-    // How much longer than itself the container says the frame laid last
-    // lasts, in a file with no clock. See `longer` below.
-    let mut longer = 0.0f64;
-    // The track's frames as the cut with pictures takes them: a frame of a
-    // program stream one frame late on the next one's stamp is put back
-    // where it belongs. See [`crate::input::LateFrames`]. What it hands on
-    // waits in `due`; what it still holds when the read ends is taken last.
-    let mut late = crate::input::LateFrames::new(&ictx, 1);
-    let mut due = std::collections::VecDeque::new();
-    let mut read_over = false;
-    let mut packets = ictx.read_packets();
-    loop {
-        let packet = match due.pop_front() {
-            Some(packet) => packet,
-            None if read_over => break,
-            None => {
-                read_on(&mut packets, &mut late, &mut due, &mut read_over, track.stream_index, src.start_time, range.1);
-                continue;
-            }
-        };
-        let Some(pts) = packet.pts() else { continue };
-        let t = pts as f64 * in_tb - src.start_time;
-        // A frame that comes with no length at all, on a track whose
-        // packets otherwise carry theirs: the first sound block of an
-        // `ffmpeg -c copy` .mkv of a broadcast, read as the open read it.
-        // Of no length it was passed over as sound before the range, the
-        // range opened a frame late and every frame after went down 21 ms
-        // early -- where the picture writer, which gives such a frame its
-        // own length (`take_audio` in [`crate::cut`]), keeps it. Read once,
-        // as there: Vorbis's parser keeps the block before, and asked twice
-        // of one packet it answered the second time as if the packet had
-        // followed itself.
-        let dur = match (packet.duration(), clock.frame_secs) {
-            (own, _) if own > 0 => lengths.of(&packet, in_tb, own as f64 * in_tb),
-            (_, Some(frame)) if frame > 0.0 => lengths.of(&packet, in_tb, frame),
-            _ => lengths.own(&packet).unwrap_or(0.0),
-        };
-        if t >= range.1 {
-            break;
-        }
-        if let Some(re) = recoder.as_deref_mut() {
-            // The re-encoder is handed every frame the range touches and
-            // trims to the sample: the window says where the range really
-            // begins and ends, which is inside the frames at both of them.
-            // From the frame before the one the range opens in: the decoder
-            // needs it to decode that one whole, and the window drops it.
-            // A frame of no stated length is taken whatever its time: its
-            // length unknown, the one the range opens in looked like one
-            // that ends where it begins, and the opening of every range was
-            // left out -- a whole second of WavPack in a short .mkv. The
-            // window trims what is early.
-            if dur <= 0.0 || t + 2.0 * dur > range.0 {
-                re.take(&packet, track, src.start_time, win, ramp, at_out)?;
-                let mut out = Vec::new();
-                re.drain(&mut out)?;
-                for (p, at) in out {
-                    written = write_encoded(octx, p, at, clock)?.max(written);
-                }
-            }
-            continue;
-        }
-        // Open on whichever frame sits nearest the range's start, so the
-        // error is at most half a frame either way rather than a whole frame
-        // late -- the start as the sound so far has drifted from it, so the
-        // errors do not add up. The picture writer's own rule; see
-        // `take_audio` there, which records why being cleverer is not
-        // available.
-        if t + dur / 2.0 <= pick_from {
-            if dur > 0.0 {
-                before = Some(t + dur);
-            }
-            continue;
-        }
-        if dur <= 0.0 {
-            // A frame with no length is a frame there is nowhere to put:
-            // what follows would land on top of it.
-            continue;
-        }
-        if first.is_none() && owed > 0.0 {
-            let next = packet.data().unwrap_or(&[]);
-            let rewritten = mender.as_deref().is_some_and(|m| m.off_shape(next));
-            if let Some(kept) = gap.lay(octx, owed, next, rewritten, track, written, clock)? {
-                written += kept;
-                kept_owed = true;
-            }
-        }
-        first.get_or_insert((t, dur, before));
-        // A frame that starts before one the range has laid already: the
-        // track's timestamps stepped back (a second or so before some
-        // recorder seams, by a fifth or a third of a second), and what
-        // follows is sound for instants already written. The picture writer
-        // leaves it out as clashing with the last frame it wrote. Laid end to
-        // end here, it put everything after it that much later -- and,
-        // carried as drift, the next range opened that much late, on the
-        // sound the cut kept. A millisecond's leeway for a clock that keeps
-        // whole ones.
-        if behind(latest, t) {
-            if std::env::var("SMARTCUT_DEBUG").is_ok() {
-                crate::say!("  sound behind {:.4}-{:.4} in range {:.4}-{:.4}", t, t + dur, range.0, range.1);
-            }
-            continue;
-        }
-        let mut hole = hole_before(reached, t, dur);
-        // **A hole that is only this frame's stamp.** One frame of a
-        // damaged recording stamped ahead of where it belongs, by more than
-        // half a frame or by seconds, with the frame after it stamped where
-        // that one belongs: no sound is missing, and laid as a hole it put
-        // the rest of the range that much late (silence for seconds in a
-        // file with no clock), every frame up to the wild stamp passed over
-        // as `behind` it. The frame after it starting before this one's
-        // middle says so: then it goes down end to end, as it always did,
-        // and its stamp is not counted. A real hole is followed by frames
-        // that carry on from the frame after it.
-        let mut stray = false;
-        if hole > 0.0 {
-            while due.is_empty() && !read_over {
-                read_on(&mut packets, &mut late, &mut due, &mut read_over, track.stream_index, src.start_time, range.1);
-            }
-            if let Some(after) = due.front().and_then(|p| p.pts()) {
-                if (after as f64 * in_tb - src.start_time) < t + dur / 2.0 {
-                    if std::env::var("SMARTCUT_DEBUG").is_ok() {
-                        crate::say!("  sound stamp {:.4} out of place in range {:.4}-{:.4}", t, range.0, range.1);
-                    }
-                    hole = 0.0;
-                    stray = true;
-                }
-            }
-        }
-        if hole > 0.0 && std::env::var("SMARTCUT_DEBUG").is_ok() {
-            crate::say!("  sound hole {:.4}-{:.4} in range {:.4}-{:.4}", t - hole, t, range.0, range.1);
-        }
-        // **The frames after a hole go where the recording has them, as
-        // the picture writer puts them.** Laid end to end over it, the rest
-        // of the range ran early by the hole: 62 ms after a broadcast's
-        // switch from the programme before (three frames missing between
-        // the two), against the cut with pictures and the recording alike.
-        // Kept by the file's clock, or as silence where it has none; where
-        // neither can be had, closed up and carried as before.
+    // **And once more by the sound's own clock, where the first read began
+    // inside the range.** A seek is made by the pictures, and lands where
+    // their decode times say: in a recording whose sound is not stored
+    // beside the pictures it goes with, that is past the range's sound, or
+    // past all of it. An `ffmpeg`-made slide show in a transport stream
+    // (x264 holds a dozen pictures back to the end of the encode) carries
+    // every frame of its sound ahead of its first picture, and a sound-only
+    // file of it was written with nothing in it, where the cut with pictures
+    // had all its sound. Sought by the track itself it lands on the frames
+    // the range needs. Every recording whose first read reaches back to the
+    // range's start is read as it always was.
+    let mut by_track = false;
+    'read: loop {
+        let mut ictx = crate::input::demux(&src.input.url)?;
+        // Half a second before the range, so the frame it opens on has been
+        // decoded up to rather than seeked into: a seek in a transport stream
+        // lands where it can rather than where it was asked, and an AAC frame
+        // decoded straight after one is missing half its window.
         //
-        // **And a hole an MP4 keeps as the length of the frame before it.**
-        // Its clock has no gaps, only lengths, so three frames missing are
-        // one frame of 85 ms: no hole between the two, and a file with no
-        // clock, which plays every frame for its own length, ran early by
-        // the other 64 ms from there on (an `ffmpeg -c copy` .mp4 of a
-        // broadcast, cut to an .aac). The frame went down for its own length
-        // and the rest is laid with this frame's hole -- only once a frame
-        // follows it, so a range that ends on such a frame ends as it did.
-        let owed = std::mem::take(&mut longer);
-        if hole > 0.0 || owed > 0.0 {
-            let next = packet.data().unwrap_or(&[]);
-            let rewritten = mender.as_deref().is_some_and(|m| m.off_shape(next));
-            match gap.lay(octx, hole + owed, next, rewritten, track, written - owed, clock)? {
-                Some(kept) => written += kept - owed,
-                None => holes += hole,
+        // A range that opens at the head is not seeked for at all: the file was
+        // just opened and is standing at its first byte. Any seek lands on a
+        // picture, and a broadcast's sound starts before its first one does --
+        // half a second of it on an off-air recording, which a whole-recording
+        // .wav had as silence and an .aac did not have at all.
+        //
+        // Except where the cut with pictures seeks at the head too: a Matroska
+        // file with WebVTT in it whose open, read on, has already lost whole
+        // clusters to a block libavformat cannot parse -- 826 of 915 frames of
+        // sound, the first two seconds gone, where the cut with pictures had them
+        // all. See [`sought_at_head`].
+        let landing = (range.0 - 0.5).max(0.0);
+        if landing > 0.0 && by_track {
+            let ts = ((landing + src.start_time) / track.time_base) as i64;
+            let index = std::os::raw::c_int::try_from(track.stream_index).unwrap_or(-1);
+            // SAFETY: the context is open and nothing else is reading it.
+            let sought = index >= 0
+                && unsafe { ff::ffi::av_seek_frame(ictx.as_mut_ptr(), index, ts, ff::ffi::AVSEEK_FLAG_BACKWARD) } >= 0;
+            if !sought {
+                // Read as the first time, which is what there is.
+                let target = ((landing + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
+                ictx.seek(target, ..target)?;
             }
+        } else if landing > 0.0 {
+            let target = ((landing + src.start_time) * f64::from(ff::ffi::AV_TIME_BASE)) as i64;
+            ictx.seek(target, ..target)?;
+        } else {
+            sound_from_head(&mut ictx, &src.input.url, track.stream_index)?;
         }
-        if gap.bare() {
-            if let Some(own) = lengths.own(&packet) {
-                if dur - own > own / 2.0 + 1e-3 {
-                    longer = dur - own;
+        // Whether a frame of the track has been read yet: the first says
+        // whether the read reached back far enough (see `by_track`).
+        let mut met = false;
+        let again = landing > 0.0 && !by_track;
+        // After the seek, for the reason [`crate::input::keep_only`] gives, and
+        // with the pictures, which say when the range is over where the track
+        // has nothing in it. See [`crate::input::keep_with_pictures`].
+        crate::input::keep_with_pictures(&mut ictx, &[track.stream_index]);
+
+        let in_tb = track.time_base;
+        let mut lengths = Lengths::new(ictx.stream(track.stream_index).map(|s| s.parameters()));
+        let mut first: Option<Opening> = None;
+        // Where the last of the track's frames passed over before the range
+        // opens ended. See `head_owed`.
+        let mut before: Option<f64> = None;
+        // Where the last frame the range laid ended, where the latest of them
+        // started, and the holes between its frames so far.
+        let mut reached: Option<f64> = None;
+        let mut latest: Option<f64> = None;
+        let mut holes = 0.0f64;
+        // Whether `owed` was laid.
+        let mut kept_owed = false;
+        // How much longer than itself the container says the frame laid last
+        // lasts, in a file with no clock. See `longer` below.
+        let mut longer = 0.0f64;
+        // The track's frames as the cut with pictures takes them: a frame of a
+        // program stream one frame late on the next one's stamp is put back
+        // where it belongs. See [`crate::input::LateFrames`]. What it hands on
+        // waits in `due`; what it still holds when the read ends is taken last.
+        let mut late = crate::input::LateFrames::new(&ictx, 1);
+        // Where the pictures say the range is over. See [`TrackStop`].
+        let mut ends = TrackStop::default();
+        let mut due = std::collections::VecDeque::new();
+        let mut read_over = false;
+        let mut packets = ictx.read_packets();
+        loop {
+            let packet = match due.pop_front() {
+                Some(packet) => packet,
+                None if read_over => break,
+                None => {
+                    read_on(&mut packets, &mut late, &mut due, &mut read_over, &mut ends, track.stream_index, src.start_time, range.1);
+                    continue;
+                }
+            };
+            let Some(pts) = packet.pts() else { continue };
+            let t = pts as f64 * in_tb - src.start_time;
+            if !met {
+                met = true;
+                if again && t > range.0.min(pick_from) {
+                    by_track = true;
+                    continue 'read;
                 }
             }
-        }
-        // A frame stamped half a frame or more before where the sound has
-        // reached -- a damaged recording's repeated stamp, the frame before's
-        // given again -- is not `behind` and goes down end to end like any
-        // other: it reaches a frame on from there. Counted from its stamp it
-        // reached nothing, the frame after it read as a hole of one frame
-        // and went down a frame late, and the rest of the range with it: a
-        // frame late more for every such stamp.
-        reached = Some(match reached {
-            Some(r) if stray || t <= r - dur / 2.0 => r + dur,
-            Some(r) => r.max(t + dur),
-            None => t + dur,
-        });
-        if !stray {
-            latest = Some(latest.map_or(t, |l| l.max(t)));
-        }
-        if need_sync {
-            if !opens_on_sync(packet.data()) {
-                // Left out, but its instant is still spent, so what follows
-                // stays where the recording had it -- as the picture writer
-                // counts it.
-                written += dur;
+            // A frame that comes with no length at all, on a track whose
+            // packets otherwise carry theirs: the first sound block of an
+            // `ffmpeg -c copy` .mkv of a broadcast, read as the open read it.
+            // Of no length it was passed over as sound before the range, the
+            // range opened a frame late and every frame after went down 21 ms
+            // early -- where the picture writer, which gives such a frame its
+            // own length (`take_audio` in [`crate::cut`]), keeps it. Read once,
+            // as there: Vorbis's parser keeps the block before, and asked twice
+            // of one packet it answered the second time as if the packet had
+            // followed itself.
+            let dur = match (packet.duration(), clock.frame_secs) {
+                (own, _) if own > 0 => lengths.of(&packet, in_tb, own as f64 * in_tb),
+                (_, Some(frame)) if frame > 0.0 => lengths.of(&packet, in_tb, frame),
+                _ => lengths.own(&packet).unwrap_or(0.0),
+            };
+            if t >= range.1 {
+                break;
+            }
+            if let Some(re) = recoder.as_deref_mut() {
+                // The re-encoder is handed every frame the range touches and
+                // trims to the sample: the window says where the range really
+                // begins and ends, which is inside the frames at both of them.
+                // From the frame before the one the range opens in: the decoder
+                // needs it to decode that one whole, and the window drops it.
+                // A frame of no stated length is taken whatever its time: its
+                // length unknown, the one the range opens in looked like one
+                // that ends where it begins, and the opening of every range was
+                // left out -- a whole second of WavPack in a short .mkv. The
+                // window trims what is early.
+                if dur <= 0.0 || t + 2.0 * dur > range.0 {
+                    re.take(&packet, track, src.start_time, win, ramp, at_out)?;
+                    let mut out = Vec::new();
+                    re.drain(&mut out)?;
+                    for (p, at) in out {
+                        written = write_encoded(octx, p, at, clock)?.max(written);
+                    }
+                }
                 continue;
             }
-            need_sync = false;
-        }
-        // The frame a boundary falls inside, re-encoded beforehand with the
-        // material outside the range silenced and the fade ridden over what
-        // is kept. A guard is only used when it is what came before it.
-        let patch = patches
-            .get(&pts)
-            .filter(|p| p.after.is_none() || p.after == *prev)
-            .filter(|_| mender.as_deref().is_none_or(|m| m.fits_patch(packet.data().unwrap_or(&[]))));
-        let patched = patch.is_some();
-        let packet = match patch {
-            Some(p) => {
-                let mut patched = ff::Packet::copy(&p.bytes);
-                patched.set_flags(ff::packet::Flags::KEY);
-                patched.set_duration(packet.duration());
-                patched
+            // Open on whichever frame sits nearest the range's start, so the
+            // error is at most half a frame either way rather than a whole frame
+            // late -- the start as the sound so far has drifted from it, so the
+            // errors do not add up. The picture writer's own rule; see
+            // `take_audio` there, which records why being cleverer is not
+            // available.
+            if t + dur / 2.0 <= pick_from {
+                if dur > 0.0 {
+                    before = Some(t + dur);
+                }
+                continue;
             }
-            None => packet,
-        };
-        *prev = Some(pts);
-        if let Some(m) = mender.as_deref_mut() {
-            let data = packet.data().unwrap_or(&[]);
-            if !patched && m.off_shape(data) {
-                let tag = (written, dur, packet.duration());
-                let ready = m.take(&src.input.url, track.stream_index, data, t, dur, tag);
+            if dur <= 0.0 {
+                // A frame with no length is a frame there is nowhere to put:
+                // what follows would land on top of it.
+                continue;
+            }
+            if first.is_none() && owed > 0.0 {
+                let next = packet.data().unwrap_or(&[]);
+                let rewritten = mender.as_deref().is_some_and(|m| m.off_shape(next));
+                if let Some(kept) = gap.lay(octx, owed, next, rewritten, track, written, clock)? {
+                    written += kept;
+                    kept_owed = true;
+                }
+            }
+            first.get_or_insert((t, dur, before));
+            // A frame that starts before one the range has laid already: the
+            // track's timestamps stepped back (a second or so before some
+            // recorder seams, by a fifth or a third of a second), and what
+            // follows is sound for instants already written. The picture writer
+            // leaves it out as clashing with the last frame it wrote. Laid end to
+            // end here, it put everything after it that much later -- and,
+            // carried as drift, the next range opened that much late, on the
+            // sound the cut kept. A millisecond's leeway for a clock that keeps
+            // whole ones.
+            if behind(latest, t) {
+                if std::env::var("SMARTCUT_DEBUG").is_ok() {
+                    crate::say!("  sound behind {:.4}-{:.4} in range {:.4}-{:.4}", t, t + dur, range.0, range.1);
+                }
+                continue;
+            }
+            let mut hole = hole_before(reached, t, dur);
+            // **A hole that is only this frame's stamp.** One frame of a
+            // damaged recording stamped ahead of where it belongs, by more than
+            // half a frame or by seconds, with the frame after it stamped where
+            // that one belongs: no sound is missing, and laid as a hole it put
+            // the rest of the range that much late (silence for seconds in a
+            // file with no clock), every frame up to the wild stamp passed over
+            // as `behind` it. The frame after it starting before this one's
+            // middle says so: then it goes down end to end, as it always did,
+            // and its stamp is not counted. A real hole is followed by frames
+            // that carry on from the frame after it.
+            let mut stray = false;
+            if hole > 0.0 {
+                while due.is_empty() && !read_over {
+                    read_on(&mut packets, &mut late, &mut due, &mut read_over, &mut ends, track.stream_index, src.start_time, range.1);
+                }
+                if let Some(after) = due.front().and_then(|p| p.pts()) {
+                    if (after as f64 * in_tb - src.start_time) < t + dur / 2.0 {
+                        if std::env::var("SMARTCUT_DEBUG").is_ok() {
+                            crate::say!("  sound stamp {:.4} out of place in range {:.4}-{:.4}", t, range.0, range.1);
+                        }
+                        hole = 0.0;
+                        stray = true;
+                    }
+                }
+            }
+            if hole > 0.0 && std::env::var("SMARTCUT_DEBUG").is_ok() {
+                crate::say!("  sound hole {:.4}-{:.4} in range {:.4}-{:.4}", t - hole, t, range.0, range.1);
+            }
+            // **The frames after a hole go where the recording has them, as
+            // the picture writer puts them.** Laid end to end over it, the rest
+            // of the range ran early by the hole: 62 ms after a broadcast's
+            // switch from the programme before (three frames missing between
+            // the two), against the cut with pictures and the recording alike.
+            // Kept by the file's clock, or as silence where it has none; where
+            // neither can be had, closed up and carried as before.
+            //
+            // **And a hole an MP4 keeps as the length of the frame before it.**
+            // Its clock has no gaps, only lengths, so three frames missing are
+            // one frame of 85 ms: no hole between the two, and a file with no
+            // clock, which plays every frame for its own length, ran early by
+            // the other 64 ms from there on (an `ffmpeg -c copy` .mp4 of a
+            // broadcast, cut to an .aac). The frame went down for its own length
+            // and the rest is laid with this frame's hole -- only once a frame
+            // follows it, so a range that ends on such a frame ends as it did.
+            let owed = std::mem::take(&mut longer);
+            if hole > 0.0 || owed > 0.0 {
+                let next = packet.data().unwrap_or(&[]);
+                let rewritten = mender.as_deref().is_some_and(|m| m.off_shape(next));
+                match gap.lay(octx, hole + owed, next, rewritten, track, written - owed, clock)? {
+                    Some(kept) => written += kept - owed,
+                    None => holes += hole,
+                }
+            }
+            if gap.bare() {
+                if let Some(own) = lengths.own(&packet) {
+                    if dur - own > own / 2.0 + 1e-3 {
+                        longer = dur - own;
+                    }
+                }
+            }
+            // A frame stamped half a frame or more before where the sound has
+            // reached -- a damaged recording's repeated stamp, the frame before's
+            // given again -- is not `behind` and goes down end to end like any
+            // other: it reaches a frame on from there. Counted from its stamp it
+            // reached nothing, the frame after it read as a hole of one frame
+            // and went down a frame late, and the rest of the range with it: a
+            // frame late more for every such stamp.
+            reached = Some(match reached {
+                Some(r) if stray || t <= r - dur / 2.0 => r + dur,
+                Some(r) => r.max(t + dur),
+                None => t + dur,
+            });
+            if !stray {
+                latest = Some(latest.map_or(t, |l| l.max(t)));
+            }
+            if need_sync {
+                if !opens_on_sync(packet.data()) {
+                    // Left out, but its instant is still spent, so what follows
+                    // stays where the recording had it -- as the picture writer
+                    // counts it.
+                    written += dur;
+                    continue;
+                }
+                need_sync = false;
+            }
+            // The frame a boundary falls inside, re-encoded beforehand with the
+            // material outside the range silenced and the fade ridden over what
+            // is kept. A guard is only used when it is what came before it.
+            let patch = patches
+                .get(&pts)
+                .filter(|p| p.after.is_none() || p.after == *prev)
+                .filter(|_| mender.as_deref().is_none_or(|m| m.fits_patch(packet.data().unwrap_or(&[]))));
+            let patched = patch.is_some();
+            let packet = match patch {
+                Some(p) => {
+                    let mut patched = ff::Packet::copy(&p.bytes);
+                    patched.set_flags(ff::packet::Flags::KEY);
+                    patched.set_duration(packet.duration());
+                    patched
+                }
+                None => packet,
+            };
+            *prev = Some(pts);
+            if let Some(m) = mender.as_deref_mut() {
+                let data = packet.data().unwrap_or(&[]);
+                if !patched && m.off_shape(data) {
+                    let tag = (written, dur, packet.duration());
+                    let ready = m.take(&src.input.url, track.stream_index, data, t, dur, tag);
+                    write_mended(octx, ready, clock)?;
+                    written += dur;
+                    continue;
+                }
+                let ready = m.through(data, t, dur);
                 write_mended(octx, ready, clock)?;
-                written += dur;
-                continue;
             }
-            let ready = m.through(data, t, dur);
-            write_mended(octx, ready, clock)?;
+            write_copied(octx, packet, written, dur, clock)?;
+            written += dur;
         }
-        write_copied(octx, packet, written, dur, clock)?;
-        written += dur;
+        // Nothing of the track at all after the seek: past all of it.
+        if again && !met {
+            by_track = true;
+            continue 'read;
+        }
+        packets.finished()?;
+        return Ok((written, first, holes, kept_owed));
     }
-    packets.finished()?;
-    Ok((written, first, holes, kept_owed))
 }
 
 /// One step of [`take_range`]'s read: the next packet read, a frame of the
 /// track handed to `due` (through `late`), the read over where the pictures
 /// have passed the range's `end` by enough or the file ends.
+#[allow(clippy::too_many_arguments)]
 fn read_on(
     packets: &mut crate::input::Packets<'_>,
     late: &mut crate::input::LateFrames,
     due: &mut std::collections::VecDeque<ff::Packet>,
     read_over: &mut bool,
+    ends: &mut TrackStop,
     stream_index: usize,
     start_time: f64,
     end: f64,
 ) {
     match packets.next() {
         Some((stream, packet)) if stream.index() != stream_index => {
-            // Leeway for the pictures running a little ahead of their sound.
-            if crate::audio::read_reached(&stream, &packet, start_time).is_some_and(|t| t >= end + 5.0) {
+            if ends.picture(crate::audio::read_reached(&stream, &packet, start_time), end) {
                 *read_over = true;
                 due.extend(late.rest().into_iter().map(|(_, p)| p));
             }
         }
-        Some((_, packet)) => due.extend(late.pass(0, packet).into_iter().flatten()),
+        Some((stream, packet)) => {
+            ends.sound(packet.pts().map(|p| p as f64 * f64::from(stream.time_base()) - start_time));
+            due.extend(late.pass(0, packet).into_iter().flatten())
+        }
         None => {
             *read_over = true;
             due.extend(late.rest().into_iter().map(|(_, p)| p));
+        }
+    }
+}
+
+/// When a read for a sound track's range is over by the pictures: once they
+/// are shown well past the range's end with nothing more of the track come,
+/// which is how a track with nothing after the range says so.
+///
+/// **Well past it by the pictures' own lead.** Five seconds was the leeway
+/// for a transport stream's pictures carried a little ahead of their sound;
+/// an encode that holds its pictures back (x264 with many B pictures at one
+/// picture a second) has them stored most of half a minute ahead of it, and
+/// the read ended there: a sound-only file of `--keep 10-30` was 18.4 s. So
+/// the most the pictures have run ahead of the track's frames so far is
+/// added, held to [`crate::index::OUT_OF_PLACE`].
+///
+/// **And past one picture whose time alone is damage**
+/// ([`crate::index::PastStop`]): one key picture's decode time knocked 46.6 s
+/// ahead by reception, ten seconds before the end of a range, ended the read
+/// there, and the sound-only file was 19.1 s of the cut's 30.
+///
+/// Neither moves where an ordinary read ends: it ends on the first frame of
+/// the track past the range, long before the pictures are past it.
+#[derive(Default)]
+pub(crate) struct TrackStop {
+    past: crate::index::PastStop,
+    /// The latest picture time read that ended nothing.
+    pictures: Option<f64>,
+    /// How far the pictures have been read ahead of the track's frames.
+    lead: f64,
+}
+
+impl TrackStop {
+    /// A picture read at `t`: whether the read for a range ending at `end`
+    /// is over.
+    pub(crate) fn picture(&mut self, t: Option<f64>, end: f64) -> bool {
+        let Some(t) = t else { return false };
+        let stop = end + 5.0 + self.lead;
+        if self.past.ends(t, stop, t >= stop) {
+            return true;
+        }
+        if t < stop {
+            self.pictures = Some(self.pictures.map_or(t, |p| p.max(t)));
+        }
+        false
+    }
+
+    /// A frame of the track read at `t`.
+    pub(crate) fn sound(&mut self, t: Option<f64>) {
+        if let (Some(p), Some(t)) = (self.pictures, t) {
+            self.lead = self.lead.max((p - t).min(crate::index::OUT_OF_PLACE));
         }
     }
 }

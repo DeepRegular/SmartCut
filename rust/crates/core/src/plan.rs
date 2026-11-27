@@ -561,7 +561,16 @@ fn picture_starts(src: &crate::Source, lo: f64, hi: f64) -> Option<Vec<f64>> {
         // one B picture whose time alone is damage, which a transport stream
         // hands over as its decode time too ([`crate::index::PastStop`]): it
         // is judged below with the rest.
-        let stop = if dts.is_some() { hi + 2.0 * fd } else { hi + 1.0 };
+        //
+        // **A second, or four frames where that is more**: the pictures of
+        // a recording of stills are seconds apart, and a P picture is sent
+        // up to four of them ahead of the B pictures shown before it. Past a
+        // second, a Matroska of half a second a picture with B pictures,
+        // read for a range opening 1.26 s in, stopped on the P picture 8 s
+        // on before the pictures at 2 and 4 s came: the range's sound
+        // started where it was asked to, and its pictures a quarter second
+        // before, on whole fields ([`crate::cut::still_up_from`]).
+        let stop = if dts.is_some() { hi + 2.0 * fd } else { hi + (4.0 * fd).max(1.0) };
         if dts.or(pts).is_some_and(|t| past_stop.ends(t, stop, t > stop)) {
             if let Some(t) = pts.filter(|_| stray_met) {
                 read.push((t, dts, false));
@@ -738,7 +747,14 @@ pub fn plan_range(
     // screen recording's average is a whole picture of it, and an entry
     // point that far past OUT, or before IN, put that picture in the cut.
     let gap = video.least_gap();
-    let eps = gap / 2.0;
+    // **Not on a recording of stills**, whose closest two pictures are
+    // seconds apart: there half of it moved a range's start onto the entry
+    // point 5 s after it, and its end onto the one 5 s past it, and what lay
+    // between went with its sound. A bound there is a picture's within the
+    // slack a bound on one is, and a head is any part of the picture on
+    // screen before the entry point. See [`crate::cut::comes_as_stills`].
+    let stills = crate::cut::comes_as_stills(video);
+    let eps = if stills { crate::cut::on_a_picture_slack(video) } else { gap / 2.0 };
     let min_copy = opts.min_copy.unwrap_or_else(|| (2.0 * fd).max(0.5));
 
     let finish = |mut segments: Vec<Segment>| -> RangePlan {
@@ -750,6 +766,11 @@ pub fn plan_range(
             // recording, is not the empty window `retain` below is for.
             if s.frames == 0 && gap < fd {
                 s.frames = frames_in(video, points, 1.0 / gap, s.start, s.end, duration);
+            }
+            // A still is up through any window wider than a bound's slack,
+            // and that picture is what a re-encode of it writes.
+            if s.frames == 0 && stills && s.end - s.start > eps {
+                s.frames = 1;
             }
         }
         // A re-encode window with no picture in it is not a small piece of
@@ -831,7 +852,7 @@ pub fn plan_range(
     // Where there is none, the range simply begins at the entry point
     // instead, and the audio is anchored there with it: that is what
     // `effective_in` below reports back.
-    if body_start - t_in >= gap - 1e-9 {
+    if body_start - t_in >= gap - 1e-9 || (stills && body_start - t_in > eps) {
         segments.push(Segment {
             kind: SegmentKind::Reencode,
             start: t_in,

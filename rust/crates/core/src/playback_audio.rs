@@ -716,10 +716,6 @@ fn card_layout(channels: u16) -> ff::channel_layout::ChannelLayout {
     ff::channel_layout::ChannelLayout::default(i32::from(channels))
 }
 
-/// How far the pictures may run past what is being read for with nothing of
-/// the sound track turning up, before the track is taken not to be there.
-const PAST: f64 = 5.0;
-
 /// The timestamp a seek aims at to land at or before `landing`, in rebased
 /// seconds: the front of the file where that is the start of the recording.
 /// See `front_or` in [`crate::thumbs`] and `place` in [`crate::preview`].
@@ -1300,104 +1296,131 @@ fn feed_from(
         // own start lands on a picture, and a broadcast's sound starts before
         // its first one -- the head of a preview from nought played silence.
         let landing = (start - src.seek_margin).max(0.0);
-        let target = front_of(src, landing);
-        let _ = ictx.seek(target, ..target);
-        decoder.flush();
-        // And the conversions after it: a resampler keeps the last few
-        // samples it was given to filter the next ones against, and kept
-        // across the seek it put the end of the range before at the head of
-        // this one, every later sample of it that much late.
-        let mut resampler: Option<ff::software::resampling::Context> = None;
-        let mut folder: Option<ff::software::resampling::Context> = None;
+        // Sought again by the track where the first read began past the
+        // range's start. See [`by_the_track`].
+        let mut by_track = false;
+        'seek: loop {
+            if !(by_track && by_the_track(&mut ictx, src, idx, landing)) {
+                let target = front_of(src, landing);
+                let _ = ictx.seek(target, ..target);
+            }
+            decoder.flush();
+            let again = !by_track;
+            let mut met = false;
+            let mut ends = crate::sound::TrackStop::default();
+            // And the conversions after it: a resampler keeps the last few
+            // samples it was given to filter the next ones against, and kept
+            // across the seek it put the end of the range before at the head of
+            // this one, every later sample of it that much late.
+            let mut resampler: Option<ff::software::resampling::Context> = None;
+            let mut folder: Option<ff::software::resampling::Context> = None;
 
-        let mut frame = ff::frame::Audio::empty();
-        for (stream, packet) in ictx.read_packets() {
-            if stop() {
-                break 'ranges;
-            }
-            if stream.index() != idx {
-                // Well past the range with nothing of this track in it.
-                // Leeway, because a transport stream carries its pictures a
-                // little ahead of the sound that goes with them.
-                if crate::audio::read_reached(&stream, &packet, src.start_time)
-                    .is_some_and(|t| t >= b + PAST)
-                {
-                    break;
+            let mut frame = ff::frame::Audio::empty();
+            for (stream, packet) in ictx.read_packets() {
+                if stop() {
+                    break 'ranges;
                 }
-                continue;
-            }
-            if !looked {
-                if let Some(data) = packet.data() {
-                    looked = looked_at(&params, data);
-                    if let Some(d) = reopened_for(&params, data, src, idx) {
-                        decoder = d;
+                if stream.index() != idx {
+                    // Well past the range with nothing of this track in it.
+                    // Leeway, because a transport stream carries its pictures a
+                    // little ahead of the sound that goes with them -- and
+                    // more where they have run further ahead. See
+                    // [`crate::sound::TrackStop`].
+                    if ends.picture(crate::audio::read_reached(&stream, &packet, src.start_time), b) {
+                        if again && !met {
+                            by_track = true;
+                            continue 'seek;
+                        }
+                        break;
                     }
-                }
-            }
-            if decoder.send_packet(&packet).is_err() {
-                continue;
-            }
-            let mut past_end = false;
-            while decoder.receive_frame(&mut frame).is_ok() {
-                let Some(pts) = frame.pts() else { continue };
-                // Resampled for the card, such a frame is hundreds of
-                // megabytes. See `crate::audio::implausible_rate`.
-                if crate::audio::implausible_rate(frame.rate(), rate) {
                     continue;
                 }
-                let t = pts as f64 * in_tb - src.start_time;
-                if t >= b {
-                    past_end = true;
+                ends.sound(packet.pts().map(|p| p as f64 * in_tb - src.start_time));
+                if !met {
+                    met = true;
+                    if again && packet.pts().is_some_and(|p| p as f64 * in_tb - src.start_time > start) {
+                        by_track = true;
+                        continue 'seek;
+                    }
+                }
+                if !looked {
+                    if let Some(data) = packet.data() {
+                        looked = looked_at(&params, data);
+                        if let Some(d) = reopened_for(&params, data, src, idx) {
+                            decoder = d;
+                        }
+                    }
+                }
+                if decoder.send_packet(&packet).is_err() {
+                    continue;
+                }
+                let mut past_end = false;
+                while decoder.receive_frame(&mut frame).is_ok() {
+                    let Some(pts) = frame.pts() else { continue };
+                    // Resampled for the card, such a frame is hundreds of
+                    // megabytes. See `crate::audio::implausible_rate`.
+                    if crate::audio::implausible_rate(frame.rate(), rate) {
+                        continue;
+                    }
+                    let t = pts as f64 * in_tb - src.start_time;
+                    if t >= b {
+                        past_end = true;
+                        break;
+                    }
+                    // Folded first, where the row is written in fewer channels:
+                    // both what is heard and what is metered are the output's.
+                    //
+                    // A damaged frame the decoder read as some other number of
+                    // channels in no order -- 53, at a broadcast's join into a
+                    // commercial -- cannot be folded or brought to the card's:
+                    // swresample answers EINVAL, and that ended the playback
+                    // with the pictures playing on in silence. It is passed over
+                    // as a hole, which the next frame's `due` waits out, as the
+                    // cut leaves it one (`crate::audio::decode_on`).
+                    let unread = |e: anyhow::Error| if frame.channels() != audio.channels { Ok(()) } else { Err(e) };
+                    let heard_as = match fold_frame(&mut folder, &mut folded, &frame, fold) {
+                        Ok(heard_as) => heard_as,
+                        Err(e) => {
+                            unread(e)?;
+                            continue;
+                        }
+                    };
+                    // Measured before the resampling, so the meter answers for
+                    // the recording's channels rather than the card's.
+                    let mut peaks = [0f32; METERED];
+                    let heard = frame_peaks(heard_as, &mut peaks);
+                    let data = match resample(&mut resampler, &mut resampled, heard_as, rate, layout) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            unread(e)?;
+                            continue;
+                        }
+                    };
+                    let n = data.len() / channels as usize;
+                    if let Some((lo, hi)) = frame_window(n, rate, t, start, b) {
+                        let mut samples =
+                            data[lo * channels as usize..hi * channels as usize].to_vec();
+                        let at = t + lo as f64 / rate as f64;
+                        ride_fade(&mut samples, channels, at, rate, (a, b), fades);
+                        to_card_order(&mut samples, channels);
+                        let due = here + (at - start);
+                        let bite = Bite { frames: hi - lo, channels: heard, peaks, due };
+                        if !push(ring, cap, &stop, samples, bite) {
+                            break 'ranges;
+                        }
+                        // The first of it is in, and the clock can start.
+                        clock.mark();
+                    }
+                }
+                if past_end {
                     break;
                 }
-                // Folded first, where the row is written in fewer channels:
-                // both what is heard and what is metered are the output's.
-                //
-                // A damaged frame the decoder read as some other number of
-                // channels in no order -- 53, at a broadcast's join into a
-                // commercial -- cannot be folded or brought to the card's:
-                // swresample answers EINVAL, and that ended the playback
-                // with the pictures playing on in silence. It is passed over
-                // as a hole, which the next frame's `due` waits out, as the
-                // cut leaves it one (`crate::audio::decode_on`).
-                let unread = |e: anyhow::Error| if frame.channels() != audio.channels { Ok(()) } else { Err(e) };
-                let heard_as = match fold_frame(&mut folder, &mut folded, &frame, fold) {
-                    Ok(heard_as) => heard_as,
-                    Err(e) => {
-                        unread(e)?;
-                        continue;
-                    }
-                };
-                // Measured before the resampling, so the meter answers for
-                // the recording's channels rather than the card's.
-                let mut peaks = [0f32; METERED];
-                let heard = frame_peaks(heard_as, &mut peaks);
-                let data = match resample(&mut resampler, &mut resampled, heard_as, rate, layout) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        unread(e)?;
-                        continue;
-                    }
-                };
-                let n = data.len() / channels as usize;
-                if let Some((lo, hi)) = frame_window(n, rate, t, start, b) {
-                    let mut samples =
-                        data[lo * channels as usize..hi * channels as usize].to_vec();
-                    let at = t + lo as f64 / rate as f64;
-                    ride_fade(&mut samples, channels, at, rate, (a, b), fades);
-                    to_card_order(&mut samples, channels);
-                    let due = here + (at - start);
-                    let bite = Bite { frames: hi - lo, channels: heard, peaks, due };
-                    if !push(ring, cap, &stop, samples, bite) {
-                        break 'ranges;
-                    }
-                    // The first of it is in, and the clock can start.
-                    clock.mark();
-                }
             }
-            if past_end {
-                break;
+            if again && !met {
+                by_track = true;
+                continue 'seek;
             }
+            break;
         }
     }
     Ok(())
@@ -1509,72 +1532,121 @@ pub fn peaks_at(src: &Source, time: f64, window: f64, fold: &Fold) -> Result<Vec
     // meter the wrong instant, and landing early only costs a few frames of
     // decoding that are then passed over.
     let landing = (time - src.seek_margin).max(0.0);
-    let target = front_of(src, landing);
-    let _ = ictx.seek(target, ..target);
-    decoder.flush();
-
     let layout = ff::channel_layout::ChannelLayout::default(channels as i32);
     let mut resampler: Option<ff::software::resampling::Context> = None;
     let mut resampled = ff::frame::Audio::empty();
     let mut frame = ff::frame::Audio::empty();
     let end = time + window.max(0.0);
+    // Sought again by the track where the first read began past the moment
+    // asked about. See [`by_the_track`].
+    let mut by_track = false;
+    'seek: loop {
+        if !(by_track && by_the_track(&mut ictx, src, idx, landing)) {
+            let target = front_of(src, landing);
+            let _ = ictx.seek(target, ..target);
+        }
+        decoder.flush();
+        let again = !by_track;
+        let mut met = false;
 
-    'packets: for (stream, packet) in ictx.read_packets() {
-        if stream.index() != idx {
-            if crate::audio::read_reached(&stream, &packet, src.start_time)
-                .is_some_and(|t| t >= end + PAST)
-            {
-                break;
+        let mut ends = crate::sound::TrackStop::default();
+        'packets: for (stream, packet) in ictx.read_packets() {
+            if stream.index() != idx {
+                // See [`crate::sound::TrackStop`].
+                if ends.picture(crate::audio::read_reached(&stream, &packet, src.start_time), end) {
+                    if again && !met {
+                        by_track = true;
+                        continue 'seek;
+                    }
+                    break;
+                }
+                continue;
             }
-            continue;
-        }
-        if !looked {
-            if let Some(data) = packet.data() {
-                looked = looked_at(&params, data);
-                if let Some(d) = reopened_for(&params, data, src, idx) {
-                    decoder = d;
+            ends.sound(packet.pts().map(|p| p as f64 * audio.time_base - src.start_time));
+            if !met {
+                met = true;
+                if again && packet.pts().is_some_and(|p| p as f64 * audio.time_base - src.start_time > time) {
+                    by_track = true;
+                    continue 'seek;
+                }
+            }
+            if !looked {
+                if let Some(data) = packet.data() {
+                    looked = looked_at(&params, data);
+                    if let Some(d) = reopened_for(&params, data, src, idx) {
+                        decoder = d;
+                    }
+                }
+            }
+            if decoder.send_packet(&packet).is_err() {
+                continue;
+            }
+            while decoder.receive_frame(&mut frame).is_ok() {
+                let Some(pts) = frame.pts() else { continue };
+                if crate::audio::implausible_rate(frame.rate(), audio.sample_rate) {
+                    continue;
+                }
+                let t = pts as f64 * audio.time_base - src.start_time;
+                let dur = frame.samples() as f64 / audio.sample_rate.max(1) as f64;
+                if t >= end {
+                    break 'packets;
+                }
+                // Wholly before the window: seeking lands early on purpose.
+                if t + dur <= time {
+                    continue;
+                }
+                let data = resample(&mut resampler, &mut resampled, &frame, audio.sample_rate, layout)?;
+                // Only the samples inside the window, not every sample of every
+                // frame that overlaps it. A frame of AAC is 21 milliseconds and a
+                // picture is 33, so two or three frames reach into one picture's
+                // window and each of them brings sound from either side of it.
+                // The meter beside the picture read that sound as the picture's
+                // own, which is what a mark at a junction was being judged
+                // against: half a frame of level that belongs to the frame before
+                // and half that belongs to the frame after.
+                let rate = audio.sample_rate.max(1) as f64;
+                let from = (((time - t) * rate).ceil().max(0.0) as usize).min(data.len() / channels);
+                let to = (((end - t) * rate).ceil().max(0.0) as usize).min(data.len() / channels);
+                for (i, &s) in data[from * channels..to * channels].iter().enumerate() {
+                    let ch = i % channels;
+                    let m = s.abs();
+                    if m > peaks[ch] {
+                        peaks[ch] = m;
+                    }
                 }
             }
         }
-        if decoder.send_packet(&packet).is_err() {
-            continue;
+        if again && !met {
+            by_track = true;
+            continue 'seek;
         }
-        while decoder.receive_frame(&mut frame).is_ok() {
-            let Some(pts) = frame.pts() else { continue };
-            if crate::audio::implausible_rate(frame.rate(), audio.sample_rate) {
-                continue;
-            }
-            let t = pts as f64 * audio.time_base - src.start_time;
-            let dur = frame.samples() as f64 / audio.sample_rate.max(1) as f64;
-            if t >= end {
-                break 'packets;
-            }
-            // Wholly before the window: seeking lands early on purpose.
-            if t + dur <= time {
-                continue;
-            }
-            let data = resample(&mut resampler, &mut resampled, &frame, audio.sample_rate, layout)?;
-            // Only the samples inside the window, not every sample of every
-            // frame that overlaps it. A frame of AAC is 21 milliseconds and a
-            // picture is 33, so two or three frames reach into one picture's
-            // window and each of them brings sound from either side of it.
-            // The meter beside the picture read that sound as the picture's
-            // own, which is what a mark at a junction was being judged
-            // against: half a frame of level that belongs to the frame before
-            // and half that belongs to the frame after.
-            let rate = audio.sample_rate.max(1) as f64;
-            let from = (((time - t) * rate).ceil().max(0.0) as usize).min(data.len() / channels);
-            let to = (((end - t) * rate).ceil().max(0.0) as usize).min(data.len() / channels);
-            for (i, &s) in data[from * channels..to * channels].iter().enumerate() {
-                let ch = i % channels;
-                let m = s.abs();
-                if m > peaks[ch] {
-                    peaks[ch] = m;
-                }
-            }
-        }
+        break;
     }
     Ok(peaks)
+}
+
+/// Seek `ictx` by the sound track `idx` itself, to land at or before
+/// `landing` (rebased seconds) on its own clock; whether it did.
+///
+/// **For a read whose seek by the pictures began past what it was for.** A
+/// seek is made by the pictures' decode times, and in a recording whose sound
+/// is not stored beside the pictures it goes with that lands past the sound
+/// wanted, or past all of it: an `ffmpeg`-made slide show in a transport
+/// stream or a Matroska file (x264 holds a dozen pictures back to the end of
+/// the encode) carries every frame of its sound ahead of its first picture,
+/// and played from anywhere but its head the preview was silent and its
+/// meter read nothing. A read that reaches back far enough the first time --
+/// every other recording -- is never sought this way. As `by_track` in
+/// [`crate::sound`].
+fn by_the_track(ictx: &mut crate::input::Demux, src: &Source, idx: usize, landing: f64) -> bool {
+    let Some(tb) = ictx.stream(idx).map(|s| f64::from(s.time_base())) else { return false };
+    let Ok(index) = std::os::raw::c_int::try_from(idx) else { return false };
+    if !tb.is_finite() || tb <= 0.0 {
+        return false;
+    }
+    let ts = ((landing + src.start_time) / tb) as i64;
+    // SAFETY: the context is open and nothing else is reading it.
+    unsafe { ff::ffi::av_seek_frame(ictx.as_mut_ptr(), index, ts, ff::ffi::AVSEEK_FLAG_BACKWARD) >= 0 }
 }
 
 #[cfg(test)]

@@ -15453,6 +15453,723 @@ def stage_poster_frame_57(cfg, t):
 SCENARIOS += [stage_poster_frame_57]
 
 
+
+# --- 58th pass, mainjs: ordinary recordings with real holds -------------------
+
+H58_SCR = "(N/30+6*gte(N,1)+12*gte(N,61)+30*gte(N,121)+55*gte(N,181)+20*gte(N,239))/TB"
+H58_X264 = ["-c:v", "libx264", "-preset", "veryfast", "-g", "60", "-bf", "3", "-sc_threshold", "0",
+            "-x264-params", "b-pyramid=normal", "-pix_fmt", "yuv420p"]
+
+
+def _h58_make(cfg):
+    """Undamaged recordings whose pictures really hold: a screen recording
+    paused at its head (6 s), mid-way (12, 30, 55 s) and ending on a picture
+    after a 20 s still, as .mp4 (90 kHz), .mkv and .ts; a slide show with B
+    pictures (7 s a picture, one held 65 s) as .mp4 and .mkv; two screen
+    recordings, each with a 10 s hold, joined with cat (the clock goes back);
+    a phone's 30 a second with jitter and a dropped picture every 37."""
+    d = os.path.join(cfg.work, "h58mainjs")
+    os.makedirs(d, exist_ok=True)
+    aac = ["-c:a", "aac", "-b:a", "96k"]
+    sine = lambda sec: ["-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate=48000"]
+    base = os.path.join(d, "scr.mp4")
+    if not os.path.exists(base):
+        _m50_ff(sine(132) + ["-filter_complex", _num_graph(640, 360, 30, 8, f"format=yuv420p,setpts='{H58_SCR}'"),
+                             "-map", "[v]", "-map", "0:a", "-fps_mode", "passthrough"] + H58_X264 + aac +
+                ["-video_track_timescale", "90000", "-f", "mp4", base + ".part"])
+        os.replace(base + ".part", base)
+    for ext, f in (("mkv", "matroska"), ("ts", "mpegts")):
+        out = os.path.join(d, "scr." + ext)
+        if not os.path.exists(out):
+            _m50_ff(["-i", base, "-map", "0", "-c", "copy", "-f", f, out + ".part"])
+            os.replace(out + ".part", out)
+    sl = os.path.join(d, "slide.mp4")
+    if not os.path.exists(sl):
+        _m50_ff(sine(150) + ["-filter_complex",
+                             _num_graph(640, 360, 1, 14, "format=yuv420p,setpts='(N*7+58*gte(N,6))/TB'"),
+                             "-map", "[v]", "-map", "0:a", "-fps_mode", "passthrough",
+                             "-c:v", "libx264", "-preset", "veryfast", "-g", "250", "-bf", "3",
+                             "-sc_threshold", "0", "-pix_fmt", "yuv420p"] + aac + ["-f", "mp4", sl + ".part"])
+        os.replace(sl + ".part", sl)
+    slk = os.path.join(d, "slide.mkv")
+    if not os.path.exists(slk):
+        _m50_ff(["-i", sl, "-map", "0", "-c", "copy", "-f", "matroska", slk + ".part"])
+        os.replace(slk + ".part", slk)
+    # Larger than the size a transport stream is read whole for at once
+    # (restamp::CAT_WHOLE, 16 MB), and with a clock that ends near where the
+    # bytes say: only the walk finds that it goes back (p3cat).
+    big = os.path.join(d, "catbig.ts")
+    if not os.path.exists(big):
+        with open(big + ".part", "wb") as o:
+            for k, sec in ((0, 20), (1, 80)):
+                p = os.path.join(d, f"catbig{k}.ts")
+                _m50_ff(sine(sec) + ["-filter_complex", _num_graph(640, 360, 30, sec),
+                                     "-map", "[v]", "-map", "0:a", "-b:v", "2500k"] + H58_X264 + aac +
+                        ["-t", str(sec), "-f", "mpegts", p])
+                o.write(open(p, "rb").read())
+                os.remove(p)
+        os.replace(big + ".part", big)
+    cat = os.path.join(d, "catpair.ts")
+    if not os.path.exists(cat):
+        with open(cat + ".part", "wb") as o:
+            for k in (0, 1):
+                p = os.path.join(d, f"cat{k}.ts")
+                _m50_ff(sine(17) + ["-filter_complex",
+                                    _num_graph(640, 360, 30, 6, "format=yuv420p,setpts='(N/30+10*gte(N,61))/TB'"),
+                                    "-map", "[v]", "-map", "0:a", "-fps_mode", "passthrough"] + H58_X264 + aac +
+                        ["-t", "16.5", "-f", "mpegts", p])
+                o.write(open(p, "rb").read())
+                os.remove(p)
+        os.replace(cat + ".part", cat)
+    ph = os.path.join(d, "phone.mp4")
+    if not os.path.exists(ph):
+        _m50_ff(sine(20) + ["-filter_complex",
+                            _num_graph(640, 360, 30, 20, "format=yuv420p,settb=1/90000,"
+                                                         "select='not(eq(mod(n\\,37)\\,36))',"
+                                                         "setpts='(PTS*TB+0.004*sin(N))/TB'"),
+                            "-map", "[v]", "-map", "0:a", "-fps_mode", "passthrough"] + H58_X264 + aac +
+                ["-video_track_timescale", "90000", "-f", "mp4", ph + ".part"])
+        os.replace(ph + ".part", ph)
+    return d
+
+
+def _h58_times(path):
+    """Display times of the pictures of `path`, from the first."""
+    raw = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "frame=pts_time", "-of", "csv=p=0", path], capture_output=True, text=True).stdout
+    ts = [float(x.strip().strip(",")) for x in raw.splitlines() if x.strip().strip(",")]
+    return [x - ts[0] for x in ts]
+
+
+def _h58_jump(app, secs):
+    secs = max(0.0, secs)
+    _jump_text(app, f"{int(secs // 3600)}:{int(secs % 3600 // 60):02d}:{secs % 60:05.2f}")
+    _h58_settle(app, 1.0)
+
+
+def _h58_settle(app, quiet=1.5, limit=30):
+    """Until the counter and the stage's picture have stood still for
+    `quiet` seconds: a step across a long hold asks the stage a dozen times.
+    Returns how long it took."""
+    js = ("const i = document.getElementById('preview');"
+          "return [document.getElementById('counter').innerText, i ? i.src : null];")
+    t0 = time.time()
+    last, since = None, time.time()
+    while time.time() - t0 < limit:
+        v = app.s.js(js)
+        if v != last:
+            last, since = v, time.time()
+        elif time.time() - since >= quiet:
+            break
+        time.sleep(0.1)
+    return round(since - t0, 2)
+
+
+def _h58_visit(cfg, t, app, d, name, row, play=True):
+    path = os.path.join(d, name)
+    nums = _numbers(path)
+    times = _h58_times(path)
+    tag = f"58h {name}"
+    if len(nums) != len(times):
+        t.check(f"{tag}: material", False, f"{len(nums)} numbers, {len(times)} times")
+        return None
+    h = 360
+    app.to_list()
+    app.s.js(f"document.querySelector('#cliplist > li:nth-child({row})').scrollIntoView({{block: 'center'}})")
+    app.open_row(row, name, wait=False)
+    app.to_editor()
+    wait_for(f"the editor on {name}", lambda: name in app.state()["title"], 120, 0.3)
+    _walk_landed(app, 300)
+    time.sleep(1.5)
+    variable = app.state()["frames"] is None
+    # Display order: the picture on screen at an instant is the last one
+    # begun by it. The cat-joined pair is two clocks, read one after another
+    # on one clock since the 58th pass (restamp::cat_of): its display order
+    # is the file's, recording after recording, and only the first clock is
+    # asked of by time.
+    order = sorted(range(len(times)), key=lambda i: times[i])
+    clock_back = any(times[i + 1] < times[i] - 1.0 for i in range(len(times) - 1))
+    if clock_back:
+        order = list(range(len(times)))
+    app.s.keys("Home")
+    time.sleep(1.5)
+    zero = _counter_time(app) if variable else (app.state()["at"] or 0) / 30
+    first = _shown_number(app, h)
+    rel = lambda i: times[i]
+    holds = [i for i in range(len(times) - 1) if times[i + 1] - times[i] > 1.0]
+    if clock_back:
+        back = next(i for i in range(len(times) - 1) if times[i + 1] < times[i] - 1.0)
+        holds = [i for i in holds if i < back]
+    t.check(f"{tag}: Home shows the first picture", first == nums[order[0]],
+            f"shown {first}, want {nums[order[0]]}; counter {zero}; variable {variable}")
+
+    def at(i):
+        return (zero or 0) + rel(i)
+
+    bad = []
+    for i in holds[:5]:
+        p, q = i, i + 1
+        for ask, want, what in ((at(p) + 0.5, p, "early in the hold"), (at(q) + 0.006, q, "the picture after")):
+            if not variable:
+                break
+            _h58_jump(app, ask)
+            got = _shown_number(app, h)
+            ct = _counter_time(app)
+            if got != nums[want] or ct is None or abs(ct - at(want)) > 0.02:
+                bad.append((what, round(ask, 3), "shown", got, "want", nums[want], "counter", ct,
+                            "want", round(at(want), 2)))
+    t.check(f"{tag}: J into each hold shows its picture, J past it the next", not bad, f"{bad}")
+    # The arrows across each hold: from the picture before it on.
+    bad = []
+    took = []
+    for i in holds[:5]:
+        p = i
+        if p == 0 or times[p] - times[p - 1] > 1.0:
+            start = p
+        else:
+            start = p - 1
+        if variable:
+            _h58_jump(app, at(start) + 0.012)
+        else:
+            app.goto(round(at(start) * 30))
+        got0 = _shown_number(app, h)
+        seq = [got0]
+        for _ in range(3):
+            app.s.keys("Right")
+            took.append(_h58_settle(app))
+            seq.append(_shown_number(app, h))
+        back = []
+        for _ in range(3):
+            app.s.keys("Left")
+            took.append(_h58_settle(app))
+            back.append(_shown_number(app, h))
+        want = [nums[k] for k in range(start, min(start + 4, len(nums)))]
+        want += [want[-1]] * (4 - len(want))
+        f = min(start + 3, len(nums) - 1)
+        wantb = [nums[k] for k in range(f - 1, f - 4, -1)]
+        if seq != want or back != wantb:
+            bad.append((name, "from", nums[start], "->", seq, "want", want, "<-", back, "want", wantb))
+    t.check(f"{tag}: -> and <- step one picture across every hold", not bad, f"{bad}; settled after {took}")
+    t.check(f"{tag}: a step across a hold settles within 3 s", max(took or [0]) < 3.0, f"{took}")
+    # The end: a last picture after a still.
+    app.s.keys("End")
+    _h58_settle(app)
+    last = _shown_number(app, h)
+    app.s.keys("Left")
+    _h58_settle(app)
+    last1 = _shown_number(app, h)
+    lo = order[-1]
+    t.check(f"{tag}: End shows the last picture, <- the one before",
+            last == nums[lo] and last1 == nums[order[-2]],
+            f"End {last} (want {nums[lo]}), <- {last1} (want {nums[order[-2]]})")
+    # Shift+Down along the lossless points from the head.
+    app.s.keys("Home")
+    time.sleep(1.5)
+    keys = _keys_of(path)
+    pts = []
+    for _ in range(3):
+        app.s.keys("Shift+\ue015")
+        _h58_settle(app)
+        pts.append(_shown_number(app, h))
+    wantk = [nums[k] for k in keys[1:4]]
+    t.check(f"{tag}: Shift+Down walks the I pictures", pts == wantk or not clock_back and pts[:len(wantk)] == wantk,
+            f"shown {pts}, I pictures {wantk}")
+    # Playback through the first mid hold of at most 15 s.
+    mids = [i for i in holds if 0 < i and times[i + 1] - times[i] <= 15.5]
+    if play and variable and mids:
+        p = mids[0]
+        _h58_jump(app, at(p) - 0.4)
+        app.s.keys(" ")
+        hold = times[p + 1] - times[p]
+        seen = []
+        t0 = time.time()
+        while time.time() - t0 < hold + 3.0:
+            time.sleep(0.5)
+            seen.append((round(time.time() - t0, 1), _counter_time(app),
+                         app.s.js("return document.getElementById('play').textContent")))
+        app.s.keys(" ")
+        time.sleep(2.0)
+        ct = _counter_time(app)
+        got = _shown_number(app, h)
+        on = max((k for k in range(len(times)) if at(k) <= (ct or 0) + 0.0099), key=lambda k: times[k], default=0)
+        played_on = all(x[2] == "■" for x in seen) and seen and (seen[-1][1] or 0) > at(p + 1) - 0.02
+        t.check(f"{tag}: playback runs through a {hold:.0f} s hold and stops on what it shows",
+                played_on and got == nums[on],
+                f"counter/button every 0.5 s {seen[::2]}; stopped at {ct}, shown {got}, want {nums[on]}")
+    # Cuts: the held picture with the one after it (IN on the hold, -> , OUT,
+    # Del), and the last two pictures.
+    gone = []
+    if holds and variable:
+        p = holds[1] if len(holds) > 1 and holds[0] == 0 else holds[0]
+        _h58_jump(app, at(p) + 0.5)
+        na = _shown_number(app, h)
+        app.s.keys("i")
+        app.s.keys("Right")
+        _h58_settle(app)
+        nb = _shown_number(app, h)
+        app.s.keys("o")
+        time.sleep(0.3)
+        app.s.keys("Delete")
+        time.sleep(2.0)
+        gone.append((na, nb))
+    app.s.keys("End")
+    _h58_settle(app)
+    app.s.keys("Left")
+    _h58_settle(app)
+    na = _shown_number(app, h)
+    app.s.keys("i")
+    app.s.keys("End")
+    _h58_settle(app)
+    nb = _shown_number(app, h)
+    app.s.keys("o")
+    time.sleep(0.3)
+    app.s.keys("Delete")
+    time.sleep(2.0)
+    gone.append((na, nb))
+    app.ok()
+    app.gone()
+    time.sleep(0.5)
+    return name, nums, order, gone
+
+
+def _h58_run(cfg, t, scen, names, play=True):
+    d = _h58_make(cfg)
+    rows = [{"path": os.path.join(d, n)} for n in names]
+    with App(cfg, scen, rows) as app:
+        done = {}
+        for i, name in enumerate(names, 1):
+            try:
+                v = _h58_visit(cfg, t, app, d, name, i, play)
+            except Failure as e:
+                t.check(f"58h {name}: visit ran to the end", False, str(e))
+                v = None
+                for _ in range(2):
+                    if app.editor() is None:
+                        break
+                    app.to_editor()
+                    app.escape(True, expect_dialog=False)
+                    time.sleep(1)
+            if v:
+                done[i] = v
+        if not done:
+            return
+        app.save()
+        app.export(timeout=900)
+        outs = _ord_outputs(app)
+        for i, (name, nums, order, gone) in done.items():
+            files = [f for f in outs.get(i, []) if not f.endswith(".log")]
+            got = _numbers(files[0]) if len(files) == 1 else None
+            shown = [nums[k] for k in order]
+            ok_marks = True
+            # By place, not by number: the two recordings of a cat-joined
+            # file carry the same numbers. The last cut is always the last
+            # two pictures, so it is looked for from the end.
+            drop = set()
+            for g, (na, nb) in enumerate(gone):
+                if na not in shown or nb not in shown:
+                    ok_marks = False
+                    continue
+                if g == len(gone) - 1:
+                    b = len(shown) - 1 - shown[::-1].index(nb)
+                    a = b - 1 - shown[:b][::-1].index(na) if na != nb else b
+                else:
+                    a = shown.index(na)
+                    b = a + shown[a:].index(nb)
+                drop.update(range(a, b + 1))
+            want = [n for k, n in enumerate(shown) if k not in drop]
+            diff = [(k, a, b) for k, (a, b) in enumerate(zip(got or [], want)) if a != b][:4]
+            t.check(f"58h {name}: output = what the editor left", ok_marks and got == want,
+                    f"cut (shown) {gone}; got {None if got is None else len(got)} want {len(want)}; "
+                    f"first diff {diff}; files {[os.path.basename(f) for f in files]}")
+            for f in files:
+                os.remove(f)
+
+
+def holds_editor_58(cfg, t):
+    """(58th pass, mainjs.) The 57th lowered the stray rule (5 s) and put the
+    stills, the strip and playback through it (preview.rs Strays). On
+    undamaged screen recordings that really hold a picture 6..55 s at the
+    head, mid-way and before their last picture: Home, J into and past each
+    hold, -> / <- across it, End, Shift+Down, playback through a 12 s hold,
+    and two cuts, the output against what the editor showed."""
+    _h58_run(cfg, t, "holds_editor_58", ["scr.mp4", "scr.mkv", "scr.ts"])
+
+
+def holds_editor_more_58(cfg, t):
+    """(58th pass, mainjs.) As `holds_editor_58`, on a slide show with B
+    pictures (.mp4 / .mkv, one picture held 65 s), two screen recordings
+    joined with cat, and a phone's jittered 30 a second."""
+    _h58_run(cfg, t, "holds_editor_more_58", ["slide.mp4", "slide.mkv", "phone.mp4"])
+
+
+def holds_catpair_58(cfg, t):
+    """(58th pass, mainjs; in the default list since p3cat.) Two screen
+    recordings joined with cat whose clocks both start at 1.4 s: the editor's
+    timeline and every cut held only the first (0.8.52, 0.9.0 and 0.9.1
+    alike). Now read one after another on one clock (restamp::cat_of)."""
+    _h58_run(cfg, t, "holds_catpair_58", ["catpair.ts"])
+
+
+SCENARIOS += [holds_editor_58, holds_editor_more_58]
+
+
+def hold_step_then_end_58(cfg, t):
+    """(58th pass, mainjs.) On the last picture after a 20 s still, <- asks
+    the stage a dozen times; End pressed while it asks lands on the picture
+    the step began on, and the asks after it took the playhead back to the
+    picture before: the step went on as if nothing had moved it. End must
+    win. Fails on cbcd6da (the playhead ends on 238)."""
+    d = _h58_make(cfg)
+    name = "scr.mp4"
+    nums = _numbers(os.path.join(d, name))
+    with App(cfg, "hold_step_then_end_58", [{"path": os.path.join(d, name)}]) as app:
+        app.open_row(1, name, wait=False)
+        app.to_editor()
+        wait_for("the editor", lambda: name in app.state()["title"], 120, 0.3)
+        _walk_landed(app, 300)
+        time.sleep(1.5)
+        got = []
+        for _ in range(2):
+            app.s.keys("End")
+            _h58_settle(app)
+            app.s.keys("Left")
+            time.sleep(0.25)
+            app.s.keys("End")
+            _h58_settle(app, 2.5)
+            got.append((_counter_time(app), _shown_number(app, 360)))
+        t.check("58s End during a step across the last still stays at the end",
+                all(n == nums[-1] and c is not None and c > 130.9 for c, n in got),
+                f"(counter, shown) after <- then End: {got}; last picture {nums[-1]}")
+
+
+SCENARIOS += [hold_step_then_end_58, holds_catpair_58]
+
+
+def cat_found_by_walk_58(cfg, t):
+    """(58th pass, p3cat.) Two recordings joined with cat, 25 MB, the second
+    four times the first: the look the name is given does not see the clock
+    go back, the walk does, and the recording is read again on one clock
+    (lib.rs Rejoined). The editor's timeline must then hold both, End the
+    second's last picture, and the cut both recordings' pictures."""
+    _h58_run(cfg, t, "cat_found_by_walk_58", ["catbig.ts"], play=False)
+
+
+SCENARIOS.append(cat_found_by_walk_58)
+
+
+def _h58_probe(app, times, h, width=640):
+    """`preview` asked at each of `times` in turn, as the stage asks it: the
+    instant each answers with and the number on its picture."""
+    out = []
+    for x in times:
+        r = app.s.js("return window.__TAURI__.core.invoke('preview', {time: arguments[0], width: arguments[1]})"
+                     ".then((r) => [r.time, r.url], (e) => [null, String(e)]);", x, width)
+        n = _url_number(app, r[1], h) if r[0] is not None else r[1]
+        out.append((x, None if r[0] is None else round(r[0], 4), n))
+    _probe_away(app)
+    return out
+
+
+def holds_probe_58(cfg, t):
+    """(58th pass, mainjs; a diagnosis, EXTRA.) The stage's own `preview`
+    asked along a hold as stepPicture asks it, against the CLI's --still."""
+    d = _h58_make(cfg)
+    name = os.environ.get("H58_FILE", "scr.mp4")
+    with App(cfg, "holds_probe_58", [{"path": os.path.join(d, name)}]) as app:
+        app.open_row(1, name, wait=False)
+        app.to_editor()
+        wait_for("the editor", lambda: name in app.state()["title"], 120, 0.3)
+        _walk_landed(app, 300)
+        time.sleep(2)
+        seq = [float(x) for x in os.environ.get("H58_TIMES", "8.0,8.01,8.02,8.04,8.08,8.16,8.32,8.64,9.28,10.56,13.12,18.24,20.04,22.0,22.01,22.02,22.04").split(",")]
+        if os.environ.get("H58_TIMING"):
+            for x in seq:
+                ms = app.s.js("const t0 = performance.now(); return window.__TAURI__.core.invoke('preview',"
+                              " {time: arguments[0], width: 960}).then((r) => [r.time, performance.now() - t0]);", x)
+                print("       ", x, ms, flush=True)
+        else:
+            got = _h58_probe(app, seq, 360)
+            for g in got:
+                print("       ", g, flush=True)
+        t.check("58h probe ran", True, "")
+
+
+EXTRA.append(holds_probe_58)
+
+
+def update_status_together_58(cfg, t):
+    """(58th pass, tauri.) update_status runs off the window's thread since
+    the 57th, so two askings can now overlap -- 環境設定 opened just as the
+    check eight seconds after the start asks. Each asking makes the folder an
+    update would be fetched into if it is not there, writes a probe file
+    named for the PROCESS in it, removes it, and removes the folder if it made
+    it: two at once shared the probe's name, and the one that had made the
+    folder removed it under the other, whose write then failed. The window
+    keeps the first answer it gets for the session, so a copy that could be
+    updated said it could not ("blocked") and was never checked again.
+
+    Worked on an install shaped like the tar.gz's (<root>/app/usr/bin/smartcut
+    beside the two launchers -- the tree's build linked in, the launchers
+    empty: only their being there is asked) so that update::kind() is
+    linux-tar and there is a folder to make; no update is fetched
+    (SMARTCUT_UPDATE_BASE points at a closed port)."""
+    import copy
+    base = os.path.join(cfg.work, "runs", "update_status_together_58.install")
+    shutil.rmtree(base, ignore_errors=True)
+    root = os.path.join(base, "SmartCut-test-linux-x86_64")
+    os.makedirs(os.path.join(root, "app", "usr", "bin"))
+    exe = os.path.join(root, "app", "usr", "bin", "smartcut")
+    try:
+        os.link(cfg.gui, exe)
+    except OSError:
+        shutil.copy2(cfg.gui, exe)
+    for name in ("smartcut", "smartcut-cli"):
+        open(os.path.join(root, name), "w").close()
+    staging = os.path.join(base, ".smartcut-update")
+    mine = copy.copy(cfg)
+    mine.gui = exe
+    app = App(mine, "update_status_together_58", clips(cfg))
+    app.env["SMARTCUT_UPDATE_BASE"] = "http://127.0.0.1:9"
+    try:
+        with app:
+            app.to_list()
+            kinds, blocked, left = set(), [], 0
+            for _ in range(25):
+                said = app.s.js(
+                    "const ask = () => window.__TAURI__.core.invoke('update_status');"
+                    " return Promise.all(Array.from({length: 12}, ask))"
+                    ".then((a) => JSON.stringify(a.map((s) => [s.kind, s.blocked || ''])),"
+                    " (e) => JSON.stringify([['error', String(e)]]))")
+                for kind, why in json.loads(said):
+                    kinds.add(kind)
+                    if why:
+                        blocked.append(why)
+                left += os.path.isdir(staging)
+            t.check("58t the install reads as the tar.gz", kinds == {"linux-tar"}, f"{kinds}")
+            t.check("58t update_status asked twelve at once is never blocked", not blocked,
+                    f"{len(blocked)} of 300 blocked: {blocked[:1]}")
+            t.check("58t and leaves no folder beside the install", left == 0, f"left {left} times")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+SCENARIOS += [update_status_together_58]
+
+
+def _upd58_server(name, size):
+    """A local update server for the window's failure paths: a manifest naming
+    9.9.9 for the tar.gz, a .minisig that is NOT a signature (the update key's
+    id and the right trusted comment, so the fetch goes ahead, and zeros where
+    the two signatures go, so it fails at the end), and a file of `size`
+    zeros, sent in 64 KiB pieces two seconds apart (`mode['slow']`) or at
+    once. Nothing is signed here."""
+    import base64
+    import http.server
+    import threading
+    key = base64.b64decode("RWRAGQPDXoci5v058jd4moKB1ppfxO2FBPfGgNheje4mqBrOwUfsSoHm")
+    sig = "\n".join([
+        "untrusted comment: not a signature (GUI test)",
+        base64.b64encode(b"ED" + key[2:10] + bytes(64)).decode(),
+        f"trusted comment: SmartCut 9.9.9 {name}",
+        base64.b64encode(bytes(64)).decode(),
+    ]) + "\n"
+    manifest = json.dumps({"version": "9.9.9", "files": {"linux-tar": {"name": name, "size": size}}})
+    mode = {"slow": True}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def send(self, body):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/update.json":
+                return self.send(manifest.encode())
+            if self.path == f"/{name}.minisig":
+                return self.send(sig.encode())
+            if self.path != f"/{name}":
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            sent = 0
+            try:
+                while sent < size:
+                    n = min(64 * 1024 if mode["slow"] else size, size - sent)
+                    self.wfile.write(bytes(n))
+                    self.wfile.flush()
+                    sent += n
+                    if mode["slow"]:
+                        time.sleep(2)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, mode
+
+
+def update_offer_failed_58(cfg, t):
+    """(58th pass, appjs.) The update box on a fetch that is stopped and one
+    that fails: the program copied into a tar.gz's layout (so it is an
+    updatable kind) and pointed at a local server whose 9.9.9 is not signed
+    (see `_upd58_server`). With the box up Delete and Enter leave the list
+    alone and Escape does not put a fetch away; 中止 goes quiet; a stopped or
+    failed fetch keeps the dot and the menu line, leaves nothing in the
+    staging folder, and can be skipped from the box (before the 58th the skip
+    was hidden there, so the offer stood until the next start); an Enter held
+    on あとで does not run on into the list and open the row (X autorepeat)."""
+    import copy
+    d = os.path.join(cfg.work, "upd58appjs")
+    shutil.rmtree(d, ignore_errors=True)
+    root = os.path.join(d, "inst")
+    os.makedirs(os.path.join(root, "app", "usr", "bin"))
+    exe = os.path.join(root, "app", "usr", "bin", "smartcut")
+    shutil.copy2(cfg.gui, exe)
+    for n in ("smartcut", "smartcut-cli"):
+        open(os.path.join(root, n), "w").close()
+    stage = os.path.join(d, ".smartcut-update")
+    name = "SmartCut-9.9.9-x86_64.tar.gz"
+    srv, mode = _upd58_server(name, 4 << 20)
+    mine = copy.copy(cfg)
+    mine.gui = exe
+    q = lambda js: app.s.js("return " + js)  # noqa: E731
+    left = lambda: sorted(os.listdir(stage)) if os.path.isdir(stage) else []  # noqa: E731
+    try:
+        app = App(mine, "update_offer_failed_58", clips(cfg))
+        for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
+            app.env.pop(k, None)
+        app.env["NO_PROXY"] = "127.0.0.1"
+        app.env["SMARTCUT_UPDATE_BASE"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        with app:
+            app.to_list()
+            offered = lambda: q("document.getElementById('brand').classList.contains('has-update')"  # noqa: E731
+                                " && !document.getElementById('menu-update').hidden")
+            wait_for("the start's check to find 9.9.9", offered, 60, 0.5)
+            app.s.click("#cliplist > li:nth-child(1) .nm")
+            wait_for("row 1 selected", lambda: q("!!document.querySelector('#cliplist > li.on')"), 15)
+            app.s.js("document.getElementById('menu-update').click();")
+            wait_for("the update box", lambda: q("!document.getElementById('update').hidden"), 5)
+            app.s.keys("Delete")
+            time.sleep(0.5)
+            rows = app.rows()
+            app.s.keys("Enter")
+            time.sleep(2)
+            t.check("58u Delete and Enter under the update box leave the list",
+                    rows == 2 and app.editor() is None, f"rows {rows}, editor {app.editor()}")
+            app.to_list()
+            app.s.js("document.getElementById('update-go').click();")
+            wait_for("the fetch", lambda: q("!document.getElementById('update-bar').hidden"), 10)
+            time.sleep(3)
+            app.s.keys("Escape")
+            time.sleep(0.5)
+            t.check("58u Escape leaves a fetch's box up", q("!document.getElementById('update').hidden"))
+            app.s.js("document.getElementById('update-go').click();")
+            quiet = q("document.getElementById('update-go').disabled")
+            failed = lambda: q("document.getElementById('update-bar').hidden"  # noqa: E731
+                               " && !document.getElementById('update-go').disabled")
+            wait_for("the stop", failed, 30, 0.2)
+            t.check("58u 中止 goes quiet until the fetch answers", quiet)
+            t.check("58u a stopped fetch can be skipped from the box",
+                    q("!document.getElementById('update-skip').hidden"))
+            t.check("58u a stopped fetch leaves nothing in the staging folder", not left(), f"{left()}")
+            app.s.js("document.getElementById('update-later').click();")
+            time.sleep(0.5)
+            t.check("58u a stopped fetch keeps the dot and the menu line", offered())
+            # Again, at full speed: the whole file, and the signature refused.
+            mode["slow"] = False
+            app.s.js("document.getElementById('menu-update').click();")
+            wait_for("the update box", lambda: q("!document.getElementById('update').hidden"), 5)
+            app.s.js("document.getElementById('update-go').click();")
+            time.sleep(1)
+            wait_for("the refusal", failed, 60, 0.2)
+            said = q("document.getElementById('update-said').textContent")
+            t.check("58u a file whose signature fails is refused and not kept",
+                    "署名" in said and not left(), f"said {said!r}, left {left()}")
+            t.check("58u a failed fetch keeps the dot and the menu line", offered())
+            # Enter held on あとで: X repeats it after the box is gone.
+            app.s.js("document.getElementById('update-later').focus();")
+            win = None
+            pid = app.gui_pid()
+            for line in sh("wmctrl -lp", app.env).splitlines():
+                f = line.split(None, 4)
+                if len(f) >= 4 and f[2] == str(pid) and "DIALOG" not in sh(
+                        f"xprop -id {f[0]} _NET_WM_WINDOW_TYPE", app.env):
+                    win = f[0]
+                    break
+            sh(f"xdotool windowactivate --sync {win}", app.env)
+            time.sleep(0.3)
+            sh("xdotool keydown Return; sleep 1.5; xdotool keyup Return", app.env)
+            time.sleep(2)
+            ed = app.editor()
+            t.check("58u an Enter held on あとで opens no editor behind it",
+                    ed is None and q("document.getElementById('update').hidden"), f"editor {ed}")
+            if ed:
+                try:
+                    app.escape(discard=True, expect_dialog=False)
+                    app.gone()
+                except Failure:
+                    pass
+            app.to_list()
+            app.s.js("document.getElementById('menu-update').click();")
+            wait_for("the update box", lambda: q("!document.getElementById('update').hidden"), 5)
+            skip = q("!document.getElementById('update-skip').hidden")
+            if skip:
+                app.s.js("document.getElementById('update-skip').click();")
+                time.sleep(0.5)
+            t.check("58u このバージョンを飛ばす after a failure puts the offer away",
+                    skip and not offered(), f"skip shown {skip}")
+    finally:
+        srv.shutdown()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+SCENARIOS += [update_offer_failed_58]
+
+def cat_tangled_ja_58(cfg, t):
+    """(58th pass, p5check.) A file joined end to end that cannot be split
+    (an H.264 .ts and an MPEG-2 .ts written with ffmpeg's PIDs, cat'ed) is
+    refused when it is opened (restamp.rs Cat::Tangled). On a Japanese screen
+    the refusal must read in Japanese (i18n engine.catTangled), not in the
+    engine's English."""
+    d = os.path.join(cfg.work, "tangled58")
+    os.makedirs(d, exist_ok=True)
+    tangled = os.path.join(d, "tangled.ts")
+    if not os.path.exists(tangled):
+        sine = ["-f", "lavfi", "-i", "sine=frequency=440:duration=6:sample_rate=48000"]
+        with open(tangled + ".part", "wb") as o:
+            for k, codec in enumerate((["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"],
+                                       ["-c:v", "mpeg2video", "-b:v", "2M"])):
+                p = os.path.join(d, f"part{k}.ts")
+                _m50_ff(["-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=6"] + sine + codec +
+                        ["-c:a", "aac", "-t", "6", "-f", "mpegts", p])
+                o.write(open(p, "rb").read())
+                os.remove(p)
+        os.replace(tangled + ".part", tangled)
+    with App(cfg, "cat_tangled_ja_58", [{"path": tangled}]) as app:
+        # The list's reading of the row fails, and the row's second line
+        # says why (app.js paintRow: engineSays(clip.error)).
+        app.open_row(1, "tangled.ts", wait=False)
+        app.to_list()
+        sub = lambda: app.s.js(
+            "const e = document.querySelector('#cliplist > li:nth-child(1) .sub'); return e ? e.innerText : '';")
+        said = wait_for("the row to say why it cannot be read", lambda: (lambda s: s if (
+            "つなぎ" in s or "joined end to end" in s) else None)(sub() or ""), 120)
+        t.check("58t the refusal of a tangled cat file reads in Japanese",
+                "つなぎ目の前後を見分けられません" in said and "joined end to end" not in said, repr(said))
+
+
+SCENARIOS.append(cat_tangled_ja_58)
+
+
+
 def main():
     cfg = Cfg()
     os.makedirs(cfg.work, exist_ok=True)
@@ -15497,4 +16214,5 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
 

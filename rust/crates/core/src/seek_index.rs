@@ -232,7 +232,16 @@ pub struct SeekIndex {
     /// has -- and true for one made now. Not written: it is the writing. See
     /// [`Unfit::Older`].
     sets_written: bool,
+    /// The table a transport stream of recordings joined end to end was
+    /// read through when this was made ([`crate::input::Input::cache_salt`]):
+    /// its points are on that one clock, and on no other. Written after
+    /// everything else, and only for such a recording, so that every other
+    /// index is the bytes it always was. See [`SeekIndex::build`].
+    joined: Option<String>,
 }
+
+/// What stands in front of [`SeekIndex::joined`] where it is written.
+const JOINED: u8 = 0xCA;
 
 /// How many of a recording's first bytes go into its [`identity`]: the
 /// tables a transport stream opens with, a program stream's first packs, an
@@ -314,6 +323,11 @@ pub enum Unfit {
     /// their own are placed by another rule since 0.8.52; see
     /// [`index::IndexSource::build`] below.
     Older,
+    /// It was walked on another clock than the recording is read on now: a
+    /// transport stream of recordings joined end to end, read on one clock
+    /// since 0.9.2 ([`crate::restamp::cat_of`]), walked by an older version
+    /// on the clock the file states.
+    Clock,
 }
 
 impl std::fmt::Display for Unfit {
@@ -324,6 +338,12 @@ impl std::fmt::Display for Unfit {
                 f,
                 "the seek index was made from another recording than {recording} (it was made \
                  from one of {len} bytes): name another file for it, or delete it"
+            ),
+            Unfit::Clock => write!(
+                f,
+                "the seek index was made on another clock than this recording is read on now \
+                 (it holds recordings joined end to end, which are read one after another on one \
+                 clock since SmartCut 0.9.2)"
             ),
             Unfit::Older => write!(
                 f,
@@ -385,6 +405,22 @@ impl index::IndexSource for SeekIndex {
         if !self.sets_written && untimed_ps(&input) {
             return Err(Unfit::Older.into());
         }
+        // **Recordings joined end to end in a transport stream** are read on
+        // one clock since 0.9.2 ([`crate::restamp::cat_of`]), and an index's
+        // points are on the clock it was walked on. One walked on the clock
+        // the file states (0.9.1 and before) is made again; one walked on the
+        // joined clock where this open had not found the join -- the walk
+        // found it, the last time ([`crate::scan_stoppable`]) -- says so, and
+        // the open is made again through the table it names, with this index.
+        let here = crate::input::Input::parse(input.path).ok();
+        match (&self.joined, here.as_ref().and_then(|i| i.cache_salt())) {
+            (None, None) => {}
+            (Some(was), Some(now)) if *was == now => {}
+            (Some(was), None) if here.is_some_and(|i| i.adopt(was)) => {
+                return Err(anyhow::Error::new(crate::Rejoined { walk: false }));
+            }
+            _ => return Err(Unfit::Clock.into()),
+        }
         Ok(index::Index {
             points: self.points.clone(),
             leading_known: self.leading_known,
@@ -409,6 +445,12 @@ fn untimed_ps(input: &index::IndexInput) -> bool {
 }
 
 impl SeekIndex {
+    /// Whether this was made of recordings joined end to end, read on one
+    /// clock. See `joined`.
+    pub fn joined(&self) -> Option<&str> {
+        self.joined.as_deref()
+    }
+
     /// The index a finished scan and thumbnail pass amount to.
     pub fn of(src: &crate::Source, track: Option<&thumbs::Track>) -> SeekIndex {
         SeekIndex {
@@ -430,6 +472,7 @@ impl SeekIndex {
             whole: src.read_whole,
             sets: src.sets_restated.clone(),
             sets_written: true,
+            joined: src.input.cache_salt(),
         }
     }
 
@@ -523,6 +566,12 @@ impl SeekIndex {
                 }
             }
             None => w.u8(0),
+        }
+        // And last, only for recordings joined end to end, the table they
+        // were read through.
+        if let Some(table) = &self.joined {
+            w.u8(JOINED);
+            w.bytes(table.as_bytes());
         }
 
         // Through a temporary and renamed into place. This runs to tens of
@@ -679,6 +728,9 @@ impl SeekIndex {
             whole: true,
             sets_written: r.at < r.raw.len(),
             sets: sets_met(&mut r),
+            joined: (r.u8().ok() == Some(JOINED))
+                .then(|| r.bytes().ok().and_then(|b| String::from_utf8(b.to_vec()).ok()))
+                .flatten(),
         })
     }
 }
@@ -1112,6 +1164,7 @@ mod tests {
             whole: true,
             sets: None,
             sets_written: true,
+            joined: None,
         };
         let at = std::env::temp_dir().join(format!("smartcut-scix-read-{}.scix", std::process::id()));
         ix.save(&at).unwrap();
@@ -1163,6 +1216,7 @@ mod tests {
             whole: true,
             sets: None,
             sets_written: true,
+            joined: None,
         };
         let at = dir.join("x.scix");
         ix(Some(of(&a))).save(&at).unwrap();
@@ -1199,6 +1253,7 @@ mod tests {
             whole: true,
             sets,
             sets_written: true,
+            joined: None,
         };
         let at = std::env::temp_dir().join(format!("smartcut-scix-sets-{}.scix", std::process::id()));
         ix(Some(met.clone())).save(&at).unwrap();
